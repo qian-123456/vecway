@@ -12,22 +12,22 @@ export function AppMark({ size = 32, className = "" }: { size?: number; classNam
 					<stop offset="0%" stopColor="#141417" />
 					<stop offset="100%" stopColor="#09090B" />
 				</linearGradient>
-				<linearGradient id={`${id}-left`} x1="120" y1="128" x2="232" y2="388" gradientUnits="userSpaceOnUse">
+				<linearGradient id={`${id}-left`} x1="144.2" y1="110.9" x2="252" y2="419" gradientUnits="userSpaceOnUse">
 					<stop offset="0%" stopColor="#A1A1AA" />
 					<stop offset="100%" stopColor="#52525B" />
 				</linearGradient>
-				<linearGradient id={`${id}-right`} x1="396" y1="96" x2="216" y2="388" gradientUnits="userSpaceOnUse">
+				<linearGradient id={`${id}-right`} x1="402.9" y1="104" x2="252" y2="419" gradientUnits="userSpaceOnUse">
 					<stop offset="0%" stopColor="#FFFFFF" />
 					<stop offset="100%" stopColor="#D4D4D8" />
 				</linearGradient>
 			</defs>
 			<rect x="24" y="24" width="464" height="464" rx="108" fill={`url(#${id}-bg)`} stroke="#27272A" strokeWidth="8" />
-			<path d="M132 148 L228 368" stroke={`url(#${id}-left)`} strokeWidth="56" strokeLinecap="round" />
+			<path d="M144.2 137.9 L252 392" stroke={`url(#${id}-left)`} strokeWidth="54" strokeLinecap="round" />
 			<path
-				d="M200 356 L284 188 C268 148, 284 104, 322 86 C338 78, 354 78, 366 84 L328 138 L364 174 L418 136 C424 148, 424 164, 416 180 C398 218, 354 234, 314 218 L254 380 C240 404, 188 380, 200 356 Z"
+				d="M 226.6 382.7 L 302.4 219.3 C 268.8 177.6, 275.1 135.9, 306.7 113.3 C 319.9 103.2, 334.6 100.5, 346.6 104 L 321 159.8 L 360 186.6 L 402.9 142.7 C 410.4 152.7, 413.1 167.3, 408.5 183.3 C 398.7 220.9, 362 241.7, 337.1 237.5 L 276.5 403.4 A 27 27 0 0 1 226.6 382.7 Z"
 				fill={`url(#${id}-right)`}
 			/>
-			<circle cx="228" cy="368" r="16" fill="#090B0E" />
+			<circle cx="252" cy="392" r="16" fill="#090B0E" />
 		</svg>
 	);
 }
