@@ -1,4 +1,4 @@
-import { ChevronDown, ClipboardCopy, FileInput, Loader2, LogIn, Plus, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { ChevronDown, ClipboardCopy, FileInput, Loader2, LogIn, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
 import { SearchInput } from "../../components/SearchInput";
@@ -6,9 +6,7 @@ import type { ProviderRow } from "../../lib/contracts";
 import { copyText, errMsg } from "../../lib/dialogs";
 import { toast } from "../../lib/toast";
 import { useT } from "../../stores/language";
-import { SectionHeader } from "../settings/ui";
 import { useSettingsNav } from "../settings/settingsNav";
-import { openSettingsTarget } from "../settings/settingsTargets";
 import { MODELS_YML_PATH } from "./keyState";
 import { modelEntryId } from "./modelEntry";
 import { OauthLoginDialog } from "./OauthLoginDialog";
@@ -120,30 +118,16 @@ function ChatProviderPanel() {
 		"flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-neutral-200 hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:hover:bg-transparent";
 
 	return (
-		<div className="space-y-4">
-			<div className="space-y-3">
-				<SectionHeader
-					title={t("providers.headerTitle")}
-					description={t("providers.headerDesc", { total: rows.length })}
+		<div className="space-y-3">
+			<div className="flex flex-col items-stretch justify-between gap-2 sm:flex-row sm:items-center">
+				<SearchInput
+					className="min-w-[200px] max-w-sm flex-1"
+					value={query}
+					onChange={setQuery}
+					placeholder={t("providers.searchPlaceholder")}
+					ariaLabel={t("providers.searchAria")}
 				/>
-				<button
-					type="button"
-					onClick={() => openSettingsTarget("modelContext")}
-					className="flex w-full items-center gap-2 rounded-lg border border-[var(--border-divider)] bg-[var(--well-bg)] px-3 py-2 text-left text-xs text-neutral-300 transition-colors hover:bg-[var(--bg-hover)]"
-				>
-					<SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" />
-					<span className="flex-1">{t("providers.contextWindowBanner")}</span>
-					<span className="font-medium text-[var(--accent)]">{t("providers.contextWindowLink")}</span>
-				</button>
-				<div className="flex flex-col items-stretch justify-between gap-2.5 rounded-xl border border-[var(--border-divider)] bg-[var(--well-bg)] p-2 shadow-2xs sm:flex-row sm:items-center">
-					<SearchInput
-						className="min-w-[200px] max-w-sm flex-1"
-						value={query}
-						onChange={setQuery}
-						placeholder={t("providers.searchPlaceholder")}
-						ariaLabel={t("providers.searchAria")}
-					/>
-					<div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:flex-nowrap">
+				<div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:flex-nowrap">
 						<button
 							ref={menuBtnRef}
 							type="button"
@@ -210,7 +194,6 @@ function ChatProviderPanel() {
 						</button>
 					</div>
 				</div>
-			</div>
 
 			{error && (
 				<div role="alert" className="flex items-center gap-2 rounded-xl border border-rose-800/40 bg-rose-950/20 px-3 py-2 text-xs text-rose-300">
@@ -255,7 +238,7 @@ function ChatProviderPanel() {
 			)}
 
 			{!isLoading && !error && filtered.length > 0 && (
-				<div className="space-y-2">
+				<div className="space-y-1.5">
 					<div className={`${ROW_GRID} px-2.5 text-[11px] text-neutral-500`}>
 						<span>{t("providers.colProviderName")}</span>
 						<span className="whitespace-nowrap">{t("providers.colKeyAction")}</span>
