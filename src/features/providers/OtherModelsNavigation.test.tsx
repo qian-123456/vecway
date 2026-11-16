@@ -3,7 +3,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const nav = vi.hoisted(() => ({ focusKey: null as string | null, focusRequest: 0 }));
+const openSettingsTarget = vi.hoisted(() => vi.fn());
 vi.mock("../settings/settingsNav", () => ({ useSettingsNav: () => nav }));
+vi.mock("../settings/settingsTargets", () => ({ openSettingsTarget }));
 vi.mock("../settings/SectionJumpBar", () => ({ SectionJumpBar: () => null }));
 vi.mock("../settings/OmpSettingsList", () => ({ OmpSections: () => null }));
 vi.mock("../settings/sections/QuotaDashboardCard", () => ({ QuotaDashboardCard: () => <div>Quota dashboard</div> }));
@@ -40,5 +42,16 @@ describe("other-model settings navigation", () => {
 		view.rerender(<ProvidersSection />);
 		expect(screen.getByText("Chat provider management")).toBeTruthy();
 		expect(screen.queryByText("Non-LLM model catalog")).toBeNull();
+	});
+
+	it("renders raw config action in the top header and inline context-window link on chat providers tab", () => {
+		render(<ProvidersSection />);
+		expect(screen.getByRole("button", { name: "编辑原始配置文件" })).toBeTruthy();
+		const contextBtn = screen.getByRole("button", { name: "批量设置上下文窗口 →" });
+		fireEvent.click(contextBtn);
+		expect(openSettingsTarget).toHaveBeenCalledWith("modelContext");
+		fireEvent.click(screen.getByRole("radio", { name: "其他类型模型" }));
+		expect(screen.queryByRole("button", { name: "批量设置上下文窗口 →" })).toBeNull();
+		expect(screen.getByRole("button", { name: "编辑原始配置文件" })).toBeTruthy();
 	});
 });

@@ -97,7 +97,7 @@ afterEach(() => {
 async function renderPanel(rows: ProviderRow[]) {
 	data = rows;
 	render(<ProviderPanel />);
-	await screen.findByText("供应商（点名称看详情）");
+	await screen.findByText("供应商");
 }
 
 describe("key column", () => {
