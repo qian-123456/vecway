@@ -41,6 +41,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          shared-key: 'tauri-release-${{ matrix.target }}'
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4

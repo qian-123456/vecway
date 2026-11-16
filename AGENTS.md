@@ -37,7 +37,7 @@ cargo fmt                    # format (CI expects fmt-clean)
 
 Use official Cargo from `~/.cargo/bin` with Kache selected by the user's Cargo configuration (`~/.cargo/config.toml`, `[build].rustc-wrapper` pointing to the installed Kache executable). This Mac uses pinned Kache 2.0.0 and a shared local-only cache across worktrees. Do not export compiler-wrapper overrides; for direct `cargo` commands, first run `unset RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER CARGO_BUILD_RUSTC_WRAPPER CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER`. The project Tauri launcher clears those inherited overrides and puts the official rustup proxy first on `PATH`; `pnpm tauri`, `pnpm dev:preview`, `pnpm build:app`, and `open-worktree.mjs` all use it. No alternate Cargo installation or opt-in wrapper is needed.
 
-**Live dev app check.** Frontend changes require visually checking the live window (no white screen). If blank, run `touch index.html` to force Vite full-reload or use skill `omp-workspace-native-ui-acceptance`. Avoid concurrent edits to mutually-imported files while live app is watching.
+**Live dev app check.** Tier UI verification by scope: for small copy, spacing, or visual tweaks, targeted tests + `pnpm tsc --noEmit` (plus a quick visual check in an already-open preview/window when convenient) suffice without spawning a new heavy desktop subagent each round; for multi-step interactions, floating layers, native shell changes, or final delivery sign-off, visually verify the live window (no white screen; if blank, run `touch index.html` to force Vite full-reload or use skill `omp-workspace-native-ui-acceptance`). Reuse an existing idle subagent for follow-up checks on the same window, and stop immediately to report the blocker if the accessibility tree is unavailable rather than scripting pixel scans or guessing coordinates. Avoid concurrent edits to mutually-imported files while live app is watching.
 
 ## Git worktrees
 
@@ -58,6 +58,7 @@ Use official Cargo from `~/.cargo/bin` with Kache selected by the user's Cargo c
 
 ## UI rules (check every UI change against these)
 
+- **No vertical text wrapping**: Never allow single-character vertical wrapping; keep short labels, badges, and status chips wide enough with `whitespace-nowrap`.
 - **Model picker**: Use app's grouped two-pane picker (`ModelMenuContent` / `ModelSelect`), never a flat linear list.
 - **No text truncation**: Important text (model names, locations, diffs, errors) must be fully readable (wrap or expandable 「全部 N 处」 control); errors shown in full.
 - **Button labels**: No trailing ellipsis (use 「替换」, not 「替换…」); use plain labels (「换成别的模型」, not jargon).
