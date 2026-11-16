@@ -43,7 +43,7 @@ const ROW_STYLE: Record<DiffLine["kind"], string> = {
 	add: "bg-emerald-500/15 text-emerald-400",
 	del: "bg-rose-500/15 text-rose-400",
 	ctx: "text-neutral-300",
-	hunk: "bg-[#0A84FF]/10 text-sky-400/80",
+	hunk: "bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] text-[var(--accent)]",
 	meta: "text-neutral-500",
 };
 
@@ -138,7 +138,7 @@ function Gutter({
 						onAdd();
 					}}
 					className={clsx(
-						"press-scale absolute left-1 top-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-[#0A84FF] text-white shadow hover:bg-[#0A84FF]/90 opacity-0 transition-opacity focus-within:opacity-100",
+						"press-scale absolute left-1 top-0.5 flex h-4 w-4 items-center justify-center rounded-md bg-[var(--accent)] text-[var(--accent-fg)] shadow hover:opacity-90 opacity-0 transition-opacity focus-within:opacity-100",
 						group === "row" && "group-hover/row:opacity-100",
 						group === "left" && "group-hover/left:opacity-100",
 						group === "right" && "group-hover/right:opacity-100",
@@ -362,7 +362,7 @@ export function DiffModal({
 					className={clsx(
 						"group/row flex cursor-default select-text transition-colors",
 						ROW_STYLE[l.kind],
-						inSel(i) && "outline outline-1 -outline-offset-1 outline-[#0A84FF]/80",
+						inSel(i) && "outline outline-1 -outline-offset-1 outline-[var(--accent)]",
 					)}
 				>
 					<Gutter nos={[l.oldNo, l.newNo]} onAdd={() => setSel([i, i])} group="row" />
@@ -396,7 +396,7 @@ export function DiffModal({
 							? "bg-[rgba(255,69,58,0.12)] text-rose-400"
 							: "bg-[rgba(48,209,88,0.12)] text-emerald-400"
 						: "text-neutral-300",
-					inSel(cell.origIdx) && "outline outline-1 -outline-offset-1 outline-[#0A84FF]/80",
+					inSel(cell.origIdx) && "outline outline-1 -outline-offset-1 outline-[var(--accent)]",
 				)}
 			>
 				<Gutter
@@ -549,7 +549,7 @@ export function DiffModal({
 							<Counts adds={totals.adds} dels={totals.dels} />
 						</span>
 					)}
-					{note && <span className="text-xs text-[#30D158] font-mono">{note}</span>}
+					{note && <span className="text-xs text-[var(--status-success)] font-mono">{note}</span>}
 
 					<button
 						type="button"
@@ -726,7 +726,7 @@ export function DiffModal({
 									}}
 									placeholder={t("git.diff.commentPlaceholder")}
 									rows={2}
-									className="min-w-0 w-full resize-none rounded-xl hairline bg-[var(--bg-panel)] p-2.5 text-xs text-neutral-200 outline-none focus:ring-1 focus:ring-[#0A84FF]/50 transition-colors"
+									className="min-w-0 w-full resize-none rounded-xl hairline bg-[var(--bg-panel)] p-2.5 text-xs text-neutral-200 outline-none focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] transition-colors"
 								/>
 								<div className="flex items-center justify-between gap-2">
 									<div className="text-[11px] text-neutral-400">
@@ -756,7 +756,7 @@ export function DiffModal({
 											type="button"
 											disabled={sending}
 											onClick={sendToAgent}
-											className="press-scale flex items-center gap-1 rounded-lg bg-[#FF9F0A] px-3 py-1 text-xs font-medium text-white hover:bg-[#FF9F0A]/90 disabled:opacity-40 transition-colors"
+											className="press-scale flex items-center gap-1 whitespace-nowrap rounded-lg bg-[#FF9F0A] px-3 py-1 text-xs font-medium text-white hover:bg-[#FF9F0A]/90 disabled:opacity-40 transition-colors"
 											title={t("git.diff.sendToAgentTitle")}
 										>
 											<Send size={13} /> {sending ? t("git.diff.sending") : t("git.diff.sendToAgent")}
@@ -764,7 +764,7 @@ export function DiffModal({
 										<button
 											type="button"
 											onClick={() => submitAnnotation(true)}
-											className="press-scale flex items-center gap-1.5 rounded-lg bg-[#0A84FF] px-3 py-1 text-xs font-medium text-white hover:bg-[#0A84FF]/90 transition-colors"
+											className="press-scale flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-[var(--accent)] px-3 py-1 text-xs font-medium text-[var(--accent-fg)] hover:opacity-90 transition-colors"
 											title={t("git.diff.submitAndCloseTitle")}
 										>
 											<MessageSquarePlus size={14} /> {t("git.diff.submitAndClose")}

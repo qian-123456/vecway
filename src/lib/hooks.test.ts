@@ -2,9 +2,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { isComposing, resetLastCompositionEndForTest } from "./hooks";
 
+const withTimeStamp = <T extends Event>(ev: T, timeStamp: number): T => {
+	Object.defineProperty(ev, "timeStamp", { value: timeStamp, configurable: true });
+	return ev;
+};
+
 const fire = (el: Element, type: string, init: Record<string, unknown> = {}) => {
 	const ev = new Event(type, { bubbles: true });
-	Object.assign(ev, init);
+	const { timeStamp, ...rest } = init;
+	Object.assign(ev, rest);
+	if (typeof timeStamp === "number") withTimeStamp(ev, timeStamp);
 	el.dispatchEvent(ev);
 };
 
@@ -90,5 +97,37 @@ describe("isComposing stale-state recovery", () => {
 		el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		window.removeEventListener("keydown", onKey, true);
 		expect(seen).toEqual([true, true]);
+	});
+
+	it("treats standalone keyCode 229 events as composing without compositionstart", () => {
+		const nativeEv = new KeyboardEvent("keydown", { key: "Process", keyCode: 229, bubbles: true });
+		expect(isComposing(nativeEv)).toBe(true);
+		expect(isComposing({ nativeEvent: { isComposing: false, keyCode: 229 }, key: "Enter" })).toBe(true);
+		expect(isComposing({ isComposing: false, keyCode: 229, key: "Enter" })).toBe(true);
+	});
+
+	it("tracks near-zero e.timeStamp deltas and WebKit inverted negative deltas (< 50ms)", () => {
+		const el = document.body.appendChild(document.createElement("div"));
+
+		// Positive near-zero delta after compositionend
+		fire(el, "compositionstart");
+		fire(el, "compositionend", { timeStamp: 1000 });
+		const nearEnter = withTimeStamp(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }), 1015);
+		el.dispatchEvent(nearEnter);
+		expect(isComposing({ nativeEvent: nearEnter, key: "Enter" })).toBe(true);
+
+		// WebKit bug 165004: keydown.timeStamp slightly precedes compositionend.timeStamp
+		fire(el, "compositionstart");
+		fire(el, "compositionend", { timeStamp: 2000 });
+		const invertedEnter = withTimeStamp(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }), 1985);
+		el.dispatchEvent(invertedEnter);
+		expect(isComposing({ nativeEvent: invertedEnter, key: "Enter" })).toBe(true);
+
+		// Deltas >= 50ms are real Enter presses, not trailing composition commits
+		fire(el, "compositionstart");
+		fire(el, "compositionend", { timeStamp: 3000 });
+		const lateEnter = withTimeStamp(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }), 3055);
+		el.dispatchEvent(lateEnter);
+		expect(isComposing({ nativeEvent: lateEnter, key: "Enter" })).toBe(false);
 	});
 });

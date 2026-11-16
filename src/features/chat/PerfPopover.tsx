@@ -1,9 +1,8 @@
 import clsx from "clsx";
-import { Activity, AppWindow, HardDrive, Layers, Server, X } from "lucide-react";
+import { Activity, AppWindow, HardDrive, Info, X } from "lucide-react";
 import { type RefObject, useMemo } from "react";
-import type { PerfBreakdown, ServiceInfo } from "../../lib/contracts";
+import type { PerfBreakdown } from "../../lib/contracts";
 import { useLive } from "../../stores/live";
-import { useSessions } from "../../stores/sessions";
 import { useUi } from "../../stores/ui";
 import { type Anchor, FloatingLayer } from "../../components/FloatingLayer";
 import { useT } from "../../stores/language";
@@ -16,21 +15,10 @@ export interface PerfPopoverProps {
 	processes?: number;
 	open: boolean;
 	onClose: () => void;
-	/** Shared `servicesList(true)` payload polled by the bottom bar while open. */
-	services: ServiceInfo[] | null;
 	/** Shared `perf_breakdown` payload polled by the bottom bar while open. */
 	breakdown: PerfBreakdown | null;
 	ignoreRefs?: RefObject<HTMLElement | null>[];
 	className?: string;
-}
-
-/** One display row per process; multiple ports on one pid collapse. */
-interface ProcRow {
-	pid: number;
-	name: string;
-	ports: number[];
-	command: string;
-	startedByApp: boolean;
 }
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -42,10 +30,10 @@ function formatBytes(bytes: number | null | undefined): string {
 
 /** Stacked-bar segment colors: quiet neutrals, omp gets the agent accent. */
 const SEG = {
-	app: "bg-indigo-400/60",
-	omp: "bg-emerald-400/50",
-	other: "bg-neutral-500/40",
-	free: "bg-neutral-700/40",
+	app: "bg-indigo-500/75 dark:bg-indigo-400/70",
+	omp: "bg-emerald-500/70 dark:bg-emerald-400/60",
+	other: "bg-neutral-400/60 dark:bg-neutral-500/50",
+	free: "bg-neutral-300/70 dark:bg-neutral-700/50",
 } as const;
 
 export function PerfPopover({
@@ -54,53 +42,17 @@ export function PerfPopover({
 	processes = 1,
 	open,
 	onClose,
-	services,
 	breakdown,
 	ignoreRefs,
 	className,
 }: PerfPopoverProps) {
 	const { t } = useT();
-	const workspaces = useSessions((s) => s.workspaces);
 	const liveSessions = useLive((s) => s.sessions);
 	const liveOmpCount = useMemo(
 		() => Object.values(liveSessions).filter((l) => l.alive).length,
 		[liveSessions],
 	);
-	const rows = services;
 	const bd = breakdown;
-
-	// Processes that belong to this project: spawned by the app, an `omp`
-	// executable, or running in / referencing an exact workspace path.
-	const procs = useMemo<ProcRow[]>(() => {
-		if (!rows) return [];
-		const byPid = new Map<number, ProcRow>();
-		for (const s of rows) {
-			const existing = byPid.get(s.pid);
-			if (existing) {
-				if (!existing.ports.includes(s.port)) {
-					existing.ports.push(s.port);
-				}
-				continue;
-			}
-			const executable = s.command.trim().split(/\s+/, 1)[0] ?? "";
-			const isOmp = /^omp\b/i.test(s.command.trim()) || /^omp\b/i.test(executable.split("/").pop() ?? "");
-			const inProject = workspaces.some(
-				(w) =>
-					w.path &&
-					((s.cwd != null && (s.cwd === w.path || s.cwd.startsWith(`${w.path}/`))) ||
-						s.command.includes(w.path)),
-			);
-			if (!s.startedByApp && !isOmp && !inProject) continue;
-			byPid.set(s.pid, {
-				pid: s.pid,
-				name: s.name,
-				ports: [s.port],
-				command: s.command,
-				startedByApp: s.startedByApp,
-			});
-		}
-		return Array.from(byPid.values()).sort((a, b) => a.pid - b.pid);
-	}, [rows, workspaces]);
 
 	// Disjoint physical-footprint segments. Do not turn an unknown probe into a
 	// zero-width segment: that would make the total and the details disagree.
@@ -133,30 +85,45 @@ export function PerfPopover({
 			)}
 		>
 			{/* Header */}
-			<div className="mb-3 flex items-center justify-between border-b border-[var(--line)] pb-2">
-				<div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text)]">
-					<Activity size={14} className="text-[var(--text-60)]" />
+			<div className="mb-3 flex items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
+				<div className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-[var(--text)]">
+					<Activity size={14} className="shrink-0 text-[var(--text-60)]" />
 					<span>{t("chatView.perf.title")}</span>
+					<span
+						title={t("chatView.perf.description")}
+						className="inline-flex shrink-0 cursor-help items-center text-[var(--text-40)] hover:text-[var(--text-60)] transition-colors"
+					>
+						<Info size={12} />
+					</span>
 				</div>
-				<button
-					type="button"
-					onClick={onClose}
-					className="rounded-md p-1 text-[var(--text-40)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] active:scale-95 transition-all"
-				>
-					<X size={12} />
-				</button>
-			</div>
-
-			<div className="mb-3 rounded-md bg-[var(--ghost-hover)] px-2 py-1.5 text-[10.5px] leading-snug text-[var(--text-60)]">
-				{t("chatView.perf.description")}
+				<div className="flex shrink-0 items-center gap-1.5">
+					<button
+						type="button"
+						onClick={() => {
+							useUi.getState().openSettings("storage");
+							onClose();
+						}}
+						className="inline-flex items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--ghost-hover)] px-2 py-0.5 text-[11px] font-medium text-[var(--text)] hover:bg-[var(--bg-hover)] active:scale-[0.98] transition-all"
+					>
+						<HardDrive size={11} className="shrink-0 text-[var(--text-60)]" />
+						<span className="whitespace-nowrap">{t("chatView.perf.manageStorage")}</span>
+					</button>
+					<button
+						type="button"
+						onClick={onClose}
+						className="rounded-md p-1 text-[var(--text-40)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] active:scale-95 transition-all"
+					>
+						<X size={12} />
+					</button>
+				</div>
 			</div>
 
 			{/* 内存分布: stacked bar + legend */}
 			<div className="mb-2.5">
-				<div className="mb-1.5 text-[10px] font-medium tracking-wide text-[var(--text-40)]">
-					{t("chatView.perf.memoryDistribution")}
+				<div className="mb-1.5 flex items-center justify-between gap-2 text-[10px] font-medium tracking-wide text-[var(--text-40)]">
+					<span>{t("chatView.perf.memoryDistribution")}</span>
 					{bd?.usedBytes != null && bd?.totalBytes != null && (
-						<span className="ml-1 font-normal text-[var(--text-40)]">
+						<span className="font-mono font-normal tabular-nums text-[var(--text-40)]">
 							{t("chatView.perf.usedOfTotal", {
 								used: formatBytes(bd.usedBytes),
 								total: formatBytes(bd.totalBytes),
@@ -204,7 +171,7 @@ export function PerfPopover({
 			</div>
 
 			{/* Detail rows: 本程序 + OMP split */}
-			<div className="space-y-1 text-xs">
+			<div className="mt-3 space-y-1 border-t border-[var(--line)] pt-2.5 text-xs">
 				<div
 					className="flex items-center justify-between"
 					title={t("chatView.perf.appProcessTreeTitle", { count: bd?.app.processes ?? processes })}
@@ -252,113 +219,45 @@ export function PerfPopover({
 				</div>
 			</div>
 
-			{/* Instance labels and process IDs are development diagnostics only. */}
-			{import.meta.env.DEV && (
+			{/* Instance labels and process IDs are development diagnostics only; show only when multiple instances run. */}
+			{import.meta.env.DEV && bd && bd.instances.length > 1 && (
 			<div className="mt-3 border-t border-[var(--line)] pt-2.5">
 				<div className="mb-1.5 flex items-center justify-between text-[10px] font-medium tracking-wide text-[var(--text-40)]">
 					<span>{t("chatView.perf.activeWindows")}</span>
 					<span className="font-normal">
-						{t("chatView.perf.instancesSummary", { total: bd?.instances.length ?? "—", live: liveOmpCount })}
+						{t("chatView.perf.instancesSummary", { total: bd.instances.length, live: liveOmpCount })}
 					</span>
 				</div>
-				{bd && bd.instances.length > 0 ? (
-					<div className="space-y-1 text-[11px]">
-						{bd.instances.map((i) => (
-							<div
-								key={i.pid}
-								title={i.cwd ?? `pid ${i.pid}`}
-								className="flex items-center justify-between gap-2"
-							>
-								<div className="flex min-w-0 items-center gap-1.5">
-									<AppWindow
-										size={11}
-										className={clsx(
-											"shrink-0",
-											i.isThis ? "text-[var(--status-success)]" : "text-[var(--text-40)]",
-										)}
-									/>
-									<span className="truncate text-[var(--text-60)]">
-										{i.label}
-										{i.isThis ? t("chatView.perf.thisWindow") : ""}
-									</span>
-								</div>
+				<div className="space-y-1 text-[11px]">
+					{bd.instances.map((i) => (
+						<div
+							key={i.pid}
+							title={i.cwd ?? `pid ${i.pid}`}
+							className="flex items-center justify-between gap-2"
+						>
+							<div className="flex min-w-0 items-center gap-1.5">
+								<AppWindow
+									size={11}
+									className={clsx(
+										"shrink-0",
+										i.isThis ? "text-[var(--status-success)]" : "text-[var(--text-40)]",
+									)}
+								/>
+								<span className="truncate text-[var(--text-60)]">
+									{i.label}
+									{i.isThis ? t("chatView.perf.thisWindow") : ""}
+								</span>
+							</div>
+							{i.label.trim() !== `pid ${i.pid}` && (
 								<span className="shrink-0 font-mono text-[10px] text-[var(--text-40)]">
 									pid {i.pid}
 								</span>
-							</div>
-						))}
-					</div>
-				) : (
-					<div className="py-1.5 text-center text-[11px] text-[var(--text-40)]">
-						{bd ? t("chatView.perf.currentWindowOnly") : t("chatView.perf.collecting")}
-					</div>
-				)}
-			</div>
-			)}
-
-			{/* Process/close/debug management is not offered by formal releases. */}
-			{import.meta.env.DEV && (
-			<div className="mt-3 border-t border-[var(--line)] pt-2.5">
-				<div className="mb-1.5 flex items-center gap-1 text-[10px] font-medium tracking-wide text-[var(--text-40)]">
-					<Layers size={10} className="text-[var(--text-40)]" />
-					{t("chatView.perf.serviceProcesses")}
+							)}
+						</div>
+					))}
 				</div>
-				{rows === null ? (
-					<div className="py-2 text-center text-[11px] text-[var(--text-40)]">
-						{t("chatView.perf.loading")}
-					</div>
-				) : procs.length === 0 ? (
-					<div className="py-2 text-center text-[11px] text-[var(--text-40)]">
-						{t("chatView.perf.noServiceProcesses")}
-					</div>
-				) : (
-					<div className="max-h-48 space-y-1 overflow-y-auto pr-3 text-[11px]">
-						{procs.map((p) => (
-							<div
-								key={p.pid}
-								title={`pid ${p.pid} · ${p.command}`}
-								className="flex items-center justify-between gap-2"
-							>
-								<div className="flex min-w-0 items-center gap-1.5">
-									<Server
-										size={11}
-										className={clsx(
-											"shrink-0",
-											p.startedByApp
-												? "text-[var(--status-success)]"
-												: "text-[var(--text-40)]",
-										)}
-									/>
-									<span className="truncate text-[var(--text-60)]">
-										{p.name}
-									</span>
-									<span className="shrink-0 font-mono text-[var(--text-40)]">
-										:{p.ports.join(",:")}
-									</span>
-								</div>
-								<span className="shrink-0 font-mono text-[10px] text-[var(--text-40)]">
-									pid {p.pid}
-								</span>
-							</div>
-						))}
-					</div>
-				)}
 			</div>
 			)}
-
-			<div className="mt-3 border-t border-[var(--line)] pt-2.5">
-				<button
-					type="button"
-					onClick={() => {
-						useUi.getState().openSettings("storage");
-						onClose();
-					}}
-					className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--line)] bg-[var(--ghost-hover)] px-2.5 py-1.5 text-xs font-medium text-[var(--text)] hover:bg-[var(--bg-hover)] active:scale-[0.99] transition-all"
-				>
-					<HardDrive size={12} className="text-[var(--text-60)]" />
-					<span>{t("chatView.perf.manageStorage")}</span>
-				</button>
-			</div>
 		</FloatingLayer>
 	);
 }

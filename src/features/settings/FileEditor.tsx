@@ -18,7 +18,7 @@ import { Segmented } from "../../components/Segmented";
 import { confirmDialog } from "../../lib/dialogs";
 import { useShortPath } from "../../lib/hooks";
 import type { StampedText } from "../../lib/ipc";
-import { themeById, useResolvedThemeId } from "../../lib/theme";
+import { useIsDark } from "../../lib/theme";
 import { toast } from "../../lib/toast";
 import { Button, SettingsCard } from "./ui";
 import { describeFileCommandError as errMsg, isConflictError, isTooLargeToEdit } from "./fileEditorLogic";
@@ -67,7 +67,7 @@ export function FileEditor({
 	const { t } = useT();
 	const effectiveSavedToast = savedToast ?? t("settingsCore.fileEditor.savedToast");
 	const short = useShortPath();
-	const dark = themeById(useResolvedThemeId())?.dark ?? true;
+	const dark = useIsDark();
 
 	const [tab, setTab] = useState<Tab>("edit");
 	const [ready, setReady] = useState(false);

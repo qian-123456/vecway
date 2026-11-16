@@ -149,9 +149,9 @@ export function DoctorView({
 					disabled={!canStart}
 					onClick={start}
 					className={clsx(
-						"mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-[11.5px] font-medium transition-all",
+						"mt-2.5 flex w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-[11.5px] font-medium transition-all",
 						canStart
-							? "bg-[var(--accent)] text-white hover:opacity-90"
+							? "bg-[var(--accent)] text-[var(--accent-fg)] hover:opacity-90"
 							: "cursor-not-allowed bg-[var(--bg-hover)] text-neutral-500",
 					)}
 				>
@@ -339,7 +339,7 @@ function PrescriptionCard({ sessionId, prescription }: { sessionId: string; pres
 						c.setDraft(sessionId, text);
 						c.focusComposer(sessionId);
 					}}
-					className="rounded-lg bg-[var(--accent)] px-2.5 py-1 text-[11px] text-white hover:opacity-90"
+					className="whitespace-nowrap rounded-lg bg-[var(--accent)] px-2.5 py-1 text-[11px] text-[var(--accent-fg)] hover:opacity-90"
 				>
 					{t("doctor.fillComposer")}
 				</button>

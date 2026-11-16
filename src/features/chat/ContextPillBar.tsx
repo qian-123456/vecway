@@ -62,7 +62,7 @@ function PopoverSearch({
 				value={value}
 				onChange={onChange}
 				onKeyDown={(e) => {
-					if (e.key === "Enter" && onEnter) {
+					if (e.key === "Enter" && !isComposing(e) && onEnter) {
 						e.preventDefault();
 						onEnter();
 					}
@@ -198,6 +198,7 @@ export function CreateBranchDialog({
 	const [branchName, setBranchName] = useState(initialName || prefix);
 	const [busy, setBusy] = useState(false);
 	const [editingPrefix, setEditingPrefix] = useState(false);
+	const backdropPressedRef = useRef(false);
 	const applyPrefix = () => {
 		// Replace the untouched prefix-only name with the new prefix.
 		setBranchName((cur) => (!cur || cur === lastPrefix.current ? prefix : cur));
@@ -229,8 +230,15 @@ export function CreateBranchDialog({
 			role="dialog"
 			aria-modal="true"
 			aria-label={t("chat.pill.createAndCheckoutBranch")}
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
-			onClick={onClose}
+			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] backdrop-blur-xs p-4"
+			onMouseDown={(e) => {
+				backdropPressedRef.current = e.target === e.currentTarget;
+			}}
+			onClick={(e) => {
+				const pressed = backdropPressedRef.current;
+				backdropPressedRef.current = false;
+				if (pressed && e.target === e.currentTarget) onClose();
+			}}
 		>
 			<div
 				className="w-[440px] max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--line,var(--border-divider))] bg-[var(--bg-panel)] p-5 shadow-apple-modal text-[var(--text)] transition-all animate-in fade-in zoom-in-95 duration-150"
@@ -271,7 +279,7 @@ export function CreateBranchDialog({
 								value={prefix}
 								onChange={(e) => setPrefix(e.target.value)}
 								onKeyDown={(e) => {
-									if (e.key === "Enter") {
+									if (e.key === "Enter" && !isComposing(e)) {
 										e.preventDefault();
 										e.stopPropagation();
 										applyPrefix();
@@ -283,7 +291,7 @@ export function CreateBranchDialog({
 							<button
 								type="button"
 								onClick={applyPrefix}
-								className="rounded-md border border-[var(--line,var(--border-divider))] px-2 py-0.5 text-[11.5px] text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors"
+								className="whitespace-nowrap rounded-md border border-[var(--line,var(--border-divider))] px-2 py-0.5 text-[11.5px] text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors"
 							>
 								{t("chat.pill.apply")}
 							</button>
@@ -292,7 +300,7 @@ export function CreateBranchDialog({
 						<button
 							type="button"
 							onClick={() => setEditingPrefix(true)}
-							className="rounded-md border border-[var(--line,var(--border-divider))] px-2 py-0.5 text-[11.5px] text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors"
+							className="whitespace-nowrap rounded-md border border-[var(--line,var(--border-divider))] px-2 py-0.5 text-[11.5px] text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors"
 						>
 							{t("chat.pill.setPrefix")}
 						</button>
@@ -325,7 +333,7 @@ export function CreateBranchDialog({
 					<button
 						type="button"
 						onClick={onClose}
-						className="rounded-xl border border-[var(--line,var(--border-divider))] px-4 py-2 text-[12.5px] font-medium text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors"
+						className="whitespace-nowrap rounded-xl border border-[var(--line,var(--border-divider))] px-4 py-2 text-[12.5px] font-medium text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors"
 					>
 						{t("common.cancel")}
 					</button>
@@ -333,7 +341,7 @@ export function CreateBranchDialog({
 						type="button"
 						disabled={!isValid || busy}
 						onClick={() => void handleCreate()}
-						className="rounded-xl bg-[var(--text)] px-4 py-2 text-[12.5px] font-semibold text-[var(--bg)] hover:opacity-90 disabled:opacity-35 transition-opacity"
+						className="whitespace-nowrap rounded-xl bg-[var(--text)] px-4 py-2 text-[12.5px] font-semibold text-[var(--bg)] hover:opacity-90 disabled:opacity-35 transition-opacity"
 					>
 						{busy ? t("chat.pill.creating") : t("chat.pill.createAndCheckout")}
 					</button>

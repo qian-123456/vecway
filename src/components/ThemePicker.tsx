@@ -148,10 +148,10 @@ export function ThemePicker({ compact = false }: { compact?: boolean }) {
 			}}
 			aria-pressed={tab === id}
 			title={live ? t("theme.currentlyInUse", { label }) : label}
-			className={`relative flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+			className={`relative flex min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
 				tab === id
-					? "bg-[var(--bg-active-fill)] text-neutral-100 shadow-sm"
-					: "text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200"
+					? "bg-[var(--seg-thumb-bg)] text-[var(--text)] shadow-[var(--seg-thumb-shadow)]"
+					: "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 			}`}
 		>
 			{icon}

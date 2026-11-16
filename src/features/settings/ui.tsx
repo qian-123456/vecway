@@ -270,27 +270,52 @@ export function useSaveStatus(): SaveStatus {
 	return { status, error, run };
 }
 
-export function SaveIndicator({ status, error }: { status: SaveState; error?: string | null }) {
+export function SaveIndicator({
+	status,
+	error,
+	compact = false,
+}: {
+	status: SaveState;
+	error?: string | null;
+	compact?: boolean;
+}) {
 	const { t } = useT();
 	if (status === "idle") return null;
-	if (status === "saving")
+	if (status === "saving") {
+		const label = t("settingsCore.ui.saving");
 		return (
-			<span className="inline-flex items-center gap-1 text-[10px] text-neutral-500">
-				<Loader2 className="h-3 w-3 animate-spin" />
-				{t("settingsCore.ui.saving")}
+			<span
+				title={label}
+				aria-label={label}
+				className="inline-flex items-center gap-1 text-[10px] text-[var(--text-muted)] whitespace-nowrap"
+			>
+				<Loader2 className="h-3 w-3 animate-spin shrink-0" />
+				{!compact && <span>{label}</span>}
 			</span>
 		);
-	if (status === "saved")
+	}
+	if (status === "saved") {
+		const label = t("settingsCore.ui.saved");
 		return (
-			<span className="inline-flex items-center gap-0.5 text-[10px] text-emerald-400">
-				<Check className="h-3 w-3" />
-				{t("settingsCore.ui.saved")}
+			<span
+				title={label}
+				aria-label={label}
+				className="inline-flex items-center gap-0.5 text-[10px] text-[var(--status-success)] whitespace-nowrap"
+			>
+				<Check className="h-3 w-3 shrink-0" />
+				{!compact && <span>{label}</span>}
 			</span>
 		);
+	}
+	const failLabel = error ?? t("settingsCore.ui.saveFailed");
 	return (
-		<span title={error ?? undefined} className="inline-flex items-center gap-0.5 text-[10px] text-rose-400">
-			<AlertTriangle className="h-3 w-3" />
-			{t("settingsCore.ui.saveFailed")}
+		<span
+			title={failLabel}
+			aria-label={failLabel}
+			className="inline-flex items-center gap-0.5 text-[10px] text-[var(--status-error)] whitespace-nowrap"
+		>
+			<AlertTriangle className="h-3 w-3 shrink-0" />
+			{!compact && <span>{t("settingsCore.ui.saveFailed")}</span>}
 		</span>
 	);
 }
@@ -298,7 +323,7 @@ export function SaveIndicator({ status, error }: { status: SaveState; error?: st
 // ── Buffered input ───────────────────────────────────────────────────
 
 export const INPUT_CLASS =
-	"rounded-lg hairline bg-[var(--well-bg)] px-3 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-500 focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)] focus:outline-none transition-all";
+	"rounded-lg hairline bg-[var(--well-bg)] px-3 py-1.5 text-xs text-[var(--text)] placeholder:text-[var(--text-muted)] focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)] focus:outline-none transition-all";
 
 export interface CommitInputProps {
 	/** Committed value from the store; the draft resyncs when it changes. */
@@ -375,16 +400,22 @@ export function CommitInput({
 		[],
 	);
 
+	const { t } = useT();
+	const dirty = draft !== value;
+	const showInlineStatus = !invalid && save.status !== "idle";
+	const errorMessage = invalid ?? (save.status === "error" ? (save.error ?? t("settingsCore.ui.saveFailed")) : null);
+	const isFluidWidth = className.includes("w-full") || className.includes("flex-1");
+
 	return (
-		<div className={clsx("flex flex-col gap-1", className)}>
-			<div className="relative flex">
+		<div className={clsx("flex flex-col gap-1", isFluidWidth ? className : "items-end")}>
+			<div className={clsx("relative flex items-center", !isFluidWidth && className)}>
 				<input
 					type={type}
 					min={min}
 					max={max}
 					value={draft}
 					aria-label={ariaLabel}
-					aria-invalid={invalid ? true : undefined}
+					aria-invalid={invalid || save.status === "error" ? true : undefined}
 					placeholder={placeholder}
 					onChange={(e) => {
 						setDraft(e.target.value);
@@ -406,17 +437,34 @@ export function CommitInput({
 					className={clsx(
 						INPUT_CLASS,
 						"w-full",
+						showInlineStatus && "pr-7",
 						(mono || type === "number") && "font-mono tabular-nums",
 						type === "number" && "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
-						invalid && "ring-1 ring-rose-500/60",
+						(invalid || save.status === "error") && "ring-1 ring-[var(--status-error)]/60",
+						dirty && !invalid && save.status !== "error" && "ring-1 ring-[color-mix(in_srgb,var(--accent)_45%,transparent)]",
 					)}
 				/>
-				{/* Save feedback sits under the field, so it never resizes the input or pushes the unit label. */}
-				<div className="pointer-events-none absolute right-0 top-full mt-0.5 leading-none">
-					<SaveIndicator status={invalid ? "idle" : save.status} error={save.error} />
-				</div>
+				{showInlineStatus && (
+					<div
+						className={clsx(
+							"absolute right-2 top-1/2 -translate-y-1/2 leading-none",
+							save.status !== "error" && "pointer-events-none",
+						)}
+					>
+						<SaveIndicator compact status={save.status} error={save.error} />
+					</div>
+				)}
 			</div>
-			{invalid && <div className="text-[11px] text-rose-400">{invalid}</div>}
+			{errorMessage && (
+				<div
+					className={clsx(
+						"text-[11px] leading-snug text-[var(--status-error)]",
+						!isFluidWidth && "max-w-64 text-right",
+					)}
+				>
+					{errorMessage}
+				</div>
+			)}
 		</div>
 	);
 }
@@ -433,9 +481,9 @@ const BUTTON_BASE =
 
 const BUTTON_VARIANT: Record<ButtonVariant, string> = {
 	primary:
-		"bg-[var(--accent)] font-medium text-[var(--bg)] shadow-sm hover:bg-[var(--accent-hover)]",
+		"bg-[var(--accent)] font-medium text-[var(--accent-fg)] shadow-sm hover:bg-[var(--accent-hover)]",
 	secondary:
-		"hairline bg-[var(--bg-active-fill)] font-medium text-neutral-200 hover:bg-[var(--bg-hover)]",
+		"hairline bg-[var(--bg-active-fill)] font-medium text-[var(--text)] hover:bg-[var(--bg-hover)]",
 	danger:
 		"border border-[color-mix(in_srgb,var(--status-error)_45%,transparent)] bg-transparent font-medium text-[var(--status-error)] hover:bg-[color-mix(in_srgb,var(--status-error)_12%,transparent)]",
 	ghost:

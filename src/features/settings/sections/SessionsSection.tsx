@@ -45,7 +45,17 @@ export function SessionsSection() {
 							className="w-24"
 							aria-label={t("settingsSections.sessions.idleSuspendLabel")}
 							value={String(minutes)}
-							normalize={(raw) => String(Math.min(1440, Math.max(0, parseInt(raw, 10) || 0)))}
+							normalize={(raw) => {
+								const s = raw.trim();
+								return /^\d+$/.test(s) ? String(Number(s)) : s;
+							}}
+							validate={(raw) => {
+								if (!/^\d+$/.test(raw)) return t("settingsCore.validation.idleSuspendMinutesRange");
+								const n = Number(raw);
+								return Number.isInteger(n) && n >= 0 && n <= 1440
+									? null
+									: t("settingsCore.validation.idleSuspendMinutesRange");
+							}}
 							onCommit={(v) => save({ idleSuspendMinutes: Number(v) })}
 						/>
 					}

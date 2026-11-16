@@ -627,7 +627,7 @@ function ApprovalDock({
 					type="button"
 					disabled={disabled || busy}
 					onClick={() => void approve()}
-					className="inline-flex h-[34px] items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--accent)] px-4.5 text-[13px] font-semibold text-white transition-colors hover:bg-[var(--accent-hover)] disabled:opacity-45"
+					className="inline-flex h-[34px] items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--accent)] px-4.5 text-[13px] font-semibold text-[var(--accent-fg)] transition-colors hover:bg-[var(--accent-hover)] disabled:opacity-45"
 				>
 					{t("chatView.plan.approve")}
 				</button>

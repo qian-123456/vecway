@@ -108,7 +108,7 @@ export function InboxPage() {
 		toast.info(t("inbox.markAllReadToast", { count: readable.length }));
 	};
 	const headerBtn =
-		"inline-flex items-center gap-1 rounded-lg border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2 py-1 text-xs text-[var(--text-dim)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]";
+		"inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2 py-1 text-xs text-[var(--text-dim)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]";
 
 	const renderRow = (e: InboxEntry) => {
 		const idx = rows.indexOf(e);
@@ -184,9 +184,9 @@ export function InboxPage() {
 								setTab(tabItem.id);
 								setFocusedIndex(0);
 							}}
-							className={`-mb-px border-b-2 px-2.5 pb-2 text-xs transition-colors ${
+							className={`-mb-px whitespace-nowrap border-b-2 px-2.5 pb-2 text-xs transition-colors ${
 								tab === tabItem.id
-									? "border-[var(--primary)] text-[var(--text)]"
+									? "border-[var(--accent)] text-[var(--text)]"
 									: "border-transparent text-[var(--text-dim)] hover:text-[var(--text)]"
 							}`}
 						>
@@ -354,7 +354,7 @@ function ScheduleRow({
 		>
 			<div className="flex w-full min-w-0 items-center gap-2">
 				<button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-2 text-left">
-					<span className="shrink-0 whitespace-nowrap rounded-[4px] bg-blue-500/15 px-1 text-[9px] font-semibold leading-[14px] text-blue-300">
+					<span className="shrink-0 whitespace-nowrap rounded-[4px] bg-blue-500/15 px-1 text-[9px] font-semibold leading-[14px] text-sky-600 dark:text-sky-300">
 						{t("inbox.badgeSchedule")}
 					</span>
 					<span className="min-w-0 flex-1 truncate text-sm font-medium">{todo.title}</span>

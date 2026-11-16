@@ -1,7 +1,7 @@
 /** Raw editor for the provider-related files under omp's agent dir (models.yml, config.yml, .env). */
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { AlertTriangle, FolderOpen, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseDocument } from "yaml";
 import { confirmDialog, errMsg } from "../../../lib/dialogs";
 import { useEscapeKey } from "../../../lib/hooks";
@@ -60,6 +60,7 @@ export function RawFilesDialog({ onClose }: { onClose: () => void }) {
 	const [saving, setSaving] = useState(false);
 	const [saveError, setSaveError] = useState<string | null>(null);
 	const [saved, setSaved] = useState("");
+	const backdropPressedRef = useRef(false);
 
 	useEffect(() => {
 		ompInfo().then(
@@ -150,9 +151,14 @@ export function RawFilesDialog({ onClose }: { onClose: () => void }) {
 
 	return (
 		<div
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs animate-in fade-in duration-150"
+			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-xs animate-in fade-in duration-150"
 			onMouseDown={(e) => {
-				if (e.target === e.currentTarget && !saving) void close();
+				backdropPressedRef.current = e.target === e.currentTarget;
+			}}
+			onClick={(e) => {
+				const pressed = backdropPressedRef.current;
+				backdropPressedRef.current = false;
+				if (pressed && e.target === e.currentTarget && !saving) void close();
 			}}
 		>
 			<div
@@ -163,13 +169,13 @@ export function RawFilesDialog({ onClose }: { onClose: () => void }) {
 			>
 				<div className="flex items-center justify-between">
 					<h2 className="text-base font-semibold">{t("memoryRules.rawFiles.title")}</h2>
-					<button type="button" aria-label={t("memoryRules.rawFiles.close")} onClick={() => void close()} className="rounded p-1 hover:bg-[var(--bg-hover,transparent)]">
+					<button type="button" aria-label={t("memoryRules.rawFiles.close")} onClick={() => void close()} className="shrink-0 rounded p-1 hover:bg-[var(--bg-hover,transparent)]">
 						<X size={16} />
 					</button>
 				</div>
 				<div className="flex flex-wrap gap-2">
 					{files.map((f) => (
-						<Button key={f.name} variant={f.name === active ? "primary" : "secondary"} onClick={() => void switchTo(f.name)}>
+						<Button key={f.name} variant={f.name === active ? "primary" : "secondary"} className="whitespace-nowrap" onClick={() => void switchTo(f.name)}>
 							{f.label}
 						</Button>
 					))}
@@ -202,10 +208,10 @@ export function RawFilesDialog({ onClose }: { onClose: () => void }) {
 					</pre>
 				) : null}
 				<div className="flex items-center justify-between gap-2">
-					<Button icon={FolderOpen} disabled={!path} onClick={() => void reveal()}>{t("memoryRules.showInFinder")}</Button>
+					<Button icon={FolderOpen} className="whitespace-nowrap" disabled={!path} onClick={() => void reveal()}>{t("memoryRules.showInFinder")}</Button>
 					<div className="flex gap-2">
-						<Button onClick={() => void close()}>{t("memoryRules.rawFiles.close")}</Button>
-						<Button variant="primary" loading={saving} disabled={!dirty || !!parseError || loading || !!loadError} onClick={() => void save()}>
+						<Button className="whitespace-nowrap" onClick={() => void close()}>{t("memoryRules.rawFiles.close")}</Button>
+						<Button variant="primary" className="whitespace-nowrap" loading={saving} disabled={!dirty || !!parseError || loading || !!loadError} onClick={() => void save()}>
 							{t("memoryRules.rawFiles.save")}
 						</Button>
 					</div>

@@ -133,7 +133,7 @@ function EntryRow({
 				)}
 				<Button
 					size="sm"
-					variant="ghost"
+					variant="secondary"
 					onClick={() => void patchEntry(entry.id, { inLibrary: !entry.inLibrary })}
 				>
 					{entry.inLibrary ? t("settingsSectionsPrivacy.privacy.removeFromLibrary") : t("settingsSectionsPrivacy.privacy.addToLibrary")}
@@ -155,12 +155,14 @@ function AddSecretDialog({
 	const [label, setLabel] = useState("");
 	const [busy, setBusy] = useState(false);
 	const valueInputRef = useRef<HTMLInputElement>(null);
+	const backdropPressedRef = useRef(false);
 
 	useEscapeKey(() => {
 		if (!busy) onClose();
 	}, open);
 
 	useEffect(() => {
+		backdropPressedRef.current = false;
 		if (open) {
 			setValue("");
 			setLabel("");
@@ -188,12 +190,19 @@ function AddSecretDialog({
 
 	return (
 		<div
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs animate-in fade-in duration-150"
+			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-xs animate-in fade-in duration-150"
 			onMouseDown={(e) => {
-				if (e.target === e.currentTarget && !busy) onClose();
+				backdropPressedRef.current = e.target === e.currentTarget;
+			}}
+			onClick={(e) => {
+				if (backdropPressedRef.current && e.target === e.currentTarget && !busy) onClose();
+				backdropPressedRef.current = false;
 			}}
 		>
 			<div
+				role="dialog"
+				aria-modal="true"
+				aria-label={t("settingsSectionsPrivacy.privacy.addTitle")}
 				className="w-[440px] max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--border-divider)] bg-[var(--bg-panel)] p-5 shadow-apple-modal text-[var(--text)] transition-all animate-in zoom-in-95 duration-150"
 				onKeyDown={(e) => {
 					if (e.key === "Enter" && !e.shiftKey && !isComposing(e) && value.trim() && !busy) {
@@ -243,7 +252,7 @@ function AddSecretDialog({
 				</div>
 
 				<div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border-divider)]">
-					<Button variant="ghost" disabled={busy} onClick={onClose}>
+					<Button variant="secondary" disabled={busy} onClick={onClose}>
 						{t("settingsSectionsPrivacy.privacy.cancel")}
 					</Button>
 					<Button variant="primary" disabled={!value.trim()} loading={busy} onClick={() => void add()}>
@@ -266,12 +275,14 @@ function EditSecretDialog({
 	const [label, setLabel] = useState("");
 	const [busy, setBusy] = useState(false);
 	const labelInputRef = useRef<HTMLInputElement>(null);
+	const backdropPressedRef = useRef(false);
 
 	useEscapeKey(() => {
 		if (!busy) onClose();
 	}, Boolean(entry));
 
 	useEffect(() => {
+		backdropPressedRef.current = false;
 		if (entry) {
 			setLabel(entry.label ?? "");
 			setTimeout(() => labelInputRef.current?.focus(), 50);
@@ -295,12 +306,19 @@ function EditSecretDialog({
 
 	return (
 		<div
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs animate-in fade-in duration-150"
+			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-xs animate-in fade-in duration-150"
 			onMouseDown={(e) => {
-				if (e.target === e.currentTarget && !busy) onClose();
+				backdropPressedRef.current = e.target === e.currentTarget;
+			}}
+			onClick={(e) => {
+				if (backdropPressedRef.current && e.target === e.currentTarget && !busy) onClose();
+				backdropPressedRef.current = false;
 			}}
 		>
 			<div
+				role="dialog"
+				aria-modal="true"
+				aria-label={t("settingsSectionsPrivacy.privacy.editTitle")}
 				className="w-[440px] max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--border-divider)] bg-[var(--bg-panel)] p-5 shadow-apple-modal text-[var(--text)] transition-all animate-in zoom-in-95 duration-150"
 				onKeyDown={(e) => {
 					if (e.key === "Enter" && !e.shiftKey && !isComposing(e) && !busy) {
@@ -350,7 +368,7 @@ function EditSecretDialog({
 				</div>
 
 				<div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border-divider)]">
-					<Button variant="ghost" disabled={busy} onClick={onClose}>
+					<Button variant="secondary" disabled={busy} onClick={onClose}>
 						{t("settingsSectionsPrivacy.privacy.cancel")}
 					</Button>
 					<Button variant="primary" loading={busy} onClick={() => void save()}>

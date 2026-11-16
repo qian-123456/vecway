@@ -8,7 +8,7 @@
 
 import clsx from "clsx";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { themeById, useResolvedThemeId } from "../../../lib/theme";
+import { useIsDark } from "../../../lib/theme";
 import { useT } from "../../../stores/language";
 import { vizBridgeSource } from "./bridge";
 import {
@@ -31,8 +31,7 @@ type SnapshotState =
 
 export function VisualizeSnapshot({ html, mode }: { html: string; mode: VisualizeMode }) {
 	const { t } = useT();
-	const themeId = useResolvedThemeId();
-	const theme: "light" | "dark" = themeById(themeId)?.dark === false ? "light" : "dark";
+	const theme: "light" | "dark" = useIsDark() ? "dark" : "light";
 	const themeRef = useRef(theme);
 	themeRef.current = theme;
 	const iframeRef = useRef<HTMLIFrameElement>(null);

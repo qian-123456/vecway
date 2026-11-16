@@ -142,9 +142,9 @@ export function AutoCompactionCard() {
 								onKeyUp={commitDraft}
 								onBlur={commitDraft}
 								style={{
-									background: `linear-gradient(to right, var(--accent) ${fill}%, rgba(255,255,255,0.12) ${fill}%)`,
+									background: `linear-gradient(to right, var(--accent) ${fill}%, color-mix(in srgb, var(--text) 14%, var(--bg-hover)) ${fill}%)`,
 								}}
-								className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full accent-[var(--accent)]"
+								className="settings-range h-1.5 flex-1 cursor-pointer appearance-none rounded-full accent-[var(--accent)]"
 							/>
 							<CommitInput
 								className="w-20"

@@ -110,6 +110,7 @@ export function AnswerFooter({
 	answerItemId,
 	versions,
 	compact,
+	hideChangedFiles,
 }: {
 	sessionId: string;
 	cwd: string;
@@ -136,6 +137,8 @@ export function AnswerFooter({
 	/** Only the undo / changed-files / commit / fork controls (no copy or share);
 	 * used under a stopped turn that has no answer text. */
 	compact?: boolean;
+	/** Suppress the hover file-list toggle when TurnDiffCard already renders above. */
+	hideChangedFiles?: boolean;
 }) {
 	const [filesOpen, setFilesOpen] = useState(false);
 	const [undoBusy, setUndoBusy] = useState(false);
@@ -214,7 +217,7 @@ export function AnswerFooter({
 				{turnCheckpoint && (
 					<>
 
-						{!turnCheckpoint.undone && turnCheckpoint.files.length > 0 && (
+						{!hideChangedFiles && !turnCheckpoint.undone && turnCheckpoint.files.length > 0 && (
 							<button
 								type="button"
 								onClick={() => setFilesOpen((v) => !v)}
@@ -327,7 +330,8 @@ export function AnswerFooter({
 			</div>
 
 			{/* Expandable changed-files list — status letter carries the color */}
-			{filesOpen &&
+			{!hideChangedFiles &&
+				filesOpen &&
 				turnCheckpoint &&
 				!turnCheckpoint.undone &&
 				turnCheckpoint.files.length > 0 && (

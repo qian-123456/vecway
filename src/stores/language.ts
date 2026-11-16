@@ -26,28 +26,39 @@ function detectInitialLocale(): Locale {
 	return DEFAULT_LOCALE;
 }
 
+function syncDocumentLang(locale: Locale): void {
+	if (typeof document !== "undefined") {
+		document.documentElement.lang = locale;
+	}
+}
+
 export interface LanguageState {
 	locale: Locale;
 	setLocale: (next: Locale) => void;
 	t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-export const useLanguageStore = create<LanguageState>((set, get) => ({
-	locale: detectInitialLocale(),
-	setLocale: (next: Locale) => {
-		try {
-			if (typeof window !== "undefined" && window.localStorage) {
-				window.localStorage.setItem(STORAGE_KEY, next);
+export const useLanguageStore = create<LanguageState>((set, get) => {
+	const initialLocale = detectInitialLocale();
+	syncDocumentLang(initialLocale);
+	return {
+		locale: initialLocale,
+		setLocale: (next: Locale) => {
+			try {
+				if (typeof window !== "undefined" && window.localStorage) {
+					window.localStorage.setItem(STORAGE_KEY, next);
+				}
+			} catch {
+				// Ignore storage write errors
 			}
-		} catch {
-			// Ignore storage write errors
-		}
-		set({ locale: next });
-	},
-	t: (key: string, params?: Record<string, string | number>) => {
-		return translate(key, params, get().locale);
-	},
-}));
+			syncDocumentLang(next);
+			set({ locale: next });
+		},
+		t: (key: string, params?: Record<string, string | number>) => {
+			return translate(key, params, get().locale);
+		},
+	};
+});
 
 export type Translate = (key: string, params?: Record<string, string | number>) => string;
 

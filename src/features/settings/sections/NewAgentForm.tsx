@@ -81,7 +81,7 @@ function ToolPicker({
 								disabled={disabled}
 								onClick={() => onToggle(t.name)}
 								className={clsx(
-									"flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] transition-colors disabled:opacity-50",
+									"flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] whitespace-nowrap transition-colors disabled:opacity-50",
 									on
 										? "bg-[color-mix(in_srgb,var(--accent)_22%,transparent)] text-[var(--text)] ring-1 ring-[color-mix(in_srgb,var(--accent)_45%,transparent)]"
 										: "hairline text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]",
@@ -124,7 +124,7 @@ function Segmented<T extends string>({
 					disabled={disabled}
 					onClick={() => onChange(o.value)}
 					className={clsx(
-						"rounded-full px-3 py-1 text-[11px] font-medium transition-colors disabled:opacity-50",
+						"rounded-full px-3 py-1 text-[11px] font-medium whitespace-nowrap transition-colors disabled:opacity-50",
 						value === o.value
 							? "bg-[color-mix(in_srgb,var(--accent)_22%,transparent)] text-[var(--text)] ring-1 ring-[color-mix(in_srgb,var(--accent)_45%,transparent)]"
 							: "hairline bg-[var(--bg-panel)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]",
@@ -360,7 +360,7 @@ export function NewAgentForm({
 						{t("agentDefs.form.askAi")}
 					</Button>
 				)}
-				<Button size="sm" variant="ghost" disabled={locked} onClick={onCancel}>
+				<Button size="sm" variant="secondary" disabled={locked} onClick={onCancel}>
 					{t("agentDefs.form.cancel")}
 				</Button>
 			</div>

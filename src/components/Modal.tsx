@@ -1,10 +1,51 @@
 import clsx from "clsx";
 import { X } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useEscapeKey } from "../lib/hooks";
 import { Z_LAYER } from "./FloatingLayer";
 import { useT } from "../stores/language";
+
+let rootInertCount = 0;
+
+/**
+ * Ref-counted `#root` inertness lock while at least one blocking modal is open.
+ * Both `Modal` and `FloatingLayer` portal to `document.body`, so nested floating
+ * menus/selects opened from inside a modal stay interactive while `#root` is inert.
+ */
+export function acquireRootInert(): () => void {
+	if (typeof document === "undefined") return () => {};
+	if (rootInertCount === 0) {
+		document.getElementById("root")?.setAttribute("inert", "");
+	}
+	rootInertCount += 1;
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		rootInertCount = Math.max(0, rootInertCount - 1);
+		if (rootInertCount === 0) {
+			document.getElementById("root")?.removeAttribute("inert");
+		}
+	};
+}
+
+const FOCUSABLE_SELECTOR =
+	'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+const FLOATING_LAYER_SELECTOR = '[data-floating-layer], [data-layer]:not([data-layer="modal"])';
+
+function isFocusableElement(el: HTMLElement, root: HTMLElement): boolean {
+	if ((el as HTMLButtonElement).disabled) return false;
+	if (el instanceof HTMLInputElement && el.type === "hidden") return false;
+	if (typeof el.checkVisibility === "function" && !el.checkVisibility()) return false;
+	for (let cur: HTMLElement | null = el; cur; cur = cur.parentElement) {
+		if (cur.hidden || cur.hasAttribute("inert")) return false;
+		const style = getComputedStyle(cur);
+		if (style.display === "none" || style.visibility === "hidden") return false;
+		if (cur === root) break;
+	}
+	return true;
+}
 
 export type ModalSize = "sm" | "md" | "lg" | "xl" | "none";
 
@@ -32,7 +73,7 @@ export interface ModalProps {
 	className?: string;
 	/** Accessible name when there is no `title` (or the title is not text). */
 	ariaLabel?: string;
-	/** Backdrop mousedown closes the modal. Default true. */
+	/** Backdrop click closes the modal. Default true. */
 	closeOnBackdrop?: boolean;
 	/** Escape closes the modal. Default true. */
 	closeOnEscape?: boolean;
@@ -65,7 +106,9 @@ export function Modal({
 }: ModalProps) {
 	const { t } = useT();
 	const titleId = useId();
+	const backdropRef = useRef<HTMLDivElement | null>(null);
 	const panelRef = useRef<HTMLDivElement | null>(null);
+	const backdropPressedRef = useRef(false);
 	// Captured during the first render, before any child `autoFocus` moves focus.
 	const [opener] = useState(() => (typeof document === "undefined" ? null : document.activeElement));
 	const onCloseRef = useRef(onClose);
@@ -74,17 +117,72 @@ export function Modal({
 	useEscapeKey(onClose, closeOnEscape);
 
 	useEffect(() => {
+		const releaseInert = acquireRootInert();
 		const panel = panelRef.current;
 		if (panel && !panel.contains(document.activeElement)) panel.focus({ preventScroll: true });
 		return () => {
+			// Release #root inertness before returning focus so openers inside #root can receive focus.
+			releaseInert();
 			if (opener instanceof HTMLElement && opener.isConnected) opener.focus({ preventScroll: true });
 		};
 	}, [opener]);
+
+	const handleTabKey = useCallback((e: KeyboardEvent) => {
+		if (e.key !== "Tab" || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
+		const backdrop = backdropRef.current;
+		const panel = panelRef.current;
+		if (!backdrop || !panel) return;
+		const modals = document.body.querySelectorAll('[data-layer="modal"]');
+		if (modals[modals.length - 1] !== backdrop) return;
+		const active = document.activeElement as HTMLElement | null;
+		if (active?.closest?.(FLOATING_LAYER_SELECTOR)) return;
+
+		const controls = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((el) =>
+			isFocusableElement(el, panel),
+		);
+		if (controls.length === 0) {
+			e.preventDefault();
+			panel.focus({ preventScroll: true });
+			return;
+		}
+		const first = controls[0];
+		const last = controls[controls.length - 1];
+		if (e.shiftKey) {
+			if (
+				active === first ||
+				!active ||
+				!panel.contains(active) ||
+				active === panel ||
+				(!controls.includes(active) &&
+					!(first.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING))
+			) {
+				e.preventDefault();
+				last.focus({ preventScroll: true });
+			}
+		} else if (
+			active === last ||
+			!active ||
+			!panel.contains(active) ||
+			active === panel ||
+			(!controls.includes(active) &&
+				!(active.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_FOLLOWING))
+		) {
+			e.preventDefault();
+			first.focus({ preventScroll: true });
+		}
+	}, []);
+
+	useEffect(() => {
+		window.addEventListener("keydown", handleTabKey);
+		return () => window.removeEventListener("keydown", handleTabKey);
+	}, [handleTabKey]);
 
 	const hasTitle = title !== undefined && title !== null && title !== false;
 
 	return createPortal(
 		<div
+			ref={backdropRef}
+			data-layer="modal"
 			style={{ zIndex: Z_LAYER.modal }}
 			className={clsx(
 				"fixed inset-0 flex items-center justify-center p-4",
@@ -92,7 +190,19 @@ export function Modal({
 				backdropClassName ?? "bg-[var(--overlay)]",
 			)}
 			onMouseDown={(e) => {
-				if (closeOnBackdrop && e.target === e.currentTarget) onCloseRef.current();
+				backdropPressedRef.current = e.target === e.currentTarget;
+			}}
+			onClick={(e) => {
+				const pressed = backdropPressedRef.current;
+				backdropPressedRef.current = false;
+				if (closeOnBackdrop && pressed && e.target === e.currentTarget) onCloseRef.current();
+			}}
+			onKeyDown={(e) => {
+				if (e.key === "Tab") {
+					handleTabKey(e.nativeEvent);
+					// Prevent React event bubbling from reaching any underlying modal's Tab trap (e.g. SettingsOverlay).
+					e.stopPropagation();
+				}
 			}}
 		>
 			<div

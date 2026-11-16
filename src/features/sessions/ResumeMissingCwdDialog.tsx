@@ -249,7 +249,7 @@ function ResumeMissingCwdForm({ props }: { props: Record<string, unknown> }) {
 							</span>
 							{repoRoot ? (
 								<>
-									<span className="mt-0.5 block break-all font-mono text-[11px] text-[#70b1ff]">
+									<span className="mt-0.5 block break-all font-mono text-[11px] text-[var(--accent)]">
 										{repoRoot}
 									</span>
 									<span className="mt-0.5 block text-[11px] text-neutral-500">
@@ -342,7 +342,7 @@ function ResumeMissingCwdForm({ props }: { props: Record<string, unknown> }) {
 						type="button"
 						disabled={!canConfirm}
 						onClick={confirm}
-						className="press-scale flex items-center gap-1.5 rounded-lg bg-[#0A84FF] px-4 py-1.5 text-xs font-medium text-white hover:bg-[#0A84FF]/90 disabled:opacity-40 transition-colors"
+						className="press-scale flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-[var(--accent)] px-4 py-1.5 text-xs font-medium text-[var(--accent-fg)] hover:opacity-90 disabled:opacity-40 transition-colors"
 					>
 						{busy && <Loader2 size={12} className="animate-spin" />}
 						{busy ? t("sessions.resuming") : t("sessions.continueAction")}

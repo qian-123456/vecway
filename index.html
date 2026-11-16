@@ -1,18 +1,136 @@
 <!doctype html>
-<html lang="zh-CN" class="dark" style="background-color: #0c0c0c; color: #ededed;">
+<html lang="zh-CN">
 	<head>
 		<meta charset="UTF-8" />
+		<meta name="color-scheme" content="light dark" />
 		<link rel="icon" type="image/svg+xml" href="/vecway-logo.svg" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>Vecway</title>
+		<script>
+			/* Resolve persisted locale, theme, and wallpaper mode synchronously before first paint
+			   so light themes never flash dark on cold start. */
+			(function () {
+				var root = document.documentElement;
+				var THEMES = {
+					ompws: ["#161618", "#F5F5F7", 0],
+					omp: ["#000000", "#f5f5f5", 0],
+					dark: ["#1b1916", "#ebe6dc", 0],
+					dracula: ["#282a36", "#f8f8f2", 0],
+					harbor: ["#1b1b1b", "#efebdc", 0],
+					"one-dark-pro": ["#282c34", "#abb2bf", 0],
+					"rose-pine": ["#191724", "#e0def4", 0],
+					"catppuccin-mocha": ["#1e1e2e", "#cdd6f4", 0],
+					"gruvbox-dark": ["#282828", "#ebdbb2", 0],
+					nord: ["#2e3440", "#eceff4", 0],
+					"tokyo-night": ["#1a1b26", "#c0caf5", 0],
+					kanagawa: ["#1f1f28", "#dcd7ba", 0],
+					everforest: ["#2b3339", "#d3c6aa", 0],
+					"night-owl": ["#011627", "#d6deeb", 0],
+					"ayu-dark": ["#0b0e14", "#bfbdb6", 0],
+					"solarized-dark": ["#002b36", "#93a1a1", 0],
+					sakura: ["#fdf4f6", "#472b36", 1],
+					glacier: ["#f6fafc", "#1f3a4d", 1],
+					lavender: ["#f8f6fc", "#38304f", 1],
+					light: ["#faf9f6", "#2b2823", 1],
+					"one-light": ["#fafafa", "#383a42", 1],
+					"catppuccin-latte": ["#eff1f5", "#4c4f69", 1],
+					"rose-pine-dawn": ["#faf4ed", "#575279", 1],
+					"solarized-light": ["#fdf6e3", "#4f5d66", 1],
+					"github-light": ["#ffffff", "#25292e", 1],
+					"nord-light": ["#eceff4", "#2e3440", 1],
+					"tokyo-night-light": ["#e1e2e7", "#37527f", 1],
+					"ayu-light": ["#fafafa", "#5c6166", 1],
+					"gruvbox-light": ["#fbf1c7", "#3c3836", 1],
+					"everforest-light": ["#fdf6e3", "#5c6a72", 1],
+					"paper-light": ["#FAF9F6", "#1D1D1F", 1]
+				};
+				var LIGHT_WALLPAPER_PRESETS = {
+					"preset-palm-shore": 1,
+					"preset-ember-rock": 1,
+					"preset-atoll-blue": 1
+				};
+				function read(key) {
+					try {
+						return window.localStorage.getItem(key);
+					} catch {
+						return null;
+					}
+				}
+				try {
+					var locale = read("ompws:locale");
+					if (locale !== "zh-CN" && locale !== "en-US") {
+						var navLang = typeof navigator !== "undefined" && typeof navigator.language === "string"
+							? navigator.language.toLowerCase()
+							: "";
+						locale = navLang.indexOf("en") === 0 ? "en-US" : "zh-CN";
+					}
+					root.lang = locale;
+
+					var storedTheme = read("ompws:theme");
+					var storedDark = read("ompws:system-dark-theme");
+					var storedLight = read("ompws:system-light-theme");
+					var darkTheme = storedDark && THEMES[storedDark] && !THEMES[storedDark][2] ? storedDark : "ompws";
+					var lightTheme = storedLight && THEMES[storedLight] && THEMES[storedLight][2] ? storedLight : "light";
+
+					var prefersLight = false;
+					try {
+						prefersLight = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches);
+					} catch {}
+
+					var themeId = storedTheme && THEMES[storedTheme]
+						? storedTheme
+						: prefersLight
+							? lightTheme
+							: darkTheme;
+					var palette = THEMES[themeId] || THEMES.ompws;
+					var mode = palette[2] ? "light" : "dark";
+					var bg = palette[0];
+					var fg = palette[1];
+
+					var rawWallpaper = read("ompws:wallpaper-state");
+					if (rawWallpaper) {
+						try {
+							var ws = JSON.parse(rawWallpaper);
+							if (ws && typeof ws === "object" && ws.enabled === true) {
+								var wpLight =
+									ws.appearance === "light" ||
+									ws.themeMode === "light" ||
+									(!ws.appearance && !ws.themeMode && !!LIGHT_WALLPAPER_PRESETS[ws.id]);
+								mode = wpLight ? "light" : "dark";
+								if (ws.url) themeId = "wallpaper";
+								bg = wpLight ? "#f8fafc" : "#14171a";
+								fg = wpLight ? "#0f172a" : "#f3f4f6";
+							}
+						} catch {}
+					}
+
+					root.dataset.theme = themeId;
+					root.dataset.mode = mode;
+					root.classList.toggle("dark", mode === "dark");
+					root.style.colorScheme = mode;
+					root.style.backgroundColor = bg;
+					root.style.color = fg;
+				} catch {}
+			})();
+		</script>
 		<style>
 			:root, html, body {
 				margin: 0;
 				padding: 0;
 				width: 100%;
 				height: 100%;
-				background-color: #0c0c0c;
-				color: #ededed;
+			}
+			html {
+				background-color: var(--bg, #161618);
+				color: var(--text, #F5F5F7);
+			}
+			html[data-mode="light"] {
+				background-color: var(--bg, #FAF9F6);
+				color: var(--text, #1D1D1F);
+			}
+			body {
+				background-color: var(--bg, inherit);
+				color: var(--text, inherit);
 			}
 			#startup-fallback {
 				display: none;
@@ -21,19 +139,56 @@
 				flex-direction: column;
 				align-items: center;
 				justify-content: center;
-				background-color: #0c0c0c;
-				color: #a3a3a3;
+				background-color: var(--bg, #161618);
+				color: var(--text-muted, #a3a3a3);
 				font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+			}
+			#startup-fallback .fallback-card {
+				max-width: 440px;
+				margin: 0 24px;
+				padding: 24px 28px;
+				border-radius: 14px;
+				border: 1px solid var(--border, #262626);
+				background-color: var(--bg-panel, #1C1C1E);
+				text-align: center;
+				box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
+			}
+			#startup-fallback .fallback-title {
+				font-size: 15px;
+				font-weight: 600;
+				color: var(--text, #f5f5f5);
+				margin-bottom: 8px;
+			}
+			#startup-fallback .fallback-desc {
+				font-size: 12px;
+				color: var(--text-muted, #8a8a8a);
+				margin-bottom: 20px;
+				line-height: 1.6;
+			}
+			html[data-mode="light"] #startup-fallback {
+				background-color: var(--bg, #FAF9F6);
+				color: var(--text-muted, #69635a);
+			}
+			html[data-mode="light"] #startup-fallback .fallback-card {
+				border-color: var(--border, #e2ddd2);
+				background-color: var(--bg-panel, #ffffff);
+				box-shadow: 0 16px 36px rgba(0, 0, 0, 0.12);
+			}
+			html[data-mode="light"] #startup-fallback .fallback-title {
+				color: var(--text, #1D1D1F);
+			}
+			html[data-mode="light"] #startup-fallback .fallback-desc {
+				color: var(--text-muted, #69635a);
 			}
 		</style>
 	</head>
-	<body style="background-color: #0c0c0c; color: #ededed;">
+	<body>
 		<div id="root">
 			<div id="startup-fallback">
-				<div style="max-width: 440px; margin: 0 24px; padding: 24px 28px; border-radius: 14px; border: 1px solid #262626; background-color: #171717; text-align: center; box-shadow: 0 16px 36px rgba(0,0,0,0.6);">
-					<div style="font-size: 15px; font-weight: 600; color: #f5f5f5; margin-bottom: 8px;">界面加载超时 / Loading Timed Out</div>
-					<div style="font-size: 12px; color: #8a8a8a; margin-bottom: 20px; line-height: 1.6;">前端未能正常渲染。若使用开发模式，请确认开发服务正在运行；亦可点击下方按钮重新尝试载入。</div>
-					<button type="button" onclick="window.location.reload()" style="cursor: pointer; padding: 8px 18px; font-size: 13px; font-weight: 500; border-radius: 7px; border: 1px solid #3b82f6; background-color: #2563eb; color: #ffffff;">重新加载 / Reload</button>
+				<div class="fallback-card">
+					<div class="fallback-title">界面加载超时 / Loading Timed Out</div>
+					<div class="fallback-desc">前端未能正常渲染。若使用开发模式，请确认开发服务正在运行；亦可点击下方按钮重新尝试载入。</div>
+					<button type="button" onclick="window.location.reload()" style="cursor: pointer; padding: 8px 18px; font-size: 13px; font-weight: 500; border-radius: 7px; border: 1px solid #0A84FF; background-color: #0A84FF; color: #ffffff;">重新加载 / Reload</button>
 				</div>
 			</div>
 		</div>

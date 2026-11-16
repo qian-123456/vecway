@@ -16,9 +16,9 @@ import { useLive } from "../stores/live";
 import { useSessions } from "../stores/sessions";
 import { useUi } from "../stores/ui";
 import { ompVersionLabel, useOmpUpdate } from "../stores/ompUpdate";
-import { getAppMemoryUsage, perfBreakdown, servicesList, type ProcessMemoryInfo } from "../lib/ipc";
+import { getAppMemoryUsage, perfBreakdown, type ProcessMemoryInfo } from "../lib/ipc";
 import { useDisplayPrefs } from "../stores/displayPrefs";
-import type { PerfBreakdown, ServiceInfo } from "../lib/contracts";
+import type { PerfBreakdown } from "../lib/contracts";
 import { useZoom } from "../lib/zoom";
 import { useT } from "../stores/language";
 
@@ -69,12 +69,11 @@ export function BottomBar() {
 	// Real OS process physical memory (footprint across app + helpers)
 	const [memoryInfo, setMemoryInfo] = useState<ProcessMemoryInfo | null>(null);
 	const [perfData, setPerfData] = useState<PerfBreakdown | null>(null);
-	const [serviceRows, setServiceRows] = useState<ServiceInfo[] | null>(null);
 	const [perfOpen, setPerfOpen] = useState(false);
 	const statsBtnRef = useRef<HTMLButtonElement>(null);
 	const perfBtnRef = useRef<HTMLButtonElement>(null);
 
-	// Shared poller for memory + services:
+	// Shared poller for memory breakdown:
 	// - Pauses when document is hidden
 	// - Relaxed interval (30s) when PerfPopover is closed, 4s when open
 	// - Skips overlapping runs
@@ -94,9 +93,8 @@ export function BottomBar() {
 
 			try {
 				const memPromise = getAppMemoryUsage();
-				const srvPromise = perfOpen ? servicesList(true) : null;
 				const perfPromise = perfOpen ? perfBreakdown() : null;
-				const [mem, srv, perf] = await Promise.all([memPromise, srvPromise, perfPromise]);
+				const [mem, perf] = await Promise.all([memPromise, perfPromise]);
 				if (!cancelled) {
 					if (mem?.formatted) {
 						setMemoryInfo((prev) =>
@@ -105,7 +103,6 @@ export function BottomBar() {
 								: mem,
 						);
 					}
-					if (srv !== null) setServiceRows(srv);
 					if (perf !== null) setPerfData(perf);
 				}
 			} catch {
@@ -236,7 +233,6 @@ export function BottomBar() {
 					anchor={perfOpen ? perfBtnRef.current : null}
 					appMemory={realMemoryStr}
 					processes={memoryInfo?.processes}
-					services={serviceRows}
 					breakdown={perfData}
 					open={perfOpen}
 					onClose={() => setPerfOpen(false)}

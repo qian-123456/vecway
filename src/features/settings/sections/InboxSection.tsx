@@ -12,7 +12,6 @@ import {
 	SettingRow,
 	SettingsCard,
 	ToggleRow,
-	normalizeHours,
 	useSaveStatus,
 } from "../ui";
 
@@ -52,7 +51,7 @@ export function InboxSection() {
 					description={t("notifications.inbox.autoRemoveHoursDesc")}
 					hint={t("notifications.inbox.hoursHint")}
 					control={
-						<div className="flex items-center gap-1.5">
+						<div className="flex items-start gap-1.5">
 							<CommitInput
 								type="number"
 								min={1}
@@ -60,10 +59,22 @@ export function InboxSection() {
 								className="w-24"
 								aria-label={t("notifications.inbox.hoursAria")}
 								value={String(settings?.inboxWindowHours ?? 24)}
-								normalize={normalizeHours}
+								normalize={(raw) => {
+									const s = raw.trim();
+									return /^\d+$/.test(s) ? String(Number(s)) : s;
+								}}
+								validate={(raw) => {
+									if (!/^\d+$/.test(raw)) return t("settingsCore.validation.inboxWindowHoursRange");
+									const n = Number(raw);
+									return Number.isInteger(n) && n >= 1 && n <= 720
+										? null
+										: t("settingsCore.validation.inboxWindowHoursRange");
+								}}
 								onCommit={(v) => save({ inboxWindowHours: Number(v) })}
 							/>
-							<span className="text-xs text-[var(--text-muted)]">{t("notifications.inbox.hoursUnit")}</span>
+							<span className="mt-1.5 text-xs text-[var(--text-muted)] whitespace-nowrap">
+								{t("notifications.inbox.hoursUnit")}
+							</span>
 						</div>
 					}
 				/>

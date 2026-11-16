@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { estimateBlockHeight, estimateTextHeight } from "./blockEstimate";
-import type { DisplayBlock } from "./turnGrouping";
+import type { DisplayBlock, TurnBlock } from "./turnGrouping";
 import type { TranscriptItem } from "../../lib/contracts";
 
 const item = (id: string, text: string | null): TranscriptItem => ({
@@ -18,7 +18,7 @@ const item = (id: string, text: string | null): TranscriptItem => ({
 	hidden: false,
 });
 
-const turn = (answer: string | null, steps = 0): DisplayBlock => ({
+const turn = (answer: string | null, steps = 0): TurnBlock => ({
 	type: "turn",
 	id: "t",
 	userItem: item("u", "hi"),
@@ -61,5 +61,61 @@ describe("block height estimates", () => {
 		const long = { ...turn("ok"), userItem: item("u", "line of prompt\n".repeat(300)) } as DisplayBlock;
 		const short = { ...turn("ok"), userItem: item("u", "line\n".repeat(4)) } as DisplayBlock;
 		expect(estimateBlockHeight(long) - estimateBlockHeight(short)).toBeLessThan(60);
+	});
+
+	it("estimates full height for multi-paragraph interim prose while capping brief tool transitions", () => {
+		const toolStep = {
+			id: "tool-1",
+			kind: "tool" as const,
+			item: item("tool-item-1", null),
+			call: { id: "c1", name: "read", args: { path: "src/a.ts" }, intent: null },
+		};
+		const multiParagraph = Array.from({ length: 12 }, (_, i) => `第 ${i + 1} 段详细说明内容，用于验证多段过渡回复不会被截断估值。`).join("\n\n");
+		const fullProseTurn: DisplayBlock = {
+			...turn("final"),
+			intermediateSteps: [
+				{ id: "p1", kind: "text", item: item("p1", multiParagraph), text: multiParagraph },
+				toolStep,
+			],
+			stepCount: 2,
+		};
+		const briefText = "先读取配置文件。";
+		const briefProseTurn: DisplayBlock = {
+			...turn("final"),
+			intermediateSteps: [
+				{ id: "p1", kind: "text", item: item("p1", briefText), text: briefText },
+				toolStep,
+			],
+			stepCount: 2,
+		};
+		expect(estimateBlockHeight(fullProseTurn) - estimateBlockHeight(briefProseTurn)).toBeGreaterThan(360);
+	});
+
+	it("reserves TurnDiffCard row height when a turn edited files", () => {
+		const readTurn: DisplayBlock = {
+			...turn("done"),
+			intermediateSteps: [
+				{
+					id: "t-read",
+					kind: "tool",
+					item: item("t-read", null),
+					call: { id: "c1", name: "read", args: { path: "src/a.ts" }, intent: null },
+				},
+			],
+			stepCount: 1,
+		};
+		const editTurn: DisplayBlock = {
+			...turn("done"),
+			intermediateSteps: [
+				{
+					id: "t-edit",
+					kind: "tool",
+					item: item("t-edit", null),
+					call: { id: "c1", name: "edit", args: { path: "src/a.ts" }, intent: null },
+				},
+			],
+			stepCount: 1,
+		};
+		expect(estimateBlockHeight(editTurn)).toBeGreaterThan(estimateBlockHeight(readTurn));
 	});
 });

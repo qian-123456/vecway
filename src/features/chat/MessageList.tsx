@@ -48,6 +48,8 @@ import { StartHero } from "../../components/StartHero";
 import { openContextWindowForModel } from "../settings/settingsTargets";
 import { AnswerFooter } from "./AnswerFooter";
 import { ClampedProse } from "./ClampedProse";
+import { TurnDiffCard } from "./TurnDiffCard";
+import { collectTurnDiffSummary } from "./turnDiffs";
 import { isForkDraftId } from "../sessions/forkDraft";
 import { filterToLeafPath, versionsByItem, type TreeVersions } from "./treePath";
 import { startTreeResend, useTreeEditPending } from "./treeNav";
@@ -95,7 +97,6 @@ import {
 	formatMessageTimestamp,
 	groupTurnBlocks,
 	isBriefToolTransition,
-	latestRequestAnchor,
 	liveAnswerCandidate,
 	noticeLabel,
 	noticeSummary,
@@ -147,8 +148,6 @@ const DEFAULT_VIEWPORT_PX = 800;
 /** Window after the live row was last painted in which the committed turn's
  *  first measurement counts as the live→committed hand-off. */
 const HANDOFF_MEASURE_MS = 5000;
-/** Gap kept above the parked request so it clears the scroller's 1rem top fade. */
-const PARK_TOP_GAP = 12;
 const EMPTY_ECHOES: UserEcho[] = [];
 const EMPTY_OUTPUTS: CommandOutputEntry[] = [];
 
@@ -163,6 +162,11 @@ function steerStep(echo: UserEcho): StepShape {
 }
 const EMPTY_REQUESTS: LiveRequest[] = [];
 const EMPTY_TOOLS: Record<string, LiveTool> = {};
+const EMPTY_STEPS: readonly StepShape[] = [];
+/** Grace window after tail content changes during which ResizeObserver may still pin to bottom. */
+const TAIL_SETTLE_FOLLOW_MS = 800;
+/** Ignore passive involuntary scroll events right after detached handoff restoration. */
+const HANDOFF_SCROLL_SUPPRESS_MS = 200;
 
 const asObj = (v: unknown): Record<string, unknown> =>
 	typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {};
@@ -640,6 +644,7 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 	highlightedId,
 	versions,
 	holdingLiveTurn = false,
+	liveAnswerFolded = false,
 }: {
 	sessionId: string;
 	/** One part of a turn (the whole turn when it is not split). */
@@ -661,6 +666,8 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 	subagentEndedAt?: number;
 	/** Live StreamingRow is still holding below this turn while transcript catches up. */
 	holdingLiveTurn?: boolean;
+	/** Persisted steps can fold once StreamingRow below begins streaming the final answer. */
+	liveAnswerFolded?: boolean;
 }) {
 	const { t } = useT();
 	const [forceOpenSteps, setForceOpenSteps] = useState(false);
@@ -766,6 +773,17 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 
 	const isTurnSettled =
 		block.isLastTurnPart && !streamingThisTurn && !awaitingSubagents && !holdingLiveTurn;
+	const hasTurnDiff = useMemo(
+		() =>
+			block.isLastTurnPart &&
+			collectTurnDiffSummary({
+				steps: block.turn.intermediateSteps,
+				toolResultsByCallId,
+				turnCheckpoint,
+				cwd: sessionCwd,
+			}).files.length > 0,
+		[block.isLastTurnPart, block.turn.intermediateSteps, toolResultsByCallId, turnCheckpoint, sessionCwd],
+	);
 	const answerIsError = block.answerItem?.stopReason === "error";
 	const terminalErrorReason = useMemo(() => {
 		if (answerIsError && block.answerItem) {
@@ -890,8 +908,8 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 								durationMs={isFirst ? turnDurationMs : undefined}
 								isStreaming={inProgress ? isFirst : isLast && streamingThisTurn && !block.turn.answerItem}
 								awaitingSubagents={isFirst && awaitingSubagents}
-								liveOpen={inProgress}
-								hideHeader={inProgress && !isFirst}
+								liveOpen={inProgress && !liveAnswerFolded}
+								hideHeader={inProgress && !liveAnswerFolded && !isFirst}
 								startedAt={turnStartedAt}
 								forceExpanded={hasHighlightedStep || forceOpenSteps ? true : null}
 								toolResultsByCallId={toolResultsByCallId}
@@ -936,10 +954,21 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 								{answerTime}
 							</span>
 						)}
+						{block.isLastTurnPart && hasTurnDiff && (
+							<TurnDiffCard
+								sessionId={sessionId}
+								steps={block.turn.intermediateSteps}
+								toolResultsByCallId={toolResultsByCallId}
+								turnCheckpoint={turnCheckpoint}
+								sessionCwd={sessionCwd}
+								isLatestTurn={isLatestTurn}
+							/>
+						)}
 						{/* Stopped turns still need undo / changed files / fork. */}
 						{!selecting && !isForkDraftId(sessionId) && (
 							<AnswerFooter
 								compact
+								hideChangedFiles={hasTurnDiff}
 								sessionId={sessionId}
 								cwd={sessionCwd}
 								sessionFile={sessionFile}
@@ -988,6 +1017,17 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 						/>
 					)}
 
+					{block.isLastTurnPart && hasTurnDiff && (
+						<TurnDiffCard
+							sessionId={sessionId}
+							steps={block.turn.intermediateSteps}
+							toolResultsByCallId={toolResultsByCallId}
+							turnCheckpoint={turnCheckpoint}
+							sessionCwd={sessionCwd}
+							isLatestTurn={isLatestTurn}
+						/>
+					)}
+
 					{/* The answer request's stats line sits above the footer and is
 					    always visible, even when the steps above stay collapsed. */}
 					{block.isLastTurnPart && answerStat && !answerStat.error && (
@@ -996,6 +1036,7 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 					{/* Hover-only ghost footer */}
 					{block.isLastTurnPart && !selecting && !isForkDraftId(sessionId) && (
 						<AnswerFooter
+							hideChangedFiles={hasTurnDiff}
 							sessionId={sessionId}
 							cwd={sessionCwd}
 							sessionFile={sessionFile}
@@ -1045,6 +1086,16 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 						</button>
 					</div>
 				</div>
+			)}
+			{!block.answerItem && isTurnSettled && hasTurnDiff && (
+				<TurnDiffCard
+					sessionId={sessionId}
+					steps={block.turn.intermediateSteps}
+					toolResultsByCallId={toolResultsByCallId}
+					turnCheckpoint={turnCheckpoint}
+					sessionCwd={sessionCwd}
+					isLatestTurn={isLatestTurn}
+				/>
 			)}
 		</div>
 	);
@@ -1129,15 +1180,19 @@ type LivePseudoStep = StepShape;
 
 const StreamingRow = React.memo(function StreamingRow({
 	sessionId,
+	sessionCwd = "",
 	toolResultsByCallId,
 	onScrollRequest,
 	showTimer,
 	holding,
 	persistedCallIds,
+	persistedSteps = EMPTY_STEPS,
 	persistedRequestTimes,
 	onLiveEvidence,
+	onAnswerFoldChange,
 }: {
 	sessionId: string;
+	sessionCwd?: string;
 	toolResultsByCallId?: Map<string, ToolResultInfo>;
 	onScrollRequest?: () => void;
 	/** False when the latest turn's disclosure already shows the live timer. */
@@ -1147,10 +1202,14 @@ const StreamingRow = React.memo(function StreamingRow({
 	holding: boolean;
 	/** Tool-call ids the committed latest turn already shows (dedupe). */
 	persistedCallIds: ReadonlySet<string>;
+	/** Already-persisted intermediate steps of the latest turn while live. */
+	persistedSteps?: readonly StepShape[];
 	/** Completed request identities already present in the visible transcript. */
 	persistedRequestTimes: ReadonlySet<number>;
 	/** Last painted content that a new transcript page must fully cover. */
 	onLiveEvidence: (evidence: LiveHandoffEvidence) => void;
+	/** Notifies the parent when the streaming final answer folds persisted steps. */
+	onAnswerFoldChange?: (folded: boolean) => void;
 }) {
 	const streamingMessage = useLive(
 		(s) => s.sessions[sessionId]?.streamingMessage ?? null,
@@ -1454,16 +1513,31 @@ const StreamingRow = React.memo(function StreamingRow({
 	const frozenRef = useRef(liveVisible);
 	if (!holding) frozenRef.current = liveVisible;
 	const { visibleSteps, visiblePlan } = holding ? frozenRef.current : liveVisible;
+	const frozenToolsRef = useRef(liveTools);
+	if (!holding) frozenToolsRef.current = liveTools;
+	const effectiveLiveTools = holding ? frozenToolsRef.current : liveTools;
 	const endedAtRef = useRef<number | null>(null);
 	if (!holding) endedAtRef.current = null;
 	else if (endedAtRef.current === null) endedAtRef.current = Date.now();
 
 	// Final answer start: the activity folds into the disclosure and the turn
 	// takes the committed layout (disclosure, interim prose, answer), so the
-	// commit itself changes nothing but the title and the footer.
-	const foldEnabled = showTimer;
-	const candidate = foldEnabled ? liveAnswerCandidate(visibleSteps) : null;
-	const answerStarted = useAnswerStarted(candidate !== null, holding);
+	// commit itself changes nothing but the title and the footer. When
+	// `!showTimer` (persisted intermediate steps already sit in TurnBlockRow
+	// above), also fold as soon as only the final answer candidate remains here.
+	const rawCandidate = liveAnswerCandidate(visibleSteps);
+	const rawAnswerStarted = useAnswerStarted(rawCandidate !== null, holding);
+	const soloLiveAnswer =
+		!showTimer &&
+		rawCandidate !== null &&
+		visibleSteps.length === 1 &&
+		visibleSteps[0] === rawCandidate;
+	const answerStarted = rawAnswerStarted && (showTimer || soloLiveAnswer);
+	useLayoutEffect(() => {
+		const folded = !showTimer && answerStarted;
+		onAnswerFoldChange?.(folded);
+		return () => onAnswerFoldChange?.(false);
+	}, [showTimer, answerStarted, onAnswerFoldChange]);
 	const { activity, answer } = useMemo(
 		() => splitLiveTurn(visibleSteps, answerStarted),
 		[visibleSteps, answerStarted],
@@ -1594,6 +1668,10 @@ const StreamingRow = React.memo(function StreamingRow({
 			}
 		});
 		if (answer.kind === "text") {
+			const heldDiffSteps =
+				holding && persistedSteps.length > 0
+					? [...persistedSteps, ...visibleSteps]
+					: visibleSteps;
 			nodes.push(
 				<div key="live-answer" id="msg-live-answer" className={ANSWER_WRAP_CLASS}>
 					<div className={ANSWER_TEXT_CLASS}>
@@ -1603,6 +1681,16 @@ const StreamingRow = React.memo(function StreamingRow({
 							streaming={!holding && answer.streaming}
 						/>
 					</div>
+					{holding && (
+						<TurnDiffCard
+							sessionId={sessionId}
+							steps={heldDiffSteps}
+							toolResultsByCallId={toolResultsByCallId}
+							liveTools={effectiveLiveTools}
+							sessionCwd={sessionCwd}
+							isLatestTurn
+						/>
+					)}
 					{answerStat && !answerStat.error && (
 						<RequestStatsLine stat={answerStat} className="mt-0.5" omitTime />
 					)}
@@ -1741,7 +1829,6 @@ export function MessageList({
 	const ompQueue = useLive((s) => s.sessions[sessionId]?.ompQueue);
 	const flowNotices = useLive((s) => s.sessions[sessionId]?.flowNotices);
 	const modelNotices = useLive((s) => s.sessions[sessionId]?.modelNotices);
-	const blocksKey = `${items.length}:${items[items.length - 1]?.id ?? ""}`;
 	// In-turn steers render inside StreamingRow at their step position; only
 	// next-turn echoes (or steers orphaned after the stream ends) sit here.
 	const bottomEchoes = useMemo(() => {
@@ -1771,6 +1858,55 @@ export function MessageList({
 	const scrollTimerRef = useRef(0);
 	const lastHandledScrollReq = useRef<number>(0);
 	const containerRef = useRef<HTMLDivElement>(null);
+	const listBoxRef = useRef<HTMLDivElement>(null);
+	const liveVisibleRef = useRef(false);
+	const recentTailFollowUntilRef = useRef(0);
+	const suppressInvoluntaryScrollUntilRef = useRef(0);
+	const liveViewportRef = useRef<{
+		sessionId: string;
+		scrollTop: number;
+		scrollHeight: number;
+		answerOffsetPx: number | null;
+	} | null>(null);
+	const prevLiveStateRef = useRef<{ sessionId: string; liveVisible: boolean }>({
+		sessionId,
+		liveVisible: false,
+	});
+	const prevTailRef = useRef<{
+		sessionId: string;
+		rowsLen: number;
+		echoesLen: number;
+		liveVisible: boolean;
+		lastTurnId: string | null;
+		lastAnswerId: string | null;
+	}>({
+		sessionId,
+		rowsLen: 0,
+		echoesLen: 0,
+		liveVisible: false,
+		lastTurnId: null,
+		lastAnswerId: null,
+	});
+	const [liveAnswerFolded, setLiveAnswerFolded] = useState(false);
+	const captureLiveViewport = useCallback(() => {
+		const el = scrollRef.current;
+		if (!el || !liveVisibleRef.current) return;
+		const liveAnswer = containerRef.current?.querySelector<HTMLElement>("#msg-live-answer");
+		const answerRect = liveAnswer?.getBoundingClientRect();
+		const hasLiveAnswerBox =
+			Boolean(liveAnswer) &&
+			((liveAnswer?.offsetHeight ?? 0) > 0 || (answerRect?.height ?? 0) > 0);
+		const answerOffsetPx =
+			hasLiveAnswerBox && answerRect
+				? el.getBoundingClientRect().top - answerRect.top
+				: null;
+		liveViewportRef.current = {
+			sessionId,
+			scrollTop: el.scrollTop,
+			scrollHeight: el.scrollHeight,
+			answerOffsetPx,
+		};
+	}, [scrollRef, sessionId]);
 	useScrollRetention(scrollRef, sessionId, () => !shouldFollow(followRef.current));
 
 	// Throttled scroll to bottom. Deliberately NOT requestAnimationFrame: an
@@ -1929,11 +2065,21 @@ export function MessageList({
 			};
 			// While pinned to the bottom the viewport is (about to be) at the
 			// tail, whatever offset the virtualizer still holds from before the
-			// transcript loaded: mount the newest rows, not the oldest.
-			if (shouldFollow(followRef.current)) {
+			// transcript loaded: mount the newest rows, not the oldest. Once an
+			// idle accordion expansion pushes the bottom far below the viewport,
+			// render around the user's actual scrollOffset instead.
+			const el = scrollRef.current;
+			const dist = el ? el.scrollHeight - el.scrollTop - el.clientHeight : 0;
+			const pinTailRange =
+				shouldFollow(followRef.current) &&
+				(followRef.current.phase === "opening" ||
+					liveVisibleRef.current ||
+					Date.now() < recentTailFollowUntilRef.current ||
+					dist < NEAR_BOTTOM_PX * 2);
+			if (pinTailRange) {
 				return selectTailIndexes({
 					...win,
-					viewportPx: scrollRef.current?.clientHeight || DEFAULT_VIEWPORT_PX,
+					viewportPx: el?.clientHeight || DEFAULT_VIEWPORT_PX,
 				});
 			}
 			return selectRenderIndexes({
@@ -1956,14 +2102,17 @@ export function MessageList({
 	) => {
 		const viewportTop = (instance.scrollOffset ?? 0) + instance.scrollAdjustments;
 		const firstMeasure = !instance.itemSizeCache.has(item.key);
-		// The committed turn replacing the live row is measured for the first
-		// time here; the text the user may be reading sits inside it, so a
-		// bigger-than-estimated height must not shift scrollTop under them.
+		const row = rows[item.index];
+		const rowTurnId = row?.type === "turn" ? row.turnId : row?.id;
+		// Every split part of the committed turn replacing the live row is
+		// measured for the first time here; its content was already laid out at
+		// real height in #msg-live, so a bigger-than-estimated height must not
+		// shift scrollTop under a reader mid-reply.
 		if (
 			firstMeasure &&
-			item.key === lastTurnIdRef.current &&
-			Date.now() - liveSeenAtRef.current < HANDOFF_MEASURE_MS &&
-			item.end > viewportTop
+			rowTurnId !== undefined &&
+			rowTurnId === lastTurnIdRef.current &&
+			Date.now() - liveSeenAtRef.current < HANDOFF_MEASURE_MS
 		) {
 			return false;
 		}
@@ -1971,20 +2120,15 @@ export function MessageList({
 	};
 
 	// Last turn block — its footer stays visible even without hover.
-	const lastTurnId = useMemo(() => {
+	const lastTurnBlock = useMemo(() => {
 		for (let i = blocks.length - 1; i >= 0; i--) {
-			if (blocks[i].type === "turn") return blocks[i].id;
+			const b = blocks[i];
+			if (b.type === "turn") return b;
 		}
 		return null;
 	}, [blocks]);
-	// The virtualizer keys rows, not turns: the live hand-off lands in the
-	// last part of the latest turn.
-	lastTurnIdRef.current = useMemo(() => {
-		for (let i = rows.length - 1; i >= 0; i--) {
-			if (rows[i].type === "turn") return rows[i].id;
-		}
-		return null;
-	}, [rows]);
+	const lastTurnId = lastTurnBlock?.id ?? null;
+	lastTurnIdRef.current = lastTurnId;
 
 	// The latest turn already shows a live "正在处理" disclosure (persisted
 	// steps, no answer yet); StreamingRow must not add a second timer under it.
@@ -2016,19 +2160,19 @@ export function MessageList({
 		return times;
 	}, [visible]);
 
-	// Tool-call ids the committed latest turn already renders. While that turn
-	// shows its own live disclosure, StreamingRow drops whatever these cover.
+	// Tool-call ids and intermediate steps the committed latest turn already renders.
+	// While that turn shows its own live disclosure, StreamingRow drops whatever these cover.
+	const latestPersistedSteps = useMemo(() => {
+		if (!latestDisclosureLive) return EMPTY_STEPS;
+		return lastTurnBlock?.intermediateSteps ?? EMPTY_STEPS;
+	}, [lastTurnBlock, latestDisclosureLive]);
 	const persistedCallIds = useMemo(() => {
 		const ids = new Set<string>();
-		if (!latestDisclosureLive) return ids;
-		for (let i = blocks.length - 1; i >= 0; i--) {
-			const b = blocks[i];
-			if (b.type !== "turn") continue;
-			for (const st of b.intermediateSteps) if (st.kind === "tool") ids.add(st.call.id);
-			break;
+		for (const st of latestPersistedSteps) {
+			if (st.kind === "tool") ids.add(st.call.id);
 		}
 		return ids;
-	}, [blocks, latestDisclosureLive]);
+	}, [latestPersistedSteps]);
 
 	// Listen to scroll/gesture activity to maintain the follow-bottom state
 	// machine. `scroll` events are only trusted outside the opening/settle
@@ -2054,6 +2198,10 @@ export function MessageList({
 			prevTop = el.scrollTop;
 			const now = Date.now();
 			const userActive = pointerDown || now - lastInputAt < USER_INPUT_WINDOW_MS;
+			if (!userActive && now < suppressInvoluntaryScrollUntilRef.current) {
+				captureLiveViewport();
+				return;
+			}
 			const r = onScrollPosition(followRef.current, dist, now, movedUp, userActive);
 			followRef.current = r.state;
 			if (r.trusted) {
@@ -2062,6 +2210,7 @@ export function MessageList({
 					hasNewMessages: r.state.phase === "following" ? false : undefined,
 				});
 			}
+			captureLiveViewport();
 		};
 		const gestureDetach = () => {
 			followRef.current = detach(followRef.current);
@@ -2093,12 +2242,28 @@ export function MessageList({
 			if (y - touchY > 2 && canDetachByGesture(el)) gestureDetach(); // finger down = scroll toward top
 			touchY = y;
 		};
-		// Scrollbar-pill drags and text-selection autoscroll hold a pointer down.
-		const onPointerDown = () => {
+		// Scrollbar-pill drags and text-selection autoscroll inside the message
+		// scroller hold a pointer down. Clicks outside (e.g. composer, sidebar,
+		// top bar) must not mark the scroller as user-active.
+		const onPointerDown = (e: PointerEvent) => {
+			const target = e.target instanceof Element ? e.target : null;
+			if (!target) return;
+			const insideScroller = el.contains(target);
+			if (!insideScroller && !target.closest(".scroll-pill")) return;
+			if (insideScroller && !liveVisibleRef.current) {
+				// User is clicking directly on resting chat content (e.g. expanding
+				// TurnDiffCard or ExecutionDisclosure): end initial settle auto-pin
+				// immediately so expanding an accordion never yanks the clicked header.
+				recentTailFollowUntilRef.current = 0;
+				if (followRef.current.phase === "opening") {
+					followRef.current = { phase: "following", suppressUntil: 0 };
+				}
+			}
 			pointerDown = true;
 			markInput();
 		};
 		const onPointerUp = () => {
+			if (!pointerDown) return;
 			pointerDown = false;
 			markInput();
 		};
@@ -2120,27 +2285,38 @@ export function MessageList({
 			window.removeEventListener("pointerup", onPointerUp, true);
 			window.removeEventListener("pointercancel", onPointerUp, true);
 		};
-	}, [scrollRef]);
+	}, [scrollRef, captureLiveViewport]);
 
-	// ResizeObserver for dynamic content expansion during streaming
+	// ResizeObserver for dynamic content expansion during streaming and initial settle.
+	// In an idle chat (after TAIL_SETTLE_FOLLOW_MS), expanding a diff card or
+	// disclosure must NOT yank the viewport away from the clicked header.
 	useEffect(() => {
 		const el = scrollRef.current;
 		const target = containerRef.current;
 		if (!el || !target) return;
 		const ro = new ResizeObserver(() => {
 			const el2 = scrollRef.current;
+			const now = Date.now();
+			const allowAutoPin =
+				liveVisibleRef.current ||
+				followRef.current.phase === "opening" ||
+				now < recentTailFollowUntilRef.current;
 			// Pin in the same frame the content grew (before paint). A deferred
 			// write lets one frame paint at the old offset, which reads as the
 			// output block jittering on every streamed line.
-			if (el2 && shouldFollow(followRef.current) && !isAnnotating(el2)) {
+			if (el2 && shouldFollow(followRef.current) && allowAutoPin && !isAnnotating(el2)) {
 				el2.scrollTop = el2.scrollHeight;
-				followRef.current = onWroteBottom(followRef.current, Date.now());
+				followRef.current = onWroteBottom(followRef.current, now);
 			} else if (el2) {
-				// Detached: no scroll event follows content growth, so report the
-				// real distance (shows the scroll-to-bottom pill as the answer grows).
+				// Detached or idle expansion: report real distance so the
+				// scroll-to-bottom pill reflects the new height.
 				const dist = el2.scrollHeight - el2.scrollTop - el2.clientHeight;
+				if (!allowAutoPin && shouldFollow(followRef.current) && dist >= NEAR_BOTTOM_PX) {
+					followRef.current = detach(followRef.current);
+				}
 				emitScrollState({ nearBottom: dist < NEAR_BOTTOM_PX });
 			}
+			captureLiveViewport();
 		});
 		ro.observe(target);
 		return () => {
@@ -2150,7 +2326,7 @@ export function MessageList({
 				scrollTimerRef.current = 0;
 			}
 		};
-	}, [scrollRef, scrollToBottomThrottled]);
+	}, [scrollRef, scrollToBottomThrottled, captureLiveViewport]);
 
 	// Reopen = follow-bottom, no matter how the previous session was left:
 	// switching sessions reuses this component (and the scroll element), so
@@ -2160,26 +2336,131 @@ export function MessageList({
 	// cannot be wedged the way a requestAnimationFrame or timer callback can.
 	// Declared after useVirtualizer so it runs after its layout effects.
 	useLayoutEffect(() => {
-		followRef.current = initialFollowScroll(Date.now());
+		const now = Date.now();
+		followRef.current = initialFollowScroll(now);
+		recentTailFollowUntilRef.current = now + TAIL_SETTLE_FOLLOW_MS;
+		suppressInvoluntaryScrollUntilRef.current = 0;
+		liveViewportRef.current = null;
+		setLiveAnswerFolded(false);
 		emitScrollState({ nearBottom: true, hasNewMessages: false });
 	}, [sessionId]);
 
 	const liveVisible = isStreamingActive || holding;
 	if (liveVisible) liveSeenAtRef.current = Date.now();
-
-	// Pin to the bottom whenever content appears or grows while following.
-	// Runs synchronously post-commit (before paint), covering first mount,
-	// the sessionId switch commit, the clear→load commits, pending echoes,
-	// and the streaming row mounting/unmounting — without timers. The commit
-	// of a streamed turn does not re-anchor: the viewport keeps its position.
 	const totalSize = virtualizer.getTotalSize();
+	const isDetachedHandoffRender =
+		prevLiveStateRef.current.sessionId === sessionId &&
+		prevLiveStateRef.current.liveVisible &&
+		!liveVisible &&
+		!shouldFollow(followRef.current);
+	const renderedListHeight =
+		isDetachedHandoffRender && liveViewportRef.current?.sessionId === sessionId
+			? Math.max(totalSize, liveViewportRef.current.scrollHeight)
+			: totalSize;
+
+	// Synchronously settle virtualizer container height and viewport scrollTop
+	// before paint:
+	// 1. When following: sync listBoxRef to the freshly measured totalSize so
+	//    el.scrollTop = el.scrollHeight lands at the true bottom on frame 0
+	//    (never jumping back to the turn start).
+	// 2. When detached mid-reply (`liveVisible: true -> false`): restore the
+	//    exact reading offset (anchored to the committed answer's top when
+	//    available, else the pre-commit scrollTop) without any upward clamp.
+	const lastAnswerId = lastTurnBlock?.answerItem?.id ?? null;
 	useLayoutEffect(() => {
+		const now = Date.now();
+		const prevLive = prevLiveStateRef.current;
+		const isHandoffCommit =
+			prevLive.sessionId === sessionId && prevLive.liveVisible && !liveVisible;
+		prevLiveStateRef.current = { sessionId, liveVisible };
+		liveVisibleRef.current = liveVisible;
+
 		const el = scrollRef.current;
-		if (el && shouldFollow(followRef.current) && !isAnnotating(el)) {
-			el.scrollTop = el.scrollHeight;
-			followRef.current = onWroteBottom(followRef.current, Date.now());
+		const measuredTotal = virtualizer.getTotalSize();
+		if (listBoxRef.current) {
+			listBoxRef.current.style.height = `${measuredTotal}px`;
 		}
-	}, [sessionId, rows.length, pendingEchoes.length, liveVisible, totalSize, scrollRef]);
+
+		const prevTail = prevTailRef.current;
+		const tailChanged =
+			prevTail.sessionId !== sessionId ||
+			prevTail.rowsLen !== rows.length ||
+			prevTail.echoesLen < pendingEchoes.length ||
+			prevTail.liveVisible !== liveVisible ||
+			prevTail.lastTurnId !== lastTurnId ||
+			prevTail.lastAnswerId !== lastAnswerId;
+		prevTailRef.current = {
+			sessionId,
+			rowsLen: rows.length,
+			echoesLen: pendingEchoes.length,
+			liveVisible,
+			lastTurnId,
+			lastAnswerId,
+		};
+		const allowAutoPin =
+			liveVisible ||
+			followRef.current.phase === "opening" ||
+			tailChanged ||
+			now < recentTailFollowUntilRef.current;
+
+		if (el && shouldFollow(followRef.current) && allowAutoPin && !isAnnotating(el)) {
+			if (tailChanged || liveVisible) {
+				recentTailFollowUntilRef.current = now + TAIL_SETTLE_FOLLOW_MS;
+			}
+			el.scrollTop = el.scrollHeight;
+			followRef.current = onWroteBottom(followRef.current, now);
+		} else if (el && isHandoffCommit) {
+			const snap =
+				liveViewportRef.current?.sessionId === sessionId
+					? liveViewportRef.current
+					: null;
+			if (snap) {
+				let targetTop = snap.scrollTop;
+				if (snap.answerOffsetPx !== null && lastAnswerId) {
+					const committedAnswer = containerRef.current?.querySelector<HTMLElement>(
+						`[data-message-item-id="${CSS.escape(lastAnswerId)}"][data-answer-part="0"]`,
+					);
+					const rect = committedAnswer?.getBoundingClientRect();
+					const hasBox =
+						Boolean(committedAnswer) &&
+						((committedAnswer?.offsetHeight ?? 0) > 0 || (rect?.height ?? 0) > 0);
+					if (hasBox && rect) {
+						const contentTop = el.getBoundingClientRect().top - el.scrollTop;
+						targetTop = Math.max(0, rect.top - contentTop + snap.answerOffsetPx);
+					}
+				}
+				if (listBoxRef.current && el.clientHeight > 0 && el.scrollHeight < targetTop + el.clientHeight) {
+					listBoxRef.current.style.height = `${Math.max(measuredTotal, targetTop + el.clientHeight)}px`;
+				}
+				suppressInvoluntaryScrollUntilRef.current = now + HANDOFF_SCROLL_SUPPRESS_MS;
+				el.scrollTop = targetTop;
+				const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+				emitScrollState({ nearBottom: dist < NEAR_BOTTOM_PX });
+			}
+		} else if (el) {
+			const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+			if (!allowAutoPin && shouldFollow(followRef.current) && dist >= NEAR_BOTTOM_PX) {
+				followRef.current = detach(followRef.current);
+			}
+			emitScrollState({ nearBottom: dist < NEAR_BOTTOM_PX });
+		}
+
+		if (liveVisible) {
+			captureLiveViewport();
+		} else if (isHandoffCommit) {
+			liveViewportRef.current = null;
+		}
+	}, [
+		sessionId,
+		rows.length,
+		pendingEchoes.length,
+		liveVisible,
+		totalSize,
+		lastAnswerId,
+		virtualizer,
+		scrollRef,
+		captureLiveViewport,
+	]);
 
 	// Sending a message re-arms follow-bottom even after the viewport was left
 	// above the stream (the user scrolling away).
@@ -2187,52 +2468,13 @@ export function MessageList({
 	useLayoutEffect(() => {
 		const n = pendingEchoes.length;
 		if (n > echoCountRef.current && !shouldFollow(followRef.current)) {
-			followRef.current = initialFollowScroll(Date.now());
+			const now = Date.now();
+			followRef.current = initialFollowScroll(now);
+			recentTailFollowUntilRef.current = now + TAIL_SETTLE_FOLLOW_MS;
 			emitScrollState({ nearBottom: true, hasNewMessages: false });
 		}
 		echoCountRef.current = n;
 	}, [pendingEchoes.length]);
-
-	// A finished answer taller than the viewport: park the view on the request
-	// that produced it (answer right below) instead of leaving the user at the
-	// tail of a long reply. Armed when the stream ends, fired by the first
-	// transcript delivery after that. Never by the live row merely going away
-	// (hold timeout before the transcript lands): the blocks then still end at
-	// the previous turn, and parking there showed the previous reply. Only when
-	// still pinned — a user who scrolled away mid-stream keeps their position.
-	// Declared after the pin effect so it overrides that write in the same commit.
-	const parkArmedRef = useRef<{ page: TranscriptItem[]; key: string } | null>(null);
-	const prevStreamRef = useRef({ sessionId, isStreamingActive });
-	useLayoutEffect(() => {
-		const prev = prevStreamRef.current;
-		prevStreamRef.current = { sessionId, isStreamingActive };
-		if (prev.sessionId !== sessionId || isStreamingActive) parkArmedRef.current = null;
-		else if (prev.isStreamingActive) parkArmedRef.current = { page: rawItems, key: blocksKey };
-	}, [sessionId, isStreamingActive, rawItems, blocksKey]);
-	useLayoutEffect(() => {
-		const armed = parkArmedRef.current;
-		if (armed === null || liveVisible || armed.page === rawItems) return;
-		parkArmedRef.current = null;
-		// The refresh committed nothing new: there is no new answer to show.
-		if (armed.key === blocksKey) return;
-		const el = scrollRef.current;
-		const anchor = latestRequestAnchor(blocks);
-		if (!el || anchor === null || !shouldFollow(followRef.current)) return;
-		const node = containerRef.current?.querySelector<HTMLElement>(`#${CSS.escape(`msg-${anchor}`)}`);
-		const list = node?.closest("[data-index]")?.parentElement;
-		if (!node || !list) return;
-		const contentTop = el.getBoundingClientRect().top - el.scrollTop;
-		const target = Math.max(0, node.getBoundingClientRect().top - contentTop - PARK_TOP_GAP);
-		// The new row was measured on mount, so the virtualizer's total is
-		// already exact while the DOM list height still holds the estimate.
-		const listTop = list.getBoundingClientRect().top - contentTop;
-		const afterList = el.scrollHeight - (listTop + list.offsetHeight);
-		const contentEnd = listTop + virtualizer.getTotalSize() + afterList;
-		if (contentEnd - target <= el.clientHeight) return;
-		followRef.current = detach(followRef.current);
-		el.scrollTop = target;
-		emitScrollState({ nearBottom: false });
-	}, [liveVisible, rawItems, blocksKey, blocks, virtualizer, scrollRef]);
 
 	// Auto-scroll when new blocks arrive: the pin already ran pre-paint; this
 	// passive pass coalesces the trailing write (handles heights that settle
@@ -2442,7 +2684,8 @@ export function MessageList({
 					{/* Virtualized committed transcript */}
 					{rows.length > 0 && (
 						<div
-							style={{ height: virtualizer.getTotalSize() }}
+							ref={listBoxRef}
+							style={{ height: renderedListHeight }}
 							className="relative w-full"
 						>
 							{virtualizer.getVirtualItems().map((row) => {
@@ -2487,6 +2730,9 @@ export function MessageList({
 												subagentsRunning={subagentSpans.get(block.turnId)?.running}
 												subagentEndedAt={subagentSpans.get(block.turnId)?.endedAt}
 												holdingLiveTurn={block.turnId === lastTurnId && liveVisible}
+												liveAnswerFolded={
+													block.turnId === lastTurnId && liveVisible && liveAnswerFolded
+												}
 												onTurnsChange={onTurnsChange}
 												highlightedId={highlightedId}
 											/>
@@ -2533,13 +2779,16 @@ export function MessageList({
 						>
 							<StreamingRow
 								sessionId={sessionId}
+								sessionCwd={sessionCwd}
 								toolResultsByCallId={toolResultsByCallId}
 								onScrollRequest={scrollToBottomThrottled}
 								showTimer={!latestDisclosureLive}
 								holding={holding}
 								persistedCallIds={persistedCallIds}
+								persistedSteps={latestPersistedSteps}
 								persistedRequestTimes={persistedRequestTimes}
 								onLiveEvidence={rememberLiveEvidence}
+								onAnswerFoldChange={setLiveAnswerFolded}
 							/>
 						</div>
 					)}

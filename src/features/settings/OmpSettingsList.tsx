@@ -13,7 +13,7 @@ import {
 } from "react";
 import { ModelSelect, type ModelExtraOption } from "../../components/ModelSelect";
 import { parseSelection } from "../../components/modelSelectLogic";
-import { NativeSelect } from "../../components/NativeSelect";
+import { PopoverSelect } from "../../components/PopoverSelect";
 import { Segmented } from "../../components/Segmented";
 import type { OmpConfigEntry } from "../../lib/contracts";
 import { confirmDialog } from "../../lib/dialogs";
@@ -97,9 +97,6 @@ function useProjectLayer(): ProjectLayerContextValue {
 }
 
 // ── Row ──────────────────────────────────────────────────────────────
-
-/** Sentinel select value for the "type a custom value" escape hatch. */
-const CUSTOM_VALUE = "__custom__";
 
 const SECRET_KEY = /(?:token|password|apikey|secret)$/i;
 
@@ -255,7 +252,7 @@ function ClampedDescription({ text }: { text: string }) {
 				<button
 					type="button"
 					onClick={() => setExpanded((v) => !v)}
-					className="mt-0.5 text-xs text-[var(--accent)] hover:underline"
+					className="mt-1 inline-flex items-center rounded-md hairline bg-[var(--well-bg)] px-2 py-0.5 text-[11px] font-medium text-[var(--text)] hover:bg-[var(--bg-hover)] whitespace-nowrap cursor-pointer transition-colors"
 				>
 					{expanded ? t("settingsCore.ompList.collapse") : t("settingsCore.ompList.expand")}
 				</button>
@@ -281,7 +278,6 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 	const hierarchyDisabled = !parentOn;
 	const [busy, setBusy] = useState(false);
 	const [jsonMode, setJsonMode] = useState(false);
-	const [custom, setCustom] = useState(false);
 
 	const changed = () => {
 		if (onChanged) {
@@ -332,7 +328,6 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 			const ok = await save.run(() => ompConfigReset(entry.key));
 			if (ok) {
 				setJsonMode(false);
-				setCustom(false);
 				changed();
 			}
 		} finally {
@@ -347,7 +342,6 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 	const strict = (OMP_CONFIG_META[entry.key]?.values?.length ?? 0) > 0 || entry.valueType === "enum";
 	const options = isStructured || secret ? null : ompConfigOptions(entry.key);
 	const current = isUnset ? "" : typeof entry.value === "string" ? entry.value : JSON.stringify(entry.value);
-	const inOptions = options?.some((o) => o.value === current) ?? false;
 	const labeled = options?.map((o) => ({ ...o, text: ompConfigOptionLabel(entry.key, o, locale) }));
 
 	let control: ReactNode = null;
@@ -369,46 +363,33 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 			/>
 		);
 	} else if (labeled) {
-		const showCustom = !strict && (custom || (!inOptions && !isUnset));
 		control = (
-			<div className="flex items-center gap-1.5">
-				<NativeSelect
-					aria-label={title}
-					value={showCustom ? CUSTOM_VALUE : inOptions ? current : ""}
-					disabled={busy}
-					onChange={(e) => {
-						if (e.target.value === CUSTOM_VALUE) {
-							setCustom(true);
-						} else if (e.target.value) {
-							setCustom(false);
-							void persist(e.target.value);
-						}
-					}}
-					containerClassName="w-48"
-					className="text-xs"
-				>
-					{!inOptions && !showCustom && <option value="">{isUnset ? t("settingsCore.ompList.unset") : current}</option>}
-					{labeled.map((o) => (
-						<option key={o.value} value={o.value} title={optionTooltip(o.text, o)}>
-							{o.text}
-						</option>
-					))}
-					{!strict && <option value={CUSTOM_VALUE}>{t("settingsCore.ompList.custom")}</option>}
-				</NativeSelect>
-				{showCustom && (
-					<CommitInput
-						className="w-28"
-						type={entry.valueType === "number" ? "number" : "text"}
-						mono
-						value={current}
-						aria-label={t("settingsCore.ompList.customLabel", { title })}
-						validate={(v) => (entry.valueType === "number" && !Number.isFinite(Number(v)) ? t("settingsCore.ompList.numberRequired") : null)}
-						onCommit={async (v) => {
-							if (!(await persist(v))) throw new Error(save.error ?? t("settingsCore.ompList.saveFailed"));
-						}}
-					/>
-				)}
-			</div>
+			<PopoverSelect
+				aria-label={title}
+				disabled={busy}
+				value={current}
+				placeholder={isUnset ? t("settingsCore.ompList.unset") : undefined}
+				allowCustom={!strict}
+				customOptionLabel={t("settingsCore.ompList.custom")}
+				customInputType={entry.valueType === "number" ? "number" : "text"}
+				customMono
+				customInputAriaLabel={t("settingsCore.ompList.customLabel", { title })}
+				validateCustom={
+					entry.valueType === "number"
+						? (v) => (!v || !Number.isFinite(Number(v)) ? t("settingsCore.ompList.numberRequired") : null)
+						: undefined
+				}
+				options={labeled.map((o) => ({
+					value: o.value,
+					label: o.text,
+					badge: o.text !== o.value ? o.value : undefined,
+					description: o.description,
+				}))}
+				containerClassName="min-w-48 max-w-80"
+				onChange={(v) => {
+					void persist(v);
+				}}
+			/>
 		);
 	} else if (entry.valueType === "number") {
 		control = (
@@ -560,7 +541,7 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 								</pre>
 							)}
 							<div className="mt-1.5">
-								<Button size="sm" variant="ghost" icon={Braces} onClick={() => setJsonMode(true)}>
+								<Button size="sm" icon={Braces} onClick={() => setJsonMode(true)}>
 									{t("settingsCore.ompList.editRawJson")}
 								</Button>
 							</div>

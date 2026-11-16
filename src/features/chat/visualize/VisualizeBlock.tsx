@@ -26,7 +26,7 @@ import { FloatingLayer } from "../../../components/FloatingLayer";
 import { CopyButton } from "../../../components/CopyButton";
 import { errMsg } from "../../../lib/dialogs";
 import { openHtmlInBrowser } from "./openInBrowser";
-import { themeById, useResolvedThemeId } from "../../../lib/theme";
+import { useIsDark } from "../../../lib/theme";
 import { toast } from "../../../lib/toast";
 import { tNow, useT } from "../../../stores/language";
 import { sendPrompt } from "../send";
@@ -115,9 +115,7 @@ function VisualizeFrame({
 	sessionId?: string;
 	fill?: boolean;
 }) {
-	const themeId = useResolvedThemeId();
-	const theme: "light" | "dark" =
-		themeById(themeId)?.dark === false ? "light" : "dark";
+	const theme: "light" | "dark" = useIsDark() ? "dark" : "light";
 	const { t } = useT();
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const portRef = useRef<MessagePort | null>(null);
@@ -419,7 +417,7 @@ export const VisualizeBlock = React.memo(function VisualizeBlock({
 	const [fullscreen, setFullscreen] = useState(false);
 	const [showSource, setShowSource] = useState(false);
 	const { t } = useT();
-	const darkTheme = themeById(useResolvedThemeId())?.dark !== false;
+	const darkTheme = useIsDark();
 	if (streaming) {
 		return (
 			<div

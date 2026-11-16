@@ -37,6 +37,7 @@ export default defineMessages({
 		quietToAria: "免打扰结束时间",
 		quietTo: "到",
 		quietFillPreset: "填入 22:00–08:00",
+		quietPresetsAria: "免打扰常用预设",
 		quietTurnOff: "关闭免打扰",
 
 		inbox: {
@@ -121,6 +122,7 @@ export default defineMessages({
 		quietToAria: "Quiet hours end time",
 		quietTo: "to",
 		quietFillPreset: "Set 22:00–08:00",
+		quietPresetsAria: "Quiet hours presets",
 		quietTurnOff: "Turn off quiet hours",
 
 		inbox: {

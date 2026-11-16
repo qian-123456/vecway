@@ -1,7 +1,7 @@
 /** Settings ▸ 系统提示词: what a brand-new empty session carries in context, with optimization hints. */
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { NativeSelect } from "../../../components/NativeSelect";
+import { PopoverSelect } from "../../../components/PopoverSelect";
 import type { PromptCategory, PromptCategoryId, PromptComposition, PromptHint, PromptItem } from "../../../lib/contracts";
 import { createSession } from "../../../lib/createSession";
 import { errMsg } from "../../../lib/dialogs";
@@ -272,18 +272,14 @@ export function PromptCompositionSection() {
 			<SettingsCard jump={t("promptComposition.projectScope")}>
 				<div className="flex flex-wrap items-center gap-3 px-3 py-2.5">
 					<span className="text-xs text-neutral-300">{t("promptComposition.project")}</span>
-					<NativeSelect
+					<PopoverSelect
+						aria-label={t("promptComposition.project")}
 						containerClassName="min-w-0 flex-1"
 						value={cwd ?? ""}
-						onChange={(e) => setCwd(e.target.value)}
+						onChange={setCwd}
 						disabled={options.length === 0}
-					>
-						{options.map((o) => (
-							<option key={o.path} value={o.path}>
-								{o.label}
-							</option>
-						))}
-					</NativeSelect>
+						options={options.map((o) => ({ value: o.path, label: o.label }))}
+					/>
 					<Button icon={RefreshCw} loading={loading} onClick={() => cwd && load(cwd)} disabled={!cwd}>
 						{t("promptComposition.reload")}
 					</Button>
@@ -376,17 +372,13 @@ export function PromptCompositionSection() {
 					>
 						<div className="flex flex-wrap items-center gap-3 px-3 py-2.5">
 							<span className="text-xs text-neutral-300">{t("promptComposition.targetWorkspace")}</span>
-							<NativeSelect
+							<PopoverSelect
+								aria-label={t("promptComposition.targetWorkspace")}
 								containerClassName="min-w-0 flex-1"
 								value={targetWs ?? ""}
-								onChange={(e) => setTargetWs(e.target.value)}
-							>
-								{options.map((o) => (
-									<option key={o.path} value={o.path}>
-										{o.label}
-									</option>
-								))}
-							</NativeSelect>
+								onChange={setTargetWs}
+								options={options.map((o) => ({ value: o.path, label: o.label }))}
+							/>
 							<Button
 								variant="primary"
 								icon={Sparkles}

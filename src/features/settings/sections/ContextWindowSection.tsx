@@ -12,6 +12,8 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { FloatingLayer } from "../../../components/FloatingLayer";
 import { HoverScrollText } from "../../../components/HoverScrollText";
 import { confirmDialog, errMsg } from "../../../lib/dialogs";
+import { claimEscape } from "../../../lib/escapeClaim";
+import { isComposing } from "../../../lib/hooks";
 import { ompModelsContextWindowOverrides, ompModelsSetContextWindows } from "../../../lib/ipc";
 import { toast } from "../../../lib/toast";
 import { useModelCatalog } from "../../../stores/modelCatalog";
@@ -491,7 +493,7 @@ export function ContextWindowSection() {
 								/>
 								<button
 									type="button"
-									className="shrink-0 text-[var(--accent)]"
+									className="shrink-0 rounded-md hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] px-2 py-0.5 font-medium text-[var(--accent)] whitespace-nowrap cursor-pointer transition-colors"
 									onClick={() => toggle(filteredKeys, filterState !== "all")}
 								>
 									{filterState === "all" ? t("settingsSectionsContext.context.deselectAll") : t("settingsSectionsContext.context.selectAll")} {filteredKeys.length}
@@ -591,7 +593,11 @@ export function ContextWindowSection() {
 								value={bulkInput}
 								onChange={(e) => setBulkInput(e.target.value)}
 								onKeyDown={(e) => {
-									if (e.key === "Enter") void applySelected();
+									if (isComposing(e)) return;
+									if (e.key === "Enter") {
+										e.preventDefault();
+										void applySelected();
+									}
 								}}
 								placeholder={t("settingsSectionsContext.context.bulkPlaceholder")}
 								aria-label={t("settingsSectionsContext.context.bulkAria")}
@@ -620,7 +626,7 @@ export function ContextWindowSection() {
 									? t("settingsSectionsContext.context.ruleParen", { text: `${wholeBrand ? t("settingsSectionsContext.context.wholeBrandPrefix", { family }) : ""}${ruleKeywords.join(" ")}` })
 									: t("settingsSectionsContext.context.noCommonNameSuffix")}
 							</label>
-							<Button variant="ghost" size="sm" className="ml-auto" onClick={() => setSelected(new Set())}>
+							<Button variant="secondary" size="sm" className="ml-auto" onClick={() => setSelected(new Set())}>
 								{t("settingsSectionsContext.context.deselectBtn")}
 							</Button>
 						</div>
@@ -661,7 +667,7 @@ export function ContextWindowSection() {
 									<Button size="sm" disabled={busy} onClick={() => void saveRuleEdit()}>
 										{t("settingsSectionsContext.context.saveBtn")}
 									</Button>
-									<Button variant="ghost" size="sm" onClick={() => setEditingRule(null)}>
+									<Button variant="secondary" size="sm" onClick={() => setEditingRule(null)}>
 										{t("settingsSectionsContext.context.cancelBtn")}
 									</Button>
 									{(() => {
@@ -725,7 +731,7 @@ export function ContextWindowSection() {
 					<span>
 						{t("settingsSectionsContext.context.undoNotice", { count: undo.edits.length, label: undo.label })}
 					</span>
-					<Button variant="ghost" size="sm" onClick={() => void runUndo()}>
+					<Button variant="secondary" size="sm" onClick={() => void runUndo()}>
 						{t("settingsSectionsContext.context.undoBtn")}
 					</Button>
 					<IconButton icon={X} label={t("settingsSectionsContext.context.closeAria")} size="sm" onClick={() => setUndo(null)} />
@@ -756,11 +762,14 @@ function ModelRowView({
 }) {
 	const { t } = useT();
 	const [draft, setDraft] = useState<string | null>(null);
+	const cancellingRef = useRef(false);
 	const parsed = draft == null ? null : parseContextInput(draft);
 	const commit = async () => {
 		if (parsed == null) return;
 		setDraft(null);
-		await onEdit(parsed);
+		if (parsed !== row.contextWindow) {
+			await onEdit(parsed);
+		}
 	};
 	return (
 		<div
@@ -789,21 +798,44 @@ function ModelRowView({
 							aria-label={t("settingsSectionsContext.context.modelWindowAria", { modelId: row.modelId })}
 							onChange={(e) => setDraft(e.target.value)}
 							onKeyDown={(e) => {
-								if (e.key === "Enter") void commit();
-								if (e.key === "Escape") {
+								if (isComposing(e)) return;
+								if (e.key === "Enter") {
+									e.preventDefault();
+									void commit();
+								} else if (e.key === "Escape") {
+									e.preventDefault();
 									e.stopPropagation();
+									claimEscape(e);
+									cancellingRef.current = true;
 									setDraft(null);
 								}
 							}}
-							onBlur={() => setDraft(null)}
+							onBlur={() => {
+								if (cancellingRef.current) {
+									cancellingRef.current = false;
+									setDraft(null);
+									return;
+								}
+								if (parsed != null && parsed !== row.contextWindow) {
+									void commit();
+								} else {
+									setDraft(null);
+								}
+							}}
 							className={clsx(INPUT_CLASS, "w-full px-1.5 py-0.5 text-right font-mono", draft && parsed == null && "text-[var(--status-warning)]")}
 						/>
 					) : (
 						<button
 							type="button"
 							title={t("settingsSectionsContext.context.clickToEditTitle")}
-							onClick={() => setDraft(row.contextWindow != null ? fmt(row.contextWindow) : "")}
-							className={clsx("font-mono hover:underline", row.contextWindow == null ? "text-[var(--status-error)]" : "text-[var(--text)]")}
+							onClick={() => {
+								cancellingRef.current = false;
+								setDraft(row.contextWindow != null ? fmt(row.contextWindow) : "");
+							}}
+							className={clsx(
+								"inline-flex items-center rounded-md hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] px-2 py-0.5 font-mono whitespace-nowrap cursor-pointer transition-colors",
+								row.contextWindow == null ? "text-[var(--status-error)]" : "text-[var(--text)]",
+							)}
 						>
 							{row.contextWindow != null ? fmt(row.contextWindow) : t("settingsSectionsContext.context.windowUnknown")}
 						</button>
@@ -849,7 +881,7 @@ function FilterMenu<T extends string>({
 				aria-haspopup="listbox"
 				aria-expanded={open}
 				onClick={() => setOpen((v) => !v)}
-				className={clsx(INPUT_CLASS, "flex items-center gap-1.5 py-1 text-left")}
+				className={clsx(INPUT_CLASS, "flex items-center gap-1.5 py-1 text-left whitespace-nowrap")}
 			>
 				<span className="max-w-[10rem] truncate">{current?.label}</span>
 				<ChevronDown className="h-3 w-3 shrink-0 text-[var(--text-dim)]" />

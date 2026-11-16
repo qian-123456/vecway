@@ -135,7 +135,7 @@ export function AnnotationNotePopover({
 		<FloatingLayer anchor={anchor} placement="bottom-start" className={CARD_CLASS}>
 			<div ref={popRef} data-testid="annotation-note-popover">
 				<div className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--text-40,var(--text-dim))]">
-					<span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] leading-none tabular-nums text-white">
+					<span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] leading-none tabular-nums text-[var(--accent-fg)]">
 						{n}
 					</span>
 					<span className="whitespace-nowrap">{t("chat.annotation.sourceMessage")}</span>
@@ -214,7 +214,7 @@ export function AnnotationHoverCard({
 		>
 			<div data-testid="annotation-hover-card">
 				<div className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--text-40,var(--text-dim))]">
-					<span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] leading-none tabular-nums text-white">
+					<span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] leading-none tabular-nums text-[var(--accent-fg)]">
 						{n}
 					</span>
 					<span className="whitespace-nowrap">{t("chat.annotation.sourceMessage")}</span>

@@ -366,6 +366,15 @@ export default defineMessages({
 			saved: "已保存",
 			saveFailed: "保存失败",
 		},
+		popoverSelect: {
+			placeholder: "请选择",
+			customOption: "自定义",
+			customBadge: "自定义",
+			customPlaceholder: "输入自定义值",
+			confirmCustomAria: "确认自定义值",
+			editCustomAria: "编辑自定义值",
+			backToPresets: "返回预设",
+		},
 		storageLogic: {
 			restartRequired: "此功能需要重启应用后才能使用",
 		},
@@ -741,6 +750,15 @@ export default defineMessages({
 			saving: "Saving…",
 			saved: "Saved",
 			saveFailed: "Save failed",
+		},
+		popoverSelect: {
+			placeholder: "Select",
+			customOption: "Custom",
+			customBadge: "Custom",
+			customPlaceholder: "Enter custom value",
+			confirmCustomAria: "Confirm custom value",
+			editCustomAria: "Edit custom value",
+			backToPresets: "Back to presets",
 		},
 		storageLogic: {
 			restartRequired: "This feature requires restarting the application before use",

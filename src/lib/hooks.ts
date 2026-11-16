@@ -22,16 +22,21 @@ export function useEscapeKey(onEscape: () => void, active = true): void {
 
 let composingTarget: EventTarget | null = null;
 let commitEnter: Event | null = null;
-let lastCompositionEnd = 0;
+let lastCompositionEndAt: number | null = null;
 
 if (typeof document !== "undefined") {
 	// Runs before the shortcut dispatcher's window-capture listener (hooks.ts is imported first).
 	window.addEventListener(
 		"keydown",
 		(e) => {
-			if (e.key === "Enter" && !e.isComposing && Date.now() - lastCompositionEnd < 60) {
+			if (
+				e.key === "Enter" &&
+				!e.isComposing &&
+				lastCompositionEndAt !== null &&
+				Math.abs(e.timeStamp - lastCompositionEndAt) < 50
+			) {
 				commitEnter = e;
-				lastCompositionEnd = 0;
+				lastCompositionEndAt = null;
 			} else {
 				commitEnter = null;
 			}
@@ -47,9 +52,9 @@ if (typeof document !== "undefined") {
 	);
 	document.addEventListener(
 		"compositionend",
-		() => {
+		(e) => {
 			composingTarget = null;
-			lastCompositionEnd = Date.now();
+			lastCompositionEndAt = e.timeStamp;
 		},
 		true,
 	);
@@ -68,8 +73,8 @@ if (typeof document !== "undefined") {
 			if (composingTarget && !e.isComposing && e.keyCode !== 229) composingTarget = null;
 			// A non-Enter keydown after compositionend means the composition was committed
 			// by Space or a selection key, not Enter; reset so rapid follow-up Enter sends normally.
-			if (lastCompositionEnd && e.key !== "Enter" && !e.isComposing && e.keyCode !== 229) {
-				lastCompositionEnd = 0;
+			if (lastCompositionEndAt !== null && e.key !== "Enter" && !e.isComposing && e.keyCode !== 229) {
+				lastCompositionEndAt = null;
 			}
 		},
 		true,
@@ -81,9 +86,14 @@ if (typeof document !== "undefined") {
  * On macOS WKWebView, the Enter keydown committing an IME candidate can arrive
  * just after compositionend or with isComposing === false due to event dispatch ordering.
  */
-export function isComposing(e: { nativeEvent?: unknown; key?: string } | KeyboardEvent): boolean {
-	const r = e as { nativeEvent?: unknown; key?: string };
-	if (Boolean((r.nativeEvent as { isComposing?: boolean } | undefined)?.isComposing)) return true;
+export function isComposing(
+	e: { nativeEvent?: unknown; key?: string; isComposing?: boolean; keyCode?: number } | KeyboardEvent,
+): boolean {
+	const r = e as { nativeEvent?: unknown; key?: string; isComposing?: boolean; keyCode?: number };
+	const raw = (r.nativeEvent ?? (typeof Event !== "undefined" && e instanceof Event ? e : r)) as
+		| { isComposing?: boolean; keyCode?: number }
+		| undefined;
+	if (Boolean(raw?.isComposing) || raw?.keyCode === 229) return true;
 	if (composingTarget) {
 		if ((composingTarget as Node).isConnected === false) composingTarget = null;
 		else return true;
@@ -100,8 +110,9 @@ export function isComposing(e: { nativeEvent?: unknown; key?: string } | Keyboar
 
 /** Test hook: reset IME commit state. */
 export function resetLastCompositionEndForTest(): void {
-	lastCompositionEnd = 0;
+	lastCompositionEndAt = null;
 	commitEnter = null;
+	composingTarget = null;
 }
 
 

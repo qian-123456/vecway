@@ -29,7 +29,7 @@ import type {
 	ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
-import { themeById, useResolvedThemeId } from "../../../lib/theme";
+import { useIsDark } from "../../../lib/theme";
 import { useT } from "../../../stores/language";
 import {
 	createSketchEditor,
@@ -689,7 +689,7 @@ function SizeSlider(props: SizeSliderProps): ReactElement {
 export function SketchPad(props: SketchPadProps): ReactElement {
 	const { onInsert, onCancel } = props;
 	const { t } = useT();
-	const dark = themeById(useResolvedThemeId())?.dark ?? true;
+	const dark = useIsDark();
 	const canvasBg = dark ? CANVAS_BG_DARK : CANVAS_BG_LIGHT;
 	const chrome = dark
 		? {

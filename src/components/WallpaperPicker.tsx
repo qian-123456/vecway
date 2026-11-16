@@ -60,7 +60,7 @@ function ColorDots({ palette }: { palette: WallpaperPalette }) {
 						type="button"
 						title={v.label}
 						aria-label={v.label}
-						className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition ${
+						className={`flex items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1 text-xs transition ${
 							active
 								? "border-[var(--accent,#3b82f6)] bg-[var(--accent,#3b82f6)]/15 text-[var(--accent,#3b82f6)] shadow-xs"
 								: "border-black/10 hover:border-black/25 dark:border-white/10 dark:hover:border-white/25"
@@ -77,7 +77,7 @@ function ColorDots({ palette }: { palette: WallpaperPalette }) {
 			})}
 			<label
 				title={t("theme.customColorPicker")}
-				className={`relative flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition ${
+				className={`relative flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1 text-xs transition ${
 					state.variant === "custom"
 						? "border-[var(--accent,#3b82f6)] bg-[var(--accent,#3b82f6)]/15 text-[var(--accent,#3b82f6)] shadow-xs"
 						: "border-black/10 hover:border-black/25 dark:border-white/10 dark:hover:border-white/25"
@@ -186,7 +186,7 @@ export function WallpaperPicker() {
 									<button
 										key={key}
 										type="button"
-										className={`flex items-center gap-1 rounded px-2.5 py-1 transition ${
+										className={`flex items-center gap-1 whitespace-nowrap rounded px-2.5 py-1 transition ${
 											isCurrent
 												? "bg-[var(--accent,#3b82f6)]/15 text-[var(--accent,#3b82f6)] shadow-xs"
 												: "opacity-70 hover:opacity-100"
@@ -217,7 +217,7 @@ export function WallpaperPicker() {
 									<button
 										key={b}
 										type="button"
-										className={`rounded px-2 py-1 transition ${
+										className={`whitespace-nowrap rounded px-2 py-1 transition ${
 											isCurrent
 												? "bg-[var(--accent,#3b82f6)]/15 text-[var(--accent,#3b82f6)] shadow-xs"
 												: "opacity-70 hover:opacity-100"
@@ -247,7 +247,7 @@ export function WallpaperPicker() {
 									<button
 										key={v}
 										type="button"
-										className={`rounded px-2 py-1 transition ${
+										className={`whitespace-nowrap rounded px-2 py-1 transition ${
 											isCurrent
 												? "bg-[var(--accent,#3b82f6)]/15 text-[var(--accent,#3b82f6)] shadow-xs"
 												: "opacity-70 hover:opacity-100"
@@ -274,7 +274,7 @@ export function WallpaperPicker() {
 							<button
 								key={key}
 								type="button"
-								className={`rounded px-2.5 py-1 ${state.effect === key ? "bg-black/10 dark:bg-white/15" : "opacity-70 hover:opacity-100"}`}
+								className={`whitespace-nowrap rounded px-2.5 py-1 ${state.effect === key ? "bg-black/10 dark:bg-white/15" : "opacity-70 hover:opacity-100"}`}
 								onClick={() => setWallpaper({ effect: key })}
 							>
 								{label}
@@ -284,7 +284,7 @@ export function WallpaperPicker() {
 					<button
 						type="button"
 						disabled={uploading}
-						className="flex items-center gap-1 rounded-md border border-black/10 px-2.5 py-1 text-xs hover:bg-black/5 disabled:opacity-50 dark:border-white/10 dark:hover:bg-white/10"
+						className="flex items-center gap-1 whitespace-nowrap rounded-md border border-black/10 px-2.5 py-1 text-xs hover:bg-black/5 disabled:opacity-50 dark:border-white/10 dark:hover:bg-white/10"
 						onClick={() => fileRef.current?.click()}
 					>
 						<Upload className="h-3.5 w-3.5" />
@@ -361,7 +361,7 @@ export function WallpaperPicker() {
 
 function CheckBadge() {
 	return (
-		<span className="absolute top-2 right-2 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent,#0A84FF)] text-white shadow-md ring-1 ring-black/30">
+		<span className="absolute top-2 right-2 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent,#0A84FF)] text-[var(--accent-fg,#fff)] shadow-md ring-1 ring-black/30">
 			<Check className="h-3 w-3 stroke-[2.5]" />
 		</span>
 	);

@@ -57,8 +57,8 @@ export function Segmented<T extends string>({
 							pill ? "rounded-full" : "rounded-md",
 							size === "sm" ? "text-[11px]" : "text-xs font-medium",
 							active
-								? "bg-[var(--bg-active-fill)] text-neutral-100 shadow-sm"
-								: "text-neutral-400 hover:text-neutral-200",
+								? "bg-[var(--seg-thumb-bg)] text-[var(--text)] shadow-[var(--seg-thumb-shadow)]"
+								: "text-[var(--text-muted)] hover:text-[var(--text)]",
 						)}
 					>
 						{o.label}

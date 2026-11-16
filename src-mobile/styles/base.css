@@ -174,11 +174,40 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-	*,
-	*::before,
-	*::after {
-		animation-duration: 0.01ms !important;
-		transition-duration: 0.01ms !important;
+	html,
+	* {
+		scroll-behavior: auto !important;
+	}
+	.m-shimmer {
+		animation: none;
+		background: none;
+		color: inherit;
+	}
+	.m-pulse,
+	.animate-pulse,
+	.animate-bounce,
+	.animate-ping {
+		animation: none;
+	}
+	.m-glass-btn {
+		transition: background-color var(--m-dur-fast) var(--m-ease), box-shadow var(--m-dur-fast) var(--m-ease);
+	}
+	.m-glass-btn:active,
+	html[data-scheme="light"] .m-glass-btn:active {
+		transform: none;
+	}
+	[class*="active:scale-"]:active {
+		transform: none !important;
+		scale: none !important;
+	}
+	[class~="transition"],
+	[class*="transition-transform"],
+	[class*="transition-all"],
+	[class*="transition-[width"],
+	[class*="transition-[height"],
+	[class*="transition-["][class*="transform"],
+	[class*="transition-["][class*="scale"] {
+		transition-property: color, background-color, border-color, opacity, box-shadow !important;
 	}
 }
 

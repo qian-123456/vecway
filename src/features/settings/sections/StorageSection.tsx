@@ -3,6 +3,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { ArrowUpDown, ChevronDown, ChevronRight, Folder, FolderGit2, FolderOpen, GitBranch, HardDrive, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useT } from "../../../stores/language";
+import { PopoverSelect } from "../../../components/PopoverSelect";
 import type { StorageOverview, StorageProjectRow, StorageSessionsOverview, StorageStalePreview } from "../../../lib/contracts";
 import { confirmDialog } from "../../../lib/dialogs";
 import { formatBytes, relativeTime } from "../../../lib/format";
@@ -467,22 +468,24 @@ export function StorageSection() {
 							<button
 								type="button"
 								onClick={toggleAllProjects}
-								className="text-xs text-[var(--accent)] hover:underline"
+								className="rounded-md hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] px-2.5 py-1 text-xs font-medium text-[var(--text)] whitespace-nowrap cursor-pointer transition-colors"
 							>
 								{open.size > 0 ? t("settingsSectionsStorage.storage.collapseAll") : t("settingsSectionsStorage.storage.expandAll")}
 							</button>
-							<span className="text-[var(--text-dim)]">·</span>
-							<div className="flex items-center gap-1 text-xs text-[var(--text-muted)]">
-								<ArrowUpDown className="h-3 w-3" />
-								<select
+							<div className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+								<ArrowUpDown className="h-3.5 w-3.5 shrink-0" />
+								<PopoverSelect
+									size="sm"
+									align="end"
+									aria-label={t("settingsSectionsStorage.storage.sortBy")}
 									value={projectOrder}
-									onChange={(e) => setProjectOrder(e.target.value as ProjectSortOrder)}
-									className="rounded bg-transparent text-xs text-[var(--text)] focus:outline-none"
-								>
-									<option value="bytesDesc">{t("settingsSectionsStorage.storage.sortBySize")}</option>
-									<option value="updatedAtDesc">{t("settingsSectionsStorage.storage.sortByRecent")}</option>
-									<option value="nameAsc">{t("settingsSectionsStorage.storage.sortByName")}</option>
-								</select>
+									onChange={(v) => setProjectOrder(v as ProjectSortOrder)}
+									options={[
+										{ value: "bytesDesc", label: t("settingsSectionsStorage.storage.sortBySize") },
+										{ value: "updatedAtDesc", label: t("settingsSectionsStorage.storage.sortByRecent") },
+										{ value: "nameAsc", label: t("settingsSectionsStorage.storage.sortByName") },
+									]}
+								/>
 							</div>
 						</div>
 					}

@@ -43,7 +43,7 @@ const isMac =
 	/Macintosh|Mac OS X|macOS/i.test(navigator.userAgent);
 
 const INPUT_CLASS =
-	"w-full rounded-lg hairline bg-[var(--bg)] px-2.5 py-1.5 text-xs text-neutral-200 outline-none focus:ring-1 focus:ring-[#0A84FF]/50 transition-colors";
+	"w-full rounded-lg hairline bg-[var(--bg)] px-2.5 py-1.5 text-xs text-neutral-200 outline-none focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] transition-colors";
 
 /**
  * Always mounted; opened via `ui.openModal("new-session",
@@ -353,7 +353,7 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 					<button
 						type="button"
 						onClick={handleBrowse}
-						className="press-scale flex items-center gap-1 text-[11px] text-[#0A84FF] hover:text-[#0A84FF]/80 transition-colors"
+						className="press-scale flex items-center gap-1 whitespace-nowrap text-[11px] text-[var(--accent)] hover:opacity-80 transition-colors"
 					>
 						<FolderOpen size={12} />
 						<span>{t("git.newSession.browseSystemDir")}</span>
@@ -520,7 +520,7 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 							type="button"
 							disabled={!canSubmit}
 							onClick={submit}
-							className="press-scale rounded-lg bg-[#0A84FF] px-4 py-1.5 text-xs font-medium text-white hover:bg-[#0A84FF]/90 disabled:opacity-40 transition-colors"
+							className="press-scale whitespace-nowrap rounded-lg bg-[var(--accent)] px-4 py-1.5 text-xs font-medium text-[var(--accent-fg)] hover:opacity-90 disabled:opacity-40 transition-colors"
 						>
 							{busy ? t("git.newSession.creating") : t("git.newSession.createSession")}
 						</button>
@@ -636,12 +636,12 @@ function WorktreeFields({
 				{checkoutBranch ? (
 					<>
 						{t("git.newSession.willCheckoutExisting")}
-						<span className="font-mono text-[#70b1ff] ml-1">{checkoutBranch}</span>
+						<span className="font-mono text-[var(--accent)] ml-1">{checkoutBranch}</span>
 					</>
 				) : (
 					<>
 						{t("git.newSession.willCreateNewBranch")}
-						<span className="font-mono text-[#70b1ff] ml-1">
+						<span className="font-mono text-[var(--accent)] ml-1">
 							{branchPrefix}
 							{wtName.trim() || slug}
 						</span>
@@ -784,7 +784,7 @@ function WorktreeSessionForm({ props }: { props: Record<string, unknown> }) {
 							type="button"
 							disabled={!canSubmit}
 							onClick={submit}
-							className="press-scale rounded-lg bg-[#0A84FF] px-4 py-1.5 text-xs font-medium text-white hover:bg-[#0A84FF]/90 disabled:opacity-40 transition-colors"
+							className="press-scale whitespace-nowrap rounded-lg bg-[var(--accent)] px-4 py-1.5 text-xs font-medium text-[var(--accent-fg)] hover:opacity-90 disabled:opacity-40 transition-colors"
 						>
 							{busy ? t("git.newSession.creating") : t("git.newSession.create")}
 						</button>

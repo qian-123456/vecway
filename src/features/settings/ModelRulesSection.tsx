@@ -7,7 +7,7 @@
 import { ChevronDown, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ModelSelect } from "../../components/ModelSelect";
-import { NativeSelect } from "../../components/NativeSelect";
+import { PopoverSelect } from "../../components/PopoverSelect";
 import { Segmented } from "../../components/Segmented";
 import { confirmDialog, errMsg } from "../../lib/dialogs";
 import { ompConfigSet } from "../../lib/ipc";
@@ -252,19 +252,15 @@ export function ModelRulesSection({
 						/>
 					) : (
 						<div className="flex flex-wrap items-center gap-1.5">
-							<NativeSelect
+							<PopoverSelect
+								aria-label={t("settingsModels.selectProviderOption")}
 								value={provider}
+								placeholder={t("settingsModels.selectProviderOption")}
 								disabled={providers.length === 0}
 								containerClassName="w-40"
-								onChange={(e) => setProvider(e.target.value)}
-							>
-								<option value="">{t("settingsModels.selectProviderOption")}</option>
-								{providers.map((p) => (
-									<option key={p} value={p}>
-										{p}
-									</option>
-								))}
-							</NativeSelect>
+								onChange={setProvider}
+								options={providers.map((p) => ({ value: p, label: p }))}
+							/>
 							<input
 								type="text"
 								value={prefix}

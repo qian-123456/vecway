@@ -194,7 +194,7 @@ function SearchDialogBody() {
 				>
 					<Filter size={13} strokeWidth={1.6} className="shrink-0" />
 					{activeFilterCount > 0 && (
-						<span className="flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-[var(--primary)] px-1 text-[9px] font-semibold leading-none text-white">
+						<span className="flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[9px] font-semibold leading-none text-[var(--accent-fg)]">
 							{activeFilterCount}
 						</span>
 					)}

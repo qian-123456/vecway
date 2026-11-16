@@ -11,14 +11,15 @@ import { X } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { Z_LAYER } from "../components/FloatingLayer";
+import { acquireRootInert } from "../components/Modal";
 import { isComposing, useEscapeKey } from "./hooks";
 import { claimEscape } from "./escapeClaim";
 import { clipboardWriteMessage } from "./ipc";
 import { tNow } from "../stores/language";
 const CANCEL_BTN_CLASS =
-	"press-scale rounded-lg px-3 py-1.5 text-xs text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200 transition-colors";
+	"press-scale whitespace-nowrap rounded-lg border border-[var(--border-divider)] px-3 py-1.5 text-xs text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200 transition-colors";
 const OK_BTN_CLASS =
-	"press-scale rounded-lg px-4 py-1.5 text-xs font-medium text-white transition-colors";
+	"press-scale whitespace-nowrap rounded-lg px-4 py-1.5 text-xs font-medium text-white transition-colors";
 const OK_TONE = { normal: "bg-[#0A84FF] hover:bg-[#0A84FF]/90", danger: "bg-[#FF453A] hover:bg-[#FF453A]/90" };
 
 function ConfirmDialogView({
@@ -39,8 +40,21 @@ function ConfirmDialogView({
 	const titleId = useId();
 	const cancelRef = useRef<HTMLButtonElement | null>(null);
 	const okRef = useRef<HTMLButtonElement | null>(null);
+	const backdropPressedRef = useRef(false);
 	const cancel = useCallback(() => onDone(false), [onDone]);
 	useEscapeKey(cancel);
+
+	useEffect(() => {
+		const previousFocus = document.activeElement as HTMLElement | null;
+		const releaseInert = acquireRootInert();
+		return () => {
+			// Release #root inertness before returning focus so openers inside #root can receive focus.
+			releaseInert();
+			if (previousFocus && previousFocus.isConnected !== false) {
+				previousFocus.focus?.({ preventScroll: true });
+			}
+		};
+	}, []);
 
 	useEffect(() => {
 		(danger ? cancelRef : okRef).current?.focus();
@@ -48,10 +62,16 @@ function ConfirmDialogView({
 
 	return (
 		<div
+			data-layer="modal"
 			style={{ zIndex: Z_LAYER.modal }}
 			className="fixed inset-0 flex items-center justify-center bg-[var(--overlay)] backdrop-blur-sm p-6"
 			onMouseDown={(e) => {
-				if (e.target === e.currentTarget) cancel();
+				backdropPressedRef.current = e.target === e.currentTarget;
+			}}
+			onClick={(e) => {
+				const pressed = backdropPressedRef.current;
+				backdropPressedRef.current = false;
+				if (pressed && e.target === e.currentTarget) cancel();
 			}}
 		>
 			<div
@@ -79,7 +99,11 @@ function ConfirmDialogView({
 					if (e.key === "Tab") {
 						const controls = Array.from(
 							e.currentTarget.querySelectorAll<HTMLElement>("button:not([disabled])"),
-						).filter((el) => el.getClientRects().length > 0);
+						).filter((el) => {
+							if (typeof el.checkVisibility === "function" && !el.checkVisibility()) return false;
+							const style = getComputedStyle(el);
+							return !el.hidden && style.display !== "none" && style.visibility !== "hidden";
+						});
 						if (controls.length === 0) return;
 						const first = controls[0];
 						const last = controls[controls.length - 1];

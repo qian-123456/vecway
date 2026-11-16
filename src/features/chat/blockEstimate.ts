@@ -8,7 +8,13 @@
  * column at 15px text; they only need to be roughly right.
  */
 import type { TranscriptItem } from "../../lib/contracts";
-import { type DisplayBlock, type HistoryRow, splitInterimProseBySteer } from "./turnGrouping";
+import { hasTurnEditedFiles } from "./turnDiffs";
+import {
+	type DisplayBlock,
+	type HistoryRow,
+	isBriefToolTransition,
+	splitInterimProseBySteer,
+} from "./turnGrouping";
 
 const PROTOCOL_ROW = 36;
 export const ROW_PADDING = 8;
@@ -17,6 +23,7 @@ const USER_BUBBLE_BASE = 44;
 const USER_LINE = 24;
 /** Collapsed 「已处理」 header + hairline + margins. */
 export const DISCLOSURE_ROW = 48;
+export const DIFF_CARD_ROW = 48;
 export const FOOTER_ROW = 56;
 /** A steer bubble rendered between activity groups. */
 export const STEER_ROW = 64;
@@ -107,17 +114,29 @@ export function estimateBlockHeight(block: DisplayBlock | HistoryRow | undefined
 	const part = "turnId" in block ? block : null;
 	let h = ROW_PADDING;
 	if (block.userItem) h += estimateUserBubbleHeight(block.userItem.text ?? "");
-	for (const seg of splitInterimProseBySteer(block.intermediateSteps)) {
-		if (seg.type === "steer") continue;
+	const segments = splitInterimProseBySteer(block.intermediateSteps);
+	segments.forEach((seg, si) => {
+		if (seg.type === "steer") return;
 		if (seg.folded.length > 0) h += DISCLOSURE_ROW;
+		const rest = segments.slice(si + 1);
 		for (const step of seg.prose) {
-			if (step.kind === "text" || step.kind === "narration") h += Math.min(estimateTextHeight(step.text), INTERIM_PROSE_MAX);
+			if (step.kind === "text" || step.kind === "narration") {
+				const full = estimateTextHeight(step.text);
+				h += isBriefToolTransition(step, rest) ? Math.min(full, INTERIM_PROSE_MAX) : full;
+			}
 		}
-	}
+	});
 	for (const step of block.intermediateSteps) if (step.kind === "steer") h += STEER_ROW;
+	const fullTurnSteps = part ? part.turn.intermediateSteps : block.intermediateSteps;
+	const isLastPart = !part || part.isLastTurnPart;
 	if (block.answerItem) {
 		h += estimateTextHeight(part?.answerSlice ?? block.answerItem.text);
-		if (!part || part.isLastTurnPart) h += FOOTER_ROW;
+		if (isLastPart) {
+			if (hasTurnEditedFiles(fullTurnSteps)) h += DIFF_CARD_ROW;
+			h += FOOTER_ROW;
+		}
+	} else if (isLastPart && hasTurnEditedFiles(fullTurnSteps)) {
+		h += DIFF_CARD_ROW;
 	}
 	return Math.max(part?.isContinuation ? ROW_PADDING + 24 : MIN_TURN, h);
 }

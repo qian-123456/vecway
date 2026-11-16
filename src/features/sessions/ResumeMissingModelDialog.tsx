@@ -98,14 +98,14 @@ function ResumeMissingModelForm({ sessionId, diagnostic }: { sessionId: string; 
 						align="start" closeOnSelect />
 					{!loading && !models?.length && <p role="status" className="mt-2 text-xs text-neutral-400">{t("sessions.noResumeModels")}</p>}
 					<button type="button" disabled={busy || loading} onClick={() => void useModelCatalog.getState().refresh()}
-						className="mt-2 block shrink-0 whitespace-nowrap rounded-full border border-[var(--border-divider)] bg-[var(--bg-active-fill)] px-3 py-1.5 text-xs text-[#70b1ff] transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-40">{t("sessions.refreshResumeModels")}</button>
+						className="mt-2 block shrink-0 whitespace-nowrap rounded-full border border-[var(--border-divider)] bg-[var(--bg-active-fill)] px-3 py-1.5 text-xs text-[var(--accent)] transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-40">{t("sessions.refreshResumeModels")}</button>
 					{error && <div role="alert" className="mt-2 whitespace-pre-wrap break-words text-xs text-rose-400">{error}</div>}
 				</div>
 				<div className="mt-2 flex shrink-0 items-center justify-end gap-2 border-t border-[var(--border-divider)] pt-3">
 					<button type="button" disabled={busy} onClick={cancel}
 						className="press-scale shrink-0 whitespace-nowrap rounded-lg border border-[var(--border-divider)] bg-[var(--bg-active-fill)] px-3 py-1.5 text-xs text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200 transition-colors disabled:opacity-40">{t("common.cancel")}</button>
 					<button type="button" disabled={busy || !selectedOption} onClick={() => void confirm()}
-						className="press-scale flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-[#0A84FF] px-4 py-1.5 text-xs font-medium text-white hover:bg-[#0A84FF]/90 disabled:opacity-40 transition-colors">
+						className="press-scale flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-[var(--accent)] px-4 py-1.5 text-xs font-medium text-[var(--accent-fg)] hover:opacity-90 disabled:opacity-40 transition-colors">
 						{busy && <Loader2 size={12} className="shrink-0 animate-spin" />}
 						{busy ? t("sessions.resuming") : t("sessions.continueAction")}
 					</button>

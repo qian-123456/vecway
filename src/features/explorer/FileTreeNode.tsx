@@ -113,7 +113,7 @@ export function FileTreeNode({
 				className={clsx(
 					"group flex h-5 cursor-pointer items-center gap-1 pr-1 text-xs transition-all select-none mx-0.5 rounded active:scale-[0.98]",
 					isSelected
-						? "bg-[#0A84FF]/15 text-[#0A84FF] font-medium"
+						? "bg-[color-mix(in_srgb,var(--accent)_15%,transparent)] text-[var(--accent)] font-medium"
 						: "text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-neutral-100",
 				)}
 				title={entry.path}
@@ -171,7 +171,7 @@ export function FileTreeNode({
 				<div role="group" className="relative flex flex-col">
 					{/* Vertical guide line for this subtree */}
 					<div
-						className="pointer-events-none absolute bottom-0.5 top-0.5 border-l border-white/[0.08]"
+						className="pointer-events-none absolute bottom-0.5 top-0.5 border-l border-[var(--border-divider)]"
 						style={{ left: `${depth * 10 + 10}px` }}
 					/>
 					{children.length === 0 && !isLoading ? (

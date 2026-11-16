@@ -2,7 +2,7 @@
  * Slide-over sheet listing every bound account of a multi-account quota provider.
  */
 import { CheckCircle2, Clock, LogIn, LogOut, Plus, RefreshCw, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useT } from "../../../stores/language";
 import { createPortal } from "react-dom";
 import type {
@@ -154,6 +154,7 @@ export function QuotaAccountSheet({
 	const [loginOpen, setLoginOpen] = useState(false);
 	const [oauthIds, setOauthIds] = useState<Set<string>>(new Set());
 	const [loggingOutKey, setLoggingOutKey] = useState<string | null>(null);
+	const backdropPressedRef = useRef(false);
 
 	const childOpen = loginOpen;
 	useEscapeKey(onClose, isOpen && !childOpen);
@@ -240,8 +241,15 @@ export function QuotaAccountSheet({
 
 	return createPortal(
 		<div
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-black/50 p-6 backdrop-blur-xs"
-			onClick={onClose}
+			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-6 backdrop-blur-xs"
+			onMouseDown={(e) => {
+				backdropPressedRef.current = e.target === e.currentTarget;
+			}}
+			onClick={(e) => {
+				const pressed = backdropPressedRef.current;
+				backdropPressedRef.current = false;
+				if (pressed && e.target === e.currentTarget) onClose();
+			}}
 			role="presentation"
 		>
 			<div
@@ -414,6 +422,7 @@ export function QuotaAccountSheet({
 							variant="primary"
 							size="sm"
 							icon={RefreshCw}
+							className="whitespace-nowrap"
 							loading={refreshing}
 							disabled={refreshing}
 							onClick={() => void onRefresh()}

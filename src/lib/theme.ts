@@ -10,6 +10,7 @@
 
 import { useSyncExternalStore } from "react";
 import {
+	getLuminance,
 	PRESET_ID_PREFIX,
 	PRESET_WALLPAPERS,
 	type CustomWallpaperItem,
@@ -58,7 +59,7 @@ export const THEMES: ThemeDef[] = [
 		id: "ompws",
 		get name() { return tNow("theme.themeDefault"); },
 		dark: true,
-		swatch: { bg: "#0a0a0a", panel: "#171717", accent: "#f59e0b", text: "#f5f5f5" },
+		swatch: { bg: "#161618", panel: "#1C1C1E", accent: "#0A84FF", text: "#F5F5F7" },
 	},
 	{
 		id: "omp",
@@ -355,30 +356,27 @@ function shade(hex: string, amount: number): string {
 		.join("")}`;
 }
 
-const ACCENT_VARS = ["--accent", "--accent-hover", "--accent-strong"] as const;
+const ACCENT_VARS = ["--accent", "--accent-hover", "--accent-strong", "--accent-fg"] as const;
 
-function apply(): void {
-	if (typeof document === "undefined") return;
-	const id = resolvedThemeId();
-	const def = THEMES.find((t) => t.id === id) ?? THEMES[0];
-	const root = document.documentElement;
-	const ws = wallpaperState;
+function applyResolvedTheme(root: HTMLElement, def: ThemeDef, ws: WallpaperState): void {
+	let mode: "light" | "dark";
 	if (ws.enabled && ws.url) {
 		const matchedPreset = PRESET_WALLPAPERS.find((p) => p.id === ws.id);
-		const app = ws.appearance ?? matchedPreset?.appearance ?? "dark";
+		mode = ws.appearance ?? matchedPreset?.appearance ?? "dark";
 		root.dataset.theme = "wallpaper";
-		root.dataset.mode = app;
-		root.classList.toggle("dark", app === "dark");
+		root.dataset.mode = mode;
+		root.classList.toggle("dark", mode === "dark");
 		root.setAttribute("data-wallpaper", "true");
 		root.setAttribute("data-wallpaper-effect", ws.effect);
-		const veil = ws.veil ?? (app === "light" ? "white" : "none");
-		root.setAttribute("data-wallpaper-appearance", app);
+		const veil = ws.veil ?? (mode === "light" ? "white" : "none");
+		root.setAttribute("data-wallpaper-appearance", mode);
 		root.setAttribute("data-wallpaper-veil", veil);
 		root.style.setProperty("--app-wallpaper-url", `url(${JSON.stringify(ws.url)})`);
 		root.style.setProperty("--app-wallpaper-brightness", String(ws.brightness ?? 1.0));
 	} else {
+		mode = def.dark ? "dark" : "light";
 		root.dataset.theme = def.id;
-		root.dataset.mode = def.dark ? "dark" : "light";
+		root.dataset.mode = mode;
 		root.classList.toggle("dark", def.dark);
 		root.removeAttribute("data-wallpaper");
 		root.removeAttribute("data-wallpaper-effect");
@@ -387,18 +385,37 @@ function apply(): void {
 		root.style.removeProperty("--app-wallpaper-url");
 		root.style.removeProperty("--app-wallpaper-brightness");
 	}
+	// Clear cold-start inline paint from index.html so CSS tokens govern runtime switches cleanly.
+	root.style.removeProperty("background-color");
+	root.style.removeProperty("color");
+	root.style.colorScheme = mode;
 	root.dataset.fontSize = fontSize;
 	root.dataset.uiScale = uiScale;
+}
 
+function applyWallpaperAccentVariables(root: HTMLElement, ws: WallpaperState): void {
 	// Inline accent overrides the theme stylesheet; removing it restores theme accents.
-	if (ws.enabled && parseHex(ws.accentColor)) {
+	const accentRgb = ws.enabled ? parseHex(ws.accentColor) : null;
+	if (accentRgb) {
 		const isDark = (ws.appearance ?? "dark") === "dark";
+		const luminance = getLuminance(accentRgb[0], accentRgb[1], accentRgb[2]);
 		root.style.setProperty("--accent", ws.accentColor);
 		root.style.setProperty("--accent-hover", shade(ws.accentColor, isDark ? 0.2 : -0.15));
 		root.style.setProperty("--accent-strong", shade(ws.accentColor, isDark ? -0.2 : 0.2));
+		root.style.setProperty("--accent-fg", luminance > 0.42 ? "#141416" : "#ffffff");
 	} else {
 		for (const v of ACCENT_VARS) root.style.removeProperty(v);
 	}
+}
+
+function apply(): void {
+	if (typeof document === "undefined") return;
+	const id = resolvedThemeId();
+	const def = THEMES.find((t) => t.id === id) ?? THEMES[0];
+	const root = document.documentElement;
+	const ws = wallpaperState;
+	applyResolvedTheme(root, def, ws);
+	applyWallpaperAccentVariables(root, ws);
 }
 
 const CHANGE_EVENT = "ompws:theme-change";

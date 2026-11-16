@@ -1,7 +1,10 @@
 /** Settings ▸ 通知 (`notifications`): when to notify, how, and quiet hours. */
+import clsx from "clsx";
 import { Bell } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { errMsg } from "../../../lib/dialogs";
+import { claimEscape } from "../../../lib/escapeClaim";
+import { isComposing } from "../../../lib/hooks";
 import { notifyTest } from "../../../lib/ipc";
 import { tNow, useT } from "../../../stores/language";
 import { saveAppSettings, useAppSettings } from "../useAppSettings";
@@ -107,6 +110,32 @@ export function NotificationsSection() {
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+const QUIET_PRESETS = [
+	{ from: "22:00", to: "08:00" },
+	{ from: "23:00", to: "07:00" },
+	{ from: "00:00", to: "08:00" },
+] as const;
+
+/** Format 4-digit ("2200" -> "22:00"), 3-digit ("800" -> "08:00"), or single-hour ("8:00" -> "08:00") shorthand when valid. */
+function formatTimeShorthand(raw: string): string {
+	const s = raw.trim();
+	if (!s) return "";
+	if (/^\d{4}$/.test(s)) {
+		const candidate = `${s.slice(0, 2)}:${s.slice(2)}`;
+		return HHMM.test(candidate) ? candidate : s;
+	}
+	if (/^\d{3}$/.test(s)) {
+		const candidate = `0${s[0]}:${s.slice(1)}`;
+		return HHMM.test(candidate) ? candidate : s;
+	}
+	const singleHour = s.match(/^(\d):([0-5]\d)$/);
+	if (singleHour) {
+		const candidate = `0${singleHour[1]}:${singleHour[2]}`;
+		return HHMM.test(candidate) ? candidate : s;
+	}
+	return s;
+}
+
 /** Validation message for a quiet-hours pair, or null when it can be saved. */
 function quietHoursError(from: string, to: string, tr: (key: string) => string = tNow): string | null {
 	if (!from && !to) return null;
@@ -150,19 +179,45 @@ function QuietHoursRow() {
 
 	const latest = useRef({ from, to, savedFrom, savedTo });
 	latest.current = { from, to, savedFrom, savedTo };
+	const escapingRef = useRef(false);
 	useEffect(
 		() => () => {
 			const l = latest.current;
-			const patch = quietHoursPatch(l.from, l.to, l.savedFrom, l.savedTo);
+			const patch = quietHoursPatch(
+				formatTimeShorthand(l.from),
+				formatTimeShorthand(l.to),
+				l.savedFrom,
+				l.savedTo,
+			);
 			if (patch) void saveAppSettings(patch).catch(() => {});
 		},
 		[],
 	);
 
 	const commit = (f: string, tStr: string) => {
+		const nf = formatTimeShorthand(f);
+		const nt = formatTimeShorthand(tStr);
+		if (nf !== f) setFrom(nf);
+		if (nt !== tStr) setTo(nt);
 		setTouched(true);
-		const patch = quietHoursPatch(f, tStr, savedFrom, savedTo);
+		const patch = quietHoursPatch(nf, nt, savedFrom, savedTo);
 		if (patch) void status.run(() => save(patch));
+	};
+
+	const revert = (target: HTMLInputElement) => {
+		escapingRef.current = true;
+		setFrom(savedFrom);
+		setTo(savedTo);
+		setTouched(false);
+		target.blur();
+	};
+
+	const handleBlur = () => {
+		if (escapingRef.current) {
+			escapingRef.current = false;
+			return;
+		}
+		commit(from, to);
 	};
 
 	const error = touched ? quietHoursError(from, to, t) : null;
@@ -188,7 +243,19 @@ function QuietHoursRow() {
 							aria-label={t("notifications.quietFromAria")}
 							value={from}
 							onChange={(e) => setFrom(e.target.value)}
-							onBlur={() => commit(from, to)}
+							onBlur={handleBlur}
+							onKeyDown={(e) => {
+								if (isComposing(e)) return;
+								if (e.key === "Enter") {
+									e.preventDefault();
+									commit(from, to);
+								} else if (e.key === "Escape") {
+									e.preventDefault();
+									e.stopPropagation();
+									claimEscape(e);
+									revert(e.currentTarget);
+								}
+							}}
 							className={timeClass}
 						/>
 						<span className="text-xs text-[var(--text-dim)]">{t("notifications.quietTo")}</span>
@@ -196,30 +263,29 @@ function QuietHoursRow() {
 							type="text"
 							inputMode="numeric"
 							maxLength={5}
-							placeholder="22:00"
+							placeholder="08:00"
 							aria-label={t("notifications.quietToAria")}
 							value={to}
 							onChange={(e) => setTo(e.target.value)}
-							onBlur={() => commit(from, to)}
+							onBlur={handleBlur}
+							onKeyDown={(e) => {
+								if (isComposing(e)) return;
+								if (e.key === "Enter") {
+									e.preventDefault();
+									commit(from, to);
+								} else if (e.key === "Escape") {
+									e.preventDefault();
+									e.stopPropagation();
+									claimEscape(e);
+									revert(e.currentTarget);
+								}
+							}}
 							className={timeClass}
 						/>
-						{!enabled && !from && !to && (
-							<Button
-								size="sm"
-								variant="ghost"
-								onClick={() => {
-									setFrom("22:00");
-									setTo("08:00");
-									commit("22:00", "08:00");
-								}}
-							>
-								{t("notifications.quietFillPreset")}
-							</Button>
-						)}
 						{(enabled || from || to) && (
 							<Button
 								size="sm"
-								variant="ghost"
+								variant="secondary"
 								onClick={() => {
 									setFrom("");
 									setTo("");
@@ -229,6 +295,31 @@ function QuietHoursRow() {
 								{t("notifications.quietTurnOff")}
 							</Button>
 						)}
+					</div>
+					<div role="group" aria-label={t("notifications.quietPresetsAria")} className="flex flex-wrap items-center gap-1.5">
+						{QUIET_PRESETS.map((preset) => {
+							const active = from === preset.from && to === preset.to && savedFrom === preset.from && savedTo === preset.to;
+							return (
+								<button
+									key={`${preset.from}-${preset.to}`}
+									type="button"
+									aria-pressed={active}
+									onClick={() => {
+										setFrom(preset.from);
+										setTo(preset.to);
+										commit(preset.from, preset.to);
+									}}
+									className={clsx(
+										"rounded-full hairline px-2.5 py-0.5 font-mono text-[11px] whitespace-nowrap cursor-pointer transition-colors",
+										active
+											? "bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] text-[var(--accent)] ring-1 ring-[color-mix(in_srgb,var(--accent)_45%,transparent)]"
+											: "bg-[var(--well-bg)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]",
+									)}
+								>
+									{preset.from}–{preset.to}
+								</button>
+							);
+						})}
 					</div>
 					{error ? (
 						<div className="text-[11px] text-[var(--status-error)]">{error}</div>

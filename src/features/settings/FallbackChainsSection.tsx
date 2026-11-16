@@ -10,7 +10,7 @@
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useT } from "../../stores/language";
-import { NativeSelect } from "../../components/NativeSelect";
+import { PopoverSelect } from "../../components/PopoverSelect";
 import type { OmpConfigEntry } from "../../lib/contracts";
 import { errMsg } from "../../lib/dialogs";
 import { isComposing } from "../../lib/hooks";
@@ -219,24 +219,18 @@ function CycleOrderEditor({
 				{items.length === 0 && <span className="text-xs text-[var(--text-dim)]">{t("settingsModels.noRolesYet")}</span>}
 			</div>
 			<div className="mt-3 flex flex-wrap items-center gap-1.5">
-				<NativeSelect
+				<PopoverSelect
+					size="sm"
 					value=""
+					placeholder={t("settingsModels.addRoleSelectOption")}
+					aria-label={t("settingsModels.addRoleSelectOption")}
 					disabled={busy || addable.length === 0}
-					onChange={(e) => {
-						const v = e.target.value;
+					onChange={(v) => {
 						if (v) setItems([...items, v]);
-						e.target.value = "";
 					}}
-					className="text-[11px]"
-					containerClassName="w-28 shrink-0"
-				>
-					<option value="">{t("settingsModels.addRoleSelectOption")}</option>
-					{addable.map((r) => (
-						<option key={r} value={r}>
-							{r}
-						</option>
-					))}
-				</NativeSelect>
+					containerClassName="w-36 shrink-0"
+					options={addable.map((r) => ({ value: r, label: r }))}
+				/>
 				<input
 					type="text"
 					value={other}

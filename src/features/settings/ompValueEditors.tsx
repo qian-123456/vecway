@@ -19,8 +19,9 @@ import {
 import { INPUT_CLASS } from "./ui";
 
 const ICON_BUTTON =
-	"rounded-md p-1 text-neutral-500 transition-all hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-95 disabled:pointer-events-none disabled:opacity-30";
-const LINK_BUTTON = "inline-flex items-center gap-1 text-[11px] text-neutral-500 hover:text-neutral-200";
+	"rounded-md p-1 text-[var(--text-muted)] transition-all hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:scale-95 disabled:pointer-events-none disabled:opacity-30";
+const LINK_BUTTON =
+	"inline-flex items-center gap-1 rounded-md hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] px-2.5 py-1 text-xs font-medium text-[var(--text)] whitespace-nowrap cursor-pointer transition-all active:scale-95 disabled:pointer-events-none disabled:opacity-40";
 
 type Save = (value: unknown) => Promise<boolean>;
 
@@ -39,7 +40,7 @@ export function StringListEditor({ value, onSave, busy }: { value: string[]; onS
 	return (
 		<div className="space-y-1.5">
 			{value.length === 0 ? (
-				<div className="text-[11px] text-neutral-600">{t("settingsCore.ompValueEditors.listEmpty")}</div>
+				<div className="text-[11px] text-[var(--text-dim)]">{t("settingsCore.ompValueEditors.listEmpty")}</div>
 			) : (
 				<ul className="space-y-1">
 					{value.map((item, i) => (
@@ -47,7 +48,7 @@ export function StringListEditor({ value, onSave, busy }: { value: string[]; onS
 							key={`${i}:${item}`}
 							className="group flex items-center gap-1 rounded-md bg-[var(--well-bg)] px-2 py-0.5 hairline"
 						>
-							<span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-200" title={item}>
+							<span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--text)]" title={item}>
 								{item}
 							</span>
 							<button
@@ -73,7 +74,7 @@ export function StringListEditor({ value, onSave, busy }: { value: string[]; onS
 								title={t("settingsCore.ompValueEditors.remove")}
 								disabled={busy}
 								onClick={() => void onSave(listRemove(value, i))}
-								className={clsx(ICON_BUTTON, "hover:text-rose-300")}
+								className={clsx(ICON_BUTTON, "hover:text-[var(--status-error)]")}
 							>
 								<X className="h-3 w-3" />
 							</button>
@@ -145,7 +146,7 @@ export function RecordEditor({ value, onSave, busy }: { value: unknown; onSave: 
 
 	return (
 		<div className="space-y-1.5">
-			{rows.length === 0 && <div className="text-[11px] text-neutral-600">{t("settingsCore.ompValueEditors.noEntries")}</div>}
+			{rows.length === 0 && <div className="text-[11px] text-[var(--text-dim)]">{t("settingsCore.ompValueEditors.noEntries")}</div>}
 			{rows.map((row, i) => (
 				// biome-ignore lint/suspicious/noArrayIndexKey: rows have no stable id while keys are being edited
 				<div key={i} className="flex items-center gap-1.5">
@@ -161,10 +162,10 @@ export function RecordEditor({ value, onSave, busy }: { value: unknown; onSave: 
 						className={clsx(
 							INPUT_CLASS,
 							"w-40 shrink-0 font-mono",
-							error?.index === i && "ring-1 ring-rose-500/60",
+							error?.index === i && "ring-1 ring-[var(--status-error)]/60",
 						)}
 					/>
-					<span className="text-neutral-600">=</span>
+					<span className="text-[var(--text-dim)]">=</span>
 					<input
 						value={row.text}
 						disabled={busy}
@@ -180,6 +181,7 @@ export function RecordEditor({ value, onSave, busy }: { value: unknown; onSave: 
 						type="button"
 						title={row.kind === "json" ? t("settingsCore.ompValueEditors.editAsText") : t("settingsCore.ompValueEditors.editAsJson")}
 						disabled={busy}
+						aria-pressed={row.kind === "json"}
 						onClick={() => {
 							const next = rows.map((r, j) =>
 								j === i ? { ...r, kind: r.kind === "json" ? "string" : "json" } as RecordRow : r,
@@ -187,9 +189,15 @@ export function RecordEditor({ value, onSave, busy }: { value: unknown; onSave: 
 							setRows(next);
 							void commit(next);
 						}}
-						className={clsx(ICON_BUTTON, row.kind === "json" && "text-amber-300")}
+						className={clsx(
+							"inline-flex shrink-0 items-center gap-1 rounded-md hairline px-2 py-1 text-[10px] font-mono font-medium whitespace-nowrap cursor-pointer transition-all active:scale-95 disabled:pointer-events-none disabled:opacity-30",
+							row.kind === "json"
+								? "bg-[color-mix(in_srgb,var(--accent)_16%,transparent)] text-[var(--accent)]"
+								: "bg-[var(--well-bg)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]",
+						)}
 					>
 						<Braces className="h-3 w-3" />
+						<span>JSON</span>
 					</button>
 					<button
 						type="button"
@@ -200,13 +208,13 @@ export function RecordEditor({ value, onSave, busy }: { value: unknown; onSave: 
 							setRows(next);
 							void commit(next);
 						}}
-						className={clsx(ICON_BUTTON, "hover:text-rose-300")}
+						className={clsx(ICON_BUTTON, "hover:text-[var(--status-error)]")}
 					>
 						<X className="h-3 w-3" />
 					</button>
 				</div>
 			))}
-			{error && <div className="text-[11px] text-rose-400">{error.text}</div>}
+			{error && <div className="text-[11px] text-[var(--status-error)]">{error.text}</div>}
 			<button
 				type="button"
 				disabled={busy}
@@ -255,6 +263,7 @@ export function JsonEditor({
 					if (error) setError(null);
 				}}
 				onKeyDown={(e) => {
+					if (isComposing(e)) return;
 					if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
 						e.preventDefault();
 						void apply();
@@ -269,23 +278,23 @@ export function JsonEditor({
 				className={clsx(
 					INPUT_CLASS,
 					"w-full font-mono text-[11px] leading-5",
-					error && "ring-1 ring-rose-500/60",
+					error && "ring-1 ring-[var(--status-error)]/60",
 				)}
 			/>
-			{error && <div className="text-[11px] text-rose-400">{error}</div>}
+			{error && <div className="text-[11px] text-[var(--status-error)]">{error}</div>}
 			<div className="flex items-center gap-2">
 				<button
 					type="button"
 					disabled={busy}
 					onClick={() => void apply()}
-					className="rounded-lg bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--bg)] shadow-sm transition-all hover:opacity-90 active:scale-95 disabled:opacity-50"
+					className="rounded-lg bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--accent-fg)] shadow-sm transition-all hover:opacity-90 active:scale-95 whitespace-nowrap cursor-pointer disabled:opacity-50"
 				>
 					{t("settingsCore.ompValueEditors.apply")}
 				</button>
 				<button type="button" onClick={onClose} className={LINK_BUTTON}>
 					{t("settingsCore.ompValueEditors.cancel")}
 				</button>
-				<span className="text-[10px] text-neutral-600">{t("settingsCore.ompValueEditors.shortcutsHint")}</span>
+				<span className="text-[10px] text-[var(--text-dim)]">{t("settingsCore.ompValueEditors.shortcutsHint")}</span>
 			</div>
 		</div>
 	);

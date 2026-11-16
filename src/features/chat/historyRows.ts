@@ -24,6 +24,7 @@ import {
 	type DisplayBlock,
 	type HistoryRow,
 	type HistoryTurnRow,
+	isBriefToolTransition,
 	splitInterimProseBySteer,
 	type TurnBlock,
 	type TurnStep,
@@ -90,19 +91,25 @@ function turnPieces(turn: TurnBlock): Piece[] {
 	if (turn.userItem) {
 		pieces.push({ kind: "user", height: estimateUserBubbleHeight(turn.userItem.text ?? "") });
 	}
-	for (const seg of splitInterimProseBySteer(turn.intermediateSteps)) {
+	const segments = splitInterimProseBySteer(turn.intermediateSteps);
+	segments.forEach((seg, si) => {
 		if (seg.type === "steer") {
 			pieces.push({ kind: "steer", step: seg.step, height: STEER_ROW });
-			continue;
+			return;
 		}
 		if (seg.folded.length > 0) {
 			pieces.push({ kind: "fold", steps: seg.folded, height: DISCLOSURE_ROW });
 		}
+		const rest = segments.slice(si + 1);
 		for (const step of seg.prose) {
-			const h = step.kind === "text" || step.kind === "narration" ? Math.min(estimateTextHeight(step.text), INTERIM_PROSE_MAX) : 0;
+			let h = 0;
+			if (step.kind === "text" || step.kind === "narration") {
+				const full = estimateTextHeight(step.text);
+				h = isBriefToolTransition(step, rest) ? Math.min(full, INTERIM_PROSE_MAX) : full;
+			}
 			pieces.push({ kind: "prose", step, height: h });
 		}
-	}
+	});
 	if (turn.answerItem) {
 		// Keep an interrupted answer together with its stopped indicator.
 		const text = turn.answerItem.text ?? "";

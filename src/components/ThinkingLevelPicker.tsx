@@ -92,8 +92,8 @@ export function ThinkingLevelPicker({
 				className={clsx(
 					"shrink-0 select-none transition-colors",
 					variant === "pill"
-						? "flex h-8 items-center gap-1 rounded-lg border border-dashed border-[var(--border-divider)] bg-[var(--bg-active-fill)] px-2.5 text-xs text-amber-400/90 hover:border-amber-400 hover:text-amber-300"
-						: "rounded-full border border-[var(--line,var(--border-divider))] bg-[var(--well-bg,var(--bg-hover))] px-2 py-0.5 text-[12px] text-[var(--text-40,var(--text-dim))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]",
+						? "flex h-8 items-center gap-1 whitespace-nowrap rounded-lg border border-dashed border-[var(--border-divider)] bg-[var(--bg-active-fill)] px-2.5 text-xs text-amber-600 dark:text-amber-400/90 hover:border-amber-500 hover:text-amber-700 dark:hover:text-amber-300"
+						: "whitespace-nowrap rounded-full border border-[var(--line,var(--border-divider))] bg-[var(--well-bg,var(--bg-hover))] px-2 py-0.5 text-[12px] text-[var(--text-40,var(--text-dim))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]",
 				)}
 			>
 				{t("components.thinkingUnconfigured")}
@@ -107,7 +107,7 @@ export function ThinkingLevelPicker({
 				onClick={() => onOpenChange(!open)}
 				title={t("components.thinkingLevelTitle", { label: cur.label, desc: cur.desc ? ` (${cur.desc})` : "" })}
 				className={clsx(
-					"flex select-none items-center transition-colors",
+					"flex select-none items-center whitespace-nowrap transition-colors",
 					variant === "pill"
 						? "h-8 gap-1.5 rounded-lg hairline bg-[var(--bg-active-fill)] px-2.5 text-xs text-[var(--text)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] active:scale-[0.98]"
 						: clsx(
@@ -137,7 +137,7 @@ export function ThinkingLevelPicker({
 					layer="popover"
 					ignoreRefs={[ref]}
 					onDismiss={() => onOpenChange(false)}
-					className="w-[280px] max-w-[calc(100vw-16px)] rounded-[20px] border border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] shadow-[0_12px_36px_rgba(0,0,0,0.45)]"
+					className="w-[280px] max-w-[calc(100vw-16px)] rounded-[20px] border border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] shadow-apple-modal"
 				>
 					<ThinkingLevelControl levels={levels} value={value} onSelect={onSelect} />
 				</FloatingLayer>
@@ -264,7 +264,7 @@ function ThinkingLevelControl({
 					onDismiss={() => {
 						setListOpen(false);
 					}}
-					className="w-[260px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-2xl border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] p-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)]"
+					className="w-[260px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-2xl border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] p-1.5 shadow-apple-modal"
 				>
 					<div id={listId}>
 						<div className="px-3 pb-1.5 pt-1 text-[13px] text-[var(--text-40,var(--text-dim))]">
