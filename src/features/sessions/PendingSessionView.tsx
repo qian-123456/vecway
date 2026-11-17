@@ -1,9 +1,8 @@
 /** Full composer for a desktop-local draft; no transcript/RPC is needed to render it. */
-import { StartGlow, StartHero } from "../../components/StartHero";
+import { HomeRecentSessions, StartGlow, StartHero } from "../../components/StartHero";
 import { useT } from "../../stores/language";
 import { Composer } from "../chat/Composer";
 import { usePendingSession } from "./pendingSession";
-import { CalendarHeatmap } from "../home/CalendarHeatmap";
 
 export function PendingSessionView() {
 	const { t } = useT();
@@ -13,19 +12,17 @@ export function PendingSessionView() {
 	return (
 		<div className="relative @container flex h-full flex-col justify-center pb-[6vh]">
 			<StartGlow />
-			<StartHero />
-			<div className="mx-auto mb-6 w-full max-w-[880px] px-6">
-				<CalendarHeatmap />
-			</div>
-			<div className="mx-auto w-full max-w-[880px] px-6">
+			<StartHero sessionId={id} />
+			<div className="mx-auto w-full max-w-[780px] px-6">
 				<div className="start-rise">
 					<Composer key={id} sessionId={id} />
 				</div>
 				{startError && (
-					<div role="alert" className="mt-2 px-2 text-[12px] text-red-500 select-text">
+					<div role="alert" className="mt-2 px-3.5 text-[12px] text-red-500 select-text">
 						{t("sessions.createSessionFailed", { error: startError })}
 					</div>
 				)}
+				<HomeRecentSessions sessionId={id} />
 			</div>
 		</div>
 	);

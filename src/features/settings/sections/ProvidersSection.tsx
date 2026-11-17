@@ -13,6 +13,7 @@ import { Button, SectionHeader } from "../ui";
 import { useT } from "../../../stores/language";
 import { QuotaDashboardCard } from "./QuotaDashboardCard";
 import { RawFilesDialog } from "./RawFilesDialog";
+import { CalendarHeatmap } from "../../home/CalendarHeatmap";
 import { useServiceModelConfiguration } from "../../../stores/modelKinds";
 import { useUi } from "../../../stores/ui";
 
@@ -104,6 +105,9 @@ export function ProvidersSection() {
 				</div>
 			) : (
 				<div className="space-y-4">
+					<div data-jump={t("home.activityTitle")} className="scroll-mt-4">
+						<CalendarHeatmap />
+					</div>
 					<div data-jump={t("settingsSections.providers.jumpQuota")} className="scroll-mt-4">
 						<QuotaDashboardCard />
 					</div>

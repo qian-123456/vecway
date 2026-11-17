@@ -223,6 +223,7 @@ fn plan(m: &Migration, records: &[Legacy], original: &str) -> Result<Plan, Strin
             api: api.to_string(),
             models: models_of(r),
             auth_none: local && key.is_none(),
+            discovery_type: None,
         };
         text = yml::upsert_block_text(&text, &spec)?;
         if let Some(k) = &key {

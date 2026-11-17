@@ -34,6 +34,7 @@ pub struct YmlProvider {
     pub api: Option<String>,
     pub api_key: Option<String>,
     pub auth_none: bool,
+    pub discovery_type: Option<String>,
     pub models: Vec<ModelEntry>,
 }
 
@@ -43,6 +44,10 @@ fn str_field(m: &Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+fn discovery_type_of(m: &Value) -> Option<String> {
+    m.get("discovery").and_then(|d| str_field(d, "type"))
 }
 
 /// Every provider block in `text`, in document order. `Err` when the text is
@@ -64,6 +69,7 @@ pub fn parse_providers(text: &str) -> Result<Vec<YmlProvider>, String> {
                 api: str_field(v, "api"),
                 api_key: str_field(v, "apiKey"),
                 auth_none: str_field(v, "auth").is_some_and(|a| a.eq_ignore_ascii_case("none")),
+                discovery_type: discovery_type_of(v),
                 models: models_of(v)
                     .into_iter()
                     .map(|(id, f)| entry_of(id, &f))
@@ -280,9 +286,14 @@ fn replace_models_text(text: &str, slug: &str, items: &[Value]) -> Result<String
     match models_at {
         Some((i, ci)) => {
             let end = models_block_end(&lines, i, ci);
-            let block = render_block(ci, items)?;
-            out.splice(i..end, [block]);
+            if items.is_empty() {
+                out.drain(i..end);
+            } else {
+                let block = render_block(ci, items)?;
+                out.splice(i..end, [block]);
+            }
         }
+        None if items.is_empty() => {}
         None => {
             let ci = child_indent.unwrap_or(s_indent + NEW_INDENT);
             let block = render_block(ci, items)?;
@@ -557,10 +568,79 @@ pub struct BlockSpec {
     pub models: Vec<ModelEntry>,
     /// Write `auth: none` (local engines without a key).
     pub auth_none: bool,
+    /// `Some(type)` sets/keeps `providers.<id>.discovery`; `None` removes it.
+    pub discovery_type: Option<String>,
 }
 
-/// Create or update `providers.<spec.id>`: sets `name`/`baseUrl`/`api`/models and
-/// leaves every other field of an existing block (incl. `apiKey`) untouched.
+/// Set or remove `providers.<id>.discovery` (handles both inline `{ type }` and
+/// multi-line blocks; preserves extra subfields when the type is unchanged).
+pub fn set_discovery_text(
+    text: &str,
+    id: &str,
+    discovery_type: Option<&str>,
+) -> Result<String, String> {
+    let want = discovery_type.map(str::trim).filter(|s| !s.is_empty());
+    let current = parse_providers(text)?
+        .into_iter()
+        .find(|p| p.id == id)
+        .and_then(|p| p.discovery_type);
+    if current.as_deref() == want {
+        return Ok(text.to_string());
+    }
+    let mut out = split_lines(text);
+    let (prov_line, prov_indent, prov_end, found) = {
+        let lines = borrow(&out);
+        let loc = locate(&lines, id)?;
+        let prov = loc
+            .prov
+            .ok_or_else(|| "models.yml 中找不到该供应商".to_string())?;
+        let mut child_indent = None;
+        let mut found = None;
+        for (i, raw) in lines.iter().enumerate().take(prov.end).skip(prov.line + 1) {
+            let l = parse_line(raw);
+            if l.trivia {
+                continue;
+            }
+            let ci = *child_indent.get_or_insert(l.indent);
+            if l.indent == ci && l.entry.as_ref().is_some_and(|(k, _)| k == "discovery") {
+                found = Some((i, ci, block_end(&lines, i, ci)));
+                break;
+            }
+        }
+        (prov.line, prov.indent, prov.end, found)
+    };
+    let _ = prov_end;
+    match (found, want) {
+        (Some((i, ci, end)), Some(kind)) => {
+            let line = format!(
+                "{}discovery: {{ type: {} }}\n",
+                " ".repeat(ci),
+                yaml_scalar(kind)
+            );
+            out.splice(i..end, [line]);
+        }
+        (Some((i, _, end)), None) => {
+            out.drain(i..end);
+        }
+        (None, Some(kind)) => {
+            let ci = prov_indent + NEW_INDENT;
+            ensure_newline(&mut out, prov_line + 1);
+            out.insert(
+                prov_line + 1,
+                format!(
+                    "{}discovery: {{ type: {} }}\n",
+                    " ".repeat(ci),
+                    yaml_scalar(kind)
+                ),
+            );
+        }
+        (None, None) => {}
+    }
+    Ok(out.concat())
+}
+
+/// Create or update `providers.<spec.id>`: sets `name`/`baseUrl`/`api`/models/discovery
+/// and leaves every other field of an existing block (incl. `apiKey`) untouched.
 pub fn upsert_block_text(text: &str, spec: &BlockSpec) -> Result<String, String> {
     let mut t = ensure_provider(text, &spec.id)?;
     let root: Value =
@@ -590,6 +670,7 @@ pub fn upsert_block_text(text: &str, spec: &BlockSpec) -> Result<String, String>
     if spec.auth_none {
         t = set_field(&t, &spec.id, "auth", Some("none"))?;
     }
+    t = set_discovery_text(&t, &spec.id, spec.discovery_type.as_deref())?;
     Ok(t)
 }
 
@@ -648,12 +729,7 @@ pub fn set_models_text(text: &str, id: &str, models: &[ModelEntry]) -> Result<St
         return Ok(text.to_string());
     }
     let existing = provider.map(models_of).unwrap_or_default();
-    let t = replace_models_text(text, id, &build_items(&existing, models))?;
-    if models.is_empty() {
-        set_field(&t, id, "models", None)
-    } else {
-        Ok(t)
-    }
+    replace_models_text(text, id, &build_items(&existing, models))
 }
 
 /// Read-back check for a built-in override block: `baseUrl`, `auth: none` and
@@ -692,9 +768,15 @@ pub fn verify_block(text: &str, spec: &BlockSpec) -> Result<(), String> {
         .as_deref()
         .map(str::trim)
         .filter(|n| !n.is_empty());
+    let discovery_type = spec
+        .discovery_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let ok = got.base_url.as_deref() == Some(spec.base_url.trim())
         && got.api.as_deref() == Some(spec.api.trim()).filter(|api| !api.is_empty())
         && got.name.as_deref() == name
+        && got.discovery_type.as_deref() == discovery_type
         && (spec.models.is_empty() && got.models.is_empty()
             || same_models(&got.models, &spec.models));
     if ok {
@@ -794,7 +876,35 @@ mod tests {
                 }),
             ],
             auth_none: false,
+            discovery_type: None,
         }
+    }
+
+    #[test]
+    fn discovery_block_round_trips_preserves_subfields_and_drops_empty_models() {
+        let base = "providers:\n  gw:\n    api: openai-completions\n    baseUrl: http://127.0.0.1:3425/v1\n    discovery:\n      type: openai-models-list\n      timeoutMs: 5000\n    models:\n      - id: m1\n";
+        let parsed = parse_providers(base).unwrap();
+        assert_eq!(
+            parsed[0].discovery_type.as_deref(),
+            Some("openai-models-list")
+        );
+
+        // Preserves extra discovery subfields when type stays the same, and drops emptied models key.
+        let mut s = spec("gw");
+        s.name = None;
+        s.models = vec![];
+        s.discovery_type = Some("openai-models-list".into());
+        let kept = upsert_block_text(base, &s).unwrap();
+        assert!(kept.contains("timeoutMs: 5000"), "{kept}");
+        assert!(!kept.contains("models:"), "{kept}");
+        verify_block(&kept, &s).unwrap();
+
+        // Removing discovery drops multi-line block cleanly.
+        s.discovery_type = None;
+        let removed = upsert_block_text(&kept, &s).unwrap();
+        assert!(!removed.contains("discovery"), "{removed}");
+        assert!(!removed.contains("timeoutMs"), "{removed}");
+        verify_block(&removed, &s).unwrap();
     }
 
     #[test]

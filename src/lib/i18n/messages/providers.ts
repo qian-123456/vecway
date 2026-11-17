@@ -398,6 +398,15 @@ export default defineMessages({
 		apiOpenaiResponses: "OpenAI Responses（openai-responses）",
 		apiAnthropicMessages: "Anthropic（anthropic-messages）",
 		apiGoogleGenerativeAi: "Gemini（google-generative-ai）",
+
+		infoTipAria: "查看说明",
+		autoDiscoverLabel: "自动同步上游模型",
+		autoDiscoverHint: "开启后，OMP 启动或刷新模型目录时会自动从接口拉取最新模型名单；下方列表仅需保留要单独覆盖协议或上下文窗口的模型。",
+		autoDiscoverBadge: "自动同步",
+		autoDiscoverNoModels: "已开启自动同步上游模型，将从接口自动发现最新名单；如需为个别模型指定独立协议或窗口，可在下方添加",
+		autoDiscoverModelsHeaderHint: "已开启自动同步：未在下方列出的上游模型会自动发现；下面仅保留需要覆盖协议或参数上限的条目。",
+		modelProtocolOverrideAria: "调整模型 {id} 的独立协议",
+		modelProtocolClearBtn: "恢复继承供应商协议",
 	},
 	"en-US": {
 		keyInputLegend: "How to provide the key",
@@ -795,5 +804,14 @@ export default defineMessages({
 		apiOpenaiResponses: "OpenAI Responses (openai-responses)",
 		apiAnthropicMessages: "Anthropic (anthropic-messages)",
 		apiGoogleGenerativeAi: "Gemini (google-generative-ai)",
+
+		infoTipAria: "More information",
+		autoDiscoverLabel: "Auto-sync upstream models",
+		autoDiscoverHint: "When enabled, OMP fetches the latest model list from the endpoint on startup or catalog refresh. Keep only models that need custom protocol or window overrides below.",
+		autoDiscoverBadge: "Auto-sync",
+		autoDiscoverNoModels: "Auto-sync is enabled; upstream models are discovered automatically. Add entries below only to override protocol or token limits for specific models.",
+		autoDiscoverModelsHeaderHint: "Auto-sync enabled: upstream models not listed below are discovered automatically; keep entries here only to override their protocol or limits.",
+		modelProtocolOverrideAria: "Configure protocol override for {id}",
+		modelProtocolClearBtn: "Inherit provider protocol",
 	},
 });

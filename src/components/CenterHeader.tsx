@@ -22,6 +22,8 @@ import React, {
 } from "react";
 import { Modal } from "./Modal";
 import { FloatingLayer } from "./FloatingLayer";
+import { TopUsageStrip } from "./TopUsageStrip";
+import { VecwayWordmark } from "./VecwayWordmark";
 import { IdeasCapsule } from "../features/backlog/IdeasCapsule";
 import { formatSessionMarkdown } from "../features/chat/exportMarkdown";
 import { useShareSelection } from "../features/chat/share/shareStore";
@@ -485,11 +487,20 @@ export const CenterHeader = React.memo(function CenterHeader({
 									<span className="shrink-0 text-neutral-600">/</span>
 								</>
 							)}
-							{CENTER_TITLE_KEY[effectiveCenterView] && (
+							{CENTER_TITLE_KEY[effectiveCenterView] ? (
 								<span className="text-[13px] font-medium text-neutral-300 shrink-0">
 									{t(CENTER_TITLE_KEY[effectiveCenterView] as string)}
 								</span>
-							)}
+							) : !backTarget ? (
+								<div className="flex min-w-0 items-center gap-3">
+									<VecwayWordmark height={21} />
+									<span
+										aria-hidden="true"
+										className="h-3.5 w-px shrink-0 bg-[var(--border-divider)]"
+									/>
+									<TopUsageStrip />
+								</div>
+							) : null}
 						</div>
 					)}
 

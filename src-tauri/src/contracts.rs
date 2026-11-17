@@ -1474,6 +1474,9 @@ pub struct ProviderRow {
     pub extra_models: Vec<ModelEntry>,
     /// Block has `auth: none`, or a keyless local engine without a block.
     pub auth_none: bool,
+    /// `providers.<id>.discovery.type` in models.yml (e.g. "openai-models-list", "proxy").
+    #[serde(default)]
+    pub discovery_type: Option<String>,
 }
 
 /// Editable fields of a custom provider block in models.yml.
@@ -1489,6 +1492,9 @@ pub struct ProviderUpsert {
     pub models: Vec<ModelEntry>,
     /// `true` writes `auth: none` and removes `apiKey`; `false` removes `auth: none`.
     pub auth_none: bool,
+    /// `Some(type)` enables/preserves `discovery: { type }`; `None` removes `discovery`.
+    #[serde(default)]
+    pub discovery_type: Option<String>,
 }
 
 /// Editable fields of a built-in provider's override block in models.yml.

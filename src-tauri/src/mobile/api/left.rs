@@ -2007,6 +2007,7 @@ async fn providers_save<B: Backend>(
                 api,
                 models: row.models.clone(),
                 auth_none: row.auth_none,
+                discovery_type: row.discovery_type.clone(),
             },
             None,
         )

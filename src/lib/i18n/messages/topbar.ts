@@ -12,6 +12,9 @@ export default defineMessages({
 		inbox: "收件箱",
 		schedules: "定时任务",
 		skills: "Skills 管理",
+		recent30dPrefix: "近 30 天",
+		recent30dUnknown: "未知",
+		openUsageTip: "打开设置 → 用量与配额 (/usage)",
 	},
 	"en-US": {
 		back: "Back",
@@ -24,5 +27,8 @@ export default defineMessages({
 		inbox: "Inbox",
 		schedules: "Schedules",
 		skills: "Skills",
+		recent30dPrefix: "Last 30d",
+		recent30dUnknown: "Unknown",
+		openUsageTip: "Open Settings → Usage & Quota (/usage)",
 	},
 });

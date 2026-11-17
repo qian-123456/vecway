@@ -1139,6 +1139,8 @@ export interface ProviderRow {
 	extraModels: ModelEntry[];
 	/** Block has `auth: none`, or keyless local engine without a block. */
 	authNone: boolean;
+	/** `providers.<id>.discovery.type` in models.yml (e.g. "openai-models-list", "proxy"). */
+	discoveryType?: string | null;
 }
 
 export interface ProviderUpsert {
@@ -1149,6 +1151,8 @@ export interface ProviderUpsert {
 	api: string;
 	models: ModelEntry[];
 	authNone: boolean;
+	/** When set, enables/preserves `discovery: { type }`; null/undefined clears it. */
+	discoveryType?: string | null;
 }
 
 export interface BuiltinOverride {

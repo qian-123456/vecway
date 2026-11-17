@@ -2595,22 +2595,22 @@ export function Composer({
 				}}
 			/>
 			)}
+			{!sessionHasMessages && !readonly && (
+				<ContextPillBar
+					sessionId={sessionId}
+					onWorkspaceClick={() => setWorkspacePickerOpen((v) => !v)}
+					workspaceBtnRef={wsPillBtnRef}
+				/>
+			)}
 			<div
 				ref={composerCardRef}
 				className={clsx(
-					"relative rounded-[22px] border bg-[var(--bg-panel)] transition-colors duration-150",
+					"composer-optical-card relative z-10 rounded-[22px] border transition-colors duration-150",
 					isDraggingOver
-						? "border-[var(--text-30,var(--border))]"
-						: "border-[var(--line,var(--border))]",
+						? "border-[var(--accent)]"
+						: "border-[var(--composer-border,var(--border))]",
 				)}
 			>
-				{!sessionHasMessages && !readonly && (
-					<ContextPillBar
-						sessionId={sessionId}
-						onWorkspaceClick={() => setWorkspacePickerOpen((v) => !v)}
-						workspaceBtnRef={wsPillBtnRef}
-					/>
-				)}
 				{workspacePickerOpen && (
 					<WorkspacePickerPopover
 						anchor={sessionHasMessages ? addBtnRef.current : (wsPillBtnRef.current ?? addBtnRef.current)}

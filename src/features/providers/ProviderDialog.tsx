@@ -4,6 +4,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Activity, ChevronDown, CircleCheck, CircleX, Eye, EyeOff, FolderOpen, Loader2, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
+import { InfoTip } from "../../components/InfoTip";
 import { Modal } from "../../components/Modal";
 import { NativeSelect } from "../../components/NativeSelect";
 import type { DiscoveredModel, ProviderRow } from "../../lib/contracts";
@@ -53,6 +54,10 @@ const hintCls = "mt-1 text-[11px] text-neutral-400";
 const MODEL_TABLE_GRID = "grid grid-cols-[minmax(0,1fr)_114px_114px_92px] items-center gap-2";
 const PROBE_CONCURRENCY = 4;
 const digitsOnly = (value: string): string => value.replace(/[^0-9]/g, "");
+const compactApiLabel = (value: string): string => {
+	const raw = SERVICE_API_LABELS[value] ?? KNOWN_APIS.find((a) => a.value === value)?.label ?? value;
+	return raw.replace(/（[^）]*）|\([^)]*\)/g, "").trim() || value;
+};
 
 export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Props) {
 	const { t } = useT();
@@ -73,11 +78,14 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 	const isBuiltin = editing !== null && editing.origin !== "custom";
 	const isOverride = editing?.origin === "override";
 	const defaultBaseUrl = editing?.defaultBaseUrl ?? null;
-	const initialModels = isBuiltin ? (editing?.extraModels ?? []) : (editing?.models ?? []);
+	const hasInitialDiscovery = Boolean(editing?.discoveryType);
+	const initialModels = isBuiltin || hasInitialDiscovery ? (editing?.extraModels ?? []) : (editing?.models ?? []);
 	const serviceMode = pickerCategory === "other";
 	const [purpose, setPurpose] = useState(initialModels.map((m) => typeof m === "string" ? undefined : m.kind).find(Boolean) ?? "image");
 	const purposeSpec = SERVICE_PURPOSES.find((p) => p.kind === purpose) ?? SERVICE_PURPOSES[0];
 	const availableApis = KNOWN_APIS;
+	const [autoDiscover, setAutoDiscover] = useState(hasInitialDiscovery);
+	const [expandedModelRows, setExpandedModelRows] = useState<ReadonlySet<number>>(() => new Set());
 
 	const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
 	const [presetOpen, setPresetOpen] = useState(false);
@@ -143,6 +151,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 				authNone !== editing.authNone ||
 				apiKey.length > 0 ||
 				(!authNone && (keyMode !== initialMode || (keyMode === "env" && envName !== initialEnv))) ||
+				(!isBuiltin && !serviceMode && autoDiscover !== hasInitialDiscovery) ||
 				JSON.stringify(entries) !== JSON.stringify(initialModels)
 			);
 		}
@@ -155,9 +164,10 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 			apiKey.length > 0 ||
 			(keyMode === "env" && envName.length > 0) ||
 			api !== (serviceMode ? "" : "openai-completions") ||
+			(!serviceMode && autoDiscover) ||
 			entries.length > 0
 		);
-	}, [isImport, pasteText, editing, isBuiltin, defaultBaseUrl, initialModels, id, baseUrl, api, authNone, apiKey, keyMode, envName, initialMode, initialEnv, modelRows, selectedPresetId, providerWindowChanged, newModelInput, serviceMode]);
+	}, [isImport, pasteText, editing, isBuiltin, defaultBaseUrl, initialModels, id, baseUrl, api, authNone, apiKey, keyMode, envName, initialMode, initialEnv, modelRows, selectedPresetId, providerWindowChanged, newModelInput, serviceMode, autoDiscover, hasInitialDiscovery]);
 
 	const isClosingRef = useRef(false);
 	const handleDismiss = useCallback(async () => {
@@ -230,6 +240,8 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 		const nextApi = serviceMode ? "" : "openai-completions";
 		setApiChoice(nextApi);
 		setApiOther("");
+		setAutoDiscover(false);
+		setExpandedModelRows(new Set());
 		setModelRows([]);
 		setNewModelInput("");
 	};
@@ -272,6 +284,28 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 
 	const handleModelRowChange = (index: number, field: keyof ModelRow, value: string) => {
 		setModelRows((prev) => prev.map((r, i) => (i === index ? { ...r, [field]: value } : r)));
+	};
+
+	const removeModelRow = (index: number) => {
+		setModelRows((prev) => prev.filter((_, i) => i !== index));
+		setExpandedModelRows((prev) => {
+			if (prev.size === 0) return prev;
+			const next = new Set<number>();
+			for (const idx of prev) {
+				if (idx < index) next.add(idx);
+				else if (idx > index) next.add(idx - 1);
+			}
+			return next;
+		});
+	};
+
+	const toggleModelRowExpanded = (index: number) => {
+		setExpandedModelRows((prev) => {
+			const next = new Set(prev);
+			if (next.has(index)) next.delete(index);
+			else next.add(index);
+			return next;
+		});
 	};
 
 	const handleFetchModels = async () => {
@@ -375,7 +409,11 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 			return;
 		}
 		const enteredModels = rowsToModelEntries(effectiveModelRows);
-		if (!api && (enteredModels.length === 0 || enteredModels.some((model) => typeof model === "string" || !model.api?.trim()))) {
+		const nextDiscoveryType =
+			!isBuiltin && !serviceMode && autoDiscover
+				? (editing?.discoveryType || "openai-models-list")
+				: null;
+		if (!api && nextDiscoveryType !== "proxy" && (enteredModels.length === 0 || enteredModels.some((model) => typeof model === "string" || !model.api?.trim()))) {
 			setFormError(t("providers.explicitModelApisRequired"));
 			return;
 		}
@@ -449,14 +487,14 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 			return;
 		}
 		const models = rowsToModelEntries(effectiveModelRows);
-		if (models.length === 0) {
+		if (models.length === 0 && !nextDiscoveryType) {
 			setFormError(t("providers.atLeastOneModelError"));
 			return;
 		}
 		setSaving(true);
 		try {
 			const { config, count } = await applyContextWindowsOnSave(
-				editing ? { models: editing.models } : null,
+				editing ? { models: initialModels } : null,
 				{ models },
 			);
 			const savedRow = await upsert(
@@ -468,10 +506,11 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 					api,
 					models: config.models,
 					authNone,
+					discoveryType: nextDiscoveryType,
 				},
 				key || null,
 			);
-			if (!serviceMode && providerWindowChanged && providerWindow) {
+			if (!serviceMode && providerWindowChanged && providerWindow && config.models.length > 0) {
 				await ompModelsSetContextWindows(config.models.map((model) => ({
 					providerId: newId,
 					modelId: typeof model === "string" ? model : model.id,
@@ -481,6 +520,9 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 			if (!serviceMode && providerWindowChanged) {
 				saveProviderWindow(newId, providerWindow ? Number(providerWindow) : null);
 				void useModelCatalog.getState().refresh();
+			}
+			if (nextDiscoveryType) {
+				void useModelCatalog.getState().refreshOnline?.()?.then(() => useProviders.getState().load?.()).catch(() => {});
 			}
 			toastKeySaved(savedRow, keyMode, t("providers.savedToast"));
 			if (count > 0) toast.success(t("providers.windowRuleCountToast", { count }));
@@ -620,7 +662,8 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 		<>
 		<Modal
 			onClose={() => void handleDismiss()}
-			size="xl"
+			size={isImport ? "xl" : "none"}
+			className={isImport ? undefined : "w-[calc(100vw-2rem)] max-w-[820px] max-h-[88vh]"}
 			ariaLabel={editing ? t("providers.titleEdit") : isImport ? t("providers.titleImport") : t("providers.titleAdd")}
 		>
 			<div
@@ -829,16 +872,20 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 						<p className="text-[11px] leading-relaxed text-neutral-500">{t("providers.keyPlainNote", { path: MODELS_YML_PATH })}</p>
 					</div>
 				) : (
-					<div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3.5">
+					<div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3.5">
 						{/* 1. Core connection & credentials */}
-						<section className="space-y-2.5 rounded-xl border border-[var(--border-divider)] bg-[var(--well-bg)]/45 p-2.5">
+						<section className="shrink-0 space-y-2.5 rounded-xl border border-[var(--border-divider)] bg-[var(--well-bg)]/45 p-2.5">
 							<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
 								<div className="min-w-0">
-									<div className="flex min-h-[22px] items-center gap-0.5">
+									<div className="flex min-h-[22px] items-center gap-1">
 										<label htmlFor="provider-name" className={labelCls}>
 											{t("providers.nameLabel")}
 										</label>
 										{!isBuiltin && <span aria-hidden="true" className="text-xs font-medium text-rose-400">*</span>}
+										<InfoTip
+											text={isBuiltin ? t("providers.builtinNameHint") : t("providers.customNameHint")}
+											label={t("providers.infoTipAria")}
+										/>
 									</div>
 									<input
 										id="provider-name"
@@ -850,9 +897,6 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 										className={`mt-1.5 ${inputCls} font-mono ${isBuiltin ? "cursor-default opacity-70" : ""}`}
 										placeholder={t("providers.namePlaceholder")}
 									/>
-									<div className={hintCls}>
-										{isBuiltin ? t("providers.builtinNameHint") : t("providers.customNameHint")}
-									</div>
 								</div>
 								<div className="min-w-0">
 									<div className="flex min-h-[22px] items-center">
@@ -957,12 +1001,18 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 
 								<div className="min-w-0">
 									<div className="flex min-h-[22px] flex-wrap items-center justify-between gap-1.5">
-										<label
-											htmlFor={activeAuthSeg === "env" ? "provider-env-name" : activeAuthSeg === "plain" ? "provider-key" : undefined}
-											className={labelCls}
-										>
-											{t("providers.apiKeyLabel")}
-										</label>
+										<div className="flex items-center gap-1">
+											<label
+												htmlFor={activeAuthSeg === "env" ? "provider-env-name" : activeAuthSeg === "plain" ? "provider-key" : undefined}
+												className={labelCls}
+											>
+												{t("providers.apiKeyLabel")}
+											</label>
+											<InfoTip
+												text={t("providers.keyPlainNote", { path: MODELS_YML_PATH })}
+												label={t("providers.infoTipAria")}
+											/>
+										</div>
 										<div
 											role="radiogroup"
 											aria-label={t("providers.keyInputLegend")}
@@ -1034,7 +1084,6 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 													{showKey ? <EyeOff size={14} /> : <Eye size={14} />}
 												</button>
 											</div>
-											<p className={hintCls}>{t("providers.keyPlainNote", { path: MODELS_YML_PATH })}</p>
 										</div>
 									)}
 
@@ -1099,8 +1148,8 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 							</div>
 						</section>
 
-						{/* 2. Models table: header batch adjust + fixed-height scrollable rows + pinned add bar */}
-						<section className="space-y-2 rounded-xl border border-[var(--border-divider)] bg-[var(--well-bg)]/45 p-2.5">
+						{/* 2. Models table: header batch adjust + flexible scrollable rows + pinned add bar */}
+						<section className="flex min-h-[260px] flex-1 flex-col gap-2 rounded-xl border border-[var(--border-divider)] bg-[var(--well-bg)]/45 p-2.5">
 							<div className="flex flex-wrap items-center justify-between gap-2">
 								<div className="flex items-center gap-2">
 									<span className={labelCls}>
@@ -1111,6 +1160,30 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 									</span>
 								</div>
 								<div className="flex flex-wrap items-center gap-1.5">
+									{!isBuiltin && !serviceMode && (
+										<div className="inline-flex items-center gap-1">
+											<button
+												type="button"
+												role="switch"
+												aria-checked={autoDiscover}
+												onClick={() => setAutoDiscover((v) => !v)}
+												className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-medium transition-all active:scale-95 ${
+													autoDiscover
+														? "border border-[color-mix(in_srgb,var(--accent)_45%,transparent)] bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-[var(--accent)]"
+														: "hairline bg-[var(--bg-panel)] text-neutral-300 hover:bg-[var(--bg-hover)]"
+												}`}
+											>
+												<span
+													aria-hidden="true"
+													className={`h-2 w-2 rounded-full transition-colors ${
+														autoDiscover ? "bg-[var(--accent)]" : "bg-neutral-500"
+													}`}
+												/>
+												<span>{t("providers.autoDiscoverLabel")}</span>
+											</button>
+											<InfoTip text={t("providers.autoDiscoverHint")} label={t("providers.infoTipAria")} />
+										</div>
+									)}
 									<button
 										type="button"
 										onClick={() => void handleProbeAll()}
@@ -1144,8 +1217,13 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 									{t("providers.builtinModelsHint", { count: Math.max(0, (editing?.models.length ?? 0) - (editing?.extraModels.length ?? 0)) })}
 								</p>
 							)}
+							{!isBuiltin && !serviceMode && autoDiscover && (
+								<p className="text-[11px] text-neutral-400">
+									{t("providers.autoDiscoverModelsHeaderHint")}
+								</p>
+							)}
 
-							<div className="overflow-hidden rounded-xl border border-[var(--border-divider)] bg-[var(--bg-panel)]">
+							<div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--border-divider)] bg-[var(--bg-panel)]">
 								<div className={`${MODEL_TABLE_GRID} border-b border-[var(--border-divider)] bg-[var(--bg-active-fill)] px-3 py-1.5 text-[11px] font-medium text-neutral-400`}>
 									<span>{t("providers.colModelId")}</span>
 									<span>{t("providers.colContextWindow")}</span>
@@ -1206,11 +1284,15 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 
 								<div
 									ref={rowsContainerRef}
-									className="h-[144px] divide-y divide-[var(--border-divider)] overflow-y-auto"
+									className="min-h-[160px] flex-1 divide-y divide-[var(--border-divider)] overflow-y-auto"
 								>
 									{modelRows.length === 0 ? (
-										<div className="flex h-full items-center justify-center px-4 text-center text-xs text-neutral-500">
-											{isBuiltin ? t("providers.builtinNoExtraModels") : t("providers.customNoModels")}
+										<div className="flex min-h-[160px] h-full items-center justify-center px-6 text-center text-xs text-neutral-500">
+											{isBuiltin
+												? t("providers.builtinNoExtraModels")
+												: autoDiscover
+													? t("providers.autoDiscoverNoModels")
+													: t("providers.customNoModels")}
 										</div>
 									) : (
 										modelRows.map((row, index) => {
@@ -1226,6 +1308,13 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 													: testedDone
 														? `${modelTest.result.detail}${t("providers.latencyOpen")}${modelTest.result.latencyMs}ms${t("providers.latencyClose")}`
 														: t("providers.testModelTitle", { id: mid || String(index + 1) });
+											const hasModelOverride = Boolean(row.kind || row.api);
+											const showPerModelFields = serviceMode || (hasModelOverride && expandedModelRows.has(index));
+											const overrideBadgeText = row.api
+												? compactApiLabel(row.api)
+												: row.kind
+													? (SERVICE_PURPOSES.find((p) => p.kind === row.kind) ? t(SERVICE_PURPOSES.find((p) => p.kind === row.kind)!.key) : row.kind)
+													: "";
 											return (
 												<div
 													// biome-ignore lint/suspicious/noArrayIndexKey: rows have no stable identity while being typed
@@ -1233,14 +1322,27 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 													className="px-3 py-1.5"
 												>
 													<div className={MODEL_TABLE_GRID}>
-														<input
-															type="text"
-															value={row.id}
-															onChange={(e) => handleModelRowChange(index, "id", e.target.value)}
-															aria-label={t("providers.modelIdAria", { index: index + 1 })}
-															className={cellCls}
-															placeholder={t("providers.modelIdPlaceholder")}
-														/>
+														<div className="flex min-w-0 items-center gap-1.5">
+															<input
+																type="text"
+																value={row.id}
+																onChange={(e) => handleModelRowChange(index, "id", e.target.value)}
+																aria-label={t("providers.modelIdAria", { index: index + 1 })}
+																className={`${cellCls} min-w-0 flex-1`}
+																placeholder={t("providers.modelIdPlaceholder")}
+															/>
+															{!serviceMode && hasModelOverride && (
+																<button
+																	type="button"
+																	onClick={() => toggleModelRowExpanded(index)}
+																	aria-expanded={showPerModelFields}
+																	aria-label={t("providers.modelProtocolOverrideAria", { id: mid || String(index + 1) })}
+																	className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border-divider)] bg-[var(--well-bg)] px-1.5 py-0.5 text-[10px] text-neutral-300 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-100"
+																>
+																	{overrideBadgeText}
+																</button>
+															)}
+														</div>
 														<input
 															type="text"
 															inputMode="numeric"
@@ -1291,7 +1393,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 															</button>
 															<button
 																type="button"
-																onClick={() => setModelRows((prev) => prev.filter((_, i) => i !== index))}
+																onClick={() => removeModelRow(index)}
 																aria-label={t("providers.deleteModelAria", { index: index + 1 })}
 																title={t("providers.deleteModelTitle")}
 																className="flex h-6 w-6 items-center justify-center rounded-md text-neutral-400 transition-all hover:bg-rose-950/40 hover:text-rose-300 active:scale-95"
@@ -1300,36 +1402,38 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 															</button>
 														</div>
 													</div>
-													{(serviceMode || row.kind || row.api) && (
-														<div className="mt-1.5 grid grid-cols-2 gap-2 pb-1">
-															<label className="text-[11px] text-neutral-400">
-																{t("providers.servicePurpose")}
-																<NativeSelect
-																	value={row.kind ?? ""}
-																	containerClassName="mt-1"
-																	onChange={(event) => {
-																		const next = SERVICE_PURPOSES.find((p) => p.kind === event.target.value);
-																		setModelRows((prev) =>
-																			prev.map((r, i) =>
-																				i === index
-																					? { ...r, kind: event.target.value || undefined, api: next?.apis[0] }
-																					: r,
-																			),
-																		);
-																	}}
-																>
-																	<option value="">{t("providers.inheritPurpose")}</option>
-																	<option value="chat">{t("providers.purposeChat")}</option>
-																	{row.kind && row.kind !== "chat" && !SERVICE_PURPOSES.some((p) => p.kind === row.kind) && (
-																		<option value={row.kind}>{row.kind}</option>
-																	)}
-																	{SERVICE_PURPOSES.map((p) => (
-																		<option key={p.kind} value={p.kind}>
-																			{t(p.key)}
-																		</option>
-																	))}
-																</NativeSelect>
-															</label>
+													{showPerModelFields && (
+														<div className={`mt-1.5 grid gap-2 pb-1 ${serviceMode || row.kind ? "grid-cols-2" : "grid-cols-[minmax(0,1fr)_auto] items-end"}`}>
+															{(serviceMode || row.kind) && (
+																<label className="text-[11px] text-neutral-400">
+																	{t("providers.servicePurpose")}
+																	<NativeSelect
+																		value={row.kind ?? ""}
+																		containerClassName="mt-1"
+																		onChange={(event) => {
+																			const next = SERVICE_PURPOSES.find((p) => p.kind === event.target.value);
+																			setModelRows((prev) =>
+																				prev.map((r, i) =>
+																					i === index
+																						? { ...r, kind: event.target.value || undefined, api: next?.apis[0] }
+																						: r,
+																				),
+																			);
+																		}}
+																	>
+																		<option value="">{t("providers.inheritPurpose")}</option>
+																		<option value="chat">{t("providers.purposeChat")}</option>
+																		{row.kind && row.kind !== "chat" && !SERVICE_PURPOSES.some((p) => p.kind === row.kind) && (
+																			<option value={row.kind}>{row.kind}</option>
+																		)}
+																		{SERVICE_PURPOSES.map((p) => (
+																			<option key={p.kind} value={p.kind}>
+																				{t(p.key)}
+																			</option>
+																		))}
+																	</NativeSelect>
+																</label>
+															)}
 															<label className="text-[11px] text-neutral-400">
 																{t("providers.apiLabel")}
 																<NativeSelect
@@ -1350,6 +1454,24 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 																	))}
 																</NativeSelect>
 															</label>
+															{!serviceMode && !row.kind && (
+																<button
+																	type="button"
+																	onClick={() => {
+																		setModelRows((prev) =>
+																			prev.map((r, i) => (i === index ? { ...r, kind: undefined, api: undefined } : r)),
+																		);
+																		setExpandedModelRows((prev) => {
+																			const next = new Set(prev);
+																			next.delete(index);
+																			return next;
+																		});
+																	}}
+																	className="whitespace-nowrap rounded-lg hairline bg-[var(--well-bg)] px-2.5 py-1.5 text-[11px] text-neutral-300 hover:bg-[var(--bg-hover)]"
+																>
+																	{t("providers.modelProtocolClearBtn")}
+																</button>
+															)}
 														</div>
 													)}
 												</div>

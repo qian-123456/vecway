@@ -144,10 +144,16 @@ pub fn upsert(env: &Env, input: &ProviderUpsert, api_key: Option<&str>) -> Resul
     if base_url.is_empty() {
         return Err("Base URL 不能为空".to_string());
     }
+    let discovery_type = input
+        .discovery_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let every_model_has_api = !input.models.is_empty() && input.models.iter().all(|model| {
         matches!(model, crate::contracts::ModelEntry::Spec(spec) if spec.api.as_deref().is_some_and(|api| !api.trim().is_empty()))
     });
-    if api.is_empty() && !every_model_has_api {
+    if api.is_empty() && !every_model_has_api && discovery_type.as_deref() != Some("proxy") {
         return Err("API 协议不能为空，除非每个模型均明确设置协议".to_string());
     }
     // `auth: none` and a key contradict each other; "no key needed" wins.
@@ -181,6 +187,7 @@ pub fn upsert(env: &Env, input: &ProviderUpsert, api_key: Option<&str>) -> Resul
         api: api.to_string(),
         models: input.models.clone(),
         auth_none,
+        discovery_type,
     };
 
     // No new key: the existing `apiKey` (literal, env var name, command) stays.
@@ -466,6 +473,7 @@ mod tests {
             })
             .collect(),
             auth_none: false,
+            discovery_type: None,
         };
         upsert(&fx.env(), &input, None).unwrap();
         let provider = fx.env().provider("services").unwrap().unwrap();
@@ -506,6 +514,7 @@ mod tests {
             api: "openai-completions".into(),
             models: vec![ModelEntry::Id("a".into())],
             auth_none: false,
+            discovery_type: None,
         };
         upsert(&env, &input, Some("sk-n")).unwrap();
         let t = fx.text();
@@ -557,6 +566,7 @@ mod tests {
             api: "openai-completions".into(),
             models: vec![],
             auth_none: false,
+            discovery_type: None,
         };
         upsert(&env, &input, None).unwrap();
         assert!(env.provider("ollama").unwrap().unwrap().auth_none);
@@ -761,6 +771,7 @@ mod tests {
             api: "openai-completions".into(),
             models: vec![ModelEntry::Id("m1".into())],
             auth_none: false,
+            discovery_type: None,
         }
     }
 

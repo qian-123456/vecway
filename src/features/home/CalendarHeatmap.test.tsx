@@ -181,4 +181,17 @@ describe("CalendarHeatmap", () => {
 		expect(fetchUsage).toHaveBeenCalledTimes(2);
 		expect(screen.getByText(/250 tokens/)).toBeTruthy();
 	});
+
+	it("prevents adjacent month labels from overlapping at the start of the 52-week grid", async () => {
+		fetchUsage.mockResolvedValue({ days: [] });
+		const { container } = render(<CalendarHeatmap />);
+		await flush();
+		const xs = Array.from(container.querySelectorAll("svg text")).map((el) =>
+			Number(el.getAttribute("x")),
+		);
+		expect(xs.length).toBeGreaterThanOrEqual(10);
+		for (let i = 1; i < xs.length; i++) {
+			expect(xs[i] - xs[i - 1]).toBeGreaterThanOrEqual(3 * 13);
+		}
+	});
 });

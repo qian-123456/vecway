@@ -25,7 +25,7 @@ import { useUi } from "../../stores/ui";
 import { toast } from "../../lib/toast";
 import { useT, tNow } from "../../stores/language";
 import { abortTurn } from "./send";
-import { StartGlow } from "../../components/StartHero";
+import { HomeRecentSessions, StartGlow } from "../../components/StartHero";
 import { Notice } from "../../components/Notice";
 import { MODAL_SELECTOR } from "../../components/FloatingLayer";
 import { ChatTrace } from "./ChatTrace";
@@ -359,7 +359,7 @@ export function SessionView({
 					<div
 						className={
 							centered
-								? "mx-auto w-full max-w-[880px] px-6"
+								? "mx-auto w-full max-w-[780px] px-6"
 								: "mx-auto w-full @min-[864px]:w-[calc(100%-6rem)] @min-[864px]:max-w-3xl"
 						}
 					>
@@ -416,6 +416,7 @@ export function SessionView({
 									readonly={external}
 									compact={compact}
 								/>
+								{centered && <HomeRecentSessions sessionId={sessionId} />}
 							</div>
 						)}
 

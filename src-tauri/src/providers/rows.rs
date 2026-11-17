@@ -148,8 +148,25 @@ pub fn build_rows(inp: &Inputs) -> Vec<ProviderRow> {
                 .and_then(|p| p.api.clone())
                 .or_else(|| cache.as_ref().and_then(|c| c.api.clone()))
                 .or_else(|| preset.map(|p| api_string(p.api).to_string()));
+            let discovery_type = yml.and_then(|p| p.discovery_type.clone());
             let models: Vec<ModelEntry> = match yml {
-                Some(p) if origin == ProviderOrigin::Custom => p.models.clone(),
+                Some(p) if origin == ProviderOrigin::Custom => {
+                    if p.discovery_type.is_some() {
+                        let mut merged = p.models.clone();
+                        let mut seen: HashSet<String> =
+                            merged.iter().map(|m| m.id().to_string()).collect();
+                        if let Some(c) = cache.as_ref() {
+                            for mid in &c.model_ids {
+                                if seen.insert(mid.clone()) {
+                                    merged.push(ModelEntry::Id(mid.clone()));
+                                }
+                            }
+                        }
+                        merged
+                    } else {
+                        p.models.clone()
+                    }
+                }
                 _ => cache
                     .as_ref()
                     .map(|c| c.model_ids.iter().cloned().map(ModelEntry::Id).collect())
@@ -201,6 +218,7 @@ pub fn build_rows(inp: &Inputs) -> Vec<ProviderRow> {
                 default_base_url,
                 extra_models: yml.map(|p| p.models.clone()).unwrap_or_default(),
                 auth_none,
+                discovery_type,
                 id,
             }
         })
@@ -278,6 +296,7 @@ mod tests {
             api: base.map(|_| "openai-completions".to_string()),
             api_key: key.map(str::to_string),
             auth_none: false,
+            discovery_type: None,
             models: vec![ModelEntry::Id("m".into())],
         }
     }
@@ -359,5 +378,44 @@ mod tests {
         let openai = rows.iter().find(|r| r.id == "openai").unwrap();
         assert_eq!(openai.key.kind, ProviderKeyKind::Missing);
         assert!(!openai.auth_none);
+    }
+
+    #[test]
+    fn custom_provider_with_discovery_merges_cached_models_without_mutating_extra_models() {
+        let mut p = yp("magpie", Some("http://127.0.0.1:3425/v1"), None);
+        p.auth_none = true;
+        p.discovery_type = Some("openai-models-list".into());
+        p.models = vec![ModelEntry::Spec(crate::contracts::ModelSpec {
+            id: "special".into(),
+            api: Some("openai-responses".into()),
+            ..Default::default()
+        })];
+        let yml = vec![p];
+        let disabled = HashSet::new();
+        let creds = HashMap::new();
+        let cache = |id: &str| {
+            (id == "magpie").then(|| CachedEndpoint {
+                base_url: Some("http://127.0.0.1:3425/v1".into()),
+                api: Some("openai-completions".into()),
+                model_ids: vec!["special".into(), "upstream-new".into()],
+            })
+        };
+        let env_set = |_: &str| false;
+        let rows = build_rows(&Inputs {
+            yml: &yml,
+            disabled: &disabled,
+            creds: &creds,
+            cache: &cache,
+            env: &KeyEnv { env_set: &env_set },
+        });
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].discovery_type.as_deref(),
+            Some("openai-models-list")
+        );
+        assert_eq!(rows[0].extra_models.len(), 1);
+        assert_eq!(rows[0].models.len(), 2);
+        assert_eq!(rows[0].models[0].id(), "special");
+        assert_eq!(rows[0].models[1].id(), "upstream-new");
     }
 }

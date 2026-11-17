@@ -193,6 +193,11 @@ export function ProviderRowView({ row, expanded, onToggleExpand, onEdit, onSetKe
 							>
 								{badge.label}
 							</span>
+							{row.discoveryType && (
+								<span className="inline-flex shrink-0 whitespace-nowrap items-center rounded-full border border-[color-mix(in_srgb,var(--accent)_35%,transparent)] bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)]">
+									{t("providers.autoDiscoverBadge")}
+								</span>
+							)}
 							{test?.state === "done" && (
 								<span
 									title={`${test.result.detail}${t("providers.latencyOpen")}${test.result.latencyMs}ms${t("providers.latencyClose")}`}

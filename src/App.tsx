@@ -422,9 +422,12 @@ export default function App() {
 							<MainCenterView activeView={effectiveCenterView} />
 						</ErrorBoundary>
 					</main>
+
+					{/* Center-scoped bottom status bar so left sidebar & right aside extend full window height */}
+					<BottomBar />
 				</div>
 
-				{/* Right panel — spans the full window height above the BottomBar */}
+				{/* Right panel — spans the full window height */}
 				{rightVisible && (
 					<>
 						{/* Right panel drag handle */}
@@ -442,9 +445,6 @@ export default function App() {
 					</>
 				)}
 			</div>
-
-			{/* Bottom status bar (CC GUI & dsh session stats) */}
-			<BottomBar />
 			{/* Global notifications stack */}
 			<Toaster />
 			{/* Global modals — render nothing unless ui.modal matches. Lazy loaded in Suspense */}

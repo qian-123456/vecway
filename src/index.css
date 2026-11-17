@@ -204,6 +204,14 @@ input[type="number"] {
 	--shadow-apple-card: 0 0 0 0.5px var(--hairline), 0 4px 16px rgba(0, 0, 0, 0.35);
 	--shadow-apple-modal: 0 0 0 0.5px var(--hairline-strong), 0 16px 40px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.25);
 
+	/* Elevated Composer & raised ear surface tokens (dark default) */
+	--bg-ear: color-mix(in oklab, var(--bg-panel) 76%, var(--bg));
+	--composer-surface: color-mix(in oklab, var(--bg-panel) 94%, #ffffff 3%);
+	--composer-border: color-mix(in oklab, var(--text) 10%, transparent);
+	--composer-halo: 0 22px 52px -16px rgba(0, 0, 0, 0.58), 0 2px 6px rgba(0, 0, 0, 0.30);
+	--composer-prism: radial-gradient(110% 80% at 20% -35%, rgba(255, 255, 255, 0.045), transparent 55%);
+	--composer-rim: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.05) 38px, rgba(255, 255, 255, 0.07));
+
 	/* Derived chat tokens (Codex-style). These mix against each theme's
 	 * --text, so every light/dark palette resolves them automatically:
 	 *   --text-60  activity summary / secondary text
@@ -524,35 +532,35 @@ html[data-theme="solarized-dark"] {
 }
 
 html[data-theme="sakura"] {
-	--bg: #fdf4f6;
-	--bg-panel: #f9eaee;
-	--bg-hover: #f3e0e6;
-	--bg-selected: #ecd2da;
-	--border: #eed5dd;
-	--text: #472b36;
-	--text-muted: #86606f;
-	--text-dim: #b08b98;
-	--accent: #d6336c;
-	--accent-strong: #b02559;
-	--accent-hover: #e77ba1;
+	--bg: #fcf6f8;
+	--bg-panel: #fffdfe;
+	--bg-hover: #f5eaee;
+	--bg-selected: #eddbe2;
+	--border: #ead8df;
+	--text: #3a222b;
+	--text-muted: #7d5c68;
+	--text-dim: #ac8b97;
+	--accent: #c93b6b;
+	--accent-strong: #9e2a5b;
+	--accent-hover: #e26d95;
 	--accent-fg: #ffffff;
 	--status-error: #c23545;
-	--status-success: #2e9e63;
+	--status-success: #268e60;
 	--status-warning: #ad6b0a;
 	--status-renamed: #3a6fd8;
 }
 
 html[data-theme="glacier"] {
-	--bg: #f6fafc;
-	--bg-panel: #ecf3f8;
-	--bg-hover: #e2edf4;
-	--bg-selected: #d4e3ee;
+	--bg: #f5f9fc;
+	--bg-panel: #fcfeff;
+	--bg-hover: #e6eff6;
+	--bg-selected: #d6e5f0;
 	--border: #d8e6ef;
-	--text: #1f3a4d;
+	--text: #1b3242;
 	--text-muted: #56738a;
-	--text-dim: #8aa4b5;
+	--text-dim: #88a2b5;
 	--accent: #0d94bd;
-	--accent-strong: #0a7699;
+	--accent-strong: #4f5fd8;
 	--accent-hover: #3bb0d6;
 	--accent-fg: #ffffff;
 	--status-error: #cf4a56;
@@ -563,10 +571,10 @@ html[data-theme="glacier"] {
 
 html[data-theme="lavender"] {
 	--bg: #f8f6fc;
-	--bg-panel: #f0ecf8;
-	--bg-hover: #e8e2f4;
-	--bg-selected: #dcd2ee;
-	--border: #ded4f0;
+	--bg-panel: #fdfcff;
+	--bg-hover: #ece6f7;
+	--bg-selected: #ded4f0;
+	--border: #e0d7f2;
 	--text: #38304f;
 	--text-muted: #6b6288;
 	--text-dim: #9a92b5;
@@ -581,16 +589,16 @@ html[data-theme="lavender"] {
 }
 
 html[data-theme="light"] {
-	--bg: #faf9f6;
-	--bg-panel: #f2f0ea;
-	--bg-hover: #eae7df;
-	--bg-selected: #e5e0d4;
-	--border: #e2ddd2;
+	--bg: #f8f7f4;
+	--bg-panel: #ffffff;
+	--bg-hover: #eeece6;
+	--bg-selected: #e5e1d8;
+	--border: #e4e0d6;
 	--text: #2b2823;
 	--text-muted: #69635a;
-	--text-dim: #6a6458;
+	--text-dim: #8a8377;
 	--accent: #b03e22;
-	--accent-strong: #b03e22;
+	--accent-strong: #6e59c7;
 	--accent-hover: #96331b;
 	--accent-fg: #ffffff;
 	--status-error: #b42318;
@@ -600,16 +608,16 @@ html[data-theme="light"] {
 }
 
 html[data-theme="one-light"] {
-	--bg: #fafafa;
-	--bg-panel: #f0f0f0;
-	--bg-hover: #e5e5e6;
-	--bg-selected: #dbdbdc;
-	--border: #dcdcdc;
+	--bg: #f6f7f8;
+	--bg-panel: #ffffff;
+	--bg-hover: #eaebed;
+	--bg-selected: #dfe1e4;
+	--border: #e1e3e6;
 	--text: #383a42;
 	--text-muted: #696c77;
 	--text-dim: #a0a1a7;
 	--accent: #2f65d9;
-	--accent-strong: #2f65d9;
+	--accent-strong: #5856d6;
 	--accent-hover: #1e4fb8;
 	--accent-fg: #ffffff;
 	--status-error: #e45649;
@@ -620,15 +628,15 @@ html[data-theme="one-light"] {
 
 html[data-theme="catppuccin-latte"] {
 	--bg: #eff1f5;
-	--bg-panel: #e6e9ef;
-	--bg-hover: #dce0e8;
-	--bg-selected: #ccd0da;
-	--border: #bcc0cc;
+	--bg-panel: #f9fafc;
+	--bg-hover: #e3e7ef;
+	--bg-selected: #d4d9e4;
+	--border: #d5dae5;
 	--text: #4c4f69;
 	--text-muted: #65687e;
 	--text-dim: #8c8fa1;
 	--accent: #1e66f5;
-	--accent-strong: #1e66f5;
+	--accent-strong: #8839ef;
 	--accent-hover: #04a5e5;
 	--accent-fg: #ffffff;
 	--status-error: #d20f39;
@@ -866,17 +874,38 @@ html[data-theme="everforest-light"],
 html[data-theme="sakura"],
 html[data-theme="glacier"],
 html[data-theme="lavender"] {
-	--chrome-glass: rgba(255, 255, 255, 0.72);
-	--popover-glass: rgba(255, 255, 255, 0.85);
+	--chrome-glass: color-mix(in oklab, var(--bg) 94%, var(--text) 4.2%);
+	--popover-glass: color-mix(in oklab, #ffffff 88%, var(--bg));
 	--hairline: rgba(0, 0, 0, 0.08);
 	--hairline-strong: rgba(0, 0, 0, 0.14);
-	--border-divider: rgba(0, 0, 0, 0.06);
+	--border-divider: color-mix(in oklab, var(--text) 8.5%, transparent);
 	--bg-active-fill: rgba(0, 0, 0, 0.06);
 	--overlay: rgba(0, 0, 0, 0.30);
 	--well-bg: rgba(0, 0, 0, 0.04);
 	--switch-off: #E9E9EB;
 	--shadow-apple-card: 0 0 0 0.5px var(--hairline), 0 2px 12px rgba(0, 0, 0, 0.08);
 	--shadow-apple-modal: 0 0 0 0.5px var(--hairline-strong), 0 16px 40px rgba(0, 0, 0, 0.15), 0 2px 6px rgba(0, 0, 0, 0.08);
+	--bg-ear: color-mix(in oklab, var(--bg) 90%, var(--text) 5%);
+	--composer-surface: color-mix(in oklab, #ffffff 84%, var(--bg));
+	--composer-border: color-mix(in oklab, var(--text) 11%, transparent);
+	--composer-halo:
+		0 18px 46px -14px color-mix(in oklab, var(--text) 14%, transparent),
+		0 2px 6px color-mix(in oklab, var(--text) 4%, transparent);
+	--composer-prism:
+		radial-gradient(120% 90% at 22% -30%, rgba(255, 255, 255, 0.78), transparent 55%),
+		linear-gradient(
+			90deg,
+			color-mix(in oklab, var(--accent) 5.8%, transparent),
+			transparent 11%,
+			transparent 89%,
+			color-mix(in oklab, var(--accent-strong) 5.8%, transparent)
+		);
+	--composer-rim: linear-gradient(
+		180deg,
+		rgba(255, 255, 255, 0.94),
+		color-mix(in oklab, var(--text) 8%, transparent) 38px,
+		color-mix(in oklab, var(--text) 12%, transparent)
+	);
 }
 
 /* Follow the OS scheme while the theme choice is "system". */
@@ -1244,6 +1273,41 @@ html[data-ui-scale="large"] {
 	-webkit-backdrop-filter: blur(28px) saturate(190%);
 }
 
+/* Optical Composer elevation: theme-tinted halo, subtle edge dispersion, and top specular rim */
+.composer-optical-card {
+	position: relative;
+	isolation: isolate;
+	background-color: var(--composer-surface, var(--bg-panel));
+	border-color: var(--composer-border, var(--border));
+	box-shadow: var(--composer-halo);
+}
+.composer-optical-card::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	pointer-events: none;
+	z-index: var(--z-local-base);
+	background: var(--composer-prism);
+}
+.composer-optical-card::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	padding: 1px;
+	pointer-events: none;
+	z-index: var(--z-local-base);
+	background: var(--composer-rim);
+	-webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+	-webkit-mask-composite: xor;
+	mask-composite: exclude;
+}
+.composer-optical-card > * {
+	position: relative;
+	z-index: var(--z-local-raised);
+}
+
 /* Reduced transparency accessibility fallback */
 @media (prefers-reduced-transparency: reduce) {
 	.vibrancy-chrome {
@@ -1255,6 +1319,25 @@ html[data-ui-scale="large"] {
 		background-color: var(--bg-panel) !important;
 		backdrop-filter: none !important;
 		-webkit-backdrop-filter: none !important;
+	}
+	.composer-optical-card {
+		background-color: var(--bg-panel);
+	}
+	.composer-optical-card::before,
+	.composer-optical-card::after {
+		display: none;
+	}
+}
+
+@media (forced-colors: active) {
+	.composer-optical-card {
+		background-color: Canvas;
+		border-color: ButtonText;
+		box-shadow: none;
+	}
+	.composer-optical-card::before,
+	.composer-optical-card::after {
+		display: none;
 	}
 }
 

@@ -4,51 +4,64 @@ import {
 	Coins,
 	Gauge,
 	GitBranch,
-	Minus,
-	Plus,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { computeSessionStats, formatTokens } from "../features/chat/sessionStats";
+import { useChatUi } from "../features/chat/chatUi";
 import { PerfPopover } from "../features/chat/PerfPopover";
 import { SessionStatsPopover } from "../features/chat/SessionStatsPopover";
-import { useChatUi } from "../features/chat/chatUi";
+import { computeSessionStats, formatTokens } from "../features/chat/sessionStats";
+import { usePendingSession } from "../features/sessions/pendingSession";
+import type { GitBadge, PerfBreakdown } from "../lib/contracts";
+import { getAppMemoryUsage, gitBadge, perfBreakdown, type ProcessMemoryInfo } from "../lib/ipc";
+import { useZoom } from "../lib/zoom";
+import { useDisplayPrefs } from "../stores/displayPrefs";
+import { useT } from "../stores/language";
 import { useLive } from "../stores/live";
 import { useSessions } from "../stores/sessions";
 import { useUi } from "../stores/ui";
-import { ompVersionLabel, useOmpUpdate } from "../stores/ompUpdate";
-import { getAppMemoryUsage, perfBreakdown, type ProcessMemoryInfo } from "../lib/ipc";
-import { useDisplayPrefs } from "../stores/displayPrefs";
-import type { PerfBreakdown } from "../lib/contracts";
-import { useZoom } from "../lib/zoom";
-import { useT } from "../stores/language";
 
 export function BottomBar() {
 	const { t } = useT();
 	const selectedSessionId = useUi((s) => s.selectedSessionId);
-	const lastSessionId = useUi((s) => s.lastSessionId);
 	const bottomBarVisible = useDisplayPrefs((s) => s.bottomBar);
-	const activeSessionId = selectedSessionId || lastSessionId;
 
 	const rightTab = useUi((s) => s.rightTab);
 	const setRightTab = useUi((s) => s.setRightTab);
 	const rightOpen = useUi((s) => s.rightOpen);
 	const setRightOpen = useUi((s) => s.setRightOpen);
-	const openSettings = useUi((s) => s.openSettings);
-	const ompInfo = useOmpUpdate((s) => s.info);
-	const ompStatus = useOmpUpdate((s) => s.status);
-	const ompVersion = ompVersionLabel(ompInfo, ompStatus);
-	const ompUpdateAvailable = ompStatus?.updateAvailable === true;
 
 	const activeSession = useSessions((s) =>
-		activeSessionId ? s.sessions[activeSessionId] : undefined,
+		selectedSessionId ? s.sessions[selectedSessionId] : undefined,
 	);
 	const live = useLive((s) =>
-		activeSessionId ? s.sessions[activeSessionId] : undefined,
+		selectedSessionId ? s.sessions[selectedSessionId] : undefined,
 	);
 	const streaming = live?.streaming === true;
 
-	// Global keyboard shortcuts (Cmd/Ctrl +/-, Cmd/Ctrl 0) and stored zoom application
-	const { zoom, zoomIn, zoomOut, resetZoom, minZoom, maxZoom } = useZoom();
+	const draftCwd = usePendingSession((s) =>
+		!selectedSessionId && s.selectedId ? (s.drafts[s.selectedId]?.cwd ?? "") : "",
+	);
+	const [draftGit, setDraftGit] = useState<GitBadge | null>(null);
+	useEffect(() => {
+		if (selectedSessionId || !draftCwd) {
+			setDraftGit(null);
+			return;
+		}
+		let cancelled = false;
+		gitBadge(draftCwd)
+			.then((b) => {
+				if (!cancelled) setDraftGit(b ?? null);
+			})
+			.catch(() => {
+				if (!cancelled) setDraftGit(null);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [selectedSessionId, draftCwd]);
+
+	// Global keyboard shortcuts (Cmd/Ctrl +/-, Cmd/Ctrl 0) and persisted zoom remain active
+	useZoom();
 
 	const handleToggleGit = () => {
 		if (rightTab === "git" && rightOpen) {
@@ -58,7 +71,6 @@ export function BottomBar() {
 		}
 	};
 
-	// Session statistics (dsh style)
 	const statsOpen = useChatUi((s) => s.statsOpen);
 	const setStatsOpen = useChatUi((s) => s.setStatsOpen);
 	const transcriptItems = live?.items ?? [];
@@ -66,24 +78,34 @@ export function BottomBar() {
 		() => computeSessionStats(transcriptItems, live),
 		[transcriptItems, live],
 	);
-	// Real OS process physical memory (footprint across app + helpers)
+
+	const contextPct = useMemo(() => {
+		const raw = live?.state?.contextUsage;
+		if (!raw || typeof raw !== "object") return null;
+		const rec = raw as Record<string, unknown>;
+		if (typeof rec.percent === "number" && Number.isFinite(rec.percent)) {
+			return Math.max(0, Math.round(rec.percent));
+		}
+		if (
+			typeof rec.tokens === "number" &&
+			typeof rec.contextWindow === "number" &&
+			rec.contextWindow > 0
+		) {
+			return Math.max(0, Math.round((rec.tokens / rec.contextWindow) * 100));
+		}
+		return null;
+	}, [live?.state?.contextUsage]);
+
 	const [memoryInfo, setMemoryInfo] = useState<ProcessMemoryInfo | null>(null);
 	const [perfData, setPerfData] = useState<PerfBreakdown | null>(null);
 	const [perfOpen, setPerfOpen] = useState(false);
 	const statsBtnRef = useRef<HTMLButtonElement>(null);
 	const perfBtnRef = useRef<HTMLButtonElement>(null);
 
-	// Shared poller for memory breakdown:
-	// - Pauses when document is hidden
-	// - Relaxed interval (30s) when PerfPopover is closed, 4s when open
-	// - Skips overlapping runs
 	useEffect(() => {
 		let cancelled = false;
 		let timer: number | null = null;
 		let inFlight = false;
-
-		// Closed: only the bar label needs refreshing; the backend walks every
-		// system pid for it, so keep that rare.
 		const intervalMs = perfOpen ? 4000 : 30000;
 
 		const poll = async () => {
@@ -124,11 +146,9 @@ export function BottomBar() {
 					timer = null;
 				}
 				void poll();
-			} else {
-				if (timer !== null) {
-					window.clearTimeout(timer);
-					timer = null;
-				}
+			} else if (timer !== null) {
+				window.clearTimeout(timer);
+				timer = null;
 			}
 		};
 
@@ -141,65 +161,84 @@ export function BottomBar() {
 			document.removeEventListener("visibilitychange", onVisibilityChange);
 		};
 	}, [perfOpen]);
+
 	const realMemoryStr = memoryInfo?.formatted ?? null;
-
-
-	// Approximate memory estimation for CC-GUI style indicator
 	const memEstimate = useMemo(() => {
 		const baseMb = 75;
-		const itemMb = (transcriptItems.length * 0.15);
+		const itemMb = transcriptItems.length * 0.15;
 		return `${Math.round(baseMb + itemMb)} MB`;
 	}, [transcriptItems.length]);
 
-	const branch = activeSession?.git?.branch;
-	const dirty = activeSession?.git?.dirty ?? 0;
+	const gitInfo = selectedSessionId ? activeSession?.git : draftGit;
+	const branch = gitInfo?.branch;
+	const dirty = gitInfo?.dirty ?? 0;
+	const showSessionTelemetry = Boolean(selectedSessionId) && (stats.hasData || streaming);
 
 	return (
-		<footer data-app-bottombar className={`relative ${bottomBarVisible ? "flex" : "hidden"} h-7 shrink-0 items-center justify-between border-t border-[var(--border-divider)] bg-neutral-950 px-3 text-[11px] text-neutral-400 select-none tabular-nums`}>
-			{/* Left: dsh-style Session Stats */}
-			<div className="flex items-center gap-2">
-				{activeSessionId && stats.hasData ? (
+		<footer
+			data-app-bottombar
+			className={clsx(
+				"relative h-6 shrink-0 items-center justify-between border-t border-[var(--border-divider)] bg-[var(--bg)] px-3.5 text-[11px] text-[var(--text-muted)] select-none tabular-nums",
+				bottomBarVisible ? "flex" : "hidden",
+			)}
+		>
+			{/* Left: DSH-style live session telemetry — only shown after a session starts */}
+			<div className="flex min-w-0 items-center gap-2">
+				{showSessionTelemetry ? (
 					<button
 						ref={statsBtnRef}
 						type="button"
 						onClick={() => setStatsOpen(!statsOpen)}
 						title={t("bottomBar.statsTip")}
-						className="group flex items-center gap-1.5 rounded-[6px] px-1.5 py-0.5 text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-200 active:scale-97 transition-all"
+						className="group flex min-w-0 items-center gap-1.5 rounded-[6px] px-1.5 py-0.5 -ml-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer"
 					>
 						<Gauge
-							size={12}
+							size={11.5}
 							className={clsx(
-								"transition-colors",
-								streaming ? "text-indigo-400 animate-pulse" : "text-neutral-500 group-hover:text-indigo-400",
+								"shrink-0 transition-colors",
+								streaming
+									? "text-indigo-400 animate-pulse"
+									: "text-[var(--text-dim)] group-hover:text-indigo-400",
 							)}
 						/>
-						<span className="tabular-nums font-mono">
+						{contextPct !== null && (
+							<>
+								<span className="whitespace-nowrap font-mono tabular-nums">
+									{t("bottomBar.contextPercent", { pct: contextPct })}
+								</span>
+								<span className="text-[var(--text-dim)]">·</span>
+							</>
+						)}
+						<span className="whitespace-nowrap font-mono tabular-nums">
 							{t("bottomBar.roundsAndSteps", { rounds: stats.rounds, steps: stats.steps })}
 						</span>
 						{stats.tps != null && (
 							<>
-								<span className="text-neutral-600">·</span>
-								<span className="tabular-nums font-mono">{stats.tps.toFixed(1)} token/s</span>
+								<span className="text-[var(--text-dim)]">·</span>
+								<span className="whitespace-nowrap font-mono tabular-nums">
+									{stats.tps.toFixed(1)} tok/s
+								</span>
 							</>
 						)}
-						<span className="text-neutral-600">·</span>
-						<Coins size={11} className="text-neutral-500 group-hover:text-amber-400 transition-colors" />
-						<span className="tabular-nums font-mono">{stats.totalTokens == null ? "—" : formatTokens(stats.totalTokens)}</span>
+						<span className="text-[var(--text-dim)]">·</span>
+						<Coins
+							size={11}
+							className="shrink-0 text-[var(--text-dim)] transition-colors group-hover:text-amber-400"
+						/>
+						<span className="whitespace-nowrap font-mono tabular-nums">
+							{stats.totalTokens == null ? "—" : formatTokens(stats.totalTokens)}
+						</span>
 						{stats.cacheHitRate != null && stats.cacheHitRate > 0 && (
 							<>
-								<span className="text-neutral-600">·</span>
-								<span className="tabular-nums font-mono">{t("bottomBar.cacheHitRate", { rate: stats.cacheHitRate.toFixed(1) })}</span>
+								<span className="text-[var(--text-dim)]">·</span>
+								<span className="whitespace-nowrap font-mono tabular-nums">
+									{t("bottomBar.cacheHitRate", { rate: stats.cacheHitRate.toFixed(1) })}
+								</span>
 							</>
 						)}
 					</button>
-				) : (
-					<div className="flex items-center gap-1.5 text-neutral-500">
-						<Activity size={12} className="text-neutral-600" />
-						<span>{t("bottomBar.ready")}</span>
-					</div>
-				)}
+				) : null}
 
-				{/* Floating Session Stats Popover */}
 				<SessionStatsPopover
 					anchor={statsOpen ? statsBtnRef.current : null}
 					stats={stats}
@@ -209,23 +248,24 @@ export function BottomBar() {
 				/>
 			</div>
 
-			{/* Right: CC GUI style Status Strip (Performance, Zoom, Sync, Git) */}
-			<div className="flex items-center gap-2 text-neutral-400">
-				{/* Performance indicator (Real OS physical memory RSS) — click for per-process breakdown */}
+			{/* Right: Essential runtime footprint & Git branch */}
+			<div className="flex shrink-0 items-center gap-2 text-[var(--text-muted)]">
 				<button
 					ref={perfBtnRef}
 					type="button"
 					onClick={() => setPerfOpen((v) => !v)}
 					title={t("bottomBar.memoryTooltip", {
-						processes: memoryInfo?.processes ? t("bottomBar.processesCount", { count: memoryInfo.processes }) : "",
+						processes: memoryInfo?.processes
+							? t("bottomBar.processesCount", { count: memoryInfo.processes })
+							: "",
 					})}
 					className={clsx(
-						"flex items-center gap-1 rounded-[6px] px-1 py-0.5 transition-all hover:bg-[var(--bg-active-fill)] hover:text-neutral-200 active:scale-97",
-						perfOpen && "bg-[var(--bg-hover)] text-neutral-100",
+						"flex items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer",
+						perfOpen && "bg-[var(--bg-hover)] text-[var(--text)]",
 					)}
 				>
-					<Activity size={11} className="text-emerald-400" />
-					<span className="tabular-nums font-mono text-[10.5px]">
+					<Activity size={11} className="shrink-0 text-emerald-500" />
+					<span className="font-mono text-[10.5px] tabular-nums">
 						{t("bottomBar.performance", { memory: realMemoryStr ?? memEstimate })}
 					</span>
 				</button>
@@ -238,80 +278,34 @@ export function BottomBar() {
 					onClose={() => setPerfOpen(false)}
 					ignoreRefs={[perfBtnRef]}
 				/>
-				<span className="text-neutral-700">·</span>
 
-				{/* omp version chip — click opens 设置 ▸ 版本与更新 */}
-				{ompVersion && (
-					<>
-						<button
-							type="button"
-							onClick={() => openSettings("about")}
-						title={ompUpdateAvailable ? t("bottomBar.ompNewVersion", { version: ompStatus?.latest ?? "" }) : t("bottomBar.ompVersionTip")}
-							className="relative flex items-center gap-1 rounded-[6px] px-1 py-0.5 transition-all hover:bg-[var(--bg-active-fill)] hover:text-neutral-200 active:scale-97"
-						>
-							<span className="font-mono text-[10.5px]">omp {ompVersion}</span>
-							{ompUpdateAvailable && <span className="h-1.5 w-1.5 rounded-full bg-indigo-400" />}
-						</button>
-						<span className="text-neutral-700">·</span>
-					</>
-				)}
-
-				{/* Zoom controls: - 100% + */}
-				<div className="flex items-center gap-1 text-[11px]">
-					<button
-						type="button"
-						onClick={zoomOut}
-						disabled={zoom <= minZoom}
-						title={t("bottomBar.zoomOut")}
-						className="rounded p-0.5 text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-200 disabled:opacity-30 transition-colors"
-					>
-						<Minus size={11} />
-					</button>
-					<button
-						type="button"
-						onClick={resetZoom}
-						title={t("bottomBar.resetZoom")}
-						className="font-mono text-[10.5px] hover:text-neutral-200 transition-colors"
-					>
-						{zoom}%
-					</button>
-					<button
-						type="button"
-						onClick={zoomIn}
-						disabled={zoom >= maxZoom}
-						title={t("bottomBar.zoomIn")}
-						className="rounded p-0.5 text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-200 disabled:opacity-30 transition-colors"
-					>
-						<Plus size={11} />
-					</button>
-				</div>
-
-				{/* Git branch if available */}
 				{branch && (
 					<>
-						<span className="text-neutral-700">·</span>
+						<span className="text-[var(--text-dim)]">·</span>
 						<button
 							type="button"
 							onClick={handleToggleGit}
 							aria-label={t("bottomBar.viewGitPanel")}
 							title={t("bottomBar.viewGitPanel")}
 							className={clsx(
-								"flex items-center gap-1 rounded-[6px] px-1.5 py-0.5 text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-200 active:scale-97 transition-all cursor-pointer",
-								rightTab === "git" && rightOpen && "bg-[var(--bg-active-fill)] text-neutral-200",
+								"flex items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 -mr-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer",
+								rightTab === "git" && rightOpen && "bg-[var(--bg-active-fill)] text-[var(--text)]",
 							)}
 						>
 							<GitBranch
 								size={11}
 								className={clsx(
-									"transition-colors",
-									rightTab === "git" && rightOpen ? "text-indigo-400" : "text-neutral-500",
+									"shrink-0 transition-colors",
+									rightTab === "git" && rightOpen ? "text-indigo-400" : "text-[var(--text-dim)]",
 								)}
 							/>
-							<span className="max-w-[120px] truncate font-mono text-[10.5px]">
+							<span className="max-w-[140px] truncate font-mono text-[10.5px]">
 								{branch}
 							</span>
 							{dirty > 0 && (
-								<span className="tabular-nums font-mono text-[10px] text-amber-400">+{dirty}</span>
+								<span className="font-mono text-[10px] tabular-nums text-amber-500">
+									+{dirty}
+								</span>
 							)}
 						</button>
 					</>

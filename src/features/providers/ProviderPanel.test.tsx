@@ -681,4 +681,63 @@ describe("provider dialog key input mode", () => {
 		expect(ipc.providerTestModel).toHaveBeenCalledWith("gw", "m1");
 		expect(ipc.providerTestModel).toHaveBeenCalledWith("gw", "m2");
 	});
+
+	it("moves name and key notes into InfoTip popovers next to field labels", () => {
+		useProviders.setState({ rows: [], loaded: true });
+		render(<ProviderDialog target={{ mode: "add" }} onClose={() => {}} />);
+		expect(screen.queryByText(/就是 OMP 里的供应商名/)).toBeNull();
+		expect(screen.queryByText(/密钥以明文保存在 OMP/)).toBeNull();
+		const tips = screen.getAllByRole("button", { name: "查看说明" });
+		expect(tips.length).toBeGreaterThanOrEqual(2);
+		fireEvent.click(tips[0]);
+		expect(screen.getByRole("tooltip", { hidden: true }).textContent).toContain("就是 OMP 里的供应商名");
+		fireEvent.click(tips[0]);
+		fireEvent.click(tips[1]);
+		expect(screen.getByRole("tooltip", { hidden: true }).textContent).toContain("密钥以明文保存在 OMP");
+	});
+
+	it("collapses per-model protocol overrides behind a compact chip in chat mode", () => {
+		const r = row("magpie", "none", {
+			authNone: true,
+			models: [{ id: "muse-spark", api: "openai-responses" }],
+		});
+		useProviders.setState({ rows: [r], loaded: true });
+		render(<ProviderDialog target={{ mode: "edit", row: r }} onClose={() => {}} />);
+		expect(screen.queryByText("根据协议继承")).toBeNull();
+		const chip = screen.getByRole("button", { name: "调整模型 muse-spark 的独立协议" });
+		expect(chip.textContent).toBe("OpenAI Responses");
+		fireEvent.click(chip);
+		expect(screen.queryByText("根据协议继承")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "恢复继承供应商协议" }));
+		expect(screen.queryByRole("button", { name: "调整模型 muse-spark 的独立协议" })).toBeNull();
+	});
+
+	it("supports auto-discover toggle with empty static models and loads extraModels on edit", async () => {
+		useProviders.setState({ rows: [], loaded: true });
+		ipc.providerUpsert.mockResolvedValue(row("magpie", "none", { authNone: true, discoveryType: "openai-models-list", models: [] }));
+		const { unmount } = render(<ProviderDialog target={{ mode: "add" }} onClose={() => {}} />);
+		fireEvent.change(screen.getByLabelText("名称"), { target: { value: "magpie" } });
+		fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "http://127.0.0.1:3425/v1" } });
+		fireEvent.click(screen.getByRole("switch", { name: "自动同步上游模型" }));
+		fireEvent.click(screen.getByRole("button", { name: "保存" }));
+		await waitFor(() => expect(ipc.providerUpsert).toHaveBeenCalledTimes(1));
+		expect(ipc.providerUpsert.mock.calls[0][0]).toMatchObject({
+			id: "magpie",
+			models: [],
+			discoveryType: "openai-models-list",
+		});
+		unmount();
+
+		const existing = row("magpie", "none", {
+			authNone: true,
+			discoveryType: "openai-models-list",
+			models: [{ id: "override-only", api: "openai-responses" }, "cached-model"],
+			extraModels: [{ id: "override-only", api: "openai-responses" }],
+		});
+		useProviders.setState({ rows: [existing], loaded: true });
+		render(<ProviderDialog target={{ mode: "edit", row: existing }} onClose={() => {}} />);
+		expect(screen.getByDisplayValue("override-only")).toBeTruthy();
+		expect(screen.queryByDisplayValue("cached-model")).toBeNull();
+		expect(screen.getByRole("switch", { name: "自动同步上游模型" }).getAttribute("aria-checked")).toBe("true");
+	});
 });

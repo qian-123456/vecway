@@ -145,7 +145,7 @@ function HeatmapContent() {
 			}
 		}
 		const daysList: DayData[] = [];
-		const monthMarkers: { weekIndex: number; monthName: string }[] = [];
+		const rawMonthMarkers: { weekIndex: number; monthName: string }[] = [];
 		let lastMonth = -1;
 		let totalTokens: number | null = 0;
 		let knownDays = 0;
@@ -160,7 +160,7 @@ function HeatmapContent() {
 			const dayIndex = i % 7;
 			const month = current.getMonth();
 			if (month !== lastMonth && dayIndex === 0) {
-				monthMarkers.push({ weekIndex, monthName: (isZh ? MONTH_NAMES_ZH : MONTH_NAMES_EN)[month] });
+				rawMonthMarkers.push({ weekIndex, monthName: (isZh ? MONTH_NAMES_ZH : MONTH_NAMES_EN)[month] });
 				lastMonth = month;
 			}
 			const dateKey = `${current.getFullYear()}-${String(month + 1).padStart(2, "0")}-${String(current.getDate()).padStart(2, "0")}`;
@@ -180,6 +180,17 @@ function HeatmapContent() {
 				: ratio <= 0.5 ? 2
 				: ratio <= 0.75 ? 3 : 4;
 			daysList.push({ date: current, dateKey, weekIndex, dayIndex, tokens, missingRequests: data?.missingRequests ?? 0, sessionCount, topModel: data?.topModel ?? null, level });
+		}
+
+		// Prevent adjacent month labels from colliding when a partial leading month has < 3 columns.
+		const monthMarkers: { weekIndex: number; monthName: string }[] = [];
+		for (let idx = 0; idx < rawMonthMarkers.length; idx++) {
+			const m = rawMonthMarkers[idx];
+			const next = rawMonthMarkers[idx + 1];
+			if (idx === 0 && next && next.weekIndex - m.weekIndex < 3) continue;
+			const prev = monthMarkers[monthMarkers.length - 1];
+			if (prev && m.weekIndex - prev.weekIndex < 3) continue;
+			monthMarkers.push(m);
 		}
 		return { gridDays: daysList, monthLabels: monthMarkers, grandTokens: knownDays === 0 && missingRequests > 0 ? null : totalTokens, grandMissingRequests: missingRequests, grandSessions: totalSessions, grandTurns: totalTurns };
 	}, [usage, isZh]);
@@ -218,13 +229,13 @@ function HeatmapContent() {
 			{/* omp-tui 风格单行状态数据栏：左对齐与第 1 列日历方块对准 */}
 			<div
 				style={{ paddingLeft: `${leftPadding}px` }}
-				className="mb-2.5 flex items-center justify-between font-mono text-[12px] leading-snug"
+				className="mb-2.5 flex items-center justify-between text-[12px] leading-snug"
 			>
-				<div className="flex min-w-0 items-start gap-2 text-[var(--text-muted)]">
-					<span className="shrink-0 whitespace-nowrap font-semibold text-rose-400 tracking-wide">
+				<div className="flex min-w-0 items-baseline gap-2.5 text-[var(--text-muted)]">
+					<span className="shrink-0 whitespace-nowrap font-semibold text-[var(--text)]">
 						{t("home.activityTitle")}
 					</span>
-					<span className="min-w-0 break-words font-medium text-[var(--text)]" role={error ? "alert" : "status"}>
+					<span className="min-w-0 break-words font-mono text-[11.5px] text-[var(--text-muted)] tabular-nums" role={error ? "alert" : "status"}>
 						{error ? t("home.activityError", { error }) : !usage ? t("home.activityLoading") : t("home.activityHeader", {
 							tokens: grandTokens === null ? t("home.activityUnknown") : `${grandMissingRequests > 0 ? "≥" : ""}${formatTokenCount(grandTokens)}`,
 							sessions: grandSessions.toLocaleString(),

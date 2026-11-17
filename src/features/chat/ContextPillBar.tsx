@@ -40,7 +40,7 @@ import { isComposing } from "../../lib/hooks";
 import { useT } from "../../stores/language";
 import { validateBranchName } from "./branchName";
 const PILL =
-	"flex max-w-full shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[13px] font-medium text-[var(--text-80,var(--text))] transition-colors hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] select-none";
+	"inline-flex max-w-full shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-[12px] font-medium text-[var(--text-80,var(--text))] transition-colors hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] select-none cursor-pointer";
 const ROW =
 	"flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-[var(--text)] hover:bg-[var(--ghost-hover,var(--bg-hover))]";
 
@@ -96,11 +96,13 @@ export function WorkspacePickerPopover({
 	anchor,
 	ignoreRefs,
 	activeWorkspaceId,
+	placement = "top-start",
 	onClose,
 }: {
 	anchor: HTMLElement | null;
 	ignoreRefs: RefObject<HTMLElement | null>[];
 	activeWorkspaceId: string | null;
+	placement?: "top-start" | "bottom-start";
 	onClose: () => void;
 }) {
 	const { t } = useT();
@@ -148,7 +150,7 @@ export function WorkspacePickerPopover({
 	return (
 		<FloatingLayer
 			anchor={anchor}
-			placement="top-start"
+			placement={placement}
 			offset={6}
 			layer="popover"
 			ignoreRefs={ignoreRefs}
@@ -597,74 +599,89 @@ export function ContextPillBar({
 	if (meta?.kind === "side" || (meta?.forkDepth ?? 0) > 0) return null;
 
 	return (
-		<div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 border-b border-[var(--line,var(--border-divider))] px-3.5 py-2 text-[var(--text-60,var(--text-muted))]">
-			<button
-				ref={workspaceBtnRef}
-				type="button"
-				onClick={onWorkspaceClick}
-				title={pillTitle}
-				className={PILL}
-			>
-				{isGlobal ? (
-					<Globe size={14} className="shrink-0 text-neutral-400" />
-				) : (
-					<Folder size={14} className="shrink-0 text-neutral-400" />
-				)}
-				<span className="max-w-56 truncate">{wsLabel}</span>
-				<ChevronDown size={11} className="shrink-0 text-[var(--text-40,var(--text-dim))]" />
-			</button>
-
-			{group && isDraft && (
-				<span title={t("chat.pill.currentGroup", { name: group.name })} className={PILL}>
-					<Tag size={13} className="shrink-0 text-neutral-400" />
-					<span className="max-w-40 truncate">{group.name}</span>
-				</span>
-			)}
-			{group && !isDraft && (
+		<div className="relative z-0 flex items-center justify-between px-3.5">
+			<div className="inline-flex max-w-full flex-wrap items-center gap-x-1 gap-y-0.5 rounded-t-[14px] border border-b-0 border-[var(--composer-border,var(--border))] bg-[var(--bg-ear)] px-2 pt-1 pb-2.5 -mb-2 text-[var(--text-60,var(--text-muted))]">
 				<button
+					ref={workspaceBtnRef}
 					type="button"
-					onClick={() => requestMoveToGroup([sessionId])}
-					title={t("chat.pill.currentGroup", { name: group.name })}
+					onClick={onWorkspaceClick}
+					title={pillTitle}
 					className={PILL}
 				>
-					<Tag size={13} className="shrink-0 text-neutral-400" />
-					<span className="max-w-40 truncate">{group.name}</span>
-				</button>
-			)}
-
-			{branch === null ? (
-				<span className="px-2 py-1 text-[12.5px] text-[var(--text-40,var(--text-dim))]">{t("chat.pill.noGitRepo")}</span>
-			) : branch !== undefined ? (
-				<>
-					<button
-						ref={branchRef}
-						type="button"
-						onClick={() => setBranchOpen((v) => !v)}
-						title={t("chat.pill.currentBranch", { branch })}
-						className={PILL}
-					>
-						<GitBranch size={14} className="shrink-0 text-neutral-400" />
-						<span className="max-w-48 truncate">{branch}</span>
-						<ChevronDown size={11} className="shrink-0 text-[var(--text-40,var(--text-dim))]" />
-					</button>
-					{branchOpen && (
-						<BranchPickerPopover
-							anchor={branchRef.current}
-							ignoreRef={branchRef}
-							resolveSession={resolveSession}
-							cwd={cwd}
-							currentBranch={branch}
-							onChanged={() => setNonce((n) => n + 1)}
-							onClose={() => setBranchOpen(false)}
-						/>
+					{isGlobal ? (
+						<Globe size={13} className="shrink-0 text-[var(--text-muted)]" />
+					) : (
+						<Folder size={13} className="shrink-0 text-[var(--text-muted)]" />
 					)}
-				</>
-			) : (
-				<span className="flex items-center gap-1.5 px-2 py-1 text-[12.5px] text-[var(--text-40,var(--text-dim))]">
-					<Loader2 size={12} className="animate-spin" />
-					{t("chat.pill.loadingBranch")}
-				</span>
-			)}
+					<span className="max-w-52 truncate">{wsLabel}</span>
+					<ChevronDown size={11} className="shrink-0 text-[var(--text-40,var(--text-dim))]" />
+				</button>
+
+				{group && isDraft && (
+					<>
+						<span aria-hidden="true" className="h-3 w-px shrink-0 bg-[var(--border)]" />
+						<span title={t("chat.pill.currentGroup", { name: group.name })} className={PILL}>
+							<Tag size={12.5} className="shrink-0 text-[var(--text-muted)]" />
+							<span className="max-w-40 truncate">{group.name}</span>
+						</span>
+					</>
+				)}
+				{group && !isDraft && (
+					<>
+						<span aria-hidden="true" className="h-3 w-px shrink-0 bg-[var(--border)]" />
+						<button
+							type="button"
+							onClick={() => requestMoveToGroup([sessionId])}
+							title={t("chat.pill.currentGroup", { name: group.name })}
+							className={PILL}
+						>
+							<Tag size={12.5} className="shrink-0 text-[var(--text-muted)]" />
+							<span className="max-w-40 truncate">{group.name}</span>
+						</button>
+					</>
+				)}
+
+				{branch === null ? (
+					<>
+						<span aria-hidden="true" className="h-3 w-px shrink-0 bg-[var(--border)]" />
+						<span className="px-2 py-0.5 text-[12px] text-[var(--text-40,var(--text-dim))]">{t("chat.pill.noGitRepo")}</span>
+					</>
+				) : branch !== undefined ? (
+					<>
+						<span aria-hidden="true" className="h-3 w-px shrink-0 bg-[var(--border)]" />
+						<button
+							ref={branchRef}
+							type="button"
+							onClick={() => setBranchOpen((v) => !v)}
+							title={t("chat.pill.currentBranch", { branch })}
+							className={PILL}
+						>
+							<GitBranch size={12.5} className="shrink-0 text-[var(--text-muted)]" />
+							<span className="max-w-44 truncate">{branch}</span>
+							<ChevronDown size={11} className="shrink-0 text-[var(--text-40,var(--text-dim))]" />
+						</button>
+						{branchOpen && (
+							<BranchPickerPopover
+								anchor={branchRef.current}
+								ignoreRef={branchRef}
+								resolveSession={resolveSession}
+								cwd={cwd}
+								currentBranch={branch}
+								onChanged={() => setNonce((n) => n + 1)}
+								onClose={() => setBranchOpen(false)}
+							/>
+						)}
+					</>
+				) : (
+					<>
+						<span aria-hidden="true" className="h-3 w-px shrink-0 bg-[var(--border)]" />
+						<span className="flex items-center gap-1.5 px-2 py-0.5 text-[12px] text-[var(--text-40,var(--text-dim))]">
+							<Loader2 size={11.5} className="animate-spin" />
+							{t("chat.pill.loadingBranch")}
+						</span>
+					</>
+				)}
+			</div>
 		</div>
 	);
 }
