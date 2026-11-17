@@ -599,8 +599,8 @@ export function ContextPillBar({
 	if (meta?.kind === "side" || (meta?.forkDepth ?? 0) > 0) return null;
 
 	return (
-		<div className="relative z-0 flex items-center justify-between px-3.5">
-			<div className="inline-flex max-w-full flex-wrap items-center gap-x-1 gap-y-0.5 rounded-t-[14px] border border-b-0 border-[var(--composer-border,var(--border))] bg-[var(--bg-ear)] px-2 pt-1 pb-2.5 -mb-2 text-[var(--text-60,var(--text-muted))]">
+		<div className="relative z-0 flex items-center justify-between px-[22px]">
+			<div className="inline-flex max-w-full flex-wrap items-center gap-x-1 gap-y-0.5 rounded-t-[14px] border border-b-0 border-[var(--composer-border,var(--border))] bg-[var(--bg-ear)] px-2.5 pt-1 pb-2.5 -mb-2 text-[var(--text-60,var(--text-muted))]">
 				<button
 					ref={workspaceBtnRef}
 					type="button"

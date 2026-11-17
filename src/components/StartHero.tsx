@@ -179,8 +179,8 @@ export function StartHero({ sessionId, onPickDirectory }: StartContextProps) {
 
 	return (
 		<div className="start-rise mx-auto w-full max-w-[780px] px-6 select-none">
-			<div className="px-3.5 pb-4 text-center">
-				<h1 className="inline-flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[25px] font-semibold leading-snug tracking-[-0.02em] text-[var(--text)]">
+			<div className="px-3.5 pb-8 text-center">
+				<h1 className="inline-flex max-w-full flex-wrap items-center justify-center gap-x-2.5 gap-y-1 text-[26px] font-semibold leading-snug tracking-[-0.022em] text-[var(--text)]">
 					<span>{t("home.headlinePrefix")}</span>
 					<button
 						ref={triggerRef}
@@ -191,19 +191,19 @@ export function StartHero({ sessionId, onPickDirectory }: StartContextProps) {
 					>
 						{!target.hasProject ? (
 							<FolderPlus
-								size={20}
+								size={21}
 								strokeWidth={1.8}
 								className="shrink-0 translate-y-[0.5px] text-[var(--accent)]"
 							/>
 						) : target.isGlobal ? (
 							<Globe
-								size={20}
+								size={21}
 								strokeWidth={1.8}
 								className="shrink-0 translate-y-[0.5px] text-[var(--accent)]"
 							/>
 						) : (
 							<FolderOpen
-								size={20}
+								size={21}
 								strokeWidth={1.8}
 								className="shrink-0 translate-y-[0.5px] text-[var(--accent)]"
 							/>
@@ -220,7 +220,7 @@ export function StartHero({ sessionId, onPickDirectory }: StartContextProps) {
 					{suffix ? <span>{suffix}</span> : null}
 				</h1>
 
-				<p className="mt-1.5 text-center text-[12.5px] leading-relaxed text-[var(--text-muted)] tabular-nums">
+				<p className="mt-2 text-center text-[12.5px] leading-relaxed tracking-[0.01em] text-[var(--text-muted)] tabular-nums">
 					{subtitle}
 				</p>
 
@@ -262,8 +262,8 @@ export function HomeRecentSessions({ sessionId }: { sessionId?: string | null })
 	if (recent.length === 0) return null;
 
 	return (
-		<div className="start-rise px-4 pt-3 text-[12.5px] tabular-nums select-none">
-			<div className="pb-1 text-[11.5px] text-[var(--text-dim)]">
+		<div className="start-rise px-6 pt-4 text-[12.5px] tabular-nums select-none">
+			<div className="pb-1.5 text-[11.5px] font-medium tracking-[0.01em] text-[var(--text-dim)]">
 				{t("home.continueRecent")}
 			</div>
 			<div className="divide-y divide-[var(--border-divider)]">
@@ -273,13 +273,16 @@ export function HomeRecentSessions({ sessionId }: { sessionId?: string | null })
 						type="button"
 						onClick={() => useUi.getState().selectSession(item.id)}
 						title={sessionDisplayName(item)}
-						className="flex w-full items-center justify-between gap-4 py-1.5 text-left transition-opacity hover:opacity-75 active:opacity-65 cursor-pointer"
+						className="group flex w-full items-center justify-between gap-4 py-2 text-left transition-colors hover:text-[var(--text)] active:opacity-70 cursor-pointer"
 					>
-						<span className="inline-flex min-w-0 items-center gap-2 text-[var(--text)]">
-							<History size={13} className="shrink-0 text-[var(--text-dim)]" />
+						<span className="inline-flex min-w-0 items-center gap-2 text-[var(--text-80,var(--text))] transition-colors group-hover:text-[var(--text)]">
+							<History
+								size={13}
+								className="shrink-0 text-[var(--text-dim)] transition-colors group-hover:text-[var(--accent)]"
+							/>
 							<span className="truncate">{sessionDisplayName(item)}</span>
 						</span>
-						<span className="shrink-0 whitespace-nowrap text-[11.5px] text-[var(--text-dim)]">
+						<span className="shrink-0 whitespace-nowrap text-[11.5px] text-[var(--text-dim)] transition-colors group-hover:text-[var(--text-muted)]">
 							{timeAgo(item.updatedAt)}
 						</span>
 					</button>

@@ -294,8 +294,9 @@ export function SessionView({
 	return (
 		<div
 			data-session-view=""
-			className={`relative @container flex h-full flex-col ${centered ? "justify-center pb-[6vh]" : ""}`}
+			className="relative @container flex h-full flex-col"
 		>
+			{centered && <div className="min-h-[24px] flex-[0.95]" aria-hidden="true" />}
 			{centered && <StartGlow />}
 					<div className={`relative min-h-0 @container ${centered ? "flex-none" : "flex-1"}`}>
 						{!compact && <TopCapsule />}
@@ -421,6 +422,7 @@ export function SessionView({
 						)}
 
 					</div>
+			{centered && <div className="min-h-[24px] flex-[1.05]" aria-hidden="true" />}
 		</div>
 	);
 }

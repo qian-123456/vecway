@@ -63,7 +63,7 @@ function LaunchComposer({
 
 	return (
 		<div className="start-rise w-full px-3 pb-3 pt-1 select-text">
-			<div className="relative z-0 flex items-center justify-between px-3.5">
+			<div className="relative z-0 flex items-center justify-between px-[22px]">
 				<div className="inline-flex max-w-full items-center gap-1.5 rounded-t-[14px] border border-b-0 border-[var(--composer-border,var(--border))] bg-[var(--bg-ear)] px-3 pt-1.5 pb-2.5 -mb-2 text-[12px] text-[var(--text-60,var(--text-muted))]">
 					<Folder size={13} className="shrink-0 text-[var(--text-muted)]" />
 					<span title={target?.path} className="font-medium text-[var(--text)]">
@@ -150,7 +150,8 @@ export function StartPage() {
 	};
 
 	return (
-		<div className="relative flex h-full w-full flex-col justify-center overflow-hidden pb-[6vh] select-none">
+		<div className="relative flex h-full w-full flex-col overflow-y-auto select-none">
+			<div className="min-h-[24px] flex-[0.95]" aria-hidden="true" />
 			<StartGlow />
 			<StartHero onPickDirectory={() => void pickDirectory()} />
 			<div className="mx-auto w-full max-w-[780px] px-6">
@@ -185,7 +186,7 @@ export function StartPage() {
 					</>
 				) : (
 					<div className="start-rise w-full px-3 pb-3 pt-1">
-						<div className="relative z-0 flex items-center justify-between px-3.5">
+						<div className="relative z-0 flex items-center justify-between px-[22px]">
 							<button
 								type="button"
 								onClick={() => void pickDirectory()}
@@ -215,6 +216,7 @@ export function StartPage() {
 					</div>
 				)}
 			</div>
+			<div className="min-h-[24px] flex-[1.05]" aria-hidden="true" />
 		</div>
 	);
 }
