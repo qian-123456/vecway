@@ -481,9 +481,9 @@ export function WorktreeGraph({
 											setSessionMenuWt(null);
 											setSessionMenuAnchor(null);
 										}}
-										className="w-64 p-1 shadow-2xl"
+										className="w-max min-w-[160px] max-w-[260px] p-1 shadow-2xl"
 									>
-										<div className="flex items-center justify-between px-2 py-1 text-[10px] font-medium text-neutral-400 border-b border-[var(--border-divider)]">
+										<div className="flex items-center justify-between gap-4 px-2 py-1 text-[10px] font-medium text-neutral-400 border-b border-[var(--border-divider)] whitespace-nowrap">
 											<span>{t("worktree.graph.selectSessionTitle", { count: wt.sessionIds.length })}</span>
 											<button
 												type="button"

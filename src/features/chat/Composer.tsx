@@ -27,6 +27,7 @@ import { useOmpConfigStore } from "../settings/ompConfigStore";
 import { PLAN_ROLE, effectiveRoles, planRoleScope, resolvePlanChoice, savedPlanValue } from "./plan/planModelChoice";
 import { useDraftBaseContext, useDraftDefaultModel } from "./useDraftDefaultModel";
 import { clearPlanModelApplied, hasPlanModelApplied, markPlanModelApplied } from "./plan/planModelApplied";
+import { parseSavedPlanStatus, usePlanPanelLifecycle } from "./plan/usePlanPanelLifecycle";
 import { applyArgName, buildArgItems, type ArgCandidate } from "./slash/argComplete";
 import { findArgProvider } from "./slash/argProviders";
 import { AttachmentThumb, FileChip } from "./ImageChips";
@@ -191,8 +192,7 @@ import { isComposing } from "../../lib/hooks";
 import { annotationImageAttachments, formatWithAnnotations, useComposer } from "../../stores/composer";
 import { moveToMain, moveToSideChat } from "../sidechat/annotationRoute";
 import { MAX_SIDE_CHAT_DEPTH } from "../sidechat/depth";
-import { useUi } from "../../stores/ui";
-import { useLive, type SlashCommand } from "../../stores/live";
+import { emptySessionLive, useLive, type SlashCommand } from "../../stores/live";
 import { isBlankComposerSession } from "./sessionWorkspace";
 import { skillCommandsFromCatalog } from "./slash/skillCatalog";
 import { DEFAULT_SKILL_CONFIG, parseSkillConfig } from "../../lib/skillEnablement";
@@ -625,7 +625,15 @@ export function Composer({
 		let cancelled = false;
 		sessionSnapshot(sessionId)
 			.then((snap) => {
-				if (!cancelled) setSnapshotRec({ id: sessionId, snap });
+				if (cancelled) return;
+				setSnapshotRec({ id: sessionId, snap });
+				// Disk restoration is only a baseline; a live status frame always wins.
+				const plan = !readonly ? parseSavedPlanStatus(snap.planState) : null;
+				if (plan) useLive.setState((state) => {
+					const current = state.sessions[sessionId];
+					if (current?.plan !== undefined) return state;
+					return { sessions: { ...state.sessions, [sessionId]: { ...(current ?? emptySessionLive()), plan } } };
+				});
 			})
 			.catch((err) => console.warn("[composer] session snapshot fetch failed", err));
 		return () => {
@@ -710,8 +718,6 @@ export function Composer({
 	);
 	const planPending = !readonly && (planIntent || (chip?.name === "plan" && !chip.sub && chip.offset === undefined));
 	const planPreview = planMode || planPending;
-	// undefined = no status frame yet (never a plan revision).
-	const planVersion = useLive((s) => s.sessions[sessionId]?.plan?.version);
 	// Raw `plan` role spec from the status frame (null when the role is unset).
 	const planStatusModel = useLive((s) => s.sessions[sessionId]?.plan?.planModel);
 	// Picker edit made during this plan-mode visit (a `plan` role value); wins over the status spec.
@@ -733,16 +739,7 @@ export function Composer({
 	// auto-apply cannot overwrite that newer choice.
 	const planApplyGen = useRef(0);
 
-	// The 计划 tab opens only when a finished plan revision arrives while plan
-	// mode is on. The first observed version is a baseline (e.g. resuming a
-	// session that already has a plan), never an arrival.
-	const prevPlanVersionRef = useRef(planVersion);
-	useEffect(() => {
-		const prev = prevPlanVersionRef.current;
-		prevPlanVersionRef.current = planVersion;
-		if (prev === undefined || planVersion === undefined) return;
-		if (planMode && planVersion > prev) useUi.getState().setRightTab("plan");
-	}, [planVersion, planMode]);
+	usePlanPanelLifecycle(sessionId, live?.plan, streaming);
 
 	/** Attach one filesystem path: images go to the gallery, text files are
 	 * inlined as doc references, folders/binaries as path-only references. */

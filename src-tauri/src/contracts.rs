@@ -980,6 +980,9 @@ pub struct SessionSnapshot {
     /// Prompt tokens of the last assistant request; None when unknown
     /// (no assistant usage yet, or a compaction happened after it).
     pub context_tokens: Option<u64>,
+    /// Latest complete `ompws-plan-state` custom record's raw data object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_state: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

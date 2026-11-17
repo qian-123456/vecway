@@ -62,7 +62,7 @@ function ProjectPickerPill({
 				onDismiss={() => setAnchor(null)}
 				role="listbox"
 				aria-label={t("backlog.assignProject")}
-				className="w-[240px] !bg-[var(--bg-panel)] py-1"
+				className="w-max min-w-[140px] max-w-[240px] !bg-[var(--bg-panel)] py-1"
 			>
 				{rows.map((r) => (
 					<button

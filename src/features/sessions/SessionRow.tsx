@@ -22,7 +22,7 @@ import {
 	Tag,
 	Trash2,
 } from "lucide-react";
-import React, { type MouseEvent, useEffect, useRef, useState } from "react";
+import React, { type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { SessionMeta, Workspace } from "../../lib/contracts";
 import { confirmDialog, copyText, errMsg } from "../../lib/dialogs";
 import { absoluteTime, relativeTime } from "../../lib/format";
@@ -166,6 +166,17 @@ function hasActiveDialogNow(): boolean {
 	);
 }
 
+function isElementStillHovered(el: HTMLElement): boolean {
+	if (typeof document === "undefined") return true;
+	try {
+		const anyDomHover = document.querySelector(":hover") !== null;
+		if (!anyDomHover) return true;
+		return el.matches(":hover");
+	} catch {
+		return true;
+	}
+}
+
 /**
  * Mounts the hover card only while it is open; the dialog subscription lives
  * here so closed rows carry neither it nor the card's home-dir hook.
@@ -174,8 +185,7 @@ function HoverCardGate(props: {
 	session: SessionMeta;
 	anchorRect: DOMRect;
 	workspaces: Workspace[];
-	onMouseEnterCard: () => void;
-	onMouseLeaveCard: () => void;
+	onClose: () => void;
 }) {
 	const hasActiveDialog = useSessionActions(
 		(s) =>
@@ -259,7 +269,42 @@ function SessionRowComponent({
 	const [hoverCardOpen, setHoverCardOpen] = useState(false);
 	const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
 	const hoverTimer = useRef<number | null>(null);
-	const closeTimer = useRef<number | null>(null);
+	const isPointerInsideRef = useRef(false);
+
+	const dismissHoverCard = useCallback(() => {
+		isPointerInsideRef.current = false;
+		if (hoverTimer.current !== null) {
+			window.clearTimeout(hoverTimer.current);
+			hoverTimer.current = null;
+		}
+		setHoverCardOpen(false);
+		setAnchorRect(null);
+	}, []);
+
+	useEffect(() => {
+		return () => {
+			isPointerInsideRef.current = false;
+			if (hoverTimer.current !== null) {
+				window.clearTimeout(hoverTimer.current);
+				hoverTimer.current = null;
+			}
+		};
+	}, []);
+
+	useEffect(() => {
+		if (!hoverCardOpen) return;
+		const handleDismiss = () => dismissHoverCard();
+		window.addEventListener("scroll", handleDismiss, true);
+		window.addEventListener("blur", handleDismiss);
+		document.addEventListener("keydown", handleDismiss, true);
+		document.addEventListener("mousedown", handleDismiss, true);
+		return () => {
+			window.removeEventListener("scroll", handleDismiss, true);
+			window.removeEventListener("blur", handleDismiss);
+			document.removeEventListener("keydown", handleDismiss, true);
+			document.removeEventListener("mousedown", handleDismiss, true);
+		};
+	}, [hoverCardOpen, dismissHoverCard]);
 
 	// Subscriptions to programmatic requests (R7, Contract 3)
 	const isRenameRequested = useSessionActions(
@@ -294,11 +339,7 @@ function SessionRowComponent({
 	useEffect(() => {
 		if (menuOpen) {
 			// Suppress hover card when menu opens (R10)
-			if (hoverTimer.current !== null) {
-				window.clearTimeout(hoverTimer.current);
-				hoverTimer.current = null;
-			}
-			setHoverCardOpen(false);
+			dismissHoverCard();
 
 			const timer = window.setTimeout(() => {
 				const firstItem =
@@ -309,45 +350,42 @@ function SessionRowComponent({
 			}, 0);
 			return () => clearTimeout(timer);
 		}
-	}, [menuOpen]);
+	}, [menuOpen, dismissHoverCard]);
 
 	const handleRowMouseEnter = (e: React.MouseEvent<HTMLDivElement>) => {
-		// Empty drafts have nothing worth previewing; the card only covers the composer.
-		if (hasActiveDialogNow() || menuOpen || isRenaming || !session.title?.trim()) return;
-		if (closeTimer.current !== null) {
-			window.clearTimeout(closeTimer.current);
-			closeTimer.current = null;
+		if (hoverTimer.current !== null) {
+			window.clearTimeout(hoverTimer.current);
+			hoverTimer.current = null;
 		}
+		// Empty drafts have nothing worth previewing; the card only covers the composer.
+		if (
+			hasActiveDialogNow() ||
+			menuOpen ||
+			isRenaming ||
+			(!session.title?.trim() && !session.lastAssistant?.trim())
+		) {
+			return;
+		}
+		isPointerInsideRef.current = true;
 		// Measure lazily inside the timer: the row may scroll during the 400ms
 		// hover delay, and a stale rect makes the card flash at the wrong spot.
-		const rowEl = e.currentTarget;
+		const rowEl = rowRef.current ?? e.currentTarget;
 		hoverTimer.current = window.setTimeout(() => {
+			hoverTimer.current = null;
+			if (!rowEl.isConnected || !isPointerInsideRef.current || hasActiveDialogNow()) {
+				return;
+			}
+			if (!isElementStillHovered(rowEl)) {
+				isPointerInsideRef.current = false;
+				return;
+			}
 			setAnchorRect(rowEl.getBoundingClientRect());
 			setHoverCardOpen(true);
 		}, 400);
 	};
 
 	const handleRowMouseLeave = () => {
-		if (hoverTimer.current !== null) {
-			window.clearTimeout(hoverTimer.current);
-			hoverTimer.current = null;
-		}
-		closeTimer.current = window.setTimeout(() => {
-			setHoverCardOpen(false);
-		}, 150);
-	};
-
-	const handleCardMouseEnter = () => {
-		if (closeTimer.current !== null) {
-			window.clearTimeout(closeTimer.current);
-			closeTimer.current = null;
-		}
-	};
-
-	const handleCardMouseLeave = () => {
-		closeTimer.current = window.setTimeout(() => {
-			setHoverCardOpen(false);
-		}, 150);
+		dismissHoverCard();
 	};
 
 	const startInlineRename = () => {
@@ -355,11 +393,7 @@ function SessionRowComponent({
 		setRenameDraft(sessionDisplayName(session));
 		setIsRenaming(true);
 		setMenuOpen(false);
-		if (hoverTimer.current !== null) {
-			window.clearTimeout(hoverTimer.current);
-			hoverTimer.current = null;
-		}
-		setHoverCardOpen(false);
+		dismissHoverCard();
 	};
 
 	const saveInlineRename = async () => {
@@ -384,6 +418,7 @@ function SessionRowComponent({
 	};
 
 	const handleRowClick = (e: React.MouseEvent) => {
+		dismissHoverCard();
 		// macOS Ctrl+Click is a context-menu gesture, not a row selection / multi-select.
 		if (isMac() && e.ctrlKey && !e.metaKey) {
 			if (!menuOpen) {
@@ -437,6 +472,7 @@ function SessionRowComponent({
 
 	// Right-click opens the context menu without switching the active session.
 	const handleContextMenu = (e: MouseEvent | React.MouseEvent) => {
+		dismissHoverCard();
 		e.preventDefault();
 		e.stopPropagation();
 		// A local draft has no session to act on; its trash button is the only action.
@@ -451,6 +487,7 @@ function SessionRowComponent({
 
 	// "…" trigger toggles menu anchored to button with bottom-end (R8)
 	const handleMenuBtnClick = (e: MouseEvent) => {
+		dismissHoverCard();
 		e.preventDefault();
 		e.stopPropagation();
 		onRowFocus?.();
@@ -1231,8 +1268,7 @@ function SessionRowComponent({
 					session={session}
 					anchorRect={anchorRect}
 					workspaces={workspaces}
-					onMouseEnterCard={handleCardMouseEnter}
-					onMouseLeaveCard={handleCardMouseLeave}
+					onClose={dismissHoverCard}
 				/>
 			)}
 		</div>

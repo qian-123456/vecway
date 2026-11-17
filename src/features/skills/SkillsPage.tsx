@@ -1307,7 +1307,7 @@ export function SkillsPage() {
 								offset={6}
 								onDismiss={() => setSortOpen(false)}
 								ignoreRefs={[sortBtnRef]}
-								className="w-40 rounded-lg border border-neutral-700 bg-neutral-900 p-1 text-xs shadow-xl"
+								className="w-max rounded-lg border border-neutral-700 bg-neutral-900 p-1 text-xs shadow-xl"
 							>
 								{SORT_OPTIONS.map((o) => (
 									<button
@@ -1317,7 +1317,7 @@ export function SkillsPage() {
 											setSort(o.value);
 											setSortOpen(false);
 										}}
-										className="flex w-full items-center justify-between gap-2 rounded px-2.5 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center justify-between gap-4 whitespace-nowrap rounded px-2.5 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 									>
 										<span>{t(o.labelKey)}</span>
 										{sort === o.value && (

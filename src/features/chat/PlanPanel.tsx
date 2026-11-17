@@ -70,22 +70,35 @@ export function PlanPanel() {
 	const { t } = useT();
 	const plan = useLive((s) => (sessionId ? s.sessions[sessionId]?.plan : undefined));
 	const streaming = useLive((s) => (sessionId ? s.sessions[sessionId]?.streaming === true : false));
+	const alive = useLive((s) => (sessionId ? s.sessions[sessionId]?.alive === true : false));
 
-	// A panel opened with no known plan state (window reload, or a session whose process went idle)
-	// asks for a read-only status; runPlanAction wakes the local RPC without any model inference.
-	// Unknown is not "off": the Enable button must not appear until the state is actually known.
+	// Opening a cold review refreshes execution choices. Approved history is
+	// read-only and never needs a process just to remain accessible.
 	const hasPlan = plan !== undefined;
+	const planEnabled = plan?.enabled === true;
+	const statusQuery = useRef<{ sessionId: string; promise: Promise<void>; baseline: PlanStatus | undefined } | null>(null);
 	const [statusError, setStatusError] = useState<{ sessionId: string; error: string } | null>(null);
+	const [statusReadySession, setStatusReadySession] = useState<string | null>(null);
 	useEffect(() => {
-		if (!sessionId || hasPlan || streaming) return;
+		if (!sessionId) return;
+		let query = statusQuery.current?.sessionId === sessionId ? statusQuery.current : null;
+		if (!query && !streaming && (!hasPlan || (planEnabled && !alive))) {
+			query = { sessionId, promise: runPlanAction(sessionId, "status"), baseline: plan };
+			statusQuery.current = query;
+			setStatusReadySession(null);
+			setStatusError(null);
+		}
+		if (!query) return;
 		let stale = false;
-		runPlanAction(sessionId, "status").catch((err) => {
+		// Reattach to the same request if ensureLive changes alive. Do not send
+		// twice, or lose its error merely because the process became connected.
+		query.promise.then(() => {
+			if (!stale) setStatusReadySession(sessionId);
+		}, (err) => {
 			if (!stale) setStatusError({ sessionId, error: errMsg(err) });
 		});
-		return () => {
-			stale = true;
-		};
-	}, [sessionId, hasPlan, streaming]);
+		return () => { stale = true; };
+	}, [sessionId, hasPlan, planEnabled, streaming, alive]);
 
 	if (!sessionId) return <EmptyHint text={t("chatView.plan.emptyNoSession")} />;
 	// Plan mode is off after approval; the extension still reports the approved plan and how it went.
@@ -102,6 +115,15 @@ export function PlanPanel() {
 		);
 	}
 	if (!plan.enabled) return <NotEnabled sessionId={sessionId} />;
+	if (statusError?.sessionId === sessionId) {
+		return <EmptyHint text={t("chatView.plan.statusFailed", { error: statusError.error })} />;
+	}
+	const query = statusQuery.current?.sessionId === sessionId ? statusQuery.current : null;
+	// A restored review lacks fresh execution choices. Do not expose approval
+	// until both the status request and the authoritative live frame arrive.
+	if ((!streaming && !alive && !query) || (query?.baseline && (statusReadySession !== sessionId || plan === query.baseline))) {
+		return <EmptyHint text={t("chatView.plan.statusLoading")} />;
+	}
 	if (!plan.content) {
 		return (
 			<EmptyHint text={streaming ? t("chatView.plan.planning") : t("chatView.plan.waitingTask")}>

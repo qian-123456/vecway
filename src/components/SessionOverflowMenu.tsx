@@ -135,10 +135,10 @@ export function SessionOverflowMenu({
 				onDismiss={() => setOpen(false)}
 				role="menu"
 				aria-orientation="vertical"
-				className="w-60 p-1 text-xs"
+				className="w-max p-1 text-xs"
 			>
 					{/* Section 1: 会话弹性与恢复 */}
-					<div className="px-2.5 py-1 text-[10px] font-medium tracking-wider text-neutral-400/80 uppercase">
+					<div className="px-2.5 py-1 text-[10px] font-medium tracking-wider text-neutral-400/80 uppercase whitespace-nowrap">
 						{t("shell.sectionConnection")}
 					</div>
 
@@ -148,14 +148,14 @@ export function SessionOverflowMenu({
 						role="menuitem"
 						disabled={busy}
 						onClick={handleFreshRestart}
-						className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-neutral-200 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40 transition-all active:scale-[0.98]"
+						className="flex w-full items-center gap-2 whitespace-nowrap rounded-lg px-2.5 pr-3 py-1.5 text-left text-neutral-200 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40 transition-all active:scale-[0.98]"
 						title={t("shell.resetStreamTip")}
 					>
 						<RefreshCw
 							size={13}
 							className={clsx("shrink-0 text-emerald-400", busy && "animate-spin")}
 						/>
-						<span className="flex-1 truncate">{t("shell.resetStreamAction")}</span>
+						<span className="flex-1 whitespace-nowrap">{t("shell.resetStreamAction")}</span>
 					</button>
 
 
@@ -165,11 +165,13 @@ export function SessionOverflowMenu({
 						type="button"
 						role="menuitem"
 						onClick={handleClearContextNotice}
-						className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-neutral-100 transition-all active:scale-[0.98]"
+						className="flex w-full items-center gap-3 whitespace-nowrap rounded-lg px-2.5 pr-3 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-neutral-100 transition-all active:scale-[0.98]"
 						title={t("shell.clearContextTip")}
 					>
-						<Eraser size={13} className="shrink-0 text-neutral-400" />
-						<span className="flex-1 truncate">{t("shell.clearContextAction")}</span>
+						<span className="flex items-center gap-2 flex-1 whitespace-nowrap">
+							<Eraser size={13} className="shrink-0 text-neutral-400" />
+							<span>{t("shell.clearContextAction")}</span>
+						</span>
 						<span className="shrink-0 rounded-md bg-amber-500/15 border border-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300 font-medium">
 							{t("shell.unsupportedTag")}
 						</span>
@@ -178,7 +180,7 @@ export function SessionOverflowMenu({
 					<div className="my-1 border-t border-[var(--border-divider)]" />
 
 					{/* Section 2: 折叠的常用操作 (Task C fold) */}
-					<div className="px-2.5 py-1 text-[10px] font-medium tracking-wider text-neutral-400/80 uppercase">
+					<div className="px-2.5 py-1 text-[10px] font-medium tracking-wider text-neutral-400/80 uppercase whitespace-nowrap">
 						{t("shell.sectionQuickActions")}
 					</div>
 
@@ -192,11 +194,11 @@ export function SessionOverflowMenu({
 								setOpen(false);
 								onOpenInFinder();
 							}}
-							className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-30 transition-all active:scale-[0.98]"
+							className="flex w-full items-center gap-2 whitespace-nowrap rounded-lg px-2.5 pr-3 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-30 transition-all active:scale-[0.98]"
 							title={cwd ? t("shell.revealInFinder", { path: cwd }) : t("shell.noCwd")}
 						>
 							<FolderOpen size={13} className="shrink-0 text-neutral-400" />
-							<span className="flex-1 truncate">{t("shell.revealInFinderAction")}</span>
+							<span className="flex-1 whitespace-nowrap">{t("shell.revealInFinderAction")}</span>
 						</button>
 					)}
 
@@ -209,10 +211,10 @@ export function SessionOverflowMenu({
 								setOpen(false);
 								onCopyMarkdown();
 							}}
-							className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-all active:scale-[0.98]"
+							className="flex w-full items-center gap-2 whitespace-nowrap rounded-lg px-2.5 pr-3 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-all active:scale-[0.98]"
 						>
 							<Copy size={13} className="shrink-0 text-neutral-400" />
-							<span className="flex-1 truncate">{t("shell.copyAsMarkdown")}</span>
+							<span className="flex-1 whitespace-nowrap">{t("shell.copyAsMarkdown")}</span>
 						</button>
 					)}
 
@@ -222,11 +224,11 @@ export function SessionOverflowMenu({
 						role="menuitem"
 						disabled={busy}
 						onClick={handleExportHtml}
-						className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40 transition-all active:scale-[0.98]"
+						className="flex w-full items-center gap-2 whitespace-nowrap rounded-lg px-2.5 pr-3 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40 transition-all active:scale-[0.98]"
 						title={t("shell.exportHtmlTip")}
 					>
 						<FileDown size={13} className="shrink-0 text-neutral-400" />
-						<span className="flex-1 truncate">{t("shell.exportHtmlAction")}</span>
+						<span className="flex-1 whitespace-nowrap">{t("shell.exportHtmlAction")}</span>
 					</button>
 
 					{/* 复制终端续接命令 */}
@@ -235,11 +237,11 @@ export function SessionOverflowMenu({
 						role="menuitem"
 						disabled={busy}
 						onClick={handleCopyResumeCommand}
-						className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40 transition-all active:scale-[0.98]"
+						className="flex w-full items-center gap-2 whitespace-nowrap rounded-lg px-2.5 pr-3 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40 transition-all active:scale-[0.98]"
 						title={t("shell.copyResumeCommandTip")}
 					>
 						<Terminal size={13} className="shrink-0 text-neutral-400" />
-						<span className="flex-1 truncate">{t("shell.copyResumeCommandAction")}</span>
+						<span className="flex-1 whitespace-nowrap">{t("shell.copyResumeCommandAction")}</span>
 					</button>
 
 					{/* 手机扫码查看 */}
@@ -251,10 +253,10 @@ export function SessionOverflowMenu({
 								setOpen(false);
 								onMobilePair();
 							}}
-							className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-all active:scale-[0.98]"
+							className="flex w-full items-center gap-2 whitespace-nowrap rounded-lg px-2.5 pr-3 py-1.5 text-left text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-all active:scale-[0.98]"
 						>
 							<QrCode size={13} className="shrink-0 text-neutral-400" />
-							<span className="flex-1 truncate">{t("shell.mobileScan")}</span>
+							<span className="flex-1 whitespace-nowrap">{t("shell.mobileScan")}</span>
 						</button>
 					)}
 			</FloatingLayer>

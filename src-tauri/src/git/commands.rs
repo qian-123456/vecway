@@ -937,3 +937,136 @@ pub async fn git_undo_turn(
 pub async fn checkpoints_rule() -> Result<String, String> {
     Ok(checkpoints_ext::RULE.to_string())
 }
+
+pub(super) fn validate_folder_segment(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains('\0')
+    {
+        return Err("文件夹名称不合法".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+pub(super) fn derive_repo_folder_name(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let trimmed = if trimmed
+        .as_bytes()
+        .get(trimmed.len().saturating_sub(4)..)
+        .is_some_and(|tail| tail.eq_ignore_ascii_case(b".git"))
+    {
+        trimmed[..trimmed.len() - 4].trim_end_matches('/')
+    } else {
+        trimmed
+    };
+    let seg = trimmed.rsplit(['/', ':']).next()?;
+    validate_folder_segment(seg).ok()
+}
+
+pub(super) fn create_project_dir_internal(
+    parent_dir: &str,
+    name: &str,
+    init_git: bool,
+) -> Result<String, String> {
+    let parent = crate::services::files::resolve(parent_dir)?;
+    if !parent.is_dir() {
+        return Err(format!("父目录不存在或不是文件夹：{}", parent.display()));
+    }
+    let seg = validate_folder_segment(name)?;
+    let target = parent.join(&seg);
+    crate::services::files::ensure_not_protected(&target)?;
+    if target.exists() {
+        return Err(format!("目标文件夹已存在：{}", target.display()));
+    }
+    std::fs::create_dir(&target).map_err(|e| format!("创建文件夹失败：{e}"))?;
+    if init_git {
+        if let Err(e) = super::cmd::git_ok(&target, &["init"]) {
+            let _ = std::fs::remove_dir(&target);
+            return Err(format!("初始化 Git 仓库失败：{e}"));
+        }
+    }
+    Ok(target
+        .canonicalize()
+        .unwrap_or(target)
+        .to_string_lossy()
+        .into_owned())
+}
+
+pub(super) fn git_clone_repo_internal(
+    url: &str,
+    parent_dir: &str,
+    folder_name: Option<&str>,
+    timeout: Duration,
+) -> Result<String, String> {
+    let trimmed_url = url.trim();
+    if trimmed_url.is_empty() {
+        return Err("仓库地址不能为空".to_string());
+    }
+    if trimmed_url.starts_with('-') {
+        return Err("仓库地址不合法".to_string());
+    }
+    let parent = crate::services::files::resolve(parent_dir)?;
+    if !parent.is_dir() {
+        return Err(format!("父目录不存在或不是文件夹：{}", parent.display()));
+    }
+    let dir_name = match folder_name.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(custom) => validate_folder_segment(custom)?,
+        None => derive_repo_folder_name(trimmed_url)
+            .ok_or_else(|| "无法从仓库地址推断文件夹名称，请手动填写".to_string())?,
+    };
+    let target = parent.join(&dir_name);
+    crate::services::files::ensure_not_protected(&target)?;
+    if target.exists() {
+        return Err(format!("目标文件夹已存在：{}", target.display()));
+    }
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(&parent)
+        .env("PATH", crate::todos::omp::augmented_path())
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["clone", "--", trimmed_url, &dir_name]);
+    let out = super::cmd::run(cmd, timeout)?;
+    if !out.ok() {
+        return Err(out.err_msg());
+    }
+    Ok(target
+        .canonicalize()
+        .unwrap_or(target)
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// Create a new project folder under `parent_dir` and optionally initialize Git.
+#[tauri::command]
+pub async fn create_project_dir(
+    parent_dir: String,
+    name: String,
+    init_git: bool,
+) -> Result<String, String> {
+    blocking(move || create_project_dir_internal(&parent_dir, &name, init_git)).await
+}
+
+/// Clone a Git repository into `parent_dir` and return the created directory path.
+#[tauri::command]
+pub async fn git_clone_repo(
+    url: String,
+    parent_dir: String,
+    folder_name: Option<String>,
+) -> Result<String, String> {
+    blocking(move || {
+        git_clone_repo_internal(
+            &url,
+            &parent_dir,
+            folder_name.as_deref(),
+            Duration::from_secs(120),
+        )
+    })
+    .await
+}

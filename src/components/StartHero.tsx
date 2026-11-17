@@ -208,7 +208,7 @@ export function StartHero({ sessionId, onPickDirectory }: StartContextProps) {
 								className="shrink-0 translate-y-[0.5px] text-[var(--accent)]"
 							/>
 						)}
-						<span className="truncate underline decoration-1 underline-offset-[6px] decoration-[var(--text-30)] transition-colors group-hover:decoration-[var(--text-60)]">
+						<span className="truncate">
 							{displayLabel}
 						</span>
 					</button>

@@ -30,6 +30,7 @@ import {
 	FolderInput,
 	FolderSearch,
 	GitBranch,
+	ListFilter,
 	Loader2,
 	MoreHorizontal,
 	Pencil,
@@ -74,6 +75,7 @@ import {
 } from "../../lib/ipc";
 import { toast } from "../../lib/toast";
 import { useSessions } from "../../stores/sessions";
+import { onPromptSend } from "../../stores/promptSendEvents";
 import { draftMeta, isBlankLocalDraft, isLocalDraftId, selectSessionOrDraft, usePendingSession } from "./pendingSession";
 import { useComposer } from "../../stores/composer";
 import { useLive } from "../../stores/live";
@@ -119,7 +121,13 @@ import { deriveLoadState } from "../../lib/loadState";
 import { SessionRow } from "./SessionRow";
 import { SessionSearchDialog } from "./search/SessionSearchDialog";
 import { useSearchDialog } from "./search/searchStore";
-import { useSidebarStore } from "./sidebarStore";
+import {
+	countActiveSidebarFilters,
+	filterSidebarSessions,
+	useSidebarStore,
+} from "./sidebarStore";
+import { AddProjectPopover, CloneRepoModal } from "./AddProjectMenu";
+import { SidebarFilterPopover } from "./SidebarFilterPopover";
 import { SIDEBAR_LIST_ATTR, getVisibleSessionIds } from "./visibleRows";
 import { groupsForMode, splitSessionsByGroup, useSessionGroups } from "./sessionGroups";
 import { claimEscape } from "../../lib/escapeClaim";
@@ -267,6 +275,16 @@ export function SessionSidebar() {
 	const setGroupOpen = useSidebarStore((s) => s.setGroupOpen);
 	const toggleGroup = useSidebarStore((s) => s.toggleGroup);
 	const showArchived = useSidebarStore((s) => s.showArchived);
+	const groupBy = useSidebarStore((s) => s.groupBy);
+	const sessionSort = useSidebarStore((s) => s.sessionSort);
+	const projectSort = useSidebarStore((s) => s.projectSort);
+	const archivedOnly = useSidebarStore((s) => s.archivedOnly);
+	const showUnassigned = useSidebarStore((s) => s.showUnassigned);
+	const filterQuery = useSidebarStore((s) => s.filterQuery);
+	const statusFilter = useSidebarStore((s) => s.statusFilter);
+	const timeFilter = useSidebarStore((s) => s.timeFilter);
+	const hideEmptyProjects = useSidebarStore((s) => s.hideEmptyProjects);
+	const resetSidebarFilters = useSidebarStore((s) => s.resetSidebarFilters);
 	const expandedSections = useSidebarStore((s) => s.expandedSections);
 	const setSectionCount = useSidebarStore((s) => s.setSectionCount);
 	const toggleSection = useSidebarStore((s) => s.toggleSection);
@@ -286,11 +304,15 @@ export function SessionSidebar() {
 		},
 		[groupOpen],
 	);
+	const projectsExpanded = isGroupOpen("__projects_root", true);
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 	const [loadError, setLoadError] = useState<string | null>(null);
 
 	// Dropdown and menu state
 	const [modeMenuOpen, setModeMenuOpen] = useState(false);
+	const [filterPopoverOpen, setFilterPopoverOpen] = useState(false);
+	const [addProjectMenuOpen, setAddProjectMenuOpen] = useState(false);
+	const [projectModal, setProjectModal] = useState<"clone" | null>(null);
 	const [plusMenu, setPlusMenu] = useState<PlusMenuState | null>(null);
 	const [wsMenu, setWsMenu] = useState<WsMenuState | null>(null);
 	const wsMenuTriggerRef = useRef<HTMLElement | null>(null);
@@ -321,6 +343,8 @@ export function SessionSidebar() {
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const modeSwitcherRef = useRef<HTMLButtonElement>(null);
+	const filterBtnRef = useRef<HTMLButtonElement>(null);
+	const addProjectBtnRef = useRef<HTMLButtonElement>(null);
 
 	const plusTriggerRef = useRef<HTMLElement | null>(null);
 	const debounceTimerRef = useRef<number | null>(null);
@@ -356,6 +380,25 @@ export function SessionSidebar() {
 	// modes → project directories. Search stays scoped to the active space.
 	const showLoose = !modeHasProjects(activeMode);
 	const showProjects = modeHasProjects(activeMode);
+
+	useEffect(() => {
+		if (!showProjects) {
+			setFilterPopoverOpen(false);
+			setAddProjectMenuOpen(false);
+		}
+	}, [showProjects]);
+
+	useEffect(() => {
+		return onPromptSend((phase, sessionId) => {
+			if (phase !== "sent") return;
+			if (!useSidebarStore.getState().autoPin) return;
+			if (isLocalDraftId(sessionId)) return;
+			const target = useSessions.getState().sessions[sessionId];
+			if (!target || target.pinned) return;
+			useSessions.getState().upsert([{ ...target, pinned: true }]);
+			void updateSessionMeta(sessionId, { pinned: true }).catch(() => {});
+		});
+	}, []);
 
 	// S10: Cancel pending arrow-key selection timer whenever selection changes or on unmount
 	useEffect(() => {
@@ -466,16 +509,130 @@ export function SessionSidebar() {
 	}, [sessions, composerActiveIds, selectedSessionId, localDrafts, shownDraftId, draftInputKey]);
 	// Worktree grouping is a code-mode concept; other modes always get a flat list per project.
 	const groupByWorktreeSetting = useSettings((s) => s.settings?.sessionGroupByWorktree ?? true);
-	const groupByWorktree = activeMode === "code" && groupByWorktreeSetting;
-	const grouped = useMemo(() => {
-		const res = groupSessions(sessionsList, workspaces, {
+	const effectiveGroupBy =
+		groupBy === "none"
+			? "none"
+			: activeMode === "code" && groupBy === "worktree" && groupByWorktreeSetting
+				? "worktree"
+				: "project";
+	const groupByWorktree = effectiveGroupBy === "worktree";
+	const unfilteredGrouped = useMemo(() => {
+		return groupSessions(sessionsList, workspaces, {
 			showArchived,
+			archivedOnly: false,
 			mode: activeMode,
 			worktrees,
 			groupByWorktree,
+			sessionSort,
+			projectSort,
 		});
-		return res;
-	}, [sessionsList, workspaces, showArchived, activeMode, worktrees, groupByWorktree]);
+	}, [
+		sessionsList,
+		workspaces,
+		showArchived,
+		activeMode,
+		worktrees,
+		groupByWorktree,
+		sessionSort,
+		projectSort,
+	]);
+	const hasSessionFilterCriteria =
+		filterQuery.trim() !== "" || statusFilter !== "all" || timeFilter !== "all" || archivedOnly;
+	const filteredSessionsList = useMemo(
+		() =>
+			filterSidebarSessions(sessionsList, workspaces, {
+				query: filterQuery,
+				statusFilter,
+				timeFilter,
+			}),
+		[sessionsList, workspaces, filterQuery, statusFilter, timeFilter],
+	);
+	const grouped = useMemo(() => {
+		if (!hasSessionFilterCriteria) return unfilteredGrouped;
+		return groupSessions(filteredSessionsList, workspaces, {
+			showArchived,
+			archivedOnly,
+			mode: activeMode,
+			worktrees,
+			groupByWorktree,
+			sessionSort,
+			projectSort,
+		});
+	}, [
+		hasSessionFilterCriteria,
+		unfilteredGrouped,
+		filteredSessionsList,
+		workspaces,
+		showArchived,
+		archivedOnly,
+		activeMode,
+		worktrees,
+		groupByWorktree,
+		sessionSort,
+		projectSort,
+	]);
+	const activeFilterCount = countActiveSidebarFilters({
+		filterQuery,
+		statusFilter,
+		timeFilter,
+		showArchived,
+		archivedOnly,
+		hideEmptyProjects,
+	});
+	const flatSessions = useMemo(() => {
+		if (effectiveGroupBy !== "none") return [];
+		const list: SessionMeta[] = [];
+		for (const wg of grouped.workspaceGroups) {
+			for (const sub of wg.subgroups) list.push(...sub.sessions);
+			for (const sub of wg.deletedSubgroups) list.push(...sub.sessions);
+		}
+		if (showUnassigned) {
+			list.push(...grouped.unassigned);
+		}
+		list.push(...grouped.deletedSessions);
+		const parseTs = (ts: string | null | undefined) => {
+			if (!ts) return 0;
+			const n = Date.parse(ts);
+			return Number.isNaN(n) ? 0 : n;
+		};
+		return list.sort((a, b) => {
+			if (sessionSort === "title") {
+				const cmp = (a.title || a.label || "")
+					.trim()
+					.localeCompare((b.title || b.label || "").trim());
+				if (cmp !== 0) return cmp;
+			}
+			const ta = parseTs(
+				sessionSort === "created" ? a.createdAt || a.updatedAt : a.updatedAt || a.createdAt,
+			);
+			const tb = parseTs(
+				sessionSort === "created" ? b.createdAt || b.updatedAt : b.updatedAt || b.createdAt,
+			);
+			return tb - ta;
+		});
+	}, [effectiveGroupBy, grouped, sessionSort, showUnassigned]);
+	const displayedWorkspaceGroups = useMemo(() => {
+		if (!hideEmptyProjects && !hasSessionFilterCriteria) {
+			return grouped.workspaceGroups;
+		}
+		const q = filterQuery.trim().toLowerCase();
+		return grouped.workspaceGroups.filter((wg) => {
+			if (wg.totalCount > 0) return true;
+			if (wg.pinnedCount > 0 && !hasSessionFilterCriteria) return true;
+			if (hideEmptyProjects) return false;
+			if (statusFilter === "all" && timeFilter === "all" && q !== "") {
+				return wg.workspace.name.toLowerCase().includes(q);
+			}
+			return false;
+		});
+	}, [
+		grouped.workspaceGroups,
+		hideEmptyProjects,
+		hasSessionFilterCriteria,
+		statusFilter,
+		timeFilter,
+		filterQuery,
+	]);
 
 	// 无项目 sessions of the active mode, split into per-group buckets.
 	const noProjectSplit = useMemo(() => {
@@ -692,6 +849,28 @@ export function SessionSidebar() {
 	]);
 
 	// Workspace management actions — adds land in the CURRENT space mode.
+	const activateAddedProject = async (selectedPath: string) => {
+		const ws = await addWorkspace(selectedPath, activeMode);
+		await loadSessions();
+		setGroupOpen((prev) => ({ ...prev, [ws.id]: true }));
+		if (
+			hideEmptyProjects ||
+			statusFilter !== "all" ||
+			timeFilter !== "all" ||
+			filterQuery.trim() !== ""
+		) {
+			resetSidebarFilters();
+		}
+		toast.success(t("sessions.addedWorkspaceNamed", { name: ws.name }));
+		await startSessionInDir(ws, false);
+		requestAnimationFrame(() => {
+			const groupEl = scrollRef.current?.querySelector<HTMLElement>(
+				`[data-group-key="${ws.id}"]`,
+			);
+			groupEl?.scrollIntoView({ block: "nearest" });
+		});
+	};
+
 	const handleAddWorkspace = async () => {
 		try {
 			let selectedPath: string | null = null;
@@ -709,10 +888,7 @@ export function SessionSidebar() {
 			}
 
 			if (selectedPath) {
-				const ws = await addWorkspace(selectedPath, activeMode);
-				await loadSessions();
-				toast.success(t("sessions.addedWorkspace"));
-				await startSessionInDir(ws, false);
+				await activateAddedProject(selectedPath);
 			}
 		} catch (err) {
 			toast.error(t("sessions.addWorkspaceFailed", { error: errMsg(err) }));
@@ -1092,7 +1268,7 @@ export function SessionSidebar() {
 					</div>
 				</div>
 			)}
-			<div className="relative border-b border-[var(--border-divider)] bg-transparent px-2 pb-2 pt-1">
+			<div className="relative bg-transparent px-2 pb-1 pt-1">
 
 				{/* First-class Navigation List (S22: real accessible buttons, no button-in-button) */}
 				<div className="space-y-1 pt-1.5 pb-0.5">
@@ -1188,14 +1364,14 @@ export function SessionSidebar() {
 					layer="popover"
 					ignoreRefs={[modeSwitcherRef]}
 					onDismiss={() => setModeMenuOpen(false)}
-					className="max-h-[70vh] w-[200px] overflow-y-auto p-1.5 text-xs text-neutral-300"
+					className="max-h-[70vh] w-max min-w-[160px] max-w-[230px] overflow-y-auto p-1.5 text-xs text-neutral-300"
 				>
 					<MenuContainer
 						ariaLabel={t("sidebar.switchMode")}
 						onClose={() => setModeMenuOpen(false)}
 						triggerRef={modeSwitcherRef}
 					>
-						<div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+						<div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-500 whitespace-nowrap">
 							{t("sidebar.switchMode")}
 						</div>
 						{SPACE_MODES.map((mode) => {
@@ -1212,7 +1388,7 @@ export function SessionSidebar() {
 										setModeMenuOpen(false);
 									}}
 									className={clsx(
-										"flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left transition-colors",
+										"flex w-full items-center justify-between gap-4 whitespace-nowrap rounded-md px-2 py-1.5 text-left transition-colors",
 										isSelected
 											? "bg-[var(--bg-hover)] font-medium text-[var(--text)]"
 											: "text-[var(--text-muted)] hover:bg-[var(--bg-hover)]/60 hover:text-[var(--text)]",
@@ -1257,6 +1433,68 @@ export function SessionSidebar() {
 					>
 						<X size={14} />
 					</button>
+				</div>
+			)}
+
+			{/* Fixed Project Header Bar (pinned above scrollable list) */}
+			{showProjects && (
+				<div
+					data-testid="fixed-project-bar"
+					className="flex shrink-0 items-center justify-between px-3 pt-2 pb-1"
+				>
+					<button
+						type="button"
+						aria-expanded={projectsExpanded}
+						onClick={() => toggleGroup("__projects_root", true)}
+						className="-ml-1 inline-flex min-w-0 items-center whitespace-nowrap rounded px-1 py-0.5 text-[12px] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+					>
+						{t("sidebar.projects")}
+						{archivedOnly ? t("sidebar.projectsArchivedSuffix") : ""}
+					</button>
+					<div className="flex shrink-0 items-center gap-0.5">
+						<button
+							ref={filterBtnRef}
+							type="button"
+							aria-label={t("sidebar.displayOptionsTitle")}
+							aria-expanded={filterPopoverOpen}
+							title={t("sidebar.displayOptionsTitle")}
+							onClick={() => {
+								setAddProjectMenuOpen(false);
+								setFilterPopoverOpen((v) => !v);
+							}}
+							className={clsx(
+								"inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
+								activeFilterCount > 0 || filterPopoverOpen
+									? "bg-[var(--accent)]/10 text-[var(--accent)]"
+									: "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]",
+							)}
+						>
+							<ListFilter
+								size={14}
+								strokeWidth={activeFilterCount > 0 ? 2.25 : 1.75}
+								className="shrink-0"
+							/>
+						</button>
+						<button
+							ref={addProjectBtnRef}
+							type="button"
+							aria-label={t("sidebar.addProjectDir")}
+							aria-expanded={addProjectMenuOpen}
+							title={t("sidebar.addProjectDir")}
+							onClick={() => {
+								setFilterPopoverOpen(false);
+								setAddProjectMenuOpen((v) => !v);
+							}}
+							className={clsx(
+								"inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
+								addProjectMenuOpen
+									? "bg-[var(--bg-hover)] text-[var(--text)]"
+									: "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]",
+							)}
+						>
+							<FolderPlus size={14} strokeWidth={1.75} className="shrink-0" />
+						</button>
+					</div>
 				</div>
 			)}
 
@@ -1625,25 +1863,26 @@ export function SessionSidebar() {
 							);
 						})()}
 
-						{showProjects && (
-						<>
-						{/* 2. 项目 section header: 「添加工作区目录…」 lands in the CURRENT space */}
-						<div className="mx-1 mt-1 flex items-center justify-between rounded-md px-2 py-1">
-							<span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)]">
-								{t("sidebar.projects")}
-							</span>
-							<button
-								type="button"
-								onClick={() => void handleAddWorkspace()}
-								title={t("sidebar.addWorkspaceDir")}
-								className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] shrink-0 transition-all duration-150 ease-out focus:opacity-100 focus-visible:opacity-100"
-							>
-								<Plus size={13} />
-							</button>
-						</div>
+						{showProjects && effectiveGroupBy === "none" && projectsExpanded && flatSessions.length > 0 && (
+							<div className="mt-0.5 px-1">
+								<SessionList
+									sessions={flatSessions}
+									scopeKey="__flat_projects"
+									recentLimit={30}
+									expanded={expandedSections}
+									onSetCount={setSectionCount}
+									workspaces={workspaces}
+									onRowFocus={focusList}
+									onBatchAction={handleBatchAction}
+								/>
+							</div>
+						)}
 
+						{showProjects && effectiveGroupBy !== "none" && (
+						<>
 						{/* 3. Registered Project Workspaces */}
-						{grouped.workspaceGroups.map((wg) => {
+						{projectsExpanded &&
+							displayedWorkspaceGroups.map((wg) => {
 									const palette = getWorkspacePalette(
 										wg.workspace.id || wg.workspace.name,
 									);
@@ -1813,9 +2052,10 @@ export function SessionSidebar() {
 								})}
 
 								{/* 3. Unassigned Bucket (G15: per-cwd subgroups under UNASSIGNED_LABEL) */}
-								{(grouped.unassigned.length > 0 ||
-									(grouped.unassignedGroups &&
-										grouped.unassignedGroups.length > 0)) && (
+								{showUnassigned &&
+									(grouped.unassigned.length > 0 ||
+										(grouped.unassignedGroups &&
+											grouped.unassignedGroups.length > 0)) && (
 									<div className="mt-0.5">
 										<GroupHeader
 											groupKey="__unassigned"
@@ -2020,8 +2260,31 @@ export function SessionSidebar() {
 
 						</>
 						)}
+						{/* Filtered empty state */}
+						{showProjects &&
+							activeFilterCount > 0 &&
+							grouped.pinnedSessions.length === 0 &&
+							(effectiveGroupBy === "none"
+								? flatSessions.length === 0
+								: displayedWorkspaceGroups.length === 0 &&
+									grouped.unassigned.length === 0 &&
+									grouped.deletedSessions.length === 0) && (
+								<div className="flex flex-col items-center justify-center gap-2.5 p-6 text-center">
+									<div className="text-xs text-[var(--text-muted)]">
+										{t("sessions.noMatchingFilteredSessions")}
+									</div>
+									<button
+										type="button"
+										onClick={resetSidebarFilters}
+										className="whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/10"
+									>
+										{t("sessions.filterClear")}
+									</button>
+								</div>
+							)}
+
 						{/* Empty State (G11, S20) */}
-						{grouped.totalVisible === 0 && showProjects && (
+						{grouped.totalVisible === 0 && showProjects && activeFilterCount === 0 && (
 							<div className="flex flex-col items-center justify-center p-6 text-center text-neutral-500">
 								{Object.keys(sessions).length === 0 && loadError ? (
 									// P5: retryable inline error block when loading failed
@@ -2051,7 +2314,7 @@ export function SessionSidebar() {
 											{t("common.retry")}
 										</button>
 									</div>
-								) : grouped.workspaceGroups.length === 0 ? (
+								) : unfilteredGrouped.workspaceGroups.length === 0 ? (
 									// S20: per-space empty state — the mode owns nothing yet
 									<div className="w-full space-y-1 text-left">
 										<div className="px-2 text-[12px] text-neutral-500">
@@ -2078,7 +2341,7 @@ export function SessionSidebar() {
 
 			{/* Settings footer (S18: single accessible button) */}
 			{/* Settings footer (S18: accessible button + Qoder-style dynamic update badge) */}
-			<div className="flex shrink-0 items-center gap-1.5 p-2">
+			<div className="flex shrink-0 items-center gap-1.5 px-2 py-1">
 				<button
 					type="button"
 					onClick={() => {
@@ -2086,7 +2349,7 @@ export function SessionSidebar() {
 						centerView === "settings" ? closeSettings() : openSettings();
 					}}
 					className={clsx(
-						"group flex h-9 flex-1 min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[14px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
+						"group flex h-[30px] flex-1 min-w-0 items-center gap-2 rounded-lg px-2 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
 						centerView === "settings"
 							? "bg-[var(--bg-active-fill)] font-semibold text-[var(--text)] shadow-xs hairline"
 							: "font-medium text-[var(--text)] hover:bg-[var(--bg-hover)]",
@@ -2094,7 +2357,7 @@ export function SessionSidebar() {
 					title={t("common.settings")}
 				>
 					<SettingsIcon
-						size={17}
+						size={15}
 						strokeWidth={1.75}
 						className={clsx(
 							"shrink-0 transition-colors",
@@ -2131,9 +2394,9 @@ export function SessionSidebar() {
 					onClick={() => openSettingsTarget("quota")}
 					aria-label={t("sidebar.quota")}
 					title={t("sidebar.quota")}
-					className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+					className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 				>
-					<Gauge size={17} strokeWidth={1.75} />
+					<Gauge size={15} strokeWidth={1.75} />
 				</button>
 			</div>
 
@@ -2146,14 +2409,14 @@ export function SessionSidebar() {
 					layer="menu"
 					ignoreRefs={plusTriggerRef.current ? [plusTriggerRef] : undefined}
 					onDismiss={() => setPlusMenu(null)}
-					className="w-48 py-1 text-xs text-neutral-300"
+					className="w-max py-1 text-xs text-neutral-300"
 				>
 					<MenuContainer
 						ariaLabel={t("sidebar.newSessionOptions")}
 						onClose={() => setPlusMenu(null)}
 						triggerRef={plusTriggerRef}
 					>
-						<div className="px-3 py-1 text-[10px] text-neutral-500 font-semibold uppercase tracking-wider">
+						<div className="px-3 py-1 text-[10px] text-neutral-500 font-semibold uppercase tracking-wider whitespace-nowrap">
 							{t("sidebar.newSession")}
 						</div>
 						<button
@@ -2165,9 +2428,9 @@ export function SessionSidebar() {
 								void startSessionInDir(ws, false);
 							}}
 							disabled={creatingKey !== null}
-							className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left disabled:opacity-40"
+							className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left disabled:opacity-40"
 						>
-							<Folder size={13} className="text-amber-400" />
+							<Folder size={13} className="text-amber-400 shrink-0" />
 							{t("sidebar.createInCurrentDir")}
 						</button>
 
@@ -2190,14 +2453,14 @@ export function SessionSidebar() {
 											useWorktree: true,
 										});
 									}}
-									className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left disabled:opacity-40 disabled:hover:bg-transparent"
+									className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left disabled:opacity-40 disabled:hover:bg-transparent"
 									title={
 										!hasGitWorktrees
 											? t("sidebar.workspaceNoGitWorktrees")
 											: undefined
 									}
 								>
-									<FolderGit2 size={13} className="text-indigo-400" />
+									<FolderGit2 size={13} className="text-indigo-400 shrink-0" />
 									{t("sidebar.createInIsolatedWorktree")}
 								</button>
 							);
@@ -2214,7 +2477,7 @@ export function SessionSidebar() {
 					offset={4}
 					layer="menu"
 					onDismiss={() => setWsMenu(null)}
-					className="w-44 py-1 text-xs text-neutral-300"
+					className="w-max py-1 text-xs text-neutral-300"
 				>
 					<MenuContainer
 						ariaLabel={t("sidebar.workspaceManagement")}
@@ -2229,9 +2492,9 @@ export function SessionSidebar() {
 								setWsMenu(null);
 								void startSessionInDir(ws, false);
 							}}
-							className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left"
+							className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left"
 						>
-							<Plus size={13} />
+							<Plus size={13} className="shrink-0" />
 							{t("sidebar.newSession")}…
 						</button>
 
@@ -2239,9 +2502,9 @@ export function SessionSidebar() {
 							type="button"
 							role="menuitem"
 							onClick={() => void handleRevealWorkspace(wsMenu.ws)}
-							className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left"
+							className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left"
 						>
-							<FolderOpen size={13} />
+							<FolderOpen size={13} className="shrink-0" />
 							{t("sidebar.openInFinder")}
 						</button>
 
@@ -2252,9 +2515,9 @@ export function SessionSidebar() {
 									type="button"
 									role="menuitem"
 									onClick={() => void handleRemoveWorkspace(wsMenu.ws)}
-									className="flex w-full items-center gap-2 px-3 py-1.5 text-[var(--status-error)] hover:bg-rose-500/15 text-left"
+									className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 text-[var(--status-error)] hover:bg-rose-500/15 text-left"
 								>
-									<Trash2 size={13} />
+									<Trash2 size={13} className="shrink-0" />
 									{t("sidebar.removeFromWorkspace")}
 								</button>
 							</>
@@ -2272,7 +2535,7 @@ export function SessionSidebar() {
 					layer="menu"
 					ignoreRefs={grpMenuTriggerRef.current ? [grpMenuTriggerRef] : undefined}
 					onDismiss={() => setGrpMenu(null)}
-					className="w-44 py-1 text-xs text-neutral-300"
+					className="w-max py-1 text-xs text-neutral-300"
 				>
 					<MenuContainer
 						ariaLabel={t("sidebar.groupActions")}
@@ -2288,22 +2551,46 @@ export function SessionSidebar() {
 								setGroupNameDraft(g.name);
 								setRenamingGroupId(g.id);
 							}}
-							className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left"
+							className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left"
 						>
-							<Pencil size={13} />
+							<Pencil size={13} className="shrink-0" />
 							{t("sidebar.rename")}
 						</button>
 						<button
 							type="button"
 							role="menuitem"
 							onClick={() => void handleDeleteGroup(grpMenu.group)}
-							className="flex w-full items-center gap-2 px-3 py-1.5 text-[var(--status-error)] hover:bg-rose-500/15 text-left"
+							className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 text-[var(--status-error)] hover:bg-rose-500/15 text-left"
 						>
-							<Trash2 size={13} />
+							<Trash2 size={13} className="shrink-0" />
 							{t("sidebar.deleteGroup")}
 						</button>
 					</MenuContainer>
 				</FloatingLayer>
+			)}
+
+			{/* Fixed Project Bar Popovers & Modals */}
+			{filterPopoverOpen && showProjects && (
+				<SidebarFilterPopover
+					anchor={filterBtnRef.current}
+					ignoreRefs={[filterBtnRef]}
+					onClose={() => setFilterPopoverOpen(false)}
+				/>
+			)}
+			{addProjectMenuOpen && showProjects && (
+				<AddProjectPopover
+					anchor={addProjectBtnRef.current}
+					ignoreRefs={[addProjectBtnRef]}
+					onClose={() => setAddProjectMenuOpen(false)}
+					onOpenFolder={() => void handleAddWorkspace()}
+					onCloneRepo={() => setProjectModal("clone")}
+				/>
+			)}
+			{projectModal === "clone" && (
+				<CloneRepoModal
+					onClose={() => setProjectModal(null)}
+					onProjectReady={activateAddedProject}
+				/>
 			)}
 
 			{/* Global dialogs rendered portaled once (Contract 3, S7) */}

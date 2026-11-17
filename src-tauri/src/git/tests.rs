@@ -686,3 +686,73 @@ fn branch_cleanup_failure_leaves_disk_listing_reconciliable() {
     .is_ok());
     std::fs::remove_dir_all(repo).unwrap();
 }
+
+#[test]
+fn derive_repo_folder_name_parses_urls_and_rejects_invalid() {
+    assert_eq!(
+        commands::derive_repo_folder_name("https://github.com/org/my-repo.git"),
+        Some("my-repo".to_string())
+    );
+    assert_eq!(
+        commands::derive_repo_folder_name("https://github.com/org/my-repo.GIT/"),
+        Some("my-repo".to_string())
+    );
+    assert_eq!(
+        commands::derive_repo_folder_name("git@github.com:org/ssh-repo.git"),
+        Some("ssh-repo".to_string())
+    );
+    assert_eq!(commands::derive_repo_folder_name("   "), None);
+    assert_eq!(
+        commands::derive_repo_folder_name("https://github.com/org/.."),
+        None
+    );
+}
+
+#[test]
+fn create_project_dir_creates_repo_and_validates_segment() {
+    let parent = temp_repo("create-parent");
+    let created =
+        commands::create_project_dir_internal(parent.to_str().unwrap(), "demo-app", true).unwrap();
+    let created_path = PathBuf::from(&created);
+    assert!(created_path.is_dir());
+    assert!(created_path.join(".git").is_dir());
+
+    assert!(
+        commands::create_project_dir_internal(parent.to_str().unwrap(), "../escape", false,)
+            .is_err()
+    );
+    assert!(
+        commands::create_project_dir_internal(parent.to_str().unwrap(), "demo-app", false,)
+            .is_err()
+    );
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
+fn git_clone_repo_rejects_option_injection_and_clones_local_repo() {
+    let src = temp_repo("clone-src");
+    commit(&src, "README.md", "hello\n", "init");
+
+    let dest_parent = temp_repo("clone-dest");
+    assert!(commands::git_clone_repo_internal(
+        "-u/tmp/evil",
+        dest_parent.to_str().unwrap(),
+        None,
+        Duration::from_secs(30),
+    )
+    .is_err());
+
+    let cloned = commands::git_clone_repo_internal(
+        src.to_str().unwrap(),
+        dest_parent.to_str().unwrap(),
+        Some("cloned-app"),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let cloned_path = PathBuf::from(&cloned);
+    assert!(cloned_path.join("README.md").is_file());
+    assert!(cloned_path.join(".git").is_dir());
+
+    std::fs::remove_dir_all(src).unwrap();
+    std::fs::remove_dir_all(dest_parent).unwrap();
+}

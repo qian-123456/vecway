@@ -470,7 +470,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 							{sessionsLoadState === "error" ? t("shell.loadSessionError") : t("shell.loading")}
 						</div>
 					) : (
-						<div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+						<div data-tauri-drag-region className="flex min-w-0 items-center gap-2 overflow-hidden">
 							{backTarget && (
 								<>
 									<button
@@ -494,12 +494,12 @@ export const CenterHeader = React.memo(function CenterHeader({
 							) : !backTarget ? (
 								<div className="flex min-w-0 items-center gap-3 overflow-hidden">
 									<VecwayWordmark height={21} />
-									<div className="hidden @[420px]:contents">
+									<div className={worktreeIdentity ? "hidden @[460px]:contents" : "hidden @[370px]:contents"}>
 										<span
 											aria-hidden="true"
 											className="h-3.5 w-px shrink-0 bg-[var(--border-divider)]"
 										/>
-										<TopUsageStrip />
+										<TopUsageStrip hasRightBadge={Boolean(worktreeIdentity)} />
 									</div>
 								</div>
 							) : null}
@@ -563,7 +563,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 									offset={6}
 									onDismiss={() => setShareOpen(false)}
 									ignoreRefs={[shareBtnRef]}
-									className="w-52 rounded-lg border border-neutral-700 bg-neutral-900 p-1 text-xs shadow-xl"
+									className="w-max rounded-lg border border-neutral-700 bg-neutral-900 p-1 text-xs shadow-xl"
 								>
 									<button
 										type="button"
@@ -571,41 +571,41 @@ export const CenterHeader = React.memo(function CenterHeader({
 											if (activeSession) useShareSelection.getState().begin(activeSession.id);
 											setShareOpen(false);
 										}}
-										className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 									>
-										<ImageIcon size={13} />
+										<ImageIcon size={13} className="shrink-0" />
 										<span>{t("shell.shareAsImage")}</span>
 									</button>
 									<button
 										type="button"
 										onClick={handleShareLink}
-										className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 									>
-										<Link2 size={13} />
+										<Link2 size={13} className="shrink-0" />
 										<span>{t("shell.createShareLinkAction")}</span>
 									</button>
 									<button
 										type="button"
 										onClick={handleCopyMarkdown}
-										className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 									>
-										<Copy size={13} />
+										<Copy size={13} className="shrink-0" />
 										<span>{t("shell.copyAsMarkdown")}</span>
 									</button>
 									<button
 										type="button"
 										onClick={handleExportHtml}
-										className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 									>
-										<FileDown size={13} />
+										<FileDown size={13} className="shrink-0" />
 										<span>{t("shell.exportAsHtml")}</span>
 									</button>
 									<button
 										type="button"
 										onClick={handleMobilePair}
-										className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 									>
-										<QrCode size={13} />
+										<QrCode size={13} className="shrink-0" />
 										<span>{t("shell.mobileScan")}</span>
 									</button>
 								</FloatingLayer>

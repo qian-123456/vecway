@@ -45,18 +45,11 @@ describe("RightPanelEmptyState 计划入口", () => {
 		useLive.setState({ sessions: {} });
 	});
 
-	it("opens 计划 with no live status loaded yet, without touching plan state", () => {
+	it.each(["unknown", "approved"])("never advertises a generic plan launcher (%s)", (state) => {
+		if (state === "approved") {
+			useLive.setState({ sessions: { a: { ...emptySessionLive(), plan: { ...PLAN_OFF, approved } } } });
+		}
 		render(<RightPanelEmptyState tabBadges={badges} />);
-		fireEvent.click(screen.getByRole("button", { name: /计划/ }));
-		expect(useUi.getState().rightTab).toBe("plan");
-		expect(useLive.getState().sessions).toEqual({});
-	});
-
-	it("opens 计划 for an approved enabled=false session without enabling plan mode", () => {
-		useLive.setState({ sessions: { a: { ...emptySessionLive(), plan: { ...PLAN_OFF, approved } } } });
-		render(<RightPanelEmptyState tabBadges={badges} />);
-		fireEvent.click(screen.getByRole("button", { name: /计划/ }));
-		expect(useUi.getState().rightTab).toBe("plan");
-		expect(useLive.getState().sessions.a.plan?.enabled).toBe(false);
+		expect(screen.queryByRole("button", { name: /计划/ })).toBeNull();
 	});
 });

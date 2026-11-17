@@ -446,21 +446,29 @@ pub fn sum_usage(path: &Path) -> std::io::Result<(Option<u64>, Option<f64>)> {
     Ok((tokens, cost))
 }
 
-/// Last thinking level and context size recorded in the transcript. File order
-/// is treated as chronological; side branches are not distinguished.
+/// Last thinking level, context size and persisted plan state in the transcript.
+/// File order is treated as chronological; side branches are not distinguished.
 pub fn session_snapshot(path: &Path) -> std::io::Result<SessionSnapshot> {
-    let reader = BufReader::with_capacity(256 * 1024, File::open(path)?);
+    let mut reader = BufReader::with_capacity(256 * 1024, File::open(path)?);
     let mut snap = SessionSnapshot::default();
-    for line in reader.split(b'\n') {
-        let line = line?;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        let complete = line.last() == Some(&b'\n');
         // Cheap prefilter before JSON parsing.
         let level = contains(&line, b"\"thinking_level_change\"");
         let compaction = contains(&line, b"\"compaction\"");
         let usage = contains(&line, b"\"usage\"") && contains(&line, b"\"assistant\"");
-        if !(level || compaction || usage) {
+        let plan = complete
+            && contains(&line, b"\"customType\"")
+            && contains(&line, b"\"ompws-plan-state\"");
+        if !(level || compaction || usage || plan) {
             continue;
         }
-        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
+        let Ok(mut v) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
         match v.get("type").and_then(Value::as_str) {
@@ -486,6 +494,14 @@ pub fn session_snapshot(path: &Path) -> std::io::Result<SessionSnapshot> {
                     ) {
                         snap.context_tokens = Some(prompt);
                     }
+                }
+            }
+            Some("custom")
+                if complete
+                    && v.get("customType").and_then(Value::as_str) == Some("ompws-plan-state") =>
+            {
+                if let Some(data) = v.get_mut("data").filter(|data| data.is_object()) {
+                    snap.plan_state = Some(data.take());
                 }
             }
             _ => {}
@@ -779,7 +795,7 @@ mod tests {
 
     #[test]
     fn snapshot_tracks_last_level_and_context() {
-        let dir = std::env::temp_dir().join(format!("ompws-snap-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ompws-snap-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("s.jsonl");
         let asst = |input: u64, cache: u64| {
@@ -800,11 +816,95 @@ mod tests {
         let snap = session_snapshot(&path).unwrap();
         assert_eq!(snap.thinking_level.as_deref(), Some("high"));
         assert_eq!(snap.context_tokens, Some(220));
+        assert_eq!(snap.plan_state, None);
 
         let compaction = r#"{"type":"compaction","summary":"s"}"#;
         std::fs::write(&path, format!("{body}\n{compaction}")).unwrap();
         assert_eq!(session_snapshot(&path).unwrap().context_tokens, None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn snapshot_from_body(body: &str) -> SessionSnapshot {
+        let dir = std::env::temp_dir().join(format!("ompws-snap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        std::fs::write(&path, body).unwrap();
+        let snapshot = session_snapshot(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        snapshot
+    }
+
+    #[test]
+    fn snapshot_keeps_latest_valid_plan_record() {
+        let snapshot = snapshot_from_body(concat!(
+            "{\"type\":\"custom\",\"customType\":\"ompws-plan-state\",\"data\":{\"enabled\":true,\"approved\":true,\"phase\":\"approved\",\"lastContent\":\"old\"}}\n",
+            "{\"type\":\"custom\",\"customType\":\"ompws-plan-state\",\"data\":{\"enabled\":true,\"approved\":false,\"phase\":\"ready\",\"lastContent\":\"new\",\"extra\":{\"revision\":2}}}\n",
+            "{\"type\":\"custom\",\"customType\":\"ompws-plan-state\",\"data\":\n",
+            "{\"type\":\"custom\",\"customType\":\"other\",\"data\":{\"lastContent\":\"wrong type\"}}\n",
+            "{\"type\":\"custom\",\"customType\":\"ompws-plan-state\",\"data\":[]}\n",
+            "{\"type\":\"custom\",\"customType\":\"ompws-plan-state\",\"data\":null}\n",
+            "{\"type\":\"custom\",\"customType\":\"ompws-plan-state\"}\n",
+        ));
+        assert_eq!(
+            snapshot.plan_state,
+            Some(serde_json::json!({
+                "enabled": true,
+                "approved": false,
+                "phase": "ready",
+                "lastContent": "new",
+                "extra": { "revision": 2 }
+            }))
+        );
+    }
+
+    #[test]
+    fn snapshot_disabled_plan_replaces_approved_plan() {
+        let snapshot = snapshot_from_body(concat!(
+            "{\"type\":\"custom\",\"customType\":\"ompws-plan-state\",\"data\":{\"enabled\":true,\"approved\":true,\"phase\":\"approved\",\"lastContent\":\"approved\"}}\n",
+            "{\"type\":\"custom\",\"customType\":\"ompws-plan-state\",\"data\":{\"enabled\":false,\"approved\":false,\"phase\":\"off\",\"lastContent\":\"\"}}\n",
+        ));
+        assert_eq!(
+            snapshot.plan_state,
+            Some(serde_json::json!({
+                "enabled": false,
+                "approved": false,
+                "phase": "off",
+                "lastContent": ""
+            }))
+        );
+    }
+
+    #[test]
+    fn snapshot_ignores_spoofed_plan_content() {
+        let snapshot = snapshot_from_body(concat!(
+            "{\"type\":\"message\",\"customType\":\"ompws-plan-state\",\"data\":{\"enabled\":true},\"message\":{\"role\":\"user\",\"content\":[]}}\n",
+            "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"custom\",\"customType\":\"ompws-plan-state\",\"data\":{\"enabled\":true}}]}}\n",
+            "{\"type\":\"custom_message\",\"customType\":\"ompws-plan-state\",\"data\":{\"enabled\":true}}\n",
+            "{\"type\":\"custom\",\"customType\":\"other\",\"data\":{\"customType\":\"ompws-plan-state\",\"enabled\":true}}\n",
+        ));
+        assert_eq!(snapshot, SessionSnapshot::default());
+    }
+
+    #[test]
+    fn snapshot_ignores_unterminated_plan_tail() {
+        let approved = concat!(
+            "{\"type\":\"custom\",\"customType\":\"ompws-plan-state\",",
+            "\"data\":{\"enabled\":true,\"approved\":true,\"lastContent\":\"saved\"}}\n",
+        );
+        for tail in [
+            r#"{"type":"custom","customType":"ompws-plan-state","data":{"enabled":false"#,
+            r#"{"type":"custom","customType":"ompws-plan-state","data":{"enabled":false,"lastContent":{"type":"compaction"}}}"#,
+        ] {
+            let snapshot = snapshot_from_body(&format!("{approved}{tail}"));
+            assert_eq!(
+                snapshot.plan_state,
+                Some(serde_json::json!({
+                    "enabled": true,
+                    "approved": true,
+                    "lastContent": "saved"
+                }))
+            );
+        }
     }
 
     #[test]

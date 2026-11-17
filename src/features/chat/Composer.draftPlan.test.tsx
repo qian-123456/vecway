@@ -17,6 +17,8 @@ import { usePendingSession } from "../sessions/pendingSession";
 import { loadChip, saveChip } from "./slash/chip";
 import { Composer } from "./Composer";
 import { useTreeEditPending } from "./treeNav";
+import { PLAN_OFF, PLAN_STATUS_KEY, type PlanStatus } from "./plan/planStatus";
+import { abortTurn } from "./send";
 
 const DRAFT = "local-draft:plan-1";
 const REAL = "real-1";
@@ -24,6 +26,7 @@ const REAL = "real-1";
 const h = vi.hoisted(() => ({
 	rpcSend: vi.fn(async (_id: string, _cmd: unknown) => ({}) as Record<string, unknown>),
 	materialize: vi.fn<(id: string) => Promise<string>>(),
+	sessionSnapshot: vi.fn<() => Promise<Record<string, unknown>>>(),
 }));
 
 vi.mock("../../lib/ipc", async (importOriginal) => {
@@ -33,7 +36,7 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
 		rpcSend: h.rpcSend,
 		rpcEnsureLive: vi.fn(async () => ({ sessionId: REAL })),
 		sessionUsage: vi.fn(async () => ({ available: false, tokens: 0 })),
-		sessionSnapshot: vi.fn(async () => ({})),
+		sessionSnapshot: h.sessionSnapshot,
 		skillsList: vi.fn(async () => ({ skills: [], extensions: [] })),
 		listWorkspaceFiles: vi.fn(async () => []),
 		listModels: vi.fn(async () => ({ models: [], source: "cli", completeness: "unverified" })),
@@ -84,6 +87,7 @@ beforeEach(async () => {
 	localStorage.clear();
 	h.rpcSend.mockClear();
 	h.materialize.mockReset();
+	h.sessionSnapshot.mockReset().mockResolvedValue({});
 	useUi.setState({ rightTab: "git" } as never);
 	useComposer.setState({ drafts: {}, annotations: {}, images: {}, files: {}, history: [] });
 	usePendingSession.setState({
@@ -227,29 +231,188 @@ describe("submitted annotation ownership after draft handoff", () => {
 
 
 describe("plan tab auto-open", () => {
-	const setPlan = (plan: { enabled: boolean; version: number } | undefined) =>
+	beforeEach(() => {
+		// Session selection restores its remembered panel. Seed that first,
+		// then the target panel; combining both in setState is overwritten.
+		useUi.getState().selectSession(REAL);
+		useUi.setState({ rightOpen: true, rightTab: "git", openRightTabs: ["git"] });
+		useLive.setState((state) => ({ sessions: { ...state.sessions, [REAL]: emptySessionLive() } }));
+	});
+	const review = (version: number): PlanStatus => ({
+		...PLAN_OFF, enabled: true, phase: "review", content: "# Plan\n\nBody", version,
+	});
+	const setPlan = (plan: PlanStatus | undefined, streaming = false, id = REAL) =>
 		act(() => {
-			useLive.setState({
-				sessions: { [REAL]: { ...emptySessionLive(), alive: true, state: {}, ...(plan ? { plan } : {}) } as never },
-			});
+			useLive.setState((state) => ({
+				sessions: { ...state.sessions, [id]: { ...emptySessionLive(), alive: true, state: {}, streaming, plan } },
+			}));
 		});
 
 	it("opens only for a newer revision, not for resume or mode start", () => {
-		setPlan({ enabled: true, version: 3 });
+		setPlan(review(3));
 		render(<Composer sessionId={REAL} />);
-		expect(useUi.getState().rightTab).toBe("git"); // resumed at v3: baseline
-
-		setPlan({ enabled: true, version: 3 });
 		expect(useUi.getState().rightTab).toBe("git");
-
-		setPlan({ enabled: true, version: 4 });
+		setPlan(review(3));
+		expect(useUi.getState().rightTab).toBe("git");
+		setPlan(review(4));
 		expect(useUi.getState().rightTab).toBe("plan");
 	});
 
-	it("does not open when plan mode is toggled on at version 0", () => {
+	it("waits for the terminal agent event after an atomic review status frame", () => {
+		setPlan({ ...PLAN_OFF, enabled: true });
+		render(<Composer sessionId={REAL} />);
+		act(() => useLive.getState().reduceFrame({ sessionId: REAL, frame: { type: "agent_start" } }));
+		act(() => useLive.getState().reduceFrame({ sessionId: REAL, frame: {
+			type: "extension_ui_request", method: "setStatus", statusKey: PLAN_STATUS_KEY,
+			statusText: JSON.stringify({ v: 1, ...review(1) }),
+		} }));
+		expect(useUi.getState().rightTab).toBe("git");
+		act(() => useLive.getState().reduceFrame({ sessionId: REAL, frame: { type: "turn_end" } }));
+		expect(useUi.getState().rightTab).toBe("git");
+		act(() => useLive.getState().reduceFrame({ sessionId: REAL, frame: { type: "agent_end" } }));
+		expect(useUi.getState().rightTab).toBe("plan");
+	});
+
+	it("keeps an early version pending through phase, blank body and turn end", () => {
+		setPlan({ ...PLAN_OFF, enabled: true });
+		render(<Composer sessionId={REAL} />);
+		setPlan({ ...review(1), phase: "planning", content: null }, true);
+		expect(useUi.getState().rightTab).toBe("git");
+		setPlan({ ...review(1), phase: "planning" }, true);
+		expect(useUi.getState().rightTab).toBe("git");
+		setPlan({ ...review(1), content: " \n " }, false);
+		expect(useUi.getState().rightTab).toBe("git");
+		setPlan(review(1), true);
+		expect(useUi.getState().rightTab).toBe("git");
+		setPlan(review(1), false);
+		expect(useUi.getState().rightTab).toBe("plan");
+	});
+
+	it("respects dismissal across frames, but reopens the next completed revision", () => {
+		setPlan(review(1));
+		render(<Composer sessionId={REAL} />);
+		setPlan(review(2));
+		act(() => useUi.getState().closeRightTab("plan"));
+		expect(useUi.getState().rightTab).toBe("git");
+		setPlan(review(2));
+		setPlan(review(2), true);
+		setPlan(review(2), false);
+		expect(useUi.getState().rightTab).toBe("git");
+		setPlan(review(3));
+		expect(useUi.getState().rightTab).toBe("plan");
+	});
+
+	it("does not pop a draft after abortTurn or a late revision in the stopped turn", async () => {
+		setPlan(review(1));
+		render(<Composer sessionId={REAL} />);
+		setPlan(review(2), true);
+		await act(async () => {
+			const stopping = abortTurn(REAL);
+			useLive.getState().reduceFrame({ sessionId: REAL, frame: { type: "agent_end", aborted: true } });
+			await stopping;
+		});
+		expect(useUi.getState().rightTab).toBe("git");
+		act(() => useLive.getState().reduceFrame({ sessionId: REAL, frame: {
+			type: "extension_ui_request", method: "setStatus", statusKey: PLAN_STATUS_KEY,
+			statusText: JSON.stringify({ v: 1, ...review(3) }),
+		} }));
+		expect(useUi.getState().rightTab).toBe("git");
+		act(() => useLive.getState().reduceFrame({ sessionId: REAL, frame: { type: "agent_start" } }));
+		act(() => useLive.getState().reduceFrame({ sessionId: REAL, frame: {
+			type: "extension_ui_request", method: "setStatus", statusKey: PLAN_STATUS_KEY,
+			statusText: JSON.stringify({ v: 1, ...review(4) }),
+		} }));
+		expect(useUi.getState().rightTab).toBe("git");
+		act(() => useLive.getState().reduceFrame({ sessionId: REAL, frame: { type: "agent_end" } }));
+		expect(useUi.getState().rightTab).toBe("plan");
+	});
+
+	it("does not treat a process exit as a completed revision", () => {
+		setPlan(review(1));
+		render(<Composer sessionId={REAL} />);
+		setPlan(review(2), true);
+		act(() => useLive.getState().reduceProcess({ sessionId: REAL, running: false, exitCode: 1 }));
+		expect(useUi.getState().rightTab).toBe("git");
+	});
+
+	it("treats a higher version in a switched session as its baseline", () => {
+		setPlan(review(1));
+		setPlan(review(9), false, "other");
+		const view = render(<Composer sessionId={REAL} />);
+		act(() => {
+			useUi.getState().selectSession("other");
+			useUi.getState().setRightTab("explorer");
+		});
+		view.rerender(<Composer sessionId="other" />);
+		expect(useUi.getState().rightTab).toBe("explorer");
+		setPlan(review(10), false, "other");
+		expect(useUi.getState().rightTab).toBe("plan");
+	});
+
+	it("does not let a mounted compact child steal its selected parent's side-chat panel", () => {
+		const child = "sidechat-child";
+		setPlan(review(1), false, child);
+		useUi.setState({ rightTab: "sidechat", openRightTabs: ["sidechat"] });
+		// SideChatPanel mounts a compact SessionView/Composer for the child
+		// while selectedSessionId remains the parent.
+		render(<Composer sessionId={child} compact />);
+		act(() => useLive.getState().reduceFrame({ sessionId: child, frame: {
+			type: "extension_ui_request", method: "setStatus", statusKey: PLAN_STATUS_KEY,
+			statusText: JSON.stringify({ v: 1, ...review(2) }),
+		} }));
+		expect(useUi.getState().selectedSessionId).toBe(REAL);
+		expect(useUi.getState().rightTab).toBe("sidechat");
+		expect(useUi.getState().openRightTabs).toEqual(["sidechat"]);
+	});
+
+	it("does not open when the first status frame restores a plan or mode starts at zero", () => {
 		setPlan(undefined);
 		render(<Composer sessionId={REAL} />);
-		setPlan({ enabled: true, version: 0 });
+		setPlan(review(7));
 		expect(useUi.getState().rightTab).toBe("git");
+		setPlan({ ...PLAN_OFF, enabled: true });
+		expect(useUi.getState().rightTab).toBe("git");
+	});
+
+	it("restores a cold approved snapshot without waking RPC or opening the panel", async () => {
+		h.sessionSnapshot.mockResolvedValue({ planState: { enabled: false, approved: {
+			content: "# Saved", version: 2, status: "completed",
+		} } });
+		render(<Composer sessionId={REAL} />);
+		await waitFor(() => expect(useLive.getState().sessions[REAL].plan?.approved?.content).toBe("# Saved"));
+		expect(useUi.getState().rightTab).toBe("git");
+		expect(h.rpcSend).not.toHaveBeenCalledWith(REAL, expect.objectContaining({ message: "/plan-action status" }));
+	});
+
+	it("uses a cold review as a baseline and only opens a subsequent completed revision", async () => {
+		h.sessionSnapshot.mockResolvedValue({ planState: {
+			enabled: true, phase: "review", lastContent: "# Restored\n\nSaved body", version: 8,
+		} });
+		render(<Composer sessionId={REAL} />);
+		await waitFor(() => expect(useLive.getState().sessions[REAL].plan?.version).toBe(8));
+		expect(useUi.getState().rightTab).toBe("git");
+		setPlan(review(9));
+		expect(useUi.getState().rightTab).toBe("plan");
+	});
+
+	it("never overwrites a newer live frame with a late disk snapshot", async () => {
+		let finish!: (value: Record<string, unknown>) => void;
+		h.sessionSnapshot.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+		render(<Composer sessionId={REAL} />);
+		const livePlan = review(11);
+		act(() => useLive.getState().reduceFrame({ sessionId: REAL, frame: {
+			type: "extension_ui_request", method: "setStatus", statusKey: PLAN_STATUS_KEY,
+			statusText: JSON.stringify({ v: 1, ...livePlan }),
+		} }));
+		const receivedPlan = useLive.getState().sessions[REAL].plan;
+		await act(async () => finish({ planState: { enabled: false } }));
+		expect(useLive.getState().sessions[REAL].plan).toBe(receivedPlan);
+		expect(useUi.getState().rightTab).toBe("git");
+	});
+
+	it("does not invent a plan status for a cold session without a persisted record", async () => {
+		render(<Composer sessionId={REAL} />);
+		await waitFor(() => expect(h.sessionSnapshot).toHaveBeenCalledWith(REAL));
+		expect(useLive.getState().sessions[REAL].plan).toBeUndefined();
 	});
 });

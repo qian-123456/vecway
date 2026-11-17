@@ -76,6 +76,12 @@ export interface GroupingOptions {
 	 * folder) and deleted-worktree unassigned sessions join the normal list.
 	 */
 	groupByWorktree?: boolean;
+	/** When true, show ONLY archived sessions regardless of showArchived. */
+	archivedOnly?: boolean;
+	/** Conversation sort order within groups. Default "updated". */
+	sessionSort?: "updated" | "created" | "title";
+	/** Project workspace sort order. Default "custom". */
+	projectSort?: "custom" | "updated" | "name";
 }
 
 /** Label for the collapsed unassigned bucket (PLAN.md §66 未归档桶). */
@@ -267,7 +273,7 @@ export function filterSessions(
 	sessions: SessionMeta[],
 	options: GroupingOptions = {},
 ): SessionMeta[] {
-	const { showArchived = false } = options;
+	const { showArchived = false, archivedOnly = false } = options;
 
 	const sessionById = new Map<string, SessionMeta>();
 	for (const s of sessions) {
@@ -308,6 +314,9 @@ export function filterSessions(
 		if (isEmptySideChat(session)) {
 			return false;
 		}
+		if (archivedOnly) {
+			return isArchivedCascaded(session);
+		}
 		if (!showArchived && isArchivedCascaded(session)) {
 			return false;
 		}
@@ -322,10 +331,17 @@ function parseTimestamp(ts: string | null | undefined): number {
 	return Number.isNaN(n) ? 0 : n;
 }
 
-function buildSessionTimeMap(sessions: readonly SessionMeta[]): Map<string, number> {
+function buildSessionTimeMap(
+	sessions: readonly SessionMeta[],
+	sessionSort: GroupingOptions["sessionSort"] = "updated",
+): Map<string, number> {
 	const map = new Map<string, number>();
 	for (const s of sessions) {
-		map.set(s.id, parseTimestamp(s.updatedAt || s.createdAt));
+		const ts =
+			sessionSort === "created"
+				? s.createdAt || s.updatedAt
+				: s.updatedAt || s.createdAt;
+		map.set(s.id, parseTimestamp(ts));
 	}
 	return map;
 }
@@ -333,6 +349,7 @@ function buildSessionTimeMap(sessions: readonly SessionMeta[]): Map<string, numb
 function createSessionComparator(
 	timeMap: ReadonlyMap<string, number>,
 	frozenOrder?: ReadonlyMap<string, number>,
+	sessionSort: GroupingOptions["sessionSort"] = "updated",
 ): (a: SessionMeta, b: SessionMeta) => number {
 	return (a: SessionMeta, b: SessionMeta): number => {
 		if (a.pinned !== b.pinned) {
@@ -354,6 +371,13 @@ function createSessionComparator(
 			if (rankA !== undefined && rankB === undefined) {
 				return 1;
 			}
+		}
+
+		if (sessionSort === "title") {
+			const nameA = (a.title || a.label || "").trim();
+			const nameB = (b.title || b.label || "").trim();
+			const cmp = nameA.localeCompare(nameB);
+			if (cmp !== 0) return cmp;
 		}
 
 		const timeA = timeMap.get(a.id) ?? 0;
@@ -588,18 +612,18 @@ export function groupSessions(
 	const modeSessions = sessionList.filter((s) => s.mode === mode);
 	const modeWorkspaces = workspaces.filter((w) => w.mode === mode);
 
-	const timeMap = buildSessionTimeMap(modeSessions);
-	const compare = createSessionComparator(timeMap, options.frozenOrder);
+	const sessionSort = options.sessionSort ?? "updated";
+	const projectSort = options.projectSort ?? "custom";
+	const timeMap = buildSessionTimeMap(modeSessions, sessionSort);
+	const compare = createSessionComparator(timeMap, options.frozenOrder, sessionSort);
 
 	const visibleSessions = filterSessions(modeSessions, options);
 
 	const globalWs = modeWorkspaces.find((w) => w.kind === "global") ?? null;
-	const projectWorkspaces = modeWorkspaces
-		.filter((w) => w.kind !== "global")
-		.sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name));
+	const unsortedProjectWorkspaces = modeWorkspaces.filter((w) => w.kind !== "global");
 	// Bucket sessions by resolved workspace membership.
 	const sessionMap = new Map<string, SessionMeta[]>();
-	for (const ws of projectWorkspaces) {
+	for (const ws of unsortedProjectWorkspaces) {
 		sessionMap.set(ws.id, []);
 	}
 	const globalSessions: SessionMeta[] = [];
@@ -614,6 +638,28 @@ export function groupSessions(
 			unassignedSessions.push(s);
 		}
 	}
+
+	const projectLatestTime = new Map<string, number>();
+	if (projectSort === "updated") {
+		for (const ws of unsortedProjectWorkspaces) {
+			let newest = 0;
+			for (const s of sessionMap.get(ws.id) ?? []) {
+				const ts = timeMap.get(s.id) ?? 0;
+				if (ts > newest) newest = ts;
+			}
+			projectLatestTime.set(ws.id, newest);
+		}
+	}
+	const projectWorkspaces = [...unsortedProjectWorkspaces].sort((a, b) => {
+		if (projectSort === "name") {
+			return a.name.localeCompare(b.name) || (a.sort - b.sort);
+		}
+		if (projectSort === "updated") {
+			const diff = (projectLatestTime.get(b.id) ?? 0) - (projectLatestTime.get(a.id) ?? 0);
+			if (diff !== 0) return diff;
+		}
+		return (a.sort - b.sort) || a.name.localeCompare(b.name);
+	});
 
 	// Split unassigned: sessions on deleted worktrees go to a dedicated dimmed
 	// bucket instead of vanishing (or polluting the live list).

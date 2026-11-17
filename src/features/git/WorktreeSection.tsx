@@ -1041,9 +1041,9 @@ export function WorktreeSection({
 						setSessionMenuWt(null);
 						setSessionMenuAnchor(null);
 					}}
-					className="w-56 rounded-lg border border-neutral-700 bg-neutral-900 p-1 text-xs shadow-xl"
+					className="w-max min-w-[150px] max-w-[260px] rounded-lg border border-neutral-700 bg-neutral-900 p-1 text-xs shadow-xl"
 				>
-					<div className="border-b border-neutral-800 px-2 py-1 text-[10px] font-semibold text-neutral-400">
+					<div className="border-b border-neutral-800 px-2 py-1 text-[10px] font-semibold text-neutral-400 whitespace-nowrap">
 						{t("worktree.linkedSessions")}
 					</div>
 					<div className="max-h-48 overflow-y-auto py-1">

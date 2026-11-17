@@ -356,6 +356,12 @@ export const gitCreateWorktree = (
 		base: opts?.base ?? null,
 	});
 
+export const createProjectDir = (parentDir: string, name: string, initGit = true) =>
+	invoke<string>("create_project_dir", { parentDir, name, initGit });
+
+export const gitCloneRepo = (url: string, parentDir: string, folderName?: string) =>
+	invoke<string>("git_clone_repo", { url, parentDir, folderName: folderName ?? null });
+
 export const gitListWorktrees = (repo: string) =>
 	invoke<WorktreeInfo[]>("git_list_worktrees", { repo });
 

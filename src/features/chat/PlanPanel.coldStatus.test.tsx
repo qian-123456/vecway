@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as IpcModule from "../../lib/ipc";
 import { emptySessionLive, useLive } from "../../stores/live";
 import { useUi } from "../../stores/ui";
-import { PLAN_OFF, type ApprovedPlan, type PlanStatus } from "./plan/planStatus";
+import { PLAN_OFF, PLAN_STATUS_KEY, type ApprovedPlan, type PlanStatus } from "./plan/planStatus";
 import { PlanPanel } from "./PlanPanel";
 
 const h = vi.hoisted(() => ({ rpcSend: vi.fn(), ensureLive: vi.fn() }));
@@ -106,6 +106,75 @@ describe("PlanPanel unknown plan state", () => {
 		open({ alive: false, plan: PLAN_OFF });
 		render(<PlanPanel />);
 		expect(screen.getByRole("button", { name: "开启规划模式" })).toBeTruthy();
+		expect(h.rpcSend).not.toHaveBeenCalled();
+	});
+
+	it("blocks approval until a cold review receives fresh execution options", async () => {
+		const review: PlanStatus = { ...PLAN_OFF, enabled: true, phase: "review", content: approved.content, version: 2 };
+		open({ alive: false, plan: review });
+		h.ensureLive.mockImplementationOnce(async () => {
+			useLive.setState((state) => ({ sessions: {
+				...state.sessions, [SID]: { ...state.sessions[SID], alive: true },
+			} }));
+		});
+		render(<PlanPanel />);
+		expect(screen.getByText("正在读取计划状态…")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /批准并执行/ })).toBeNull();
+		await waitFor(() => expect(statusCalls()).toHaveLength(1));
+		// Acknowledging the control command alone does not make disk choices fresh.
+		expect(screen.getByText("正在读取计划状态…")).toBeTruthy();
+		act(() => useLive.getState().reduceFrame({ sessionId: SID, frame: {
+			type: "extension_ui_request", method: "setStatus", statusKey: PLAN_STATUS_KEY,
+			statusText: JSON.stringify({ ...review, v: 1, tiers: [{ role: "default", spec: "p/m" }], contextPercent: 12 }),
+		} }));
+		await waitFor(() => expect(screen.getAllByText(/body/).length).toBeGreaterThan(0));
+		expect(screen.queryByText("正在读取计划状态…")).toBeNull();
+		expect(h.ensureLive).toHaveBeenCalledTimes(1);
+		expect(statusCalls()).toHaveLength(1);
+	});
+
+	it("keeps approval blocked when the fresh status frame arrives before the control response", async () => {
+		const review: PlanStatus = { ...PLAN_OFF, enabled: true, phase: "review", content: approved.content, version: 2 };
+		open({ alive: false, plan: review });
+		// The project's ES2021 Promise API does not include withResolvers.
+		let accept!: () => void;
+		h.rpcSend.mockReturnValueOnce(new Promise<void>((resolve) => { accept = resolve; }));
+		render(<PlanPanel />);
+		await waitFor(() => expect(statusCalls()).toHaveLength(1));
+		act(() => useLive.getState().reduceFrame({ sessionId: SID, frame: {
+			type: "extension_ui_request", method: "setStatus", statusKey: PLAN_STATUS_KEY,
+			statusText: JSON.stringify({ ...review, v: 1, contextPercent: 15, keepDisabled: true }),
+		} }));
+		expect(screen.getByText("正在读取计划状态…")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /批准并执行/ })).toBeNull();
+		await act(async () => { accept(); });
+		await waitFor(() => expect(screen.getAllByText(/body/).length).toBeGreaterThan(0));
+		expect(screen.getByRole("button", { name: /批准并执行/ })).toBeTruthy();
+		expect(screen.queryByText("正在读取计划状态…")).toBeNull();
+	});
+
+	it("shows a cold review refresh failure instead of offering stale approval defaults", async () => {
+		const review: PlanStatus = { ...PLAN_OFF, enabled: true, phase: "review", content: approved.content, version: 2 };
+		open({ alive: false, plan: review });
+		h.ensureLive.mockRejectedValueOnce(new Error("cold review unavailable"));
+		render(<PlanPanel />);
+		expect(screen.queryByRole("button", { name: /批准并执行/ })).toBeNull();
+		expect(await screen.findByText(/读取计划状态失败：.*cold review unavailable/)).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /批准并执行/ })).toBeNull();
+		expect(screen.queryByText("正在读取计划状态…")).toBeNull();
+	});
+
+	it("retains the status request error when ensureLive flips alive before failing", async () => {
+		open({ alive: false });
+		h.ensureLive.mockImplementationOnce(async () => {
+			useLive.setState((state) => ({ sessions: {
+				...state.sessions, [SID]: { ...state.sessions[SID], alive: true },
+			} }));
+			throw new Error("late connection failure");
+		});
+		render(<PlanPanel />);
+		expect(await screen.findByText(/读取计划状态失败：.*late connection failure/)).toBeTruthy();
+		expect(h.ensureLive).toHaveBeenCalledTimes(1);
 		expect(h.rpcSend).not.toHaveBeenCalled();
 	});
 

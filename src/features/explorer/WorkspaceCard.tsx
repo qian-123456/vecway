@@ -119,9 +119,9 @@ export function WorkspaceCard({
 					layer="popover"
 					ignoreRefs={[cardRef]}
 					onDismiss={() => setMenuOpen(false)}
-					className="w-[280px] p-1"
+					className="w-max min-w-[180px] max-w-[300px] p-1"
 				>
-					<div className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
+					<div className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400 whitespace-nowrap">
 						{t("explorer.switchWorkspace")}
 					</div>
 					{workspaces.map((ws) => (

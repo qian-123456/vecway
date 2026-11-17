@@ -145,7 +145,7 @@ function ChatProviderPanel() {
 								layer="popover"
 								onDismiss={() => setMenuOpen(false)}
 								ignoreRefs={[menuBtnRef]}
-								className="w-60 space-y-0.5 rounded-xl border border-[var(--border-divider)] bg-[var(--bg-panel)] p-1 text-xs shadow-xl"
+								className="w-max max-w-[260px] space-y-0.5 rounded-xl border border-[var(--border-divider)] bg-[var(--bg-panel)] p-1 text-xs shadow-xl"
 							>
 								<button
 									type="button"

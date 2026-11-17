@@ -39,7 +39,7 @@ interface Props {
 	onRename: (name: string) => void;
 }
 const MENU_ITEM =
-	"flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[var(--text-60)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40 transition-all active:scale-[0.98]";
+	"flex w-full items-center gap-2 whitespace-nowrap rounded-lg px-2.5 pr-3 py-1.5 text-left text-[var(--text-60)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40 transition-all active:scale-[0.98]";
 
 export const ScheduleRow = React.memo(function ScheduleRow({
 	schedule,
@@ -297,7 +297,7 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 					onDismiss={closeMenu}
 					role="menu"
 					aria-orientation="vertical"
-					className="w-48 p-1 text-xs"
+					className="w-max min-w-[130px] max-w-[260px] p-1 text-xs"
 				>
 					<button
 						type="button"
@@ -312,7 +312,7 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 						title={t("schedules.runNowTitle")}
 					>
 						<Play size={13} className="shrink-0 text-[var(--text-40)]" />
-						<span className="flex-1 truncate">{t("schedules.runNow")}</span>
+						<span className="flex-1 whitespace-nowrap">{t("schedules.runNow")}</span>
 					</button>
 
 					<button
@@ -332,7 +332,7 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 						) : (
 							<Play size={13} className="shrink-0 text-[var(--text-40)]" />
 						)}
-						<span className="flex-1 truncate">
+						<span className="flex-1 whitespace-nowrap">
 							{schedule.enabled ? t("schedules.pause") : t("schedules.resume")}
 						</span>
 					</button>
@@ -348,7 +348,7 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 						className={MENU_ITEM}
 					>
 						<Edit2 size={13} className="shrink-0 text-[var(--text-40)]" />
-						<span className="flex-1 truncate">{t("schedules.edit")}</span>
+						<span className="flex-1 whitespace-nowrap">{t("schedules.edit")}</span>
 					</button>
 
 					<button
@@ -362,7 +362,7 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 						className={MENU_ITEM}
 					>
 						<PenLine size={13} className="shrink-0 text-[var(--text-40)]" />
-						<span className="flex-1 truncate">{t("schedules.rename")}</span>
+						<span className="flex-1 whitespace-nowrap">{t("schedules.rename")}</span>
 					</button>
 
 					<button
@@ -377,7 +377,7 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 						title={t("schedules.duplicateTitle")}
 					>
 						<Copy size={13} className="shrink-0 text-[var(--text-40)]" />
-						<span className="flex-1 truncate">{t("schedules.duplicate")}</span>
+						<span className="flex-1 whitespace-nowrap">{t("schedules.duplicate")}</span>
 					</button>
 
 					<div className="my-1 border-t border-[var(--border-divider)]" />
@@ -423,7 +423,7 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 							)}
 						>
 							<Trash2 size={13} className="shrink-0" />
-							<span className="flex-1 truncate">{t("common.delete")}</span>
+							<span className="flex-1 whitespace-nowrap">{t("common.delete")}</span>
 						</button>
 					)}
 				</FloatingLayer>

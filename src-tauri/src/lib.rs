@@ -633,6 +633,8 @@ pub fn run() {
             git::commands::git_worktree_turns,
             git::commands::git_undo_turn,
             git::commands::checkpoints_rule,
+            git::commands::create_project_dir,
+            git::commands::git_clone_repo,
             git::commands::tm_run,
             git::commands::tm_list,
             git::commands::tm_stop,

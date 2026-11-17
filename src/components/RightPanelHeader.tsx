@@ -47,6 +47,8 @@ import { useDisplayPrefs } from "../stores/displayPrefs";
 import { useFilePreview } from "../stores/filePreview";
 import { useComposer } from "../stores/composer";
 import { useSessions } from "../stores/sessions";
+import { useLive } from "../stores/live";
+import { hasMeaningfulPlan } from "../features/chat/plan/usePlanPanelLifecycle";
 import {
 	MAX_TAB_WIDTH,
 	MIN_TAB_WIDTH,
@@ -127,6 +129,16 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 
 	const selectedId = useUi((s) => s.selectedSessionId);
 	const sessions = useSessions((s) => s.sessions);
+	const plan = useLive((s) => selectedId ? s.sessions[selectedId]?.plan : undefined);
+	const planAvailable = !!selectedId && hasMeaningfulPlan(plan);
+	const planHasDocument = Boolean((plan?.enabled && plan.content?.trim()) || plan?.approved?.content.trim());
+	const planOpen = openRightTabs.includes("plan");
+	useEffect(() => {
+		// Unknown may still hydrate. A revision temporarily returns to planning
+		// while retaining its previous body, so keep that visible document open.
+		if (planOpen && (!selectedId || (plan !== undefined && !planHasDocument)) &&
+			useUi.getState().selectedSessionId === selectedId) closeRightTab("plan");
+	}, [selectedId, plan, planHasDocument, planOpen, closeRightTab]);
 	const parentTabs = useSideChatView((s) => (selectedId ? s.openTabs[selectedId] : undefined));
 	const storedSideTab = useSideChatView((s) => (selectedId ? s.openChild[selectedId] : undefined));
 	const activeSideTab = resolveActiveTab(parentTabs, storedSideTab);
@@ -451,7 +463,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 				layer="popover"
 				ignoreRefs={[moreBtnRef]}
 				onDismiss={() => setOverflowOpen(false)}
-				className="w-56 overflow-y-auto p-1 text-xs text-neutral-200"
+				className="w-max min-w-[140px] max-w-[260px] overflow-y-auto p-1 text-xs text-neutral-200"
 			>
 				{items.map((tab) => (
 					<div
@@ -487,7 +499,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 				layer="popover"
 				ignoreRefs={[plusBtnRef]}
 				onDismiss={() => setMenuOpen(false)}
-				className="w-48 p-1.5 text-xs text-neutral-200"
+				className="w-max p-1.5 text-xs text-neutral-200"
 			>
 				<div className="space-y-0.5">
 					<button
@@ -500,13 +512,13 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 							setRightTab("terminal");
 							setMenuOpen(false);
 						}}
-						className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-neutral-300 transition-colors hover:bg-neutral-800/60 hover:text-neutral-100"
+						className="flex w-full items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 pr-3 py-2 text-left text-neutral-300 transition-colors hover:bg-neutral-800/60 hover:text-neutral-100"
 					>
-						<SquareTerminal size={14} className="text-emerald-400" />
+						<SquareTerminal size={14} className="shrink-0 text-emerald-400" />
 						<span>{t("rightPanel.newTerminal")}</span>
 					</button>
 					<div className="my-1 border-t border-[var(--border-divider)]" />
-					{PRIMARY_TABS.filter((tab) => tab.id !== "files").map((tab) => {
+					{PRIMARY_TABS.filter((tab) => tab.id !== "files" && (tab.id !== "plan" || planAvailable)).map((tab) => {
 						const Icon = tab.icon;
 						const badge = tabBadges[tab.id] ?? 0;
 						const isOpen = openRightTabs.includes(tab.id) && tab.id !== "sidechat";
@@ -525,7 +537,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 									setMenuOpen(false);
 								}}
 								className={clsx(
-									"flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left transition-colors",
+									"flex w-full items-center justify-between gap-3 whitespace-nowrap rounded-lg px-2.5 py-2 text-left transition-colors",
 									sideChatBlocked
 										? "cursor-not-allowed text-neutral-600"
 										: activeTab === tab.id

@@ -660,10 +660,12 @@ export interface ActivityUsage {
 	days: ActivityDayUsage[];
 }
 
-/** Last-known thinking level / context size from the transcript (no live process). */
+/** Last-known composer state from the transcript (no live process). */
 export interface SessionSnapshot {
 	thinkingLevel: string | null;
 	contextTokens: number | null;
+	/** Raw data from the latest complete `ompws-plan-state` custom record. */
+	planState?: unknown;
 }
 
 export interface Settings {

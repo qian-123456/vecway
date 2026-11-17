@@ -46,7 +46,7 @@ export function ScopeMenu({
 				onDismiss={() => setAnchor(null)}
 				role="listbox"
 				aria-label={t("backlog.filterByProjectAriaLabel")}
-				className="max-h-[320px] w-[220px] overflow-y-auto !bg-[var(--bg-panel)] py-1"
+				className="max-h-[320px] w-max min-w-[140px] max-w-[240px] overflow-y-auto !bg-[var(--bg-panel)] py-1"
 			>
 				{rows.map((r) => {
 					const selected = scope === r.value;
