@@ -346,7 +346,7 @@ export function Composer({
 	const catalogModels = useModelOptions();
 	// rpc `get_available_models` fallback, used only while the catalog is empty.
 	const [rpcModels, setRpcModels] = useState<ModelOption[] | null>(null);
-	const models = catalogModels && catalogModels.length > 0 ? catalogModels : rpcModels;
+	const models = catalogModels ?? rpcModels;
 	const [modelOpen, setModelOpen] = useState(false);
 	const modelMenuRef = useRef<HTMLDivElement>(null);
 
@@ -3086,6 +3086,7 @@ export function Composer({
 									className="w-[min(640px,calc(100vw-24px))] rounded-xl border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] py-1"
 								>
 									<ModelMenuContent
+										catalogManaged
 										models={models}
 										currentValue={planChoiceUnknown ? "" : current.value}
 										contextTokens={currentTokens}

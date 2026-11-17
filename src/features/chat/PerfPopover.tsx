@@ -133,7 +133,7 @@ export function PerfPopover({
 				</div>
 				{segments ? (
 					<>
-						<div className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--ghost-hover)]">
+						<div className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--track-bg)]">
 							{segments.map((s) =>
 								s.pct > 0 ? (
 									<div

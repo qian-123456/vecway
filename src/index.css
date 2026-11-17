@@ -211,13 +211,15 @@ input[type="number"] {
 	 *   --text-30  children / tertiary text
 	 *   --line        1px hairline borders & dividers
 	 *   --ghost-hover quiet row hover fill
-	 *   --chat-user-bg user message bubble */
+	 *   --chat-user-bg user message bubble
+	 *   --track-bg    progress / ratio bar empty track */
 	--text-60: color-mix(in oklab, var(--text) 60%, transparent);
 	--text-40: color-mix(in oklab, var(--text) 40%, transparent);
 	--text-30: color-mix(in oklab, var(--text) 30%, transparent);
 	--line: color-mix(in oklab, var(--text) 8%, transparent);
 	--ghost-hover: color-mix(in oklab, var(--text) 6%, transparent);
 	--chat-user-bg: color-mix(in oklab, var(--text) 8%, transparent);
+	--track-bg: color-mix(in oklab, var(--text) 13%, transparent);
 	--status-info: var(--accent);
 	--tree-line: color-mix(in oklab, var(--accent) 42%, transparent);
 

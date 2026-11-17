@@ -23,7 +23,7 @@ vi.mock("../../providers/store", () => ({
 }));
 vi.mock("./ProviderBrandLogo", () => ({ ProviderBrandLogo: () => null }));
 
-import { QuotaAccountSheet, type AccountSheetProvider } from "./QuotaAccountSheet";
+import { QuotaAccountSheet, QuotaBar, type AccountSheetProvider } from "./QuotaAccountSheet";
 
 const provider = {
 	providerId: "anthropic",
@@ -145,5 +145,55 @@ describe("QuotaAccountSheet", () => {
 		await waitFor(() => expect(oauthLogout).toHaveBeenCalledWith("anthropic", "acc1@b.com", undefined));
 		expect(onClose).not.toHaveBeenCalled();
 		expect(onRefresh).toHaveBeenCalled();
+	});
+});
+
+describe("QuotaBar", () => {
+	afterEach(() => {
+		cleanup();
+	});
+
+	it("renders an empty full-width contrast track without a fill stub at 0%", () => {
+		const { container } = render(
+			<QuotaBar
+				label="7 天"
+				usedPct={0}
+				statusText="已用 0.0%"
+				caption="6 天 23 小时后重置"
+				tone="neutral"
+				brandColor="#10A37F"
+			/>,
+		);
+		const track = container.querySelector(".h-1.w-full");
+		expect(track).toBeTruthy();
+		expect(track?.className).toContain("bg-[var(--track-bg)]");
+		expect(track?.children).toHaveLength(0);
+	});
+
+	it("preserves a 1.5% minimum pill for small positive usage and clamps over 100%", () => {
+		const { container, rerender } = render(
+			<QuotaBar
+				label="7 天"
+				usedPct={0.4}
+				statusText="已用 0.4%"
+				tone="neutral"
+				brandColor="#10A37F"
+			/>,
+		);
+		const fill = container.querySelector(".h-1.w-full > div") as HTMLElement | null;
+		expect(fill).toBeTruthy();
+		expect(fill?.style.width).toBe("1.5%");
+
+		rerender(
+			<QuotaBar
+				label="5 小时"
+				usedPct={120}
+				statusText="100% 耗尽"
+				tone="rose"
+				brandColor="#10A37F"
+			/>,
+		);
+		const clamped = container.querySelector(".h-1.w-full > div") as HTMLElement | null;
+		expect(clamped?.style.width).toBe("100%");
 	});
 });

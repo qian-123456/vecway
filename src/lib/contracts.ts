@@ -1044,11 +1044,16 @@ export interface Model {
 	reasoning?: boolean | null;
 }
 
+export type ModelCatalogWarning =
+	| { kind: "invalidConfig" }
+	| { kind: "discoveryFailed" | "discoveryTimedOut" | "authenticationRequired"; provider: string };
+
 /** CLI success does not certify that every available provider was returned. */
 export interface ModelCatalogSnapshot {
 	models: Model[];
 	source: "cli";
 	completeness: "unverified";
+	warnings?: ModelCatalogWarning[];
 }
 
 /** models.yml `providers.<providerId>.modelOverrides.<modelId>.contextWindow`; null deletes. */

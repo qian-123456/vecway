@@ -135,6 +135,7 @@ function EntryRow({
 				)}
 				<div className="min-w-0 flex-1">
 					<ModelSelect
+						catalogManaged
 						disabled={busy}
 						closeOnSelect
 						allowCustom
@@ -302,6 +303,7 @@ export function FallbackChainEditor({
 					<span className="w-4 shrink-0" />
 					<div className="min-w-0 flex-1">
 						<ModelSelect
+							catalogManaged
 							disabled={busy}
 							closeOnSelect
 							allowCustom

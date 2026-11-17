@@ -1,16 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Model } from "../lib/contracts";
 
-const listModels = vi.fn<() => Promise<Model[]>>();
+const { invalidateWarmDrafts, markLiveSessionsStale } = vi.hoisted(() => ({
+	invalidateWarmDrafts: vi.fn(async () => {}),
+	markLiveSessionsStale: vi.fn(async () => {}),
+}));
+vi.mock("../features/sessions/draftSession", () => ({ invalidateWarmDrafts }));
+vi.mock("../features/sessions/modelRegistrySync", () => ({ markLiveSessionsStale }));
+
+const listModels = vi.fn<(online?: boolean) => Promise<Model[]>>();
 const readOverrides = vi.fn(async () => [] as { providerId: string; modelId: string; contextWindow: number }[]);
 const writeOverrides = vi.fn(async (_entries: unknown, _onlyIfAbsent: boolean) => {});
 vi.mock("../lib/ipc", () => ({
-	listModels: async () => ({ models: await listModels(), source: "cli", completeness: "unverified" }),
+	listModels: async (online?: boolean) => ({ models: await listModels(online), source: "cli", completeness: "unverified" }),
 	ompModelsContextWindowOverrides: () => readOverrides(),
 	ompModelsSetContextWindows: (entries: unknown, onlyIfAbsent: boolean) => writeOverrides(entries, onlyIfAbsent),
 }));
 
 const KEY = "ompws:cached-models";
+const UNAVAILABLE_KEY = "ompws:unavailable-models";
 let storage: Record<string, string>;
 
 const OPUS: Model = { provider: "anthropic", id: "opus", name: "Opus", thinking: ["high"], contextWindow: 200000 };
@@ -24,6 +32,8 @@ async function loadStore() {
 }
 
 beforeEach(() => {
+	invalidateWarmDrafts.mockClear();
+	markLiveSessionsStale.mockClear();
 	listModels.mockReset();
 	readOverrides.mockReset();
 	readOverrides.mockResolvedValue([]);
@@ -142,34 +152,56 @@ describe("useModelCatalog", () => {
 		expect(store.getState().models).toEqual([OPUS, HAIKU]);
 	});
 
-	it("retains a last-known snapshot with an explicit stale status on failure or shrinking empty read", async () => {
+	it("retains last-known rows for reference on failure, but honors a successful empty result", async () => {
 		storage[KEY] = JSON.stringify([OPUS]);
 		const store = await loadStore();
-		listModels.mockRejectedValueOnce(new Error("boom"));
+		listModels.mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce([]);
 		await store.getState().refresh();
-		expect(store.getState().models).toEqual([OPUS]);
-		expect(store.getState().status).toBe("stale");
+		expect(store.getState()).toMatchObject({ models: [OPUS], status: "stale" });
 		expect(store.getState().error).toContain("boom");
-		listModels.mockResolvedValueOnce([]);
+
 		await store.getState().refresh();
-		expect(store.getState().models).toEqual([OPUS]);
-		expect(store.getState().loading).toBe(false);
-		expect(store.getState().status).toBe("stale");
-		expect(store.getState().error).toContain("缺少既有条目");
+		expect(store.getState()).toMatchObject({ models: [], unavailable: [OPUS], status: "unverified", error: null });
+		expect(JSON.parse(storage[KEY])).toEqual([]);
+		expect(JSON.parse(storage[UNAVAILABLE_KEY])).toEqual([OPUS]);
+		expect((await loadStore()).getState().unavailable).toEqual([OPUS]);
 	});
 
-	it("rejects unchanged 24-provider to 4-provider successful shrink without evicting memory or cache", async () => {
+	it("publishes a 24-provider to 4-provider shrink with the missing models kept separately", async () => {
 		const full = Array.from({ length: 24 }, (_, i) => ({ provider: `p${i}`, id: "m", name: `M${i}` }));
 		storage[KEY] = JSON.stringify(full);
 		const store = await loadStore();
 		listModels.mockResolvedValueOnce(full.slice(0, 4));
 		await store.getState().refresh();
-		expect(store.getState().models?.map(({ provider, id }) => `${provider}/${id}`))
-			.toEqual(full.map(({ provider, id }) => `${provider}/${id}`));
-		expect(JSON.parse(storage[KEY])).toEqual(full);
-		expect(store.getState().status).toBe("stale");
-		expect(store.getState().error).toContain("缺少既有条目");
+		expect(store.getState()).toMatchObject({ models: full.slice(0, 4), unavailable: full.slice(4), status: "unverified" });
+		expect(JSON.parse(storage[KEY])).toEqual(full.slice(0, 4));
+		expect(JSON.parse(storage[UNAVAILABLE_KEY])).toMatchObject(full.slice(4));
 		expect(writeOverrides).not.toHaveBeenCalled();
+	});
+
+	it("publishes new models immediately on online refresh and recovers historical entries when they return", async () => {
+		storage[KEY] = JSON.stringify([OPUS]);
+		listModels.mockResolvedValueOnce([HAIKU]).mockResolvedValueOnce([OPUS, HAIKU]);
+		const store = await loadStore();
+		await store.getState().refreshOnline();
+		expect(listModels).toHaveBeenCalledWith(true);
+		expect(invalidateWarmDrafts).toHaveBeenCalledOnce();
+		expect(markLiveSessionsStale).toHaveBeenCalledOnce();
+		expect(store.getState()).toMatchObject({ models: [HAIKU], unavailable: [OPUS], status: "unverified" });
+
+		await store.getState().refreshOnline();
+		expect(store.getState()).toMatchObject({ models: [OPUS, HAIKU], unavailable: [], status: "unverified" });
+		expect(JSON.parse(storage[UNAVAILABLE_KEY])).toEqual([]);
+	});
+
+	it("evicts unavailable history for explicitly changed providers", async () => {
+		storage[KEY] = JSON.stringify([]);
+		storage[UNAVAILABLE_KEY] = JSON.stringify([OPUS]);
+		const store = await loadStore();
+		listModels.mockRejectedValueOnce(new Error("offline"));
+		await store.getState().refresh(["anthropic"]);
+		expect(store.getState().unavailable).toEqual([]);
+		expect(JSON.parse(storage[UNAVAILABLE_KEY])).toEqual([]);
 	});
 
 	it("reports failed initial reads without inventing a database subset or cache", async () => {
@@ -205,7 +237,8 @@ describe("useModelCatalog", () => {
 		expect(writeOverrides).toHaveBeenCalledTimes(1);
 		expect(store.getState().models).toEqual([OPUS, HAIKU]);
 		expect(JSON.parse(storage[KEY])).toEqual([OPUS, HAIKU]);
-		expect(store.getState().status).toBe("stale");
+		expect(store.getState().status).toBe("unverified");
+		expect(store.getState().unavailable).toEqual([]);
 	});
 
 	it("does not start derived writes after a provider mutation supersedes override discovery", async () => {

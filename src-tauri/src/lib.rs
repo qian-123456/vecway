@@ -141,7 +141,7 @@ fn relaunch_extra_args(args: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
         .collect()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 const MACOS_RELAUNCH_SCRIPT: &str = r#"pid="$1"
 app="$2"
 shift 2
@@ -153,12 +153,183 @@ done
 if kill -0 "$pid" 2>/dev/null; then
   exit 1
 fi
+/usr/bin/touch "$app" "$app/Contents/Info.plist" "$app/Contents/Resources/icon.icns" "$app/Contents/Resources/dev.icns" 2>/dev/null || true
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREGISTER" ]; then
+  "$LSREGISTER" -f "$app" >/dev/null 2>&1 || true
+fi
 sleep 0.2
 if [ "$#" -gt 0 ]; then
   exec /usr/bin/open "$app" --args "$@"
 else
   exec /usr/bin/open "$app"
 fi"#;
+
+/// Locate the `.icns` resource inside a packaged macOS `.app` bundle.
+#[cfg(any(target_os = "macos", test))]
+fn macos_bundle_icon_path(bundle_root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let resources = bundle_root.join("Contents").join("Resources");
+    for name in ["icon.icns", "dev.icns"] {
+        let candidate = resources.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Build a lightweight stamp for `(app_version, icon_size, icon_mtime)` so LaunchServices
+/// re-registration only runs once when a new app bundle or icon is first launched.
+#[cfg(any(target_os = "macos", test))]
+fn bundle_icon_stamp(icon_path: &std::path::Path) -> Option<String> {
+    let meta = std::fs::metadata(icon_path).ok()?;
+    let secs = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some(format!(
+        "{}:{}:{}",
+        env!("CARGO_PKG_VERSION"),
+        meta.len(),
+        secs
+    ))
+}
+
+#[cfg(target_os = "macos")]
+mod macos_icon {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    use std::ffi::c_char;
+    use std::os::raw::c_void;
+    use std::path::Path;
+
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {}
+
+    #[link(name = "objc")]
+    extern "C" {
+        fn objc_getClass(name: *const c_char) -> *mut c_void;
+        fn sel_registerName(name: *const c_char) -> *const c_void;
+        fn objc_msgSend();
+    }
+
+    unsafe fn msg0(obj: *mut c_void, sel: *const c_void) -> *mut c_void {
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
+            std::mem::transmute(objc_msgSend as *const ());
+        f(obj, sel)
+    }
+
+    unsafe fn msg1_ret(obj: *mut c_void, sel: *const c_void, arg: *const c_void) -> *mut c_void {
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void, *const c_void) -> *mut c_void =
+            std::mem::transmute(objc_msgSend as *const ());
+        f(obj, sel, arg)
+    }
+
+    unsafe fn msg1_void(obj: *mut c_void, sel: *const c_void, arg: *const c_void) {
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void, *const c_void) =
+            std::mem::transmute(objc_msgSend as *const ());
+        f(obj, sel, arg);
+    }
+
+    unsafe fn msg0_void(obj: *mut c_void, sel: *const c_void) {
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void) =
+            std::mem::transmute(objc_msgSend as *const ());
+        f(obj, sel);
+    }
+
+    /// Notify Finder/IconServices of bundle changes and force the live Dock tile to render
+    /// the `.app` bundle's own `.icns` file rather than a stale IconServices cache entry.
+    pub fn apply_bundle_icon(bundle_root: &Path, icon_path: Option<&Path>) {
+        // SAFETY: Called on the main AppKit thread during Tauri `setup`; CFString is
+        // toll-free bridged to NSString and retained/released per AppKit ownership rules.
+        unsafe {
+            let ws_cls = objc_getClass(c"NSWorkspace".as_ptr());
+            if !ws_cls.is_null() {
+                let ws = msg0(ws_cls, sel_registerName(c"sharedWorkspace".as_ptr()));
+                if !ws.is_null() {
+                    let ns_bundle = CFString::new(&bundle_root.to_string_lossy());
+                    msg1_void(
+                        ws,
+                        sel_registerName(c"noteFileSystemChanged:".as_ptr()),
+                        ns_bundle.as_concrete_TypeRef() as *const c_void,
+                    );
+                }
+            }
+            let Some(icon_path) = icon_path else {
+                return;
+            };
+            let img_cls = objc_getClass(c"NSImage".as_ptr());
+            let app_cls = objc_getClass(c"NSApplication".as_ptr());
+            if img_cls.is_null() || app_cls.is_null() {
+                return;
+            }
+            let img_alloc = msg0(img_cls, sel_registerName(c"alloc".as_ptr()));
+            if img_alloc.is_null() {
+                return;
+            }
+            let ns_icon = CFString::new(&icon_path.to_string_lossy());
+            let img = msg1_ret(
+                img_alloc,
+                sel_registerName(c"initWithContentsOfFile:".as_ptr()),
+                ns_icon.as_concrete_TypeRef() as *const c_void,
+            );
+            if img.is_null() {
+                return;
+            }
+            let ns_app = msg0(app_cls, sel_registerName(c"sharedApplication".as_ptr()));
+            if !ns_app.is_null() {
+                msg1_void(
+                    ns_app,
+                    sel_registerName(c"setApplicationIconImage:".as_ptr()),
+                    img,
+                );
+            }
+            msg0_void(img, sel_registerName(c"release".as_ptr()));
+        }
+    }
+}
+
+/// When running from a packaged macOS `.app` bundle, sync the live Dock icon immediately
+/// and re-register the bundle with LaunchServices once whenever the bundle icon changes.
+fn sync_macos_bundle_icon(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(exe) = tauri::process::current_binary(&app.env()) else {
+            return;
+        };
+        let Some(bundle_root) = macos_app_bundle_root(&exe) else {
+            return;
+        };
+        let icon_path = macos_bundle_icon_path(&bundle_root);
+        macos_icon::apply_bundle_icon(&bundle_root, icon_path.as_deref());
+
+        let Some(stamp) = icon_path.as_deref().and_then(bundle_icon_stamp) else {
+            return;
+        };
+        let stamp_file = paths::data_dir().join(".macos-bundle-icon-stamp");
+        let prev = std::fs::read_to_string(&stamp_file).ok();
+        if prev.as_deref().map(str::trim) == Some(stamp.as_str()) {
+            return;
+        }
+        std::thread::spawn(move || {
+            let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+            if std::path::Path::new(lsregister).is_file() {
+                let _ = std::process::Command::new(lsregister)
+                    .arg("-f")
+                    .arg(&bundle_root)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+            let _ = std::fs::write(&stamp_file, &stamp);
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
 
 #[cfg(target_os = "macos")]
 fn spawn_macos_relaunch_helper(
@@ -343,6 +514,7 @@ pub fn run() {
             privacy::init(&state);
 
             // Register event consumers before catalog and process producers start.
+            sync_macos_bundle_icon(app.handle());
             providers::init();
             todos::init(state.clone());
             backlog::init(state.clone());
@@ -742,5 +914,46 @@ tools:
   approvalMode: write
 "#;
         assert!(parse_allowed_tools_from_text(content).is_none());
+    }
+
+    #[test]
+    fn test_macos_relaunch_script_refreshes_bundle_before_open() {
+        assert!(MACOS_RELAUNCH_SCRIPT.contains("/usr/bin/touch"));
+        assert!(MACOS_RELAUNCH_SCRIPT.contains("lsregister"));
+        assert!(MACOS_RELAUNCH_SCRIPT.contains("-f \"$app\""));
+        let touch_pos = MACOS_RELAUNCH_SCRIPT.find("/usr/bin/touch").unwrap();
+        let lsreg_pos = MACOS_RELAUNCH_SCRIPT.find("lsregister").unwrap();
+        let open_pos = MACOS_RELAUNCH_SCRIPT.find("/usr/bin/open").unwrap();
+        assert!(touch_pos < lsreg_pos && lsreg_pos < open_pos);
+    }
+
+    #[test]
+    fn test_macos_bundle_icon_path_and_stamp() {
+        let tmp = std::env::temp_dir().join(format!("vecway-icon-test-{}", std::process::id()));
+        let res = tmp.join("Vecway.app").join("Contents").join("Resources");
+        std::fs::create_dir_all(&res).unwrap();
+
+        assert!(macos_bundle_icon_path(&tmp.join("Vecway.app")).is_none());
+
+        let dev_icon = res.join("dev.icns");
+        std::fs::write(&dev_icon, b"dev-bytes").unwrap();
+        assert_eq!(
+            macos_bundle_icon_path(&tmp.join("Vecway.app")),
+            Some(dev_icon.clone())
+        );
+
+        let prod_icon = res.join("icon.icns");
+        std::fs::write(&prod_icon, b"prod-v1").unwrap();
+        assert_eq!(
+            macos_bundle_icon_path(&tmp.join("Vecway.app")),
+            Some(prod_icon.clone())
+        );
+
+        let stamp1 = bundle_icon_stamp(&prod_icon).unwrap();
+        std::fs::write(&prod_icon, b"prod-v2-longer").unwrap();
+        let stamp2 = bundle_icon_stamp(&prod_icon).unwrap();
+        assert_ne!(stamp1, stamp2);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

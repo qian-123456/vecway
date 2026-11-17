@@ -122,6 +122,7 @@ function ModelTargetPicker({ current, disabled, onPick }: { current: string; dis
 	const selector = parseSelection(current).selector;
 	return (
 		<ModelSelect
+			catalogManaged
 			disabled={disabled}
 			closeOnSelect
 			allowCustom

@@ -187,7 +187,7 @@ describe("模型角色 添加角色", () => {
 				disconnect() {}
 			},
 		);
-		useModelCatalog.setState({ models: [], refresh: () => Promise.resolve() });
+		useModelCatalog.setState({ models: [], unavailable: [], warnings: [], status: "unverified", loading: false, error: null, refresh: () => Promise.resolve() });
 	});
 
 	it("writes a new custom role into the shown scope and lists it", async () => {

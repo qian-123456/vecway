@@ -92,7 +92,7 @@ function ResumeMissingModelForm({ sessionId, diagnostic }: { sessionId: string; 
 					<p className="mb-3 text-[12px] text-neutral-300">{t("sessions.sessionModelUnavailableNotice")}</p>
 					{diagnostic && <p className="mb-3 whitespace-pre-wrap break-words rounded-lg hairline bg-[var(--bg)]/60 px-2.5 py-1.5 font-mono text-[11px] text-neutral-400">{diagnostic}</p>}
 					<p className="mb-1 shrink-0 whitespace-nowrap text-xs text-neutral-400">{t("sessions.resumeModelLabel")}</p>
-					<ModelSelect models={models} currentValue={selected} onSelect={setSelected}
+					<ModelSelect catalogManaged models={models} currentValue={selected} onSelect={setSelected}
 						label={selectedOption?.id ?? t("sessions.selectResumeModel")} disabled={busy}
 						buttonClass="press-scale flex w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-[var(--border-divider)] bg-[var(--bg-active-fill)] px-3 py-2 text-left text-xs text-neutral-200 transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-40 [&>span]:whitespace-normal [&>span]:overflow-visible [&>span]:text-clip [&>span]:break-all"
 						align="start" closeOnSelect />

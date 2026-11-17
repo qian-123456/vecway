@@ -1930,7 +1930,7 @@ async fn roles_get<B: Backend>(
     let snapshot = crate::settings_model_roles::omp_model_roles_read(q.cwd.clone(), None)
         .await
         .map_err(bad_gateway)?;
-    let models = crate::catalog::commands::list_models(st.app.state::<AppState>())
+    let models = crate::catalog::commands::list_models(st.app.state::<AppState>(), None)
         .await
         .map_err(bad_gateway)?;
     Ok(Json(json!({

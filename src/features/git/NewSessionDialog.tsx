@@ -414,6 +414,7 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 						{t("git.newSession.modelOptional")}
 					</label>
 					<ModelSelect
+						catalogManaged
 						direction="down"
 						align="start"
 						widthClass="w-full"

@@ -1311,6 +1311,17 @@ pub struct ModelCatalogSnapshot {
     pub models: Vec<Model>,
     pub source: &'static str,
     pub completeness: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ModelCatalogWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ModelCatalogWarning {
+    InvalidConfig,
+    DiscoveryFailed { provider: String },
+    DiscoveryTimedOut { provider: String },
+    AuthenticationRequired { provider: String },
 }
 
 /// One `models.yml` `providers.<providerId>.modelOverrides.<modelId>.contextWindow`

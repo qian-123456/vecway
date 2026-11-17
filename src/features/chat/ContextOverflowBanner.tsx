@@ -168,6 +168,7 @@ export function ContextOverflowBanner({
 							className="w-[360px] rounded-xl border border-[var(--line)] !bg-[var(--bg-panel)] py-1 shadow-lg"
 						>
 							<ModelMenuContent
+								catalogManaged
 								models={models}
 								currentValue={
 									selectedCandidate

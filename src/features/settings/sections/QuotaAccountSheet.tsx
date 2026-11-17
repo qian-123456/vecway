@@ -86,6 +86,8 @@ export function QuotaBar({
 }) {
 	const fill =
 		tone === "rose" ? "var(--status-error)" : tone === "amber" ? "var(--status-warning)" : brandColor;
+	const clampedPct = Number.isFinite(usedPct) ? Math.min(100, Math.max(0, usedPct)) : 0;
+	const fillWidthPct = clampedPct > 0 ? Math.max(1.5, clampedPct) : 0;
 	return (
 		<div className="space-y-1.5" title={title}>
 			<div className="flex items-baseline justify-between gap-3 text-xs">
@@ -96,11 +98,13 @@ export function QuotaBar({
 					{statusText}
 				</span>
 			</div>
-			<div className="h-1 w-full overflow-hidden rounded-full bg-[var(--bg-hover)]">
-				<div
-					className="h-full rounded-full transition-all duration-300"
-					style={{ width: `${Math.max(1.5, usedPct)}%`, backgroundColor: fill }}
-				/>
+			<div className="h-1 w-full overflow-hidden rounded-full bg-[var(--track-bg)]">
+				{fillWidthPct > 0 ? (
+					<div
+						className="h-full rounded-full transition-colors duration-200"
+						style={{ width: `${fillWidthPct}%`, backgroundColor: fill }}
+					/>
+				) : null}
 			</div>
 			{caption ? (
 				<div className="text-right text-[11px] text-[var(--text-dim)]">{caption}</div>

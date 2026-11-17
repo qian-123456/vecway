@@ -882,7 +882,7 @@ export function WorktreeSection({
 				<div className="flex items-center gap-1.5 whitespace-nowrap font-semibold text-neutral-200">
 					<FolderGit2 size={13} className="text-emerald-400" />
 					<span>{t("worktree.activeWorktreesHeader")}</span>
-					<span className="rounded-full bg-neutral-800 px-1.5 font-mono text-[10px] text-neutral-400">
+					<span className="rounded-full bg-[var(--bg-active-fill)] px-1.5 font-mono text-[10px] text-neutral-400">
 						{worktrees.length}
 					</span>
 					<span

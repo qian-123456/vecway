@@ -697,6 +697,7 @@ function ApprovalDock({
 				{customOpen && (
 					<div className="mx-1.5 mt-1.5 overflow-hidden rounded-lg border border-[var(--border-divider)]">
 						<ModelMenuContent
+							catalogManaged
 							models={catalog ?? []}
 							currentValue={custom?.key ?? ""}
 							closeOnSelect

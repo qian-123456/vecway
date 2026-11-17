@@ -322,6 +322,7 @@ export function NewAgentForm({
 				)}
 				{modelMode === "model" && (
 					<ModelSelect
+						catalogManaged
 						disabled={locked}
 						closeOnSelect
 						direction="down"

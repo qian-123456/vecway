@@ -747,6 +747,7 @@ function NewSideChat({ parentId, tabId }: { parentId: string; tabId: string }) {
 												className="w-[320px] rounded-xl border border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] py-1 shadow-lg"
 											>
 												<ModelMenuContent
+													catalogManaged
 													models={catalog}
 													currentValue={effective.selector}
 													extras={[

@@ -564,42 +564,105 @@ fn decode_model_catalog(stdout: &[u8]) -> Result<crate::contracts::ModelCatalogS
         models,
         source: "cli",
         completeness: "unverified",
+        warnings: Vec::new(),
     })
+}
+
+// OMP emits these warnings on stderr even when stdout contains valid JSON.
+// Keep only known categories and provider IDs; raw diagnostics may include secrets.
+fn model_catalog_warnings(stderr: &[u8]) -> Vec<crate::contracts::ModelCatalogWarning> {
+    use crate::contracts::ModelCatalogWarning;
+    let ansi_color = regex::Regex::new(r"\x1b\[[0-9;]*m").expect("ANSI color pattern");
+    let mut warnings = Vec::new();
+    for line in String::from_utf8_lossy(stderr).lines() {
+        let line = ansi_color.replace_all(line, "");
+        let Some(message) = line.trim().strip_prefix("Warning: ") else {
+            continue;
+        };
+        let warning = if message == "models.yml validation failed — custom providers disabled" {
+            ModelCatalogWarning::InvalidConfig
+        } else {
+            let Some((provider, detail)) = message.split_once(" model discovery failed (") else {
+                continue;
+            };
+            let Some((_, detail)) = detail.split_once("): ") else {
+                continue;
+            };
+            if provider.is_empty()
+                || provider.len() > 96
+                || !provider
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-_.+@".contains(&c))
+            {
+                continue;
+            }
+            let detail = detail.to_ascii_lowercase();
+            let provider = provider.to_owned();
+            if detail.contains("401 unauthorized") || detail.contains("http 401") {
+                ModelCatalogWarning::AuthenticationRequired { provider }
+            } else if detail.contains("timed out")
+                || detail.contains("request timeout")
+                || detail.contains("etimedout")
+            {
+                ModelCatalogWarning::DiscoveryTimedOut { provider }
+            } else {
+                ModelCatalogWarning::DiscoveryFailed { provider }
+            }
+        };
+        if !warnings.contains(&warning) {
+            warnings.push(warning);
+        }
+    }
+    warnings
 }
 
 async fn read_model_catalog(
     exe: &std::path::Path,
     path_env: &str,
+    online: bool,
 ) -> Result<crate::contracts::ModelCatalogSnapshot, String> {
     let mut cmd = tokio::process::Command::new(exe);
-    cmd.args(["models", "--json"]);
+    cmd.arg("models");
+    if online {
+        cmd.arg("refresh");
+    }
+    cmd.arg("--json");
     cmd.env("PATH", path_env);
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
     let child = cmd
         .spawn()
         .map_err(|_| "MODEL_CATALOG_SPAWN_FAILED".to_string())?;
-    let output = tokio::time::timeout(std::time::Duration::from_secs(8), child.wait_with_output())
+    let timeout = std::time::Duration::from_secs(if online { 60 } else { 8 });
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| "MODEL_CATALOG_TIMEOUT".to_string())?
         .map_err(|_| "MODEL_CATALOG_READ_FAILED".to_string())?;
     if !output.status.success() {
         return Err("MODEL_CATALOG_EXIT_FAILED".to_string());
     }
-    decode_model_catalog(&output.stdout)
+    let mut snapshot = decode_model_catalog(&output.stdout)?;
+    snapshot.warnings = model_catalog_warnings(&output.stderr);
+    Ok(snapshot)
 }
 
 #[tauri::command]
 pub async fn list_models(
     state: tauri::State<'_, AppState>,
+    online: Option<bool>,
 ) -> Result<crate::contracts::ModelCatalogSnapshot, String> {
     let bin = state.settings.read().omp_binary.clone();
     let path_env = crate::todos::omp::augmented_path();
     let exe = crate::todos::omp::resolve_binary(&bin, &path_env);
     // models.db omits static/keyless providers and cannot substitute for this read.
-    read_model_catalog(std::path::Path::new(&exe), &path_env).await
+    read_model_catalog(
+        std::path::Path::new(&exe),
+        &path_env,
+        online.unwrap_or(false),
+    )
+    .await
 }
 
 fn parse_export_output(stdout: &str, working_dir: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -889,22 +952,69 @@ mod tests {
         ] {
             std::fs::write(&exe, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
-            assert_eq!(read_model_catalog(&exe, "").await.unwrap_err(), expected);
+            assert_eq!(
+                read_model_catalog(&exe, "", false).await.unwrap_err(),
+                expected
+            );
         }
         assert_eq!(
-            read_model_catalog(&dir.join("missing"), "")
+            read_model_catalog(&dir.join("missing"), "", false)
                 .await
                 .unwrap_err(),
             "MODEL_CATALOG_SPAWN_FAILED"
         );
         std::fs::write(&exe, "#!/bin/sh\nprintf '[]'\n").unwrap();
-        assert!(read_model_catalog(&exe, "")
+        assert!(read_model_catalog(&exe, "", false)
             .await
             .unwrap()
             .models
             .is_empty());
         std::fs::remove_file(&exe).unwrap();
         std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn model_catalog_online_refresh_requests_fresh_json() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ompws-catalog-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("fixture");
+        std::fs::write(
+            &exe,
+            r#"#!/bin/sh
+[ "$*" = 'models refresh --json' ] || exit 1
+printf '[{"provider":"p","id":"new"}]'
+printf '\033[33mWarning: expired model discovery failed (unavailable): HTTP 401 Authorization: placeholder-key\033[0m\n' >&2
+printf 'Warning: slow model discovery failed (unavailable): request timed out\n' >&2
+printf 'Warning: other model discovery failed (unavailable): connection reset\n' >&2
+printf 'Warning: models.yml validation failed — custom providers disabled\nraw configuration detail\n' >&2
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let snapshot = read_model_catalog(&exe, "", true).await.unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(snapshot.models[0].id, "new");
+        use crate::contracts::ModelCatalogWarning;
+        assert_eq!(
+            snapshot.warnings,
+            vec![
+                ModelCatalogWarning::AuthenticationRequired {
+                    provider: "expired".into()
+                },
+                ModelCatalogWarning::DiscoveryTimedOut {
+                    provider: "slow".into()
+                },
+                ModelCatalogWarning::DiscoveryFailed {
+                    provider: "other".into()
+                },
+                ModelCatalogWarning::InvalidConfig,
+            ]
+        );
+        let serialized = serde_json::to_string(&snapshot).unwrap();
+        assert!(!serialized.contains("placeholder-key"));
+        assert!(!serialized.contains("raw configuration detail"));
     }
 
     #[test]

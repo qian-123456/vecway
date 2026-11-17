@@ -319,7 +319,7 @@ export function PromptCompositionSection() {
 									</span>
 								)}
 							</div>
-							<div className="flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--bg-selected)]">
+							<div className="flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--track-bg)]">
 								{visible.map((c) => (
 									<div
 										key={c.id}

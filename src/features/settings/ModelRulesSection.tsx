@@ -237,6 +237,7 @@ export function ModelRulesSection({
 					</div>
 					{addMode === "model" ? (
 						<ModelSelect
+							catalogManaged
 							closeOnSelect
 							allowCustom
 							direction="down"

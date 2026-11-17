@@ -114,6 +114,7 @@ export function DoctorSection() {
 					statusError={doctorSave.error}
 					control={
 						<ModelSelect
+							catalogManaged
 							direction="down"
 							widthClass="w-[360px]"
 							label={doctorLabel}

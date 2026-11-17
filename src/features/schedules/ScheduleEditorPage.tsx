@@ -1371,6 +1371,7 @@ export function ScheduleEditorPage({
 									<div className="flex items-center gap-0.5">
 										{/* Model picker */}
 										<ModelSelect
+											catalogManaged
 											label={modelLabel}
 											models={availableModels}
 											currentValue={modelSel.selector}

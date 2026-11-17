@@ -98,6 +98,7 @@ export function AddRoleForm({
 					className="w-48 rounded-lg hairline bg-[var(--bg-panel)] px-2.5 py-1.5 font-mono text-xs text-[var(--text)] placeholder:text-[var(--text-dim)] focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)] focus:outline-none transition-all"
 				/>
 				<ModelSelect
+					catalogManaged
 					roles={ctx.roles}
 					disabled={locked}
 					closeOnSelect

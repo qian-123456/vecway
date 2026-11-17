@@ -15,6 +15,7 @@ import {
 	Loader2,
 	Pencil,
 	RotateCcw,
+	X,
 } from "lucide-react";
 import React, {
 	useCallback,
@@ -35,6 +36,7 @@ import { isComposing } from "../../lib/hooks";
 import { toast } from "../../lib/toast";
 import { useT } from "../../stores/language";
 import { withModelNotices } from "./modelChangeRows";
+import { useDismissedTurnErrors } from "./dismissedTurnErrors";
 import { isFlowItem, withFlowNotices } from "./flowNotice";
 import { QueuedBubbles } from "./QueuedBubbles";
 import { collectUserImages, queuedEchoIds, useLive, type CommandOutputEntry, type LiveRequest, type LiveTool, type UserEcho } from "../../stores/live";
@@ -799,6 +801,14 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 		}
 		return null;
 	}, [answerIsError, block.answerItem, isTurnSettled, requests, t]);
+	const turnErrorKey =
+		block.answerItem?.id ?? requests[requests.length - 1]?.id ?? block.turn.id;
+	const errorDismissed = useDismissedTurnErrors(
+		(s) => s.dismissedBySession[sessionId]?.includes(turnErrorKey) ?? false,
+	);
+	const dismissTurnError = useCallback(() => {
+		useDismissedTurnErrors.getState().dismiss(sessionId, turnErrorKey);
+	}, [sessionId, turnErrorKey]);
 	const hasPartialErrorProse = Boolean(
 		answerIsError &&
 			block.answerItem?.errorMessage?.trim() &&
@@ -1007,13 +1017,14 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 							{block.durationMs ? t("chat.message.stoppedWithTime", { time: formatDurationCompact(block.durationMs) }) : t("chat.message.stopped")}
 						</p>
 					)}
-					{block.isLastTurnPart && answerIsError && terminalErrorReason && (
+					{block.isLastTurnPart && answerIsError && terminalErrorReason && !errorDismissed && (
 						<TurnErrorCard
 							reason={terminalErrorReason}
 							modelRef={block.answerItem.model ?? block.turn.userItem?.model}
 							retrying={retryingTurn}
 							onRetry={() => void retryTurn()}
 							onSwitchModel={openComposerModelPicker}
+							onDismiss={dismissTurnError}
 						/>
 					)}
 
@@ -1054,13 +1065,14 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 				</ShareSelectable>
 				)
 			)}
-			{!block.answerItem && isTurnSettled && terminalErrorReason && (
+			{!block.answerItem && isTurnSettled && terminalErrorReason && !errorDismissed && (
 				<TurnErrorCard
 					reason={terminalErrorReason}
 					modelRef={block.turn.userItem?.model}
 					retrying={retryingTurn}
 					onRetry={() => void retryTurn()}
 					onSwitchModel={openComposerModelPicker}
+					onDismiss={dismissTurnError}
 				/>
 			)}
 			{showMissingFinalAnswerCard && (
@@ -1102,18 +1114,20 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 });
 
 /** Prominent inline card for an unrecovered terminal turn error, with full error text and recovery buttons. */
-function TurnErrorCard({
+export function TurnErrorCard({
 	reason,
 	modelRef,
 	retrying,
 	onRetry,
 	onSwitchModel,
+	onDismiss,
 }: {
 	reason: string;
 	modelRef: string | null | undefined;
 	retrying: boolean;
 	onRetry: () => void;
 	onSwitchModel: () => void;
+	onDismiss?: () => void;
 }) {
 	const { t } = useT();
 	return (
@@ -1121,8 +1135,21 @@ function TurnErrorCard({
 			role="alert"
 			className="my-1.5 flex w-full flex-col gap-2 rounded-xl border border-rose-500/30 bg-rose-500/8 px-3.5 py-3 text-[12px]"
 		>
-			<div className="font-medium text-rose-500">
-				{t("chat.message.turnFailedTitle")}
+			<div className="flex items-start justify-between gap-2">
+				<div className="font-medium text-rose-500">
+					{t("chat.message.turnFailedTitle")}
+				</div>
+				{onDismiss && (
+					<button
+						type="button"
+						onClick={onDismiss}
+						aria-label={t("chat.message.dismissError")}
+						title={t("chat.message.dismissError")}
+						className="-mr-1 -mt-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--text-40)] transition-colors hover:bg-rose-500/12 hover:text-rose-500"
+					>
+						<X className="h-3.5 w-3.5" aria-hidden="true" />
+					</button>
+				)}
 			</div>
 			<div className="select-text whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-[var(--text)]">
 				{reason}

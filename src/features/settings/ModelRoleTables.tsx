@@ -370,6 +370,7 @@ function RowEditor({
 							/>
 						) : (
 							<ModelSelect
+								catalogManaged
 								roles={ctx.roles}
 								disabled={literal.locked}
 								closeOnSelect

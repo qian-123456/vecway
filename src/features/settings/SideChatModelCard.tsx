@@ -53,6 +53,7 @@ export function SideChatModelCard() {
 					statusError={pickSave.error}
 					control={
 						<ModelSelect
+							catalogManaged
 							direction="up"
 							widthClass="w-[360px]"
 							label={label}

@@ -261,15 +261,17 @@ export function StorageSection() {
 						</span>
 					</div>
 					{/* Visual Storage Distribution Bar */}
-					<div className="flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--bg-hover)]">
-						{breakdown.categories.map((c) => (
-							<div
-								key={c.key}
-								style={{ width: `${Math.max(c.percent, 0.5)}%`, backgroundColor: c.color }}
-								title={`${categoryLabels[c.key] ?? c.key}: ${formatBytes(c.bytes)} (${c.percent.toFixed(1)}%)`}
-								className="transition-all first:rounded-l-full last:rounded-r-full"
-							/>
-						))}
+					<div className="flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--track-bg)]">
+						{breakdown.categories.map((c) =>
+							c.percent > 0 ? (
+								<div
+									key={c.key}
+									style={{ width: `${Math.max(c.percent, 0.5)}%`, backgroundColor: c.color }}
+									title={`${categoryLabels[c.key] ?? c.key}: ${formatBytes(c.bytes)} (${c.percent.toFixed(1)}%)`}
+									className="transition-colors first:rounded-l-full last:rounded-r-full"
+								/>
+							) : null,
+						)}
 					</div>
 					{/* Category legend */}
 					<div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs">

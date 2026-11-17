@@ -288,6 +288,7 @@ export function TemplateEditor({
 									<div className="text-[11px] leading-4 text-[var(--text-dim)]">{row.description}</div>
 								</div>
 								<ModelSelect
+									catalogManaged
 									models={models}
 									label={set ? parseSelection(value as string).selector : declared ? t("modelTemplates.unconfigured") : t("modelTemplates.keepCurrent")}
 									currentValue={set ? (value as string) : declared ? UNSET : ABSENT}

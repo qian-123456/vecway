@@ -130,7 +130,7 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 			{/* Status icon */}
 			<span
 				className={clsx(
-					"flex h-9 w-9 shrink-0 items-center justify-center rounded-xl hairline bg-[var(--bg-hover)]/60",
+					"flex h-9 w-9 shrink-0 items-center justify-center rounded-xl hairline bg-[var(--bg-active-fill)]",
 					runningNow
 						? "text-[var(--text)]"
 						: completed

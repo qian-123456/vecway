@@ -126,13 +126,14 @@ describe("provider mutation catalog boundary with real stores", () => {
 		expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual([updated, beta]);
 	});
 
-	it("keeps unaffected providers when a post-save successful response is also partial", async () => {
+	it("publishes new models and keeps omitted unrelated providers only for reference", async () => {
 		const { catalog, providers } = await stores();
 		ipc.listModels.mockResolvedValueOnce(snapshot([updated]));
 		await providers.getState().upsert(input, null);
-		expect(selectors(catalog.getState().models)).toEqual(selectors([beta]));
-		expect(selectors(JSON.parse(localStorage.getItem(KEY)!))).toEqual(selectors([beta]));
-		expect(catalog.getState().status).toBe("stale");
+		expect(catalog.getState().models).toEqual([updated]);
+		expect(catalog.getState().unavailable).toMatchObject([beta]);
+		expect(selectors(JSON.parse(localStorage.getItem(KEY)!))).toEqual(selectors([updated]));
+		expect(catalog.getState().status).toBe("unverified");
 	});
 
 	it("evicts both ids on provider rename while retaining unrelated providers", async () => {

@@ -81,6 +81,7 @@ fn fresh_enough(t: Option<SystemTime>) -> bool {
 /// Per-file metadata accumulated while scanning the jsonl once.
 #[derive(Default)]
 struct AgentMeta {
+    has_session_header: bool,
     model: Option<String>,
     thinking_level: Option<String>,
     system_prompt: Option<String>,
@@ -102,6 +103,11 @@ struct AgentMeta {
 fn accumulate(meta: &mut AgentMeta, v: &Value) {
     let ts = v.get("timestamp").and_then(Value::as_str);
     match v.get("type").and_then(Value::as_str) {
+        Some("session") => {
+            if v.get("id").and_then(Value::as_str).is_some() {
+                meta.has_session_header = true;
+            }
+        }
         Some("model_change") => {
             meta.model = v.get("model").and_then(Value::as_str).map(str::to_string);
         }
@@ -446,11 +452,27 @@ fn scan_cache() -> &'static Mutex<ScanCache> {
 /// deeper per generation: `<dir>/<A>/<A>.<B>.jsonl`, `<dir>/<A>/<A>.<B>/...`.
 const MAX_NEST_DEPTH: usize = 8;
 
+/// Non-subagent artifacts share `<parent>/` with subagent transcripts:
+/// - `changes.jsonl`: selective-commit edit/tool-call journal
+/// - `__advisor.jsonl` / `__advisor.<slug>.jsonl`: advisor transcripts
+/// - `*.bak.jsonl` / dotfiles: backups and lock files
+fn is_subagent_filename(name: &str) -> bool {
+    if name.starts_with('.') || !name.ends_with(".jsonl") || name.contains(".bak") {
+        return false;
+    }
+    let stem = &name[..name.len() - ".jsonl".len()];
+    stem != "changes" && stem != "__advisor" && !stem.starts_with("__advisor.")
+}
+
 /// Every visible `*.jsonl` agent transcript under `dir`, nested ones included.
+/// Only descends into `<agentId>/` subdirectories that have a sibling
+/// `<agentId>.jsonl`, skipping non-session artifact dirs (`blobs/`, `url-search/`).
 fn collect_agent_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
+    let mut dirs = HashMap::new();
+    let mut stems = Vec::new();
     for e in entries.flatten() {
         let path = e.path();
         let name = e.file_name();
@@ -461,17 +483,27 @@ fn collect_agent_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         }
         let Ok(kind) = e.file_type() else { continue };
         if kind.is_dir() {
-            if depth < MAX_NEST_DEPTH {
-                collect_agent_files(&path, depth + 1, out);
-            }
-        } else if kind.is_file() && path.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+            dirs.insert(name.to_string(), path);
+        } else if kind.is_file() && is_subagent_filename(name) {
+            let stem = &name[..name.len() - ".jsonl".len()];
+            stems.push(stem.to_string());
             out.push(path);
+        }
+    }
+    if depth < MAX_NEST_DEPTH {
+        for stem in stems {
+            if let Some(sub) = dirs.get(&stem) {
+                collect_agent_files(sub, depth + 1, out);
+            }
         }
     }
 }
 
 /// Locate `<id>.jsonl` below `dir`: direct child first, then nested generations.
 fn find_agent_file(dir: &Path, id: &str) -> Option<PathBuf> {
+    if !is_subagent_filename(&format!("{id}.jsonl")) {
+        return None;
+    }
     let direct = dir.join(format!("{id}.jsonl"));
     if direct.is_file() {
         return Some(direct);
@@ -506,10 +538,13 @@ fn list_with(
         let Ok(scan) = cache.scan(&path) else {
             continue;
         };
+        seen.insert(path.clone());
+        if !scan.meta.has_session_header {
+            continue;
+        }
         let agent_dir = path.parent().unwrap_or(&dir);
         let (status, output) = infer_status(agent_dir, &id, &scan.meta, mtime(&path));
         out.push(summary_from(&id, &path, scan, status, output));
-        seen.insert(path);
     }
     cache.retain_seen(&dir, &seen);
     out.sort_by(|a, b| a.started_at.cmp(&b.started_at));
@@ -541,6 +576,9 @@ pub fn transcript_in(
     let agent_dir = file.parent().unwrap_or(&dir).to_path_buf();
     let scan = scan_agent(&file, from_byte)
         .map_err(|e| format!("read subagent transcript {agent_id}: {e}"))?;
+    if !scan.meta.has_session_header {
+        return Err(format!("subagent session not found: {agent_id}"));
+    }
     let (status, output_path) = infer_status(&agent_dir, agent_id, &scan.meta, mtime(&file));
     let summary = summary_from(agent_id, &file, &scan, status, output_path.clone());
     // Prefer the output artifact; fall back to the last assistant text.
@@ -894,6 +932,56 @@ mod tests {
         let (st, out) = infer_status(&dir, "a", &meta_with_stop(Some("error"), true), stale());
         assert_eq!(st, SubagentStatus::Completed);
         assert!(out.is_some());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn ignores_non_subagent_artifacts_and_unheaded_jsonl() {
+        let (root, parent, subdir) = setup();
+        let p = parent.to_str().unwrap();
+        fs::write(subdir.join("RealAgent.jsonl"), AGENT).unwrap();
+        // Selective-commit journal (`omp` 18.20+): must never appear as a pending/running subagent.
+        fs::write(
+            subdir.join("changes.jsonl"),
+            concat!(
+                r#"{"type":"call","agent":"Main","tool":"eval","start":1,"label":"Inspect","end":2}"#,
+                "\n",
+                r#"{"type":"change","at":3,"agent":"Main","tool":"edit","path":"/tmp/a.conf"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        // Advisor transcripts share `<parent>/` and carry a valid session header.
+        fs::write(subdir.join("__advisor.jsonl"), AGENT).unwrap();
+        fs::write(subdir.join("__advisor.reviewer.jsonl"), AGENT).unwrap();
+        // Backup and headerless artifact jsonl files.
+        fs::write(subdir.join("RealAgent.bak.jsonl"), AGENT).unwrap();
+        fs::write(
+            subdir.join("other-artifact.jsonl"),
+            r#"{"type":"event","payload":{}}"#,
+        )
+        .unwrap();
+        // Unrelated artifact subdirectories (e.g. `blobs/`, `url-search/`) are not subagent trees.
+        fs::create_dir_all(subdir.join("blobs")).unwrap();
+        fs::write(subdir.join("blobs").join("nested.jsonl"), AGENT).unwrap();
+
+        let list = list_in(p, &root).unwrap();
+        let ids: Vec<&str> = list.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["RealAgent"]);
+
+        for excluded in [
+            "changes",
+            "__advisor",
+            "__advisor.reviewer",
+            "RealAgent.bak",
+            "other-artifact",
+            "nested",
+        ] {
+            assert!(
+                transcript_in(p, excluded, 0, &root).is_err(),
+                "{excluded} should not resolve as a subagent transcript"
+            );
+        }
         fs::remove_dir_all(&root).ok();
     }
 }

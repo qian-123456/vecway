@@ -1984,7 +1984,7 @@ async fn models_get<B: Backend>(
     let meta = load_session(&ctx, &id).await?;
     let state = app(&ctx)?;
     // Global catalog: separate read-only omp process, same source as desktop.
-    let models = crate::catalog::commands::list_models(state.app.state::<AppState>())
+    let models = crate::catalog::commands::list_models(state.app.state::<AppState>(), None)
         .await
         .map_err(bad_gateway)?;
     let mut out = model_facts(state, &meta, &id).await;

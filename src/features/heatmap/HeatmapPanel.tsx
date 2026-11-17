@@ -280,7 +280,7 @@ export function HeatmapPanel() {
 										<span className="font-medium text-neutral-200 text-[12px] break-words min-w-0">
 											{activeAnalysis.name}
 										</span>
-										<span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--bg-hover)] text-neutral-400 break-all min-w-0">
+										<span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--bg-active-fill)] text-neutral-400 break-all min-w-0">
 											{activeAnalysis.model}
 										</span>
 									</div>
@@ -299,18 +299,20 @@ export function HeatmapPanel() {
 								</div>
 
 								{/* Watermark bar */}
-								<div className="h-1.5 w-full bg-[var(--bg-hover)] rounded-full overflow-hidden mb-1.5">
-									<div
-										className={clsx(
-											"h-full rounded-full transition-all duration-300",
-											activeAnalysis.contextGauge.status === "danger"
-												? "bg-red-500"
-												: activeAnalysis.contextGauge.status === "warn"
-													? "bg-amber-500"
-													: "bg-emerald-500",
-										)}
-										style={{ width: `${activeAnalysis.contextGauge.pct}%` }}
-									/>
+								<div className="h-1.5 w-full bg-[var(--track-bg)] rounded-full overflow-hidden mb-1.5">
+									{activeAnalysis.contextGauge.pct > 0 ? (
+										<div
+											className={clsx(
+												"h-full rounded-full transition-colors duration-200",
+												activeAnalysis.contextGauge.status === "danger"
+													? "bg-red-500"
+													: activeAnalysis.contextGauge.status === "warn"
+														? "bg-amber-500"
+														: "bg-emerald-500",
+											)}
+											style={{ width: `${Math.min(100, activeAnalysis.contextGauge.pct)}%` }}
+										/>
+									) : null}
 								</div>
 
 								<div className="flex items-center justify-between text-[10px]">
@@ -359,19 +361,21 @@ export function HeatmapPanel() {
 								</div>
 
 								{/* Spectrum Bar */}
-								<div className="h-2.5 w-full rounded-full overflow-hidden flex bg-[var(--bg-hover)] mb-3">
-									{activeAnalysis.distribution.map((d) => (
-										<div
-											key={d.key}
-											className={clsx(
-												"h-full transition-all cursor-pointer hover:opacity-80",
-												d.colorClass,
-											)}
-											style={{ width: `${d.pct}%` }}
-											title={`${d.label}: ${formatTokens(d.tokens)} (${d.pct}%)`}
-											onClick={() => setCurrentCategory(d.key)}
-										/>
-									))}
+								<div className="h-2.5 w-full rounded-full overflow-hidden flex bg-[var(--track-bg)] mb-3">
+									{activeAnalysis.distribution.map((d) =>
+										d.pct > 0 ? (
+											<div
+												key={d.key}
+												className={clsx(
+													"h-full transition-opacity cursor-pointer hover:opacity-80",
+													d.colorClass,
+												)}
+												style={{ width: `${d.pct}%` }}
+												title={`${d.label}: ${formatTokens(d.tokens)} (${d.pct}%)`}
+												onClick={() => setCurrentCategory(d.key)}
+											/>
+										) : null,
+									)}
 								</div>
 
 								{/* Category Selection Chips */}
