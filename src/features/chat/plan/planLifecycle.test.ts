@@ -19,7 +19,7 @@ describe("plan extension lifecycle", () => {
 
 	beforeEach(() => {
 		originalArgv = process.argv;
-		process.argv = [...originalArgv, "--mode=rpc"];
+		process.argv = [...originalArgv, "--mode", "rpc-ui"];
 	});
 	afterEach(() => {
 		process.argv = originalArgv;
@@ -80,6 +80,20 @@ describe("plan extension lifecycle", () => {
 		return root;
 	}
 	const writePlan = (root: string, text: string) => writeFileSync(join(root, "local", "a-plan.md"), text);
+
+	it.each([
+		["--mode", "rpc-ui"],
+		["--mode=rpc-ui"],
+		["--mode", "rpc"],
+		["--mode=rpc"],
+	])("can enter and leave plan mode with transport arguments %j", async (...args) => {
+		process.argv = [...originalArgv, ...args];
+		const t = await boot(newRoot());
+		await t.action("enable");
+		expect(t.status()).toMatchObject({ enabled: true });
+		await t.action("disable");
+		expect(t.status()).toMatchObject({ enabled: false });
+	});
 
 	/** A reviewed plan ready to approve. */
 	async function reviewed(root: string) {

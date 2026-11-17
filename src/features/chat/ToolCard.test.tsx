@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), openUrl: vi.fn(
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (s: string) => s }));
 
 import { ToolCard, toolActivityLabel } from "./ToolCard";
+import { tNow } from "../../stores/language";
 
 afterEach(cleanup);
 
@@ -30,5 +31,40 @@ describe("wait tool", () => {
 	it("an unrelated tool with empty args also shows no empty box", () => {
 		render(<ToolCard sessionId="s" name="mystery" args={{}} status="done" />);
 		expect(screen.queryByRole("button")).toBeNull();
+	});
+});
+
+describe("ask tool results", () => {
+	it("renders current form answers, empty fields and option notes as compact rows", () => {
+		render(<ToolCard
+			sessionId="s"
+			name="ask"
+			status="done"
+			args={{ html: '<form><input name="db"></form>' }}
+			details={{
+				answers: [
+					{ name: "db", question: "Database?", answer: "SQLite" },
+					{ name: "extra", question: "Anything else?", answer: "" },
+					{ name: "language", question: "Language?", answer: "Rust" },
+				],
+				notes: [
+					{ name: "language", question: "Language?", option: "Rust", value: "rs", text: "Backend only" },
+				],
+			}}
+		/>);
+		expect(screen.getByText("Database? → SQLite")).toBeTruthy();
+		expect(screen.getByText(`Anything else? → ${tNow("tools.ask.unanswered")}`)).toBeTruthy();
+		expect(screen.getByText("Language? → Rust — Rust: Backend only")).toBeTruthy();
+		expect(screen.queryByText(/<form>/)).toBeNull();
+	});
+
+	it("keeps historical question-shaped transcript results readable", () => {
+		render(<ToolCard
+			sessionId="s"
+			name="ask"
+			status="done"
+			details={{ results: [{ question: "Legacy question?", selectedOptions: ["A"], customInput: "More" }] }}
+		/>);
+		expect(screen.getByText("Legacy question? → A、More")).toBeTruthy();
 	});
 });

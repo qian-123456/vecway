@@ -142,6 +142,47 @@ describe("ask driver", () => {
 		expect(askResultSummary({ foo: 1 })).toBeNull();
 	});
 
+	it("leaves modern forms to OMP's field-by-field fallback", () => {
+		const args = { html: '<form><label>Colour<input name="colour"></label></form>' };
+		expect(parseAskArgs("modern", args)).toBeNull();
+		expect(findOpenAsks([
+			{ toolCallId: "modern", toolName: "ask", args, status: "running" },
+		], [])).toEqual([]);
+	});
+
+	it("summarises current form answers in order, preserving empty and multiline answers", () => {
+		expect(askResultSummary({
+			answers: [
+				{ name: "db", question: "Database?", answer: "SQLite" },
+				{ name: "notes", question: "Notes?", answer: "First line\nSecond line" },
+				{ name: "optional", question: "Anything else?", answer: "" },
+			],
+		})).toEqual([
+			{ question: "Database?", answer: "SQLite" },
+			{ question: "Notes?", answer: "First line\nSecond line" },
+			{ question: "Anything else?", answer: "" },
+		]);
+		expect(askResultSummary({ answers: [] })).toBeNull();
+		expect(askResultSummary({ answers: [{ name: "bad", answer: "No question" }] })).toBeNull();
+	});
+
+	it("includes current option notes only with the field they belong to", () => {
+		expect(askResultSummary({
+			answers: [
+				{ name: "stack", question: "Stack?", answer: "Rust, TypeScript" },
+				{ name: "extra", question: "Extra?", answer: "" },
+			],
+			notes: [
+				{ name: "stack", question: "Stack?", option: "Rust", value: "rs", text: "Backend only" },
+				{ name: "stack", question: "Stack?", option: "TypeScript", value: "ts", text: "UI [Image #1]" },
+				{ name: "extra", question: "Extra?", option: "Other", value: "other", text: "Keep this note" },
+			],
+		})).toEqual([
+			{ question: "Stack?", answer: "Rust, TypeScript — Rust: Backend only — TypeScript: UI [Image #1]" },
+			{ question: "Extra?", answer: "Other: Keep this note" },
+		]);
+	});
+
 	it("replays a whole multi-question answer in order against omp's protocol", () => {
 		const s = spec([colour, langs, { ...colour, id: "c2", question: "Second colour" }]);
 		const answers: AskAnswer[] = [

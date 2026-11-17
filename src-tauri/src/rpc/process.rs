@@ -1,4 +1,4 @@
-//! RpcProcess: spawn `omp --mode rpc`, protocol handshake, stdout reader,
+//! RpcProcess: spawn `omp --mode rpc-ui`, protocol handshake, stdout reader,
 //! stdin writer, request/response correlation.
 
 use std::collections::{HashMap, HashSet};
@@ -592,7 +592,7 @@ fn build_command(opts: &StartOpts, settings: &Settings) -> Result<tokio::process
     let mut cmd = tokio::process::Command::new(&settings.omp_binary);
     cmd.kill_on_drop(true);
     cmd.arg("--mode")
-        .arg("rpc")
+        .arg("rpc-ui")
         .arg("--approval-mode")
         .arg(approval_mode)
         .arg("--cwd")

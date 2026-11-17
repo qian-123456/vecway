@@ -1,6 +1,6 @@
 //! 系统提示词构成: what a brand-new, empty session would carry in its context.
 //!
-//! `prompt_composition_probe(cwd)` spawns a throwaway `omp --mode rpc --no-session --cwd <dir>`
+//! `prompt_composition_probe(cwd)` spawns a throwaway `omp --mode rpc-ui --no-session --cwd <dir>`
 //! (same model / privacy / providers / visualize wiring as an app session, but *without* the
 //! status and checkpoints extensions, which write per-session files), sends one `get_state`
 //! (zero model cost) and reads `systemPrompt` (string blocks), `dumpTools` and
@@ -652,7 +652,7 @@ fn probe_command(settings: &Settings, cwd: &str) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(&settings.omp_binary);
     cmd.kill_on_drop(true);
     cmd.arg("--mode")
-        .arg("rpc")
+        .arg("rpc-ui")
         .arg("--no-session")
         .arg("--approval-mode")
         .arg(&settings.default_approval_mode)

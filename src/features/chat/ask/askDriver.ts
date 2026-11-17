@@ -300,6 +300,24 @@ export function askResultSummary(
 	details: unknown,
 ): { question: string; answer: string }[] | null {
 	const d = asObj(details);
+	if (Array.isArray(d.answers)) {
+		const notes = Array.isArray(d.notes) ? d.notes.map(asObj) : [];
+		const out: { question: string; answer: string }[] = [];
+		for (const entry of d.answers) {
+			const answer = asObj(entry);
+			if (typeof answer.question !== "string" || typeof answer.answer !== "string") return null;
+			const parts = [answer.answer];
+			for (const note of notes) {
+				if (typeof answer.name !== "string" || note.name !== answer.name ||
+					typeof note.text !== "string" || !note.text.trim()) continue;
+				parts.push(typeof note.option === "string" && note.option
+					? `${note.option}: ${note.text}`
+					: note.text);
+			}
+			out.push({ question: answer.question, answer: parts.filter(Boolean).join(" — ") });
+		}
+		return out.length ? out : null;
+	}
 	const list = Array.isArray(d.results) ? d.results : [d];
 	const out: { question: string; answer: string }[] = [];
 	for (const r0 of list) {

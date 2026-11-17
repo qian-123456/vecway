@@ -374,7 +374,10 @@ export default function planMode(pi: Pi) {
 	// The terminal view resumes the same session in omp's TUI, which ships its own
 	// `/plan`; only app RPC sessions need this one. `plan.enabled: false` turns it off.
 	const argv = process.argv;
-	const rpc = argv.includes("--mode=rpc") || argv.some((a, i) => a === "--mode" && argv[i + 1] === "rpc");
+	const rpc =
+		argv.includes("--mode=rpc") ||
+		argv.includes("--mode=rpc-ui") ||
+		argv.some((a, i) => a === "--mode" && (argv[i + 1] === "rpc" || argv[i + 1] === "rpc-ui"));
 	if (!rpc || settingsOf(pi)?.get?.("plan.enabled") === false) return;
 	let s: Saved = { enabled: false, version: 0, phase: "planning" };
 	let reminders = 0;

@@ -102,6 +102,112 @@ impl Drop for FakeShell {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn app_sessions_wait_for_question_answers_and_resume() {
+    async fn next_frame(
+        rx: &mut mpsc::UnboundedReceiver<Value>,
+        wanted: &str,
+    ) -> Result<Value, String> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(frame) = rx.recv().await {
+                if frame["type"] == wanted {
+                    return Ok(frame);
+                }
+                if frame["type"] == "agent_end" {
+                    return Err(format!("turn ended before {wanted}"));
+                }
+            }
+            Err(format!("output closed before {wanted}"))
+        })
+        .await
+        .map_err(|_| format!("timed out waiting for {wanted}"))?
+    }
+
+    for cancelled in [false, true] {
+        // Match OMP's capability boundary: plain rpc cannot prompt the user.
+        let shell = FakeShell::new(&format!(
+            r#"mode=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --mode) mode=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+printf '%s\n' '{{"type":"ready"}}'
+while IFS= read -r line; do
+    id=${{line#*\"id\":\"}}
+    id=${{id%%\"*}}
+    case "$line" in
+        *'"type":"get_state"'*)
+            printf '%s\n' '{{"type":"response","id":"'"$id"'","success":true,"data":{{"sessionId":"{SESSION}","sessionFile":"/tmp/question.jsonl"}}}}' ;;
+        *'"type":"prompt"'*)
+            printf '%s\n' '{{"type":"response","id":"'"$id"'","success":true}}' '{{"type":"agent_start"}}'
+            if [ "$mode" = rpc-ui ]; then
+                printf '%s\n' '{{"type":"extension_ui_request","id":"question","method":"select","title":"Choose a colour","options":["Red","Blue"],"selectionMarker":"radio","initialIndex":0}}'
+            else
+                printf '%s\n' '{{"type":"agent_end"}}'
+            fi ;;
+        *'"type":"extension_ui_response"'*)
+            case "$line" in
+                *'"cancelled":true'*) text='Question cancelled' ;;
+                *'"value":"Blue"'*) text='Continuing with Blue' ;;
+                *) exit 43 ;;
+            esac
+            printf '%s\n' '{{"type":"message_end","message":{{"role":"assistant","content":[{{"type":"text","text":"'"$text"'"}}]}}}}' '{{"type":"agent_end"}}' ;;
+        *) printf '%s\n' '{{"type":"response","id":"'"$id"'","success":true}}' ;;
+    esac
+done"#
+        ));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink: OutSink = Arc::new(move |event| {
+            if let OutEvent::Frame { frame, .. } = event {
+                let _ = tx.send(frame);
+            }
+        });
+        let handle = spawn_with_sink(&shell.opts, &shell.settings, sink)
+            .await
+            .expect("question-capable session starts");
+        let result = async {
+            send_command(
+                &handle,
+                json!({"type":"prompt","message":"Choose a colour"}),
+            )
+            .await?;
+            let question = next_frame(&mut rx, "extension_ui_request").await?;
+            assert_eq!(question["options"], json!(["Red", "Blue"]));
+            assert_eq!(handle.pending_ui.lock()[0].request, question);
+            assert!(handle.streaming.load(Ordering::SeqCst));
+            let response = if cancelled {
+                json!({"type":"extension_ui_response","id":"question","cancelled":true})
+            } else {
+                json!({"type":"extension_ui_response","id":"question","value":"Blue"})
+            };
+            send_raw(&handle, response.clone()).await?;
+            assert!(send_raw(&handle, response).await.is_err());
+            let answer = next_frame(&mut rx, "message_end").await?;
+            next_frame(&mut rx, "agent_end").await?;
+            assert!(handle.pending_ui.lock().is_empty());
+            assert!(!handle.streaming.load(Ordering::SeqCst));
+            Ok::<_, String>(answer)
+        }
+        .await;
+        stop_handle(&handle)
+            .await
+            .expect("graceful fixture shutdown");
+        handle.wait_stdout_closed(Duration::from_secs(2)).await;
+        let answer = result.expect("question must wait, accept the response and finish");
+        assert_eq!(
+            answer["message"]["content"][0]["text"],
+            if cancelled {
+                "Question cancelled"
+            } else {
+                "Continuing with Blue"
+            }
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn diagnostic_exit42_retains_original_error_without_stderr_capture() {
     let shell = FakeShell::new("printf 'DIAG_SECRET_SENTINEL\\n' >&2\nexit 42");
     let (dispatch, captured) = capture();

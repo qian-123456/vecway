@@ -1,6 +1,6 @@
 /** [B] Inline pending-UI dialog cards (approval select/confirm/input/editor). */
 
-import { Loader2 } from "lucide-react";
+import { Circle, CircleDot, Loader2, Square, SquareCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { PendingUiRequest } from "../../lib/contracts";
 import { errMsg } from "../../lib/dialogs";
@@ -22,6 +22,23 @@ export function PendingUiCard({
 	sessionId: string;
 	req: PendingUiRequest;
 }) {
+	const request = asObj(req.request);
+	return (
+		<PendingUiDialog
+			key={`${sessionId}:${String(request.id ?? "")}:${req.receivedAt}`}
+			sessionId={sessionId}
+			req={req}
+		/>
+	);
+}
+
+function PendingUiDialog({
+	sessionId,
+	req,
+}: {
+	sessionId: string;
+	req: PendingUiRequest;
+}) {
 	const { t } = useT();
 	const request = asObj(req.request);
 	const id = typeof request.id === "string" ? request.id : "";
@@ -35,22 +52,40 @@ export function PendingUiCard({
 	const optionDetails = Array.isArray(request.optionDetails)
 		? (request.optionDetails as { description?: string }[])
 		: [];
+	const selectionMarker =
+		request.selectionMarker === "radio" || request.selectionMarker === "checkbox"
+			? request.selectionMarker
+			: undefined;
+	const initialIndex = typeof request.initialIndex === "number" ? request.initialIndex : 0;
+	const checkedIndices = Array.isArray(request.checkedIndices) ? request.checkedIndices : [];
+	const markableCount =
+		typeof request.markableCount === "number" ? request.markableCount : options.length;
 	const dismissUi = useLive((s) => s.dismissUi);
 	const [text, setText] = useState(
-		typeof request.value === "string" ? request.value : "",
+		typeof request.prefill === "string"
+			? request.prefill
+			: typeof request.value === "string"
+				? request.value
+				: typeof request.default === "string"
+					? request.default
+					: typeof request.defaultValue === "string"
+						? request.defaultValue
+						: "",
 	);
 	const [busy, setBusy] = useState(false);
 	const [hasPermanent, setHasPermanent] = useState(false);
 	const [validationError, setValidationError] = useState<string | null>(null);
 	const prevActiveElement = useRef<HTMLElement | null>(null);
 	const primaryApprovalBtnRef = useRef<HTMLButtonElement | null>(null);
+	const initialOptionRef = useRef<HTMLButtonElement | null>(null);
 
 	const choices = method === "select" ? resolveApprovalChoices(options) : {};
 	// A select card is only an approval card when omp's exact Approve/Deny
 	// labels are present; otherwise it renders as a plain option list.
 	const isApproval =
 		/allow|approve|权限|允许/i.test(title) &&
-		(method !== "select" || (!!choices.once && !!choices.deny));
+		(method === "confirm" ||
+			(method === "select" && !selectionMarker && !!choices.once && !!choices.deny));
 
 	useEffect(() => {
 		prevActiveElement.current = document.activeElement as HTMLElement | null;
@@ -60,6 +95,9 @@ export function PendingUiCard({
 			!isEditableTarget(document.activeElement)
 		) {
 			primaryApprovalBtnRef.current?.focus();
+		}
+		if (method === "select" && !isApproval && !isEditableTarget(document.activeElement)) {
+			initialOptionRef.current?.focus();
 		}
 		return () => {
 			if (
@@ -71,11 +109,8 @@ export function PendingUiCard({
 		};
 	}, [isApproval, method]);
 
-	const isRequired =
-		request.required === true ||
-		(request.required !== false &&
-			request.allowEmpty !== true &&
-			/required|必填/i.test(`${title} ${message}`));
+	// Modern form validation belongs to OMP; only honor an explicit host hint here.
+	const isRequired = request.required === true;
 
 	const handleApprovalApprove = () => {
 		if (busy) return;
@@ -109,18 +144,16 @@ export function PendingUiCard({
 			setValidationError(t("chatView.pendingUi.inputCannotBeEmpty"));
 			return;
 		}
-		const defaultValue =
-			typeof request.default === "string"
-				? request.default
-				: typeof request.defaultValue === "string"
-					? request.defaultValue
-					: "";
-		const submittedValue = !text.trim() && defaultValue ? defaultValue : text;
-		void respond({ value: submittedValue });
+		void respond({ value: text });
 	};
 
 	const onCardKeyDown = (e: React.KeyboardEvent) => {
 		if (isComposing(e)) return;
+		if (e.key === "Escape" && !isApproval) {
+			claimEscape(e);
+			if (!busy) void respond(method === "confirm" ? { confirmed: false } : { cancelled: true });
+			return;
+		}
 		if (!isApproval || isEditableTarget(e.target)) return;
 		if (e.metaKey || e.ctrlKey || e.altKey) return;
 		if (e.key === "y" || e.key === "Y") {
@@ -249,22 +282,47 @@ export function PendingUiCard({
 
 			{!isApproval && method === "select" && (
 				<div className="mt-2 flex flex-col gap-1">
-					{options.map((opt, i) => (
-						<button
-							key={opt}
-							type="button"
-							disabled={busy}
-							onClick={() => respond({ value: opt })}
-							className={`${btn} w-full text-left text-[var(--text-60)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]`}
-						>
-							{opt}
-							{optionDetails[i]?.description && (
-								<span className="ml-2 text-[var(--text-40)]">
-									{optionDetails[i].description}
-								</span>
-							)}
-						</button>
-					))}
+					<div
+						role={selectionMarker === "radio" ? "radiogroup" : selectionMarker ? "group" : undefined}
+						aria-label={title || undefined}
+						className="flex flex-col gap-1"
+					>
+						{options.map((opt, i) => {
+							const marker = i < markableCount ? selectionMarker : undefined;
+							const checked = marker === "checkbox" ? checkedIndices.includes(i) : i === initialIndex;
+							const MarkerIcon = marker === "checkbox"
+								? checked ? SquareCheck : Square
+								: checked ? CircleDot : Circle;
+							return (
+								<button
+									key={`${i}:${opt}`}
+									ref={i === initialIndex ? initialOptionRef : undefined}
+									type="button"
+									role={marker}
+									aria-checked={marker ? checked : undefined}
+									disabled={busy}
+									onClick={() => respond({ value: opt })}
+									className={`${btn} w-full text-left text-[var(--text-60)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]`}
+								>
+									{marker && <MarkerIcon size={14} aria-hidden="true" className="shrink-0" />}
+									<span className="whitespace-pre-wrap">{opt}</span>
+									{optionDetails[i]?.description && (
+										<span className="ml-2 whitespace-pre-wrap text-[var(--text-40)]">
+											{optionDetails[i].description}
+										</span>
+									)}
+								</button>
+							);
+						})}
+					</div>
+					<button
+						type="button"
+						disabled={busy}
+						onClick={() => respond({ cancelled: true })}
+						className={`${btnGhost} self-start`}
+					>
+						{t("chatView.pendingUi.cancel")}
+					</button>
 				</div>
 			)}
 
@@ -304,10 +362,7 @@ export function PendingUiCard({
 						}}
 						onKeyDown={(e) => {
 							if (isComposing(e)) return;
-							if (e.key === "Escape") {
-								claimEscape(e);
-								void respond({ cancelled: true });
-							} else if (
+							if (
 								(method === "input" && e.key === "Enter" && !e.shiftKey) ||
 								((e.metaKey || e.ctrlKey) && e.key === "Enter")
 							) {
