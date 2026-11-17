@@ -35,6 +35,7 @@ import { useAppUpdate, watchAppUpdateChecks } from "./stores/appUpdate";
 import { useStartupImageGc } from "./features/settings/useStartupImageGc";
 import {
 	MAX_SIDEBAR_WIDTH,
+	MIN_CENTER_WIDTH,
 	MIN_SIDEBAR_WIDTH,
 	SIDEBAR_COLLAPSE_THRESHOLD,
 	type CenterView,
@@ -186,6 +187,8 @@ export default function App() {
 	// Full-width views drop the right dock entirely; the persisted `rightOpen`
 	// preference stays untouched so it is restored on the next normal view.
 	const rightVisible = rightOpen && !CENTER_WITHOUT_RIGHT_PANEL.has(effectiveCenterView);
+	const rightVisibleRef = useRef(rightVisible);
+	rightVisibleRef.current = rightVisible;
 
 	// Resizable sidebars: delta-drag (seam keeps its grab offset under the pointer), rAF-throttled
 	// live updates, persistence only on drag end. Cursor/user-select live on the overlay div, so
@@ -224,11 +227,16 @@ export default function App() {
 				if (raw < SIDEBAR_COLLAPSE_THRESHOLD) {
 					useUi.setState({ sidebarOpen: false });
 				} else {
-					const w = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, raw));
+					const rightReserved = rightVisibleRef.current ? useUi.getState().rightWidth : 0;
+					const maxLeft = Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth - rightReserved - MIN_CENTER_WIDTH);
+					const w = Math.min(MAX_SIDEBAR_WIDTH, maxLeft, Math.max(MIN_SIDEBAR_WIDTH, raw));
 					useUi.setState({ sidebarOpen: true, sidebarWidth: w });
 				}
 			} else {
-				const w = Math.min(720, Math.max(260, window.innerWidth - latestClientX + d.grabOffsetX));
+				const s = useUi.getState();
+				const leftReserved = s.sidebarOpen ? s.sidebarWidth : 0;
+				const maxRight = Math.max(260, window.innerWidth - leftReserved - MIN_CENTER_WIDTH);
+				const w = Math.min(720, maxRight, Math.max(260, window.innerWidth - latestClientX + d.grabOffsetX));
 				useUi.setState({ rightWidth: w });
 			}
 		};
@@ -386,8 +394,8 @@ export default function App() {
 				{sidebarOpen && (
 					<>
 						<div
-							style={{ width: sidebarWidth }}
-							className="flex shrink-0 flex-col vibrancy-chrome"
+							style={{ width: sidebarWidth, minWidth: 200 }}
+							className="flex shrink flex-col vibrancy-chrome"
 						>
 							<aside className="min-h-0 flex-1">
 								<SessionSidebar />
@@ -408,7 +416,7 @@ export default function App() {
 				)}
 
 				{/* Center column: topbar + main conversation view */}
-				<div className="flex min-w-0 flex-1 flex-col">
+				<div className="flex min-w-[360px] flex-1 flex-col">
 					<CenterHeader
 						sidebarOpen={sidebarOpen}
 						toggleSidebar={toggleSidebar}

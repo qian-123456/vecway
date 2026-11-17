@@ -3083,7 +3083,7 @@ export function Composer({
 									layer="popover"
 									ignoreRefs={[modelMenuRef]}
 									onDismiss={() => setModelOpen(false)}
-									className="w-[min(640px,calc(100vw-24px))] rounded-xl border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] py-1"
+									className="w-[min(440px,calc(100vw-24px))] rounded-xl border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] py-1"
 								>
 									<ModelMenuContent
 										catalogManaged

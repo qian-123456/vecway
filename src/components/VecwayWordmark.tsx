@@ -15,7 +15,7 @@ export function VecwayWordmark({ height = 21, className }: VecwayWordmarkProps) 
 	const rawId = useId();
 	const maskId = `vecway-pinhole-${rawId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
 	const groupRef = useRef<SVGGElement>(null);
-	const [viewBox, setViewBox] = useState("111 94 1060 364");
+	const [viewBox, setViewBox] = useState("109 94 1060 364");
 
 	useLayoutEffect(() => {
 		const g = groupRef.current;
@@ -23,9 +23,15 @@ export function VecwayWordmark({ height = 21, className }: VecwayWordmarkProps) 
 		try {
 			const b = g.getBBox();
 			if (b.width > 0 && b.height > 0) {
-				const pad = 6;
+				// SVG getBBox() excludes strokeWidth; include the 54px round stroke cap
+				// on M144.2 137.9 -> L252 392 (radius 27) so the left arm is never clipped.
+				const minX = Math.min(b.x, 144.2 - 27);
+				const minY = Math.min(b.y, 137.9 - 27);
+				const maxX = Math.max(b.x + b.width, 412);
+				const maxY = Math.max(b.y + b.height, 392 + 27);
+				const pad = 8;
 				setViewBox(
-					`${(b.x - pad).toFixed(1)} ${(b.y - pad).toFixed(1)} ${(b.width + pad * 2).toFixed(1)} ${(b.height + pad * 2).toFixed(1)}`,
+					`${(minX - pad).toFixed(1)} ${(minY - pad).toFixed(1)} ${(maxX - minX + pad * 2).toFixed(1)} ${(maxY - minY + pad * 2).toFixed(1)}`,
 				);
 			}
 		} catch {

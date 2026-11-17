@@ -396,7 +396,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 						</button>
 					</div>
 				)}
-				<div data-tauri-drag-region className="flex min-w-0 flex-1 items-center justify-between gap-2 px-3.5">
+				<div data-tauri-drag-region className="@container flex min-w-0 flex-1 items-center justify-between gap-2 overflow-hidden px-3.5">
 					{/* Current view info */}
 					{isViewingSession ? (
 						<div data-tauri-drag-region className="flex min-w-0 items-center gap-2">
@@ -470,7 +470,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 							{sessionsLoadState === "error" ? t("shell.loadSessionError") : t("shell.loading")}
 						</div>
 					) : (
-						<div data-tauri-drag-region className="flex min-w-0 items-center gap-2">
+						<div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
 							{backTarget && (
 								<>
 									<button
@@ -492,13 +492,15 @@ export const CenterHeader = React.memo(function CenterHeader({
 									{t(CENTER_TITLE_KEY[effectiveCenterView] as string)}
 								</span>
 							) : !backTarget ? (
-								<div className="flex min-w-0 items-center gap-3">
+								<div className="flex min-w-0 items-center gap-3 overflow-hidden">
 									<VecwayWordmark height={21} />
-									<span
-										aria-hidden="true"
-										className="h-3.5 w-px shrink-0 bg-[var(--border-divider)]"
-									/>
-									<TopUsageStrip />
+									<div className="hidden @[420px]:contents">
+										<span
+											aria-hidden="true"
+											className="h-3.5 w-px shrink-0 bg-[var(--border-divider)]"
+										/>
+										<TopUsageStrip />
+									</div>
 								</div>
 							) : null}
 						</div>

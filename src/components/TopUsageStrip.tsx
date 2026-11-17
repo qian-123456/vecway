@@ -140,16 +140,16 @@ export function TopUsageStrip() {
 			type="button"
 			onClick={() => openSettingsTarget("quota")}
 			title={t("topbar.openUsageTip")}
-			className="group inline-flex min-w-0 shrink-0 items-center gap-2 rounded-md px-1.5 py-1 -mx-1 text-[11.5px] text-[var(--text-muted)] tabular-nums transition-colors hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] active:opacity-80 cursor-pointer"
+			className="group inline-flex min-w-0 shrink items-center gap-2 overflow-hidden rounded-md px-1.5 py-1 -mx-1 text-[11.5px] text-[var(--text-muted)] tabular-nums transition-colors hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] active:opacity-80 cursor-pointer"
 		>
-			<span className="whitespace-nowrap">
+			<span className="truncate whitespace-nowrap">
 				{t("topbar.recent30dPrefix")}{" "}
 				<strong className="font-mono font-semibold text-[var(--text)]">
 					{summary.formattedTotal}
 				</strong>{" "}
 				tokens
 			</span>
-			<span className="hidden sm:inline-flex items-center gap-[2px]" aria-hidden="true">
+			<span className="hidden @[560px]:inline-flex shrink-0 items-center gap-[2px]" aria-hidden="true">
 				{summary.bars.map((bar) => (
 					<span
 						key={bar.key}

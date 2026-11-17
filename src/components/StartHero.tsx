@@ -1,4 +1,4 @@
-import { ChevronDown, FolderOpen, FolderPlus, Globe, History } from "lucide-react";
+import { FolderOpen, FolderPlus, Globe, History } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { WorkspacePickerPopover } from "../features/chat/ContextPillBar";
 import { resolveSessionLocation } from "../features/chat/sessionWorkspace";
@@ -211,11 +211,6 @@ export function StartHero({ sessionId, onPickDirectory }: StartContextProps) {
 						<span className="truncate underline decoration-1 underline-offset-[6px] decoration-[var(--text-30)] transition-colors group-hover:decoration-[var(--text-60)]">
 							{displayLabel}
 						</span>
-						<ChevronDown
-							size={14}
-							strokeWidth={2}
-							className="shrink-0 text-[var(--text-muted)] opacity-60 transition-opacity group-hover:opacity-100"
-						/>
 					</button>
 					{suffix ? <span>{suffix}</span> : null}
 				</h1>

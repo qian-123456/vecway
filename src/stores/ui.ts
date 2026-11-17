@@ -25,6 +25,7 @@ export type RightTab =
 export const MIN_SIDEBAR_WIDTH = 260;
 export const MAX_SIDEBAR_WIDTH = 600;
 export const SIDEBAR_COLLAPSE_THRESHOLD = 200;
+export const MIN_CENTER_WIDTH = 360;
 
 
 const STORAGE_KEYS = {

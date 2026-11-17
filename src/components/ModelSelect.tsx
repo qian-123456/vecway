@@ -713,7 +713,7 @@ export function ModelSelect({
 	icon = true,
 	direction = "down",
 	align = "end",
-	widthClass = "w-[min(640px,calc(100vw-24px))]",
+	widthClass = "w-[min(440px,calc(100vw-24px))]",
 	disabled = false,
 	thinking = false,
 	...menu
