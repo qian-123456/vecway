@@ -21,6 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { inheritWorktreeRoles } from "./worktree-roles.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_DIR = path.join(REPO, ".cache", "dev-worktree");
@@ -299,6 +300,13 @@ if (holder) {
 	die(
 		`port ${port} is held by pid ${holder} (cwd ${cwdOf(holder) ?? "?"}), not a dev instance of ${wt.path}; pick another worktree or free the port`,
 	);
+}
+
+// Git lists its primary checkout first, even when this script runs in a linked worktree.
+try {
+	inheritWorktreeRoles(worktrees[0].path, wt.path);
+} catch (error) {
+	die(`role inheritance failed: ${error.message}`);
 }
 
 if (!fs.existsSync(path.join(wt.path, "node_modules"))) {

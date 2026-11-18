@@ -1391,6 +1391,27 @@ containment, and sessions in deleted worktree dirs group under a default-collaps
   exist it is created from `base`, default HEAD); ensure `.worktrees/` is ignored via `<repo>/.git/info/exclude`
   (do not edit the repo's .gitignore). A new worktree inherits the repo's `.omp/mcp.json` / `.omp/.mcp.json` when the checkout
   lacks them (untracked project MCP config). Remove: refuse when dirty unless `force`; optionally delete branch.
+- Role inheritance: ordinary and newly created detached worktrees seed only `modelRoles` and
+  `task.agentModelOverrides` from Git's **primary checkout** (the first `git worktree list` entry,
+  not the currently selected linked checkout). `scripts/open-worktree.mjs` applies the same seed
+  before starting a worktree's dev process; `--dry-run`, `--close`, and already-running instances
+  do not write. `OMPWS_DATA_DIR` isolates app data, not the shared OMP agent configuration.
+  Native project sources are `.omp/settings.json` then `.omp/config.yml`, merged per role/agent
+  key with YAML winning, including null entries; a null table clears the earlier table.
+  The new `.omp/config.yml` contains only these two tables, which the role UI and the spawned
+  `omp --cwd <worktree>` consume. No source roles means no file/directory is created.
+  Existing target `settings.json`, `config.yml`, `config.yaml`, `config.json`, `settings.yml`,
+  or `settings.yaml` (including empty files or links) protects the entire target layer: it is
+  neither overwritten nor merged, even if it contains only unrelated settings. Other extensions
+  are protected, not read as sources: native project discovery does not consume them.
+  Invalid/unreadable source config fails explicitly without altering it or publishing a partial
+  target config; after a successful Git checkout, an inheritance error reports the created path
+  and leaves that checkout intact. Existing detached worktrees reused by time machine are untouched.
+  Publication is atomic/no-clobber; `.omp` directory symlinks are refused.
+  Source contract: upstream [`discovery/builtin.ts`](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/discovery/builtin.ts)
+  (`loadSettings`) and [`config/settings.ts`](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/config/settings.ts)
+  (`#readProjectSettings`, `#mergeProjectItems`, `#deepMerge`). Rust/Node share
+  `scripts/worktree-role-cases.json` regression cases to keep the two entry points aligned.
 - Orphans: for each registered workspace repo, `.worktrees/*` with no session (via `catalog::list`) whose cwd is inside.
   Frontend: on app start, if orphans exist, show a dismissible banner in GitPanel/Home "发现 N 个孤儿 worktree" with 回收 buttons.
 - Time machine: `tm_run` → `git worktree add --detach <repo>/.worktrees/tm-<short> <sha>`; command = given or detected

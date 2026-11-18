@@ -1,0 +1,18 @@
+[
+  {"name":"missing", "source":{}, "expected":null},
+  {"name":"unrelated-only", "source":{"config.yml":"theme: dark\ntask:\n  maxConcurrency: 8\n"}, "expected":null},
+  {"name":"yaml-roles-only", "source":{"config.yml":"modelRoles:\n  default: provider/main\n  custom: [provider/one, provider/two]\ntask:\n  agentModelOverrides:\n    scout: custom\n  maxConcurrency: 8\nproviders:\n  secret: never-copy\n"}, "expected":{"modelRoles":{"default":"provider/main","custom":["provider/one","provider/two"]},"task":{"agentModelOverrides":{"scout":"custom"}}}},
+  {"name":"json-roles-only", "source":{"settings.json":"{\"modelRoles\":{\"default\":\"provider/json\"},\"task\":{\"agentModelOverrides\":{\"scout\":\"provider/fast\"}},\"theme\":\"dark\"}"}, "expected":{"modelRoles":{"default":"provider/json"},"task":{"agentModelOverrides":{"scout":"provider/fast"}}}},
+  {"name":"merge-json-then-yaml", "source":{"settings.json":"{\"modelRoles\":{\"default\":\"provider/json\",\"custom\":\"provider/custom\",\"unset\":\"provider/old\"},\"task\":{\"agentModelOverrides\":{\"scout\":\"provider/json\",\"reviewer\":\"provider/review\"}}}","config.yml":"modelRoles:\n  default: provider/yaml\n  unset: null\ntask:\n  agentModelOverrides:\n    scout: null\n"}, "expected":{"modelRoles":{"default":"provider/yaml","custom":"provider/custom","unset":null},"task":{"agentModelOverrides":{"scout":null,"reviewer":"provider/review"}}}},
+  {"name":"null-table-clears-json", "source":{"settings.json":"{\"modelRoles\":{\"default\":\"provider/json\"}}","config.yml":"modelRoles: null\n"}, "expected":null},
+  {"name":"json-in-yaml-file", "source":{"config.yml":"{\"modelRoles\":{\"default\":\"provider/json\"}}"}, "expected":{"modelRoles":{"default":"provider/json"}}},
+  {"name":"unsupported-extensions-not-sources", "source":{"settings.yml":"modelRoles:\n  default: provider/unused\n","settings.yaml":"modelRoles:\n  default: provider/unused\n","config.yaml":"modelRoles:\n  default: provider/unused\n","config.json":"{\"modelRoles\":{\"default\":\"provider/unused\"}}"}, "expected":null},
+  {"name":"invalid-yaml", "source":{"config.yml":"modelRoles: ["}, "error":true},
+  {"name":"invalid-json", "source":{"settings.json":"{invalid}"}, "error":true},
+  {"name":"invalid-root", "source":{"config.yml":"- not-a-mapping\n"}, "error":true},
+  {"name":"invalid-table", "source":{"config.yml":"modelRoles: provider/not-a-table\n"}, "error":true},
+  {"name":"existing-yaml-preserved", "source":{"config.yml":"modelRoles: ["}, "target":{"config.yml":"# untouched\nmodelRoles:\n  default: provider/target\n"}, "expected":null},
+  {"name":"existing-json-preserved", "source":{"config.yml":"modelRoles:\n  default: provider/main\n"}, "target":{"settings.json":"{\"theme\":\"target\"}"}, "expected":null},
+  {"name":"existing-alternate-extension-preserved", "source":{"config.yml":"modelRoles:\n  default: provider/main\n"}, "target":{"config.yaml":"theme: target\n"}, "expected":null},
+  {"name":"no-partial-on-parse-error", "source":{"settings.json":"{\"modelRoles\":{\"default\":\"provider/json\"}}","config.yml":"[invalid"}, "error":true}
+]

@@ -235,6 +235,114 @@ fn worktree_create_inherits_untracked_mcp_config_without_overwriting() {
 }
 
 #[test]
+fn worktree_role_inheritance_matches_shared_cases() {
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("../../../scripts/worktree-role-cases.json")).unwrap();
+    for case in cases.as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let repo = temp_repo(&format!("roles-{name}"));
+        commit(&repo, "a.txt", "a\n", "init");
+        if let Some(files) = case["target"].as_object() {
+            std::fs::create_dir_all(repo.join(".omp")).unwrap();
+            for (file, text) in files {
+                std::fs::write(repo.join(".omp").join(file), text.as_str().unwrap()).unwrap();
+            }
+            git_ok(&repo, &["add", ".omp"]).unwrap();
+            git_ok(&repo, &["commit", "-q", "-m", "target config"]).unwrap();
+        }
+        std::fs::create_dir_all(repo.join(".omp")).unwrap();
+        for (file, text) in case["source"].as_object().unwrap() {
+            std::fs::write(repo.join(".omp").join(file), text.as_str().unwrap()).unwrap();
+        }
+        let result = worktree::create(&repo, "role-case", None, None);
+        let target = repo.join(".worktrees/role-case/.omp");
+        if case["error"] == true {
+            let error = result.expect_err(name);
+            assert!(error.contains("工作树已创建于"), "{name}: {error}");
+            assert!(!target.exists(), "{name}: must not leave a partial config");
+        } else {
+            result.unwrap_or_else(|error| panic!("{name}: {error}"));
+            if !case["expected"].is_null() {
+                let text = std::fs::read_to_string(target.join("config.yml")).unwrap();
+                let value: serde_json::Value = serde_yaml_ng::from_str(&text).unwrap();
+                assert_eq!(value, case["expected"], "{name}");
+                // The exact path consumed by the role UI and RPC session cwd.
+                assert_eq!(
+                    crate::settings_model_roles::project_config_file(&repo.join(".worktrees/role-case")),
+                    target.join("config.yml")
+                );
+            } else if case["target"].get("config.yml").is_none() {
+                assert!(!target.join("config.yml").exists(), "{name}");
+            }
+            if let Some(files) = case["target"].as_object() {
+                for (file, text) in files {
+                    assert_eq!(
+                        std::fs::read_to_string(target.join(file)).unwrap(),
+                        text.as_str().unwrap(),
+                        "{name}: target must stay byte-identical"
+                    );
+                }
+            }
+        }
+        for (file, text) in case["source"].as_object().unwrap() {
+            assert_eq!(
+                std::fs::read_to_string(repo.join(".omp").join(file)).unwrap(),
+                text.as_str().unwrap(),
+                "{name}: source must stay byte-identical"
+            );
+        }
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+}
+
+#[test]
+fn worktree_role_inheritance_uses_primary_checkout_from_linked_and_detached_entries() {
+    let repo = temp_repo("roles-primary");
+    let sha = commit(&repo, "a.txt", "a\n", "init");
+    std::fs::create_dir_all(repo.join(".omp")).unwrap();
+    let config = repo.join(".omp/config.yml");
+    let original = "modelRoles:\n  default: provider/main\n";
+    std::fs::write(&config, original).unwrap();
+    let linked = worktree::create(&repo, "first", None, None).unwrap();
+    std::fs::write(
+        Path::new(&linked.path).join(".omp/config.yml"),
+        "modelRoles:\n  default: provider/linked\n",
+    ).unwrap();
+    let second = worktree::create(Path::new(&linked.path), "second", None, None).unwrap();
+    let read = |path: &Path| -> serde_json::Value {
+        serde_yaml_ng::from_str(&std::fs::read_to_string(path.join(".omp/config.yml")).unwrap()).unwrap()
+    };
+    assert_eq!(read(Path::new(&second.path))["modelRoles"]["default"], "provider/main");
+    let detached = worktree::create_detached(Path::new(&linked.path), "tm-roles", &sha).unwrap();
+    assert_eq!(read(&detached)["modelRoles"]["default"], "provider/main");
+    let own = "modelRoles:\n  default: provider/detached\n";
+    std::fs::write(detached.join(".omp/config.yml"), own).unwrap();
+    assert_eq!(worktree::create_detached(&repo, "tm-roles", &sha).unwrap(), detached);
+    assert_eq!(std::fs::read_to_string(detached.join(".omp/config.yml")).unwrap(), own);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+    std::fs::remove_dir_all(&repo).unwrap();
+}
+
+#[test]
+fn worktree_role_inheritance_rejects_oversized_and_non_utf8_sources_without_partial_files() {
+    for (name, bytes) in [
+        ("oversized", vec![b'x'; 4 * 1024 * 1024 + 1]),
+        ("non-utf8", vec![0xff]),
+    ] {
+        let repo = temp_repo(&format!("roles-{name}"));
+        commit(&repo, "a.txt", "a\n", "init");
+        std::fs::create_dir_all(repo.join(".omp")).unwrap();
+        let file = repo.join(".omp/config.yml");
+        std::fs::write(&file, &bytes).unwrap();
+        let error = worktree::create(&repo, "invalid-roles", None, None).unwrap_err();
+        assert!(error.contains("工作树已创建于"), "{error}");
+        assert!(!repo.join(".worktrees/invalid-roles/.omp").exists());
+        assert_eq!(std::fs::read(file).unwrap(), bytes);
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+}
+
+#[test]
 fn worktree_create_honors_branch_and_base() {
     let repo = temp_repo("wt-branch");
     let first = commit(&repo, "a.txt", "a\n", "init");

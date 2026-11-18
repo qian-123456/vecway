@@ -350,8 +350,10 @@ pub fn create(
         return Err(format!("分支名无效：{branch}"));
     }
     // Friendlier message than git's "already checked out at ...".
-    if let Some(holder) = list_entries(&root)?
-        .into_iter()
+    let worktrees = list_entries(&root)?;
+    let main = worktrees.first().ok_or("找不到 Git 主工作树")?;
+    if let Some(holder) = worktrees
+        .iter()
         .find(|e| e.branch.as_deref() == Some(branch.as_str()))
     {
         return Err(format!(
@@ -389,6 +391,7 @@ pub fn create(
         }
         git_ok(&root, &["worktree", "add", "-b", &branch, &target_s, base])?;
     }
+    inherit_main_roles(Path::new(&main.path), &target)?;
     inherit_mcp_config(&root, &target);
     info_for(&target, &[])
 }
@@ -413,6 +416,140 @@ fn inherit_mcp_config(root: &Path, target: &Path) {
     }
 }
 
+// Only the first two are native OMP project settings sources. Protect alternate
+// spellings too: an existing target config belongs to its owner.
+const ROLE_CONFIG_NAMES: [&str; 6] = [
+    "settings.json",
+    "config.yml",
+    "config.yaml",
+    "config.json",
+    "settings.yml",
+    "settings.yaml",
+];
+
+fn inherit_main_roles(main: &Path, target: &Path) -> Result<(), String> {
+    inherit_role_config(main, target).map_err(|error| {
+        format!("工作树已创建于 {}，但角色配置继承失败：{error}", target.display())
+    })
+}
+
+fn role_config_exists(dir: &Path) -> Result<bool, String> {
+    for name in ROLE_CONFIG_NAMES {
+        match std::fs::symlink_metadata(dir.join(name)) {
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("{}: {error}", dir.join(name).display())),
+        }
+    }
+    Ok(false)
+}
+
+/// Keep in sync with scripts/worktree-roles.mjs and their shared regression cases.
+/// Seed only modelRoles/task.agentModelOverrides, never app data or other settings.
+fn inherit_role_config(main: &Path, target: &Path) -> Result<(), String> {
+    use serde_yaml_ng::{Mapping, Value};
+    use std::io::Write;
+
+    if canon(main) == canon(target) {
+        return Ok(());
+    }
+    let dir = target.join(".omp");
+    if role_config_exists(&dir)? {
+        return Ok(());
+    }
+    let mut roles = Mapping::new();
+    let mut overrides = Mapping::new();
+    for name in &ROLE_CONFIG_NAMES[..2] {
+        let file = main.join(".omp").join(name);
+        let invalid = || format!("{}（无效配置）", file.display());
+        let meta = match std::fs::symlink_metadata(&file) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("{}: {error}", file.display())),
+        };
+        let meta = if meta.file_type().is_symlink() {
+            std::fs::metadata(&file).map_err(|error| format!("{}: {error}", file.display()))?
+        } else {
+            meta
+        };
+        if !meta.is_file() || meta.len() > 4 * 1024 * 1024 {
+            return Err(invalid());
+        }
+        let text = std::fs::read_to_string(&file).map_err(|_| invalid())?;
+        let value: Value = if name.ends_with(".json") {
+            let json: serde_json::Value = serde_json::from_str(&text).map_err(|_| invalid())?;
+            serde_yaml_ng::to_value(json).map_err(|_| invalid())?
+        } else {
+            serde_yaml_ng::from_str(&text).map_err(|_| invalid())?
+        };
+        if value.is_null() {
+            continue;
+        }
+        let Value::Mapping(mut root) = value else {
+            return Err(invalid());
+        };
+        let mut task = root.remove("task");
+        let agent_overrides = task
+            .as_mut()
+            .and_then(Value::as_mapping_mut)
+            .and_then(|task| task.remove("agentModelOverrides"));
+        for (table, into) in [
+            (root.remove("modelRoles"), &mut roles),
+            (agent_overrides, &mut overrides),
+        ] {
+            match table {
+                None => {}
+                Some(Value::Null) => into.clear(),
+                Some(Value::Mapping(table)) => {
+                    // YAML wins per entry, including nulls, not per whole table.
+                    into.extend(table);
+                }
+                Some(_) => return Err(invalid()),
+            }
+        }
+    }
+    let mut value = Mapping::new();
+    if !roles.is_empty() {
+        value.insert(Value::String("modelRoles".into()), Value::Mapping(roles));
+    }
+    if !overrides.is_empty() {
+        let mut task = Mapping::new();
+        task.insert(Value::String("agentModelOverrides".into()), Value::Mapping(overrides));
+        value.insert(Value::String("task".into()), Value::Mapping(task));
+    }
+    if value.is_empty() {
+        return Ok(());
+    }
+    let text = serde_yaml_ng::to_string(&value).map_err(|_| "无法序列化角色配置")?;
+    if std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!("{} 是符号链接", dir.display()));
+    }
+    std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    if role_config_exists(&dir)? {
+        return Ok(());
+    }
+    let temporary = dir.join(format!(".role-inherit-{}.tmp", uuid::Uuid::new_v4()));
+    let publish = || -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&temporary)?.write_all(text.as_bytes())?;
+        std::fs::hard_link(&temporary, dir.join("config.yml"))
+    };
+    let result = publish();
+    let _ = std::fs::remove_file(&temporary);
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(format!("{}: {error}", dir.join("config.yml").display())),
+    }
+}
+
+
 /// `git worktree add --detach <root>/.worktrees/<dir> <sha>` (reuses an existing one).
 pub fn create_detached(repo: &Path, dir_name: &str, sha: &str) -> Result<PathBuf, String> {
     let info = repo_info(repo).ok_or("不是 git 仓库")?;
@@ -422,8 +559,11 @@ pub fn create_detached(repo: &Path, dir_name: &str, sha: &str) -> Result<PathBuf
     if target.is_dir() && repo_info(&target).is_some() {
         return Ok(canon(&target));
     }
+    let worktrees = list_entries(&root)?;
+    let main = worktrees.first().ok_or("找不到 Git 主工作树")?;
     let target_s = target.to_string_lossy().into_owned();
     git_ok(&root, &["worktree", "add", "--detach", &target_s, sha])?;
+    inherit_main_roles(Path::new(&main.path), &target)?;
     Ok(canon(&target))
 }
 
