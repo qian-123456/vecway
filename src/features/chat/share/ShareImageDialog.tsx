@@ -3,6 +3,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { Copy, Download, ListChecks, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "../../../components/Modal";
+import { notifyCopied } from "../../../lib/copyFeedback";
 import { errMsg } from "../../../lib/dialogs";
 import { saveShareImage } from "../../../lib/ipc";
 import { sessionDisplayName } from "../../../lib/sessionName";
@@ -88,7 +89,7 @@ export function ShareImageDialog() {
 		setBusy("copy");
 		try {
 			await writeImage(image.bytes);
-			toast.success(t("share.copied"));
+			notifyCopied({ label: t("share.copied") });
 		} catch (e) {
 			toast.error(t("share.copyFailed", { error: errMsg(e) }));
 		} finally {

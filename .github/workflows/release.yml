@@ -56,12 +56,32 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install
+
+      - name: Prepare Apple notarization API key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          if [ -n "$APPLE_API_KEY_P8" ] && [ -n "$APPLE_API_KEY" ]; then
+            KEY_DIR="${{ runner.temp }}/private_keys"
+            mkdir -p "$KEY_DIR"
+            KEY_PATH="$KEY_DIR/AuthKey_${APPLE_API_KEY}.p8"
+            echo "$APPLE_API_KEY_P8" | base64 --decode > "$KEY_PATH"
+            chmod 600 "$KEY_PATH"
+            echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+          fi
+
       - name: Build and Publish Tauri App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         with:
           tagName: ${{ github.event.inputs.tag_name || github.ref_name }}
           releaseName: 'Vecway ${{ github.event.inputs.tag_name || github.ref_name }}'
@@ -73,13 +93,9 @@ jobs:
 
             ---
 
-            ### ⚠️ 重要安全提示：macOS 绕过未签名与隔离提示
-            由于开源社区版未购买苹果商业开发者证书，首次在 macOS 打开可能提示 **“Vecway 已损坏，无法打开。你应该将它移到废纸篓”**。
-            **软件并非损坏**，只需打开 macOS「终端（Terminal）」并运行以下命令清除隔离属性：
-            ```bash
-            xattr -cr /Applications/Vecway.app
-            ```
-            *备选方式*：在访达「应用程序」中按住 `Control` 键点按应用选择「打开」，或在系统「系统设置 ▸ 隐私与安全性」中点击「仍要打开」。
+            ### ✅ 签名与公证 / Signed & Notarized
+            - 本版本已使用 **Apple Developer ID** 证书签名并通过 **Apple 官方公证（Notarized）**，下载后将 `Vecway.app` 拖入「应用程序」即可直接双击打开。
+            - Signed with an **Apple Developer ID** certificate and notarized by Apple. Drag `Vecway.app` into **Applications** and open directly.
 
             ---
 

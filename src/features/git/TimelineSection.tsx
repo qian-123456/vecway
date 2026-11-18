@@ -700,8 +700,7 @@ export function TimelineSection({
 	};
 
 	const copySha = async (sha: string, short: string) => {
-		await copyText(sha);
-		toast.success(t("git.timeline.copiedSha", { short }));
+		await copyText(sha, { label: t("git.timeline.copiedSha", { short }) });
 	};
 
 	return (

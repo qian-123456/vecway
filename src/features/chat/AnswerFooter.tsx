@@ -286,8 +286,7 @@ export function AnswerFooter({
 							type="button"
 							onClick={async () => {
 								try {
-									await copyText(answerText);
-									toast.success(tNow("chat.undo.replyCopied"));
+									await copyText(answerText, { label: tNow("chat.undo.replyCopied") });
 								} catch (e) {
 									toast.error(tNow("chat.message.copyFailed", { error: errMsg(e) }));
 								}

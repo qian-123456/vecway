@@ -95,8 +95,9 @@ export function SessionOverflowMenu({
 		if (busy) return;
 		setBusy(true);
 		try {
-			await copyText(await sessionResumeCommand(sessionId));
-			toast.success(t("shell.copyResumeCommandSuccess"));
+			await copyText(await sessionResumeCommand(sessionId), {
+				label: t("shell.copyResumeCommandSuccess"),
+			});
 			setOpen(false);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);

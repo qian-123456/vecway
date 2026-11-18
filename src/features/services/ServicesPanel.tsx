@@ -123,9 +123,8 @@ export function ServicesPanel() {
 	const copy = async (s: ServiceInfo) => {
 		const key = `${s.pid}:${s.port}`;
 		try {
-			await copyText(s.url);
+			await copyText(s.url, { label: t("services.copySuccess") });
 			setCopiedKey(key);
-			toast.success(t("services.copySuccess"));
 			setTimeout(() => {
 				setCopiedKey((c) => (c === key ? null : c));
 			}, 1500);

@@ -462,7 +462,7 @@ fn fatal_startup(what: &str, err: &dyn std::fmt::Display) -> ! {
     {
         let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
         let script = format!(
-            "display dialog \"{escaped}\" with title \"OMP Workspace 启动失败\" buttons {{\"好\"}} default button 1 with icon stop"
+            "display dialog \"{escaped}\" with title \"Vecway 启动失败\" buttons {{\"好\"}} default button 1 with icon stop"
         );
         let _ = std::process::Command::new("osascript")
             .args(["-e", &script])

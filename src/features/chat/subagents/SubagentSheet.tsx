@@ -87,7 +87,6 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 			onClick={async () => {
 				try {
 					await copyText(text);
-					toast.success(tNow("common.copied"));
 				} catch (e) {
 					toast.error(tNow("subagents.copyFailed", { error: errMsg(e) }));
 				}

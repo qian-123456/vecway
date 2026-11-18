@@ -2,7 +2,7 @@
 import { ArrowUpCircle, CheckCircle2, ChevronDown, ChevronRight, Copy, Download, Loader2, RefreshCw, RotateCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useT } from "../../../stores/language";
-import { confirmDialog } from "../../../lib/dialogs";
+import { confirmDialog, copyText } from "../../../lib/dialogs";
 import { timeAgo } from "../../../lib/format";
 import { sessionDisplayName } from "../../../lib/sessionName";
 import { toast } from "../../../lib/toast";
@@ -99,8 +99,7 @@ export function AboutSection() {
 
 	const copyOutput = async () => {
 		try {
-			await navigator.clipboard.writeText(lastOutput ?? error ?? "");
-			toast.success(t("settingsSections.about.copied"));
+			await copyText(lastOutput ?? error ?? "", { label: t("settingsSections.about.copied") });
 		} catch {
 			toast.error(t("settingsSections.about.copyFailed"));
 		}

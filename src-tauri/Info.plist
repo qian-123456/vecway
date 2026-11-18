@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Allow Vecway to serve and discover local network sessions for mobile remote access.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Record audio to transcribe voice input in the composer.</string>
 </dict>

@@ -228,8 +228,9 @@ export function ChangesSection({
 
 	const handleCopyPath = async (f: GitFileChange, absolute = false) => {
 		const target = absolute ? joinPath(toplevel, f.path) : f.path;
-		await copyText(target);
-		toast.success(absolute ? t("git.changes.copiedAbsolutePath") : t("git.changes.copiedRelativePath"));
+		await copyText(target, {
+			label: absolute ? t("git.changes.copiedAbsolutePath") : t("git.changes.copiedRelativePath"),
+		});
 	};
 
 	const handleSendToAgent = async (f: GitFileChange) => {

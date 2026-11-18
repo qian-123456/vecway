@@ -278,8 +278,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 			sessionDisplayName(activeSession),
 		);
 		try {
-			await copyText(md);
-			toast.success(t("shell.copiedSessionMarkdown"));
+			await copyText(md, { label: t("shell.copiedSessionMarkdown") });
 		} catch (e) {
 			toast.error(t("shell.copyFailed", { error: errMsg(e) }));
 		}
@@ -312,8 +311,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 		toast.info(t("shell.generatingShareLink"));
 		try {
 			const url = await sessionShare(activeSession.id);
-			await copyText(url);
-			toast.success(t("shell.shareLinkCopied"));
+			await copyText(url, { label: t("shell.shareLinkCopied") });
 		} catch (err) {
 			toast.error(t("shell.createShareLinkFailed", { error: errMsg(err) }));
 		}

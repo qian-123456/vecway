@@ -345,8 +345,7 @@ export function CommandTerminalPanel() {
 		setContextMenu(null);
 		const sel = activeEntry?.term.getSelection();
 		if (sel) {
-			await copyText(sel);
-			toast.success(tNow("terminal.copiedSelection"));
+			await copyText(sel, { label: tNow("terminal.copiedSelection") });
 		}
 	}, [activeEntry]);
 
@@ -384,8 +383,7 @@ export function CommandTerminalPanel() {
 			useComposer.getState().addAnnotation(sessionId, { source: "terminal", text });
 			toast.success(tNow("terminal.addedToAnnotation"));
 		} else {
-			void copyText(text);
-			toast.success(tNow("terminal.copiedSelection"));
+			void copyText(text, { label: tNow("terminal.copiedSelection") });
 		}
 		setCopied(true);
 		setTimeout(() => setCopied(false), 1500);

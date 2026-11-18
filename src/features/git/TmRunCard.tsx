@@ -7,7 +7,6 @@ import { confirmDialog, copyText, errMsg } from "../../lib/dialogs";
 import { onTmLog } from "../../lib/events";
 import { gitSummary, tmStop } from "../../lib/ipc";
 import { basename } from "../../lib/paths";
-import { toast } from "../../lib/toast";
 import { useT } from "../../stores/language";
 import { appendLog, stripAnsi } from "./helpers";
 
@@ -90,14 +89,12 @@ export function TmRunCard({
 
 	const copyUrl = async () => {
 		if (!info.url) return;
-		await copyText(info.url);
-		toast.success(t("worktree.tm.copiedUrl"));
+		await copyText(info.url, { label: t("worktree.tm.copiedUrl") });
 	};
 
 	const copyAllLogs = async () => {
 		if (log.length === 0) return;
-		await copyText(log.join("\n"));
-		toast.success(t("worktree.tm.copiedLogs"));
+		await copyText(log.join("\n"), { label: t("worktree.tm.copiedLogs") });
 	};
 
 	const running = info.pid !== null && info.pid !== undefined;

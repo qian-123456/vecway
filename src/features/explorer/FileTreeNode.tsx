@@ -73,8 +73,7 @@ export function FileTreeNode({
 			? entry.path.slice(rootPath.length).replace(/^[/\\]/, "")
 			: entry.name;
 		try {
-			await copyText(rel);
-			toast.success(t("explorer.copiedRelativePath"));
+			await copyText(rel, { label: t("explorer.copiedRelativePath") });
 		} catch {
 			toast.error(t("explorer.copyFailed"));
 		}
@@ -83,8 +82,7 @@ export function FileTreeNode({
 	const copyAbsolutePath = async () => {
 		setContextMenu(null);
 		try {
-			await copyText(entry.path);
-			toast.success(t("explorer.copiedAbsolutePath"));
+			await copyText(entry.path, { label: t("explorer.copiedAbsolutePath") });
 		} catch {
 			toast.error(t("explorer.copyFailed"));
 		}

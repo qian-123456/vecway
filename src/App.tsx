@@ -41,6 +41,7 @@ import {
 	type CenterView,
 	useUi,
 } from "./stores/ui";
+import { CopyFeedbackPill } from "./components/CopyFeedbackPill";
 import { Toaster } from "./components/Toaster";
 import { BottomBar } from "./components/BottomBar";
 import { CENTER_WITHOUT_RIGHT_PANEL, CenterHeader } from "./components/CenterHeader";
@@ -455,6 +456,7 @@ export default function App() {
 			</div>
 			{/* Global notifications stack */}
 			<Toaster />
+			<CopyFeedbackPill />
 			{/* Global modals — render nothing unless ui.modal matches. Lazy loaded in Suspense */}
 			<QuickCapture />
 			<HandbackDialog />

@@ -103,16 +103,7 @@ Download the latest release for your Mac architecture from [GitHub Releases](htt
 | **Apple Silicon** (Recommended) | M1 / M2 / M3 / M4 / M5 series Mac | `Vecway_<version>_aarch64.dmg` |
 | **Intel Mac** | Older Intel-based Mac | `Vecway_<version>_x64.dmg` |
 
-> ⚠️ **Important: "Vecway is damaged and can't be opened"**
->
-> Because open-source community builds are not signed with a paid Apple Developer certificate, macOS Gatekeeper may show:
-> `“Vecway” is damaged and can’t be opened. You should move it to the Trash.`
->
-> **The app is NOT damaged.** Run this command in Terminal to clear the quarantine flag:
-> ```bash
-> xattr -cr /Applications/Vecway.app
-> ```
-> *Alternative*: Right-click (Control-click) `Vecway.app` in Finder, choose **Open**, or go to **System Settings ▸ Privacy & Security** and click **Open Anyway**.
+> ✅ **Signed & Notarized**: Official releases are signed with an Apple Developer ID certificate and notarized by Apple. Drag `Vecway.app` into **Applications** and open it directly.
 
 ---
 
@@ -237,15 +228,7 @@ New worktrees need the current tracked launchers and package commands; uncommitt
 - **苹果 M 系列芯片（Apple Silicon: M1/M2/M3/M4/M5）**：下载 `Vecway_<version>_aarch64.dmg`（绝大多数用户推荐）
 - **老款 Intel 芯片**：下载 `Vecway_<version>_x64.dmg`
 
-> ⚠️ **重要：若提示“已损坏，无法打开。你应该将它移到废纸篓”**
->
-> 这是因为开源社区构建尚未购买苹果昂贵的商业开发者证书，macOS Gatekeeper 安全机制会自动给下载的文件打上隔离标记（Quarantine）。**软件本身没有任何损坏**。
->
-> 只需要打开 macOS「终端（Terminal）」，执行以下命令即可清除隔离标记并正常开启：
-> ```bash
-> xattr -cr /Applications/Vecway.app
-> ```
-> *免终端替代方案*：在访达「应用程序」中按住 `Control` 键点按应用选择「打开」，或在系统「系统设置 ▸ 隐私与安全性」中点击「仍要打开」。
+> ✅ **已签名并公证**：正式版安装包均已通过 **Apple Developer ID** 证书签名与 **Apple 官方公证**，下载后拖入「应用程序」即可直接双击打开。
 
 ---
 

@@ -14,6 +14,7 @@ import { Z_LAYER } from "../components/FloatingLayer";
 import { acquireRootInert } from "../components/Modal";
 import { isComposing, useEscapeKey } from "./hooks";
 import { claimEscape } from "./escapeClaim";
+import { notifyCopied } from "./copyFeedback";
 import { clipboardWriteMessage } from "./ipc";
 import { tNow } from "../stores/language";
 const CANCEL_BTN_CLASS =
@@ -213,12 +214,13 @@ export function confirmDialog(
 	}
 }
 
-export async function copyText(text: string): Promise<void> {
+export async function copyText(text: string, opts?: { label?: string }): Promise<void> {
 	try {
 		await navigator.clipboard.writeText(text);
 	} catch {
 		await writeText(text);
 	}
+	notifyCopied({ label: opts?.label });
 }
 
 let lastMessageCopy: { text: string; raw: string; paths: string[]; files: string[] } | null = null;
@@ -258,6 +260,7 @@ export async function copyTextWithImages(
 	}
 	await clipboardWriteMessage(text, [...imagePaths, ...filePaths]);
 	lastMessageCopy = { text, raw, paths: imagePaths, files: filePaths };
+	notifyCopied();
 }
 
 /** Mirrors `rpc::SESSION_HELD_PREFIX` (src-tauri/src/rpc/mod.rs). */

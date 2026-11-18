@@ -13,7 +13,7 @@
 | 板块 | 必须性 | 核心内容要求 |
 |---|---|---|
 | **架构与安装包选型** | **必须** | 明确指引 Apple Silicon（M 系列，`aarch64.dmg`）与 Intel Mac（`x64.dmg`）的对应关系，并说明 `.app.tar.gz` 为自动更新内部使用。 |
-| **首次打开安全提示（Gatekeeper 绕过命令）** | **必须（不可缺失）** | 明确告知用户：因开源未购买苹果高昂商业证书，系统会误报“已损坏移入废纸篓”，**软件实际无损坏**。提供一键绕过隔离命令：<br>`xattr -cr /Applications/Vecway.app` 以及访达 Control+点击打开的备选步骤。 |
+| **签名与公证状态说明** | **必须** | 说明安装包已通过 Apple Developer ID 代码签名与官方公证，拖入「应用程序」即可直接打开。 |
 | **运行依赖与环境说明** | **必须** | 说明 `omp` CLI 运行环境依赖（未安装时应用会自动调用官方安装器安装，亦可手动安装），以及需准备模型 API Key 或订阅。 |
 | **版本变更日志（Changelog）** | **必须** | 按「新增功能（Features）」、「体验与缺陷修复（Fixes）」、「重大改动（Breaking Changes）」分类列出本次更新亮点。 |
 | **校验与文件完整性（Checksums）** | 建议 | 附带发布产物的 SHA256 校验和，便于安全校验。 |
@@ -35,21 +35,10 @@
 
 ---
 
-### ⚠️ 重要安全提示：绕过 macOS Gatekeeper 隔离 / macOS Quarantine Bypass
+### ✅ 签名与公证 / Signed & Notarized
 
-由于开源社区版本尚未购买苹果商业开发者证书，首次在 macOS 上打开可能会弹出拦截提示：
-> **“Vecway”已损坏，无法打开。你应该将它移到废纸篓。**  
-> (*“Vecway” is damaged and can’t be opened. You should move it to the Trash.*)
-
-**软件本身没有任何损坏**。这是 macOS 针对未购买商业证书的开源软件实施的隔离保护。只需打开 macOS「终端（Terminal）」，执行以下一行命令即可清除隔离属性并正常开启：
-
-```bash
-xattr -cr /Applications/Vecway.app
-```
-
-**备选免终端方式**：
-1. 在「访达 ▸ 应用程序」中，按住 `Control` 键点按 `Vecway.app`，在弹出菜单中点击「打开」；
-2. 或打开 macOS「系统设置 ▸ 隐私与安全性」，在页面下方找到拦截提示，点击「仍要打开」。
+- 本版本已使用 **Apple Developer ID** 证书签名并通过 **Apple 官方公证（Notarized）**，下载后将 `Vecway.app` 拖入「应用程序」即可直接双击打开。
+- Signed with an **Apple Developer ID** certificate and notarized by Apple. Drag `Vecway.app` into **Applications** and open directly.
 
 ---
 

@@ -572,7 +572,7 @@ export function WorktreeSection({
 				key: "copy-path",
 				label: t("worktree.copyPathMenu"),
 				icon: <Copy size={12} />,
-				onSelect: () => void copyText(wt.path).then(() => toast.success(t("worktree.copiedPath"))),
+				onSelect: () => void copyText(wt.path, { label: t("worktree.copiedPath") }),
 			},
 		);
 		if (branch) {
@@ -580,7 +580,7 @@ export function WorktreeSection({
 				key: "copy-branch",
 				label: t("worktree.copyBranchMenu"),
 				icon: <GitBranch size={12} />,
-				onSelect: () => void copyText(branch).then(() => toast.success(t("worktree.copiedBranch"))),
+				onSelect: () => void copyText(branch, { label: t("worktree.copiedBranch") }),
 			});
 		}
 		entries.push("separator");

@@ -527,8 +527,7 @@ export function MobilePanel() {
 										icon={Copy}
 										title={t("mobile.copyPairUrlTitle")}
 										onClick={async () => {
-											await copyText(pairing.url);
-											toast.success(t("mobile.toastPairUrlCopied"));
+											await copyText(pairing.url, { label: t("mobile.toastPairUrlCopied") });
 										}}
 									>
 										{t("mobile.btnCopyLink")}
@@ -603,8 +602,7 @@ export function MobilePanel() {
 							variant="secondary"
 							icon={Copy}
 							onClick={async () => {
-								await copyText(status.lanUrl!);
-								toast.success(t("mobile.toastAddressCopied"));
+								await copyText(status.lanUrl!, { label: t("mobile.toastAddressCopied") });
 							}}
 						>
 							{t("mobile.btnCopyLink")}
@@ -902,8 +900,7 @@ export function MobilePanel() {
 								variant="secondary"
 								icon={Copy}
 								onClick={async () => {
-									await copyText(status.tunnelUrl!);
-									toast.success(t("mobile.toastAddressCopied"));
+									await copyText(status.tunnelUrl!, { label: t("mobile.toastAddressCopied") });
 								}}
 							>
 								{t("mobile.btnCopyLink")}

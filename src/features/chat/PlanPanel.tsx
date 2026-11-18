@@ -243,8 +243,7 @@ function PlanReview({
 	};
 
 	const copy = () => {
-		copyText(content).then(
-			() => toast.success(t("chatView.plan.copied")),
+		copyText(content, { label: t("chatView.plan.copied") }).catch(
 			(err) => toast.error(t("chatView.plan.actionFailed", { error: errMsg(err) })),
 		);
 	};

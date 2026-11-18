@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { AlertTriangle, Camera, Check, Clock, Copy, EyeOff, ImagePlus, Loader2, QrCode, Wifi, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { copyText } from "../lib/dialogs";
 import { mobileCameraAck, mobileCameraPoll, mobileCameraStart, mobileCameraStop } from "../lib/ipc";
 import type { CameraLink, CameraPhoto, CameraSnapshot } from "../lib/mobileCameraTypes";
 import { useT } from "../stores/language";
@@ -206,7 +207,7 @@ export function PhoneCameraDialog({ onPhoto, onClose }: {
 	const status = ended ? "ended" : busy ? "receiving" : snapshot?.state === "connected" ? "connected" : link ? "waiting" : "starting";
 	const copy = async () => {
 		if (!link) return;
-		try { await navigator.clipboard.writeText(link.url); setCopied(true); }
+		try { await copyText(link.url); setCopied(true); }
 		catch (error) { setIssue({ kind: "copy", error: message(error) }); }
 	};
 	const close = () => { activeRef.current = false; onClose(); };

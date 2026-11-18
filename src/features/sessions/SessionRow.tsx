@@ -575,8 +575,7 @@ function SessionRowComponent({
 		closeMenu(true);
 		if (!text) return;
 		try {
-			await copyText(text);
-			toast.success(t("sessions.copiedNamed", { name: label }));
+			await copyText(text, { label: t("sessions.copiedNamed", { name: label }) });
 		} catch (err) {
 			toast.error(t("sessions.copyFailed", { error: errMsg(err) }));
 		}
