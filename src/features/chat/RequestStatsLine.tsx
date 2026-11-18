@@ -1,10 +1,10 @@
 /** [B] Per-request model stats: one dim TUI-style line under the last row of
- * every assistant message, its hover/tap explanation card (field meanings +
+ * every assistant message, its click-open explanation card (field meanings +
  * 等第一个字 / 生成 split), and the whole-turn summary rows of the 「已处理」 area.
  * Values come from omp's own per-request metrics via `requestStats.ts`. */
 
 import clsx from "clsx";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
 import { useDisplayPrefs } from "../../stores/displayPrefs";
 import { useT, tNow } from "../../stores/language";
@@ -41,62 +41,6 @@ function statDateTime(epochMs: number): string {
 	return `${prefix} ${clock}`;
 }
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
-
-/**
- * Hover / tap plumbing shared by the request card and the turn totals card:
- * a dwell-delayed open, a close that survives the gap between the trigger and
- * the portaled card, and a lazily measured anchor rect.
- */
-function useHoverCard() {
-	const [open, setOpen] = useState(false);
-	const [anchor, setAnchor] = useState<DOMRect | null>(null);
-	const openTimer = useRef<number | undefined>(undefined);
-	const closeTimer = useRef<number | undefined>(undefined);
-
-	const enter = useCallback((target: HTMLElement) => {
-		clearTimeout(closeTimer.current);
-		clearTimeout(openTimer.current);
-		openTimer.current = window.setTimeout(() => {
-			// Measure on open: the row may have scrolled during the dwell.
-			setAnchor(target.getBoundingClientRect());
-			setOpen(true);
-		}, 600);
-	}, []);
-
-	// The short close delay lets the pointer travel from the line to the card
-	// (a different DOM subtree: the card is portaled) without a flicker.
-	const leave = useCallback(() => {
-		clearTimeout(openTimer.current);
-		closeTimer.current = window.setTimeout(() => {
-			setOpen(false);
-			setAnchor(null);
-		}, 180);
-	}, []);
-
-	// Tapping (touch / trackpad click) opens or closes immediately.
-	const toggle = useCallback(
-		(target: HTMLElement) => {
-			if (open) {
-				leave();
-				return;
-			}
-			clearTimeout(openTimer.current);
-			clearTimeout(closeTimer.current);
-			setAnchor(target.getBoundingClientRect());
-			setOpen(true);
-		},
-		[open, leave],
-	);
-
-	const enterProps = (e: React.MouseEvent<HTMLElement>) => enter(e.currentTarget);
-	const clickProps = (e: { currentTarget: HTMLElement }) => toggle(e.currentTarget);
-
-	const cardProps = {
-		onMouseEnter: () => clearTimeout(closeTimer.current),
-		onMouseLeave: leave,
-	};
-	return { open, anchor, enterProps, clickProps, cardProps };
-}
 
 /** One explained value: label + number, with the Chinese meaning underneath. */
 function FieldRow({
@@ -229,6 +173,7 @@ function RequestCard({ stat }: { stat: RequestStat }) {
 /**
  * One request's stats line: `12:47:23 ↘1.3K ↗774 💾51K ⏱2.2s ⚡71.4/s`.
  * Renders nothing when the setting is off or no field is enabled.
+ * Hover and keyboard focus highlight the clickable row; the highlight stays while open.
  */
 export function RequestStatsLine({
 	stat,
@@ -239,7 +184,7 @@ export function RequestStatsLine({
 	/** Extra row classes (indent, spacing) supplied by the owning list. */
 	className?: string;
 	/** Drop the clock field when a neighbouring row already shows the time
-	 * (the answer footer); the hover card still lists it. */
+	 * (the answer footer); the explanation card still lists it. */
 	omitTime?: boolean;
 }) {
 	const { t } = useT();
@@ -252,29 +197,33 @@ export function RequestStatsLine({
 				: [],
 		[enabled, stat, fields, omitTime, t],
 	);
-	const { open, anchor, enterProps, clickProps, cardProps } = useHoverCard();
+	const triggerRef = useRef<HTMLDivElement>(null);
+	const [anchor, setAnchor] = useState<DOMRect | null>(null);
+	const toggleCard = (event: { currentTarget: HTMLElement }) => {
+		setAnchor(anchor ? null : event.currentTarget.getBoundingClientRect());
+	};
 	const failedText = formatFailedRequest(stat);
 	if (!failedText && parts.length === 0) return null;
 
 	return (
 		<>
 			<div
+				ref={triggerRef}
 				className={clsx(
-					"flex w-fit max-w-full flex-wrap items-baseline gap-x-2 font-mono text-[11px] leading-5 tabular-nums",
+					"-mx-1 flex w-fit max-w-full cursor-pointer flex-wrap items-baseline gap-x-2 rounded-md px-1 font-mono text-[11px] leading-5 tabular-nums transition-colors hover:bg-[var(--ghost-hover)] focus-visible:bg-[var(--ghost-hover)] aria-expanded:bg-[var(--ghost-hover)]",
 					className,
 				)}
-				onMouseEnter={enterProps}
-				onMouseLeave={cardProps.onMouseLeave}
-				onClick={clickProps}
+				onClick={toggleCard}
 				onKeyDown={(e) => {
 					if (e.key === "Enter" || e.key === " ") {
 						e.preventDefault();
-						clickProps(e);
+						toggleCard(e);
 					}
 				}}
 				role="button"
 				tabIndex={0}
 				aria-label={t("chatView.stats.ariaViewStats")}
+				aria-expanded={anchor !== null}
 			>
 				{failedText ? (
 					<>
@@ -299,13 +248,14 @@ export function RequestStatsLine({
 					))
 				)}
 			</div>
-			{open && anchor && (
+			{anchor && (
 				<FloatingLayer
 					anchor={anchor}
 					placement="top-start"
 					offset={6}
 					layer="hovercard"
-					{...cardProps}
+					onDismiss={() => setAnchor(null)}
+					ignoreRefs={[triggerRef]}
 				>
 					{stat.error ? <FailedRequestCard stat={stat} /> : <RequestCard stat={stat} />}
 				</FloatingLayer>

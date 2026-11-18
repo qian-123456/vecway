@@ -92,7 +92,7 @@ src/
   stores/worktrees.ts        live git worktrees per workspace id (git_list_worktrees)   [A]
   features/home/             composer-first start screen (StartPage)                    [A]
   features/sessions/         left column, Codex-style navigation (§10)                  [A]
-  features/chat/             center session view, composer, turn grouping, tool cards, answer footer, per-request stats line + thinking preview (requestStats.ts) (§11 B) [B]
+  features/chat/             center session view, composer, turn grouping, tool cards, answer footer, per-request stats line (click toggles its explanation card; outside click/Escape dismiss; no hover activation) + thinking preview (requestStats.ts) (§11 B) [B]
   features/sidechat/         right tab group: one tab per side chat (blank new-chat tab → create + ask) [B]
   features/heatmap/          right tab: minimap                                         [B]
   features/git/              right tab: changes + time machine; worktree dialogs        [C]
