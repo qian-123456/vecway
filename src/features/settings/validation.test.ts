@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { validateSettingsShape } from "./validation";
 
 describe("validateSettingsShape", () => {
+	it.each(["skip", "coalesce", "queue", "parallel"])("imports the global %s overlap policy", (automationOverlapPolicy) => {
+		expect(validateSettingsShape({ automationOverlapPolicy })).toEqual({ ok: true, value: { automationOverlapPolicy } });
+	});
+
+	it.each(["invalid", null, 1, {}])("rejects invalid global overlap policy %j", (automationOverlapPolicy) => {
+		expect(validateSettingsShape({ automationOverlapPolicy }).ok).toBe(false);
+	});
+
 	it("rejects non-objects, null, and arrays", () => {
 		expect(validateSettingsShape(null).ok).toBe(false);
 		expect(validateSettingsShape("string").ok).toBe(false);

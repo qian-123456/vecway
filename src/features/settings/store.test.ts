@@ -36,6 +36,18 @@ const mockSettings: Settings = {
 };
 
 describe("settings store", () => {
+	it.each(["skip", "coalesce", "queue", "parallel"] as const)("persists and reloads the global %s overlap policy", async (automationOverlapPolicy) => {
+		useSettings.setState({ settings: { ...mockSettings }, error: null });
+		const saved = { ...mockSettings, automationOverlapPolicy };
+		const save = vi.spyOn(ipc, "saveSettings").mockImplementation(async (settings) => ({ ...settings }));
+		await useSettings.getState().update({ automationOverlapPolicy });
+		expect(save).toHaveBeenCalledWith(saved);
+		vi.spyOn(ipc, "getSettings").mockResolvedValue(saved);
+		useSettings.setState({ settings: null });
+		await useSettings.getState().load();
+		expect(useSettings.getState().settings?.automationOverlapPolicy).toBe(automationOverlapPolicy);
+	});
+
 	it("serializes concurrent updates and rolls back to confirmed state on error", async () => {
 		useSettings.setState({ settings: { ...mockSettings }, error: null });
 

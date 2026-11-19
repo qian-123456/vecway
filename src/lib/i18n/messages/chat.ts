@@ -250,6 +250,9 @@ export default defineMessages({
 		"addMenu.planMode": "规划模式",
 		"addMenu.enablePlan": "开启规划模式",
 		"addMenu.disablePlan": "关闭规划模式",
+		"addMenu.automationMode": "自动化",
+		"addMenu.enableAutomation": "将当前想法或流程定制为定时任务",
+		"addMenu.disableAutomation": "退出自动化定制模式",
 		"addMenu.sketch": "草图",
 		"addMenu.sketchDesc": "绘制草图",
 		"addMenu.images": "图片",
@@ -347,6 +350,8 @@ export default defineMessages({
 
 		"planMode.clickToDisable": "点击关闭规划模式",
 		"planMode.enabled": "规划模式已启用",
+		"automationMode.clickToDisable": "点击退出自动化定制",
+		"automationMode.enabled": "定制自动化",
 	},
 	"en-US": {
 		"phoneCamera.menu": "Phone camera",
@@ -597,6 +602,9 @@ export default defineMessages({
 		"addMenu.planMode": "Plan mode",
 		"addMenu.enablePlan": "Turn on plan mode",
 		"addMenu.disablePlan": "Turn off plan mode",
+		"addMenu.automationMode": "Automation",
+		"addMenu.enableAutomation": "Turn this idea or workflow into a scheduled task",
+		"addMenu.disableAutomation": "Exit automation customization mode",
 		"addMenu.sketch": "Sketch",
 		"addMenu.sketchDesc": "Draw a sketch",
 		"addMenu.images": "Images",
@@ -694,5 +702,7 @@ export default defineMessages({
 
 		"planMode.clickToDisable": "Click to disable plan mode",
 		"planMode.enabled": "Plan mode enabled",
+		"automationMode.clickToDisable": "Click to exit automation mode",
+		"automationMode.enabled": "Automation mode",
 	},
 });

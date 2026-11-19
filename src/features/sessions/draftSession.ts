@@ -151,7 +151,9 @@ function handoff(id: string): Promise<string> {
 			const visible = usePendingSession.getState().selectedId === id &&
 				ui.selectedSessionId === null &&
 				(ui.centerView === "session" ||
-					(ui.centerView === "settings" && ui.previousCenterView === "session"));
+					ui.centerView === "schedules" ||
+					(ui.centerView === "settings" &&
+						(ui.previousCenterView === "session" || ui.previousCenterView === "schedules")));
 			transferDraft(id, sessionId);
 			// Select before dropping the draft so the center pane never flashes empty.
 			if (visible) {

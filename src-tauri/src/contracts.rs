@@ -1104,6 +1104,33 @@ pub struct Settings {
     /// "queue" (held until the turn ends), or "interrupt" (abort the turn, then send).
     #[serde(default = "default_follow_up_behavior")]
     pub follow_up_behavior: String,
+    /// Default true: keep automations running in background after closing the app.
+    #[serde(default = "default_true")]
+    pub automation_background_enabled: bool,
+    /// Global policy for future automatic triggers; never inferred from a schedule.
+    #[serde(default)]
+    pub automation_overlap_policy: AutomationOverlapPolicy,
+    /// Default script result reporting mode for new automations.
+    #[serde(default)]
+    pub automation_default_result_mode: ScheduleResultMode,
+    /// Optional default model selector for new automations (`<provider>/<id>`).
+    #[serde(default)]
+    pub automation_default_model: Option<String>,
+    /// Optional default thinking level for new automations.
+    #[serde(default)]
+    pub automation_default_thinking: Option<String>,
+    /// Editable prefill template for mock-environment automation testing (`{{name}}` placeholder).
+    #[serde(default)]
+    pub automation_prompt_mock_test: Option<String>,
+    /// Editable prefill template for single-shot real-environment automation testing.
+    #[serde(default)]
+    pub automation_prompt_real_once_test: Option<String>,
+    /// Editable prefill template for iterative real-environment automation debugging.
+    #[serde(default)]
+    pub automation_prompt_real_loop_test: Option<String>,
+    /// Editable prefill template for "Ask AI to adjust" on an automation draft card.
+    #[serde(default)]
+    pub automation_prompt_adjust: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -1197,6 +1224,15 @@ impl Default for Settings {
             visualize_enabled: true,
             send_shortcut: default_send_shortcut(),
             follow_up_behavior: default_follow_up_behavior(),
+            automation_background_enabled: true,
+            automation_overlap_policy: AutomationOverlapPolicy::Skip,
+            automation_default_result_mode: ScheduleResultMode::Structured,
+            automation_default_model: None,
+            automation_default_thinking: None,
+            automation_prompt_mock_test: None,
+            automation_prompt_real_once_test: None,
+            automation_prompt_real_loop_test: None,
+            automation_prompt_adjust: None,
         }
     }
 }
@@ -1562,6 +1598,18 @@ pub enum ScheduleRunMode {
     Worktree,
 }
 
+/// Global policy for overlapping automatic occurrences. Manual runs retain
+/// their active-run guard; running executions keep their claimed policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationOverlapPolicy {
+    #[default]
+    Skip,
+    Coalesce,
+    Queue,
+    Parallel,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ScheduleCadence {
@@ -1632,6 +1680,38 @@ pub enum ScheduleRunStatus {
     Skipped,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleAgentTrigger {
+    /// Run the agent prompt on every trigger (if probe_command is set, pass its stdout).
+    #[default]
+    Always,
+    /// Run probe_command first; wake the agent only when the probe signals updates.
+    OnSignal,
+    /// Pure local script/command mode; never wake OMP.
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleResultMode {
+    /// Script outputs structured JSON (`{ status, summary, details?, sessionId? }`) or plain text (0 extra LLM tokens).
+    #[default]
+    Structured,
+    /// After non-quiet script output, call the lightweight summary model to produce a human-readable conclusion.
+    LlmSummary,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleRunPhase {
+    ProbeQuiet,
+    ProbeOnly,
+    #[default]
+    Agent,
+    Awaiting,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Schedule {
@@ -1667,6 +1747,20 @@ pub struct Schedule {
     pub max_runs: Option<u32>,
     /// Runs started so far (counts toward `max_runs`).
     pub runs_done: u32,
+    #[serde(default)]
+    pub probe_command: Option<String>,
+    #[serde(default)]
+    pub probe_description: Option<String>,
+    #[serde(default)]
+    pub agent_trigger: ScheduleAgentTrigger,
+    #[serde(default)]
+    pub result_mode: ScheduleResultMode,
+    #[serde(default)]
+    pub invokes_external_model: bool,
+    #[serde(default)]
+    pub last_run_phase: Option<ScheduleRunPhase>,
+    #[serde(default)]
+    pub last_run_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1698,6 +1792,16 @@ pub struct ScheduleDraft {
     pub max_runs: Option<u32>,
     #[serde(default = "default_schedule_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub probe_command: Option<String>,
+    #[serde(default)]
+    pub probe_description: Option<String>,
+    #[serde(default)]
+    pub agent_trigger: ScheduleAgentTrigger,
+    #[serde(default)]
+    pub result_mode: ScheduleResultMode,
+    #[serde(default)]
+    pub invokes_external_model: bool,
 }
 
 fn default_schedule_enabled() -> bool {
@@ -1718,6 +1822,38 @@ pub struct ScheduleRun {
     pub started_at: String,
     pub finished_at: Option<String>,
     pub summary: Option<String>,
+    #[serde(default)]
+    pub phase: ScheduleRunPhase,
+    #[serde(default)]
+    pub probe_output: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeTestResult {
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub duration_ms: u64,
+    pub output: String,
+    pub outcome: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationAuthorResult {
+    pub schedule_id: String,
+    pub name: String,
+    pub cadence: ScheduleCadence,
+    pub agent_trigger: ScheduleAgentTrigger,
+    #[serde(default)]
+    pub result_mode: ScheduleResultMode,
+    #[serde(default)]
+    pub invokes_external_model: bool,
+    pub probe_description: Option<String>,
+    pub probe_command: Option<String>,
+    pub prompt: String,
+    pub notify: ScheduleNotify,
+    pub explanation: String,
 }
 
 // ---- Skills & Extensions catalog ----

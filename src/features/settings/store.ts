@@ -51,6 +51,8 @@ export const DEFAULT_SETTINGS: Settings = {
 	visualizeEnabled: true,
 	sendShortcut: "enter",
 	followUpBehavior: "steer",
+	automationBackgroundEnabled: true,
+	automationOverlapPolicy: "skip",
 };
 
 export interface SettingsState {

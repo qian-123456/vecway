@@ -11,7 +11,8 @@ describe("formatCadence", () => {
 		expect(formatCadence({ kind: "interval", minutes: 30 })).toBe("每 30 分钟");
 		expect(formatCadence({ kind: "interval", minutes: 60 })).toBe("每 1 小时");
 		expect(formatCadence({ kind: "interval", minutes: 120 })).toBe("每 2 小时");
-		expect(formatCadence({ kind: "interval", minutes: 4 })).toBe("每 5 分钟"); // clamped
+		expect(formatCadence({ kind: "interval", minutes: 4 })).toBe("每 4 分钟");
+		expect(formatCadence({ kind: "interval", minutes: 0 })).toBe("每 1 分钟");
 	});
 
 	it("formats daily every day", () => {

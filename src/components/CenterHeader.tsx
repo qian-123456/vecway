@@ -27,6 +27,7 @@ import { VecwayWordmark } from "./VecwayWordmark";
 import { IdeasCapsule } from "../features/backlog/IdeasCapsule";
 import { formatSessionMarkdown } from "../features/chat/exportMarkdown";
 import { useShareSelection } from "../features/chat/share/shareStore";
+import { useSchedulesStore } from "../features/schedules/schedulesStore";
 import { sessionDisplayName } from "../lib/sessionName";
 import { useLive } from "../stores/live";
 import { useSessions } from "../stores/sessions";
@@ -136,6 +137,24 @@ export const CenterHeader = React.memo(function CenterHeader({
 		centerView === "settings"
 			? previousCenterView ?? lastNonSettingsCenterView.current
 			: centerView;
+	const schedulesCreatingViaChat = useSchedulesStore((s) => s.creatingViaChat);
+	const schedulesIsCreating = useSchedulesStore((s) => s.isCreating);
+	const schedulesSelectedId = useSchedulesStore((s) => s.selectedScheduleId);
+	const schedulesDraftTemplateId = useSchedulesStore((s) => s.draftTemplate?.id);
+	const schedulesList = useSchedulesStore((s) => s.schedules);
+	const leaveSchedulesSubpage = useSchedulesStore((s) => s.leaveSubpage);
+	const schedulesSubpageTitle =
+		effectiveCenterView === "schedules"
+			? schedulesSelectedId
+				? (schedulesList.find((s) => s.id === schedulesSelectedId)?.name ?? null)
+				: schedulesIsCreating
+					? schedulesDraftTemplateId
+						? t("schedules.editTitle")
+						: t("schedules.createTitle")
+					: schedulesCreatingViaChat
+						? t("schedules.createTitle")
+						: null
+			: null;
 	const [worktreeIdentity, setWorktreeIdentity] = useState<string | null>(null);
 
 	useEffect(() => {
@@ -486,9 +505,25 @@ export const CenterHeader = React.memo(function CenterHeader({
 								</>
 							)}
 							{CENTER_TITLE_KEY[effectiveCenterView] ? (
-								<span className="text-[13px] font-medium text-neutral-300 shrink-0">
-									{t(CENTER_TITLE_KEY[effectiveCenterView] as string)}
-								</span>
+								schedulesSubpageTitle ? (
+									<>
+										<button
+											type="button"
+											onClick={leaveSchedulesSubpage}
+											className="shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[13px] font-medium text-neutral-400 transition-colors hover:bg-[var(--bg-active-fill)] hover:text-neutral-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+										>
+											{t(CENTER_TITLE_KEY[effectiveCenterView] as string)}
+										</button>
+										<span className="shrink-0 text-neutral-600">/</span>
+										<span className="min-w-0 truncate text-[13px] font-medium text-neutral-200">
+											{schedulesSubpageTitle}
+										</span>
+									</>
+								) : (
+									<span className="text-[13px] font-medium text-neutral-300 shrink-0">
+										{t(CENTER_TITLE_KEY[effectiveCenterView] as string)}
+									</span>
+								)
 							) : !backTarget ? (
 								<div className="flex min-w-0 items-center gap-3 overflow-hidden">
 									<VecwayWordmark height={21} />

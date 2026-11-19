@@ -14,6 +14,11 @@ import { toast } from "../../lib/toast";
 import { tNow } from "../../stores/language";
 
 export type EditorTab = "settings" | "history";
+export type WorkspaceTab = "overview" | "config";
+
+function toWorkspaceTab(tab?: EditorTab): WorkspaceTab {
+	return tab === "history" ? "overview" : "config";
+}
 
 const SEEN_KEY = "omp:schedules:seenRuns";
 /** Cap the seen list so localStorage never grows unboundedly. */
@@ -52,6 +57,16 @@ export interface SchedulesState {
 	runningScheduleIds: Record<string, boolean>;
 	/** Run ids the user has already seen (opened history/session for). */
 	seenRuns: Record<string, true>;
+	/** Selected automation displayed in the single-canvas Workspace; null = Home/Empty list. */
+	selectedScheduleId: string | null;
+	/** Active Workspace tab (`overview` for 概览与记录, `config` for 规则配置). */
+	workspaceTab: WorkspaceTab;
+	/** True when Workspace is creating a brand-new automation. */
+	isCreating: boolean;
+	/** True when the conversational composer studio is open for creating a new automation. */
+	creatingViaChat: boolean;
+	/** Optional subpage back handler registered by SchedulesPage (handles dirty confirm). */
+	subpageBackHandler: (() => void) | null;
 	isEditorOpen: boolean;
 	editingSchedule: Schedule | null;
 	draftTemplate: Partial<ScheduleDraft> | null;
@@ -65,6 +80,12 @@ export interface SchedulesState {
 	runNow: (id: string) => Promise<void>;
 	removeSchedule: (id: string) => Promise<void>;
 	saveSchedule: (draft: ScheduleDraft) => Promise<Schedule | null>;
+	setCreatingViaChat: (open: boolean) => void;
+	setSubpageBackHandler: (handler: (() => void) | null) => void;
+	leaveSubpage: () => void;
+	openHome: () => void;
+	openWorkspace: (schedule: Schedule, tab?: WorkspaceTab) => void;
+	setWorkspaceTab: (tab: WorkspaceTab) => void;
 	openCreate: (template?: Partial<ScheduleDraft>) => void;
 	openEdit: (schedule: Schedule, tab?: EditorTab) => void;
 	closeEditor: () => void;
@@ -79,6 +100,11 @@ export const useSchedulesStore = create<SchedulesState>((set, get) => ({
 	loadError: null,
 	runningScheduleIds: {},
 	seenRuns: readSeenRuns(),
+	selectedScheduleId: null,
+	workspaceTab: "overview",
+	isCreating: false,
+	creatingViaChat: false,
+	subpageBackHandler: null,
 	isEditorOpen: false,
 	editingSchedule: null,
 	draftTemplate: null,
@@ -159,7 +185,19 @@ export const useSchedulesStore = create<SchedulesState>((set, get) => ({
 			await ipcDeleteSchedule(id);
 			set((state) => {
 				const { [id]: _dropped, ...runs } = state.runs;
-				return { schedules: state.schedules.filter((s) => s.id !== id), runs };
+				const clearingSelected = state.selectedScheduleId === id;
+				return {
+					schedules: state.schedules.filter((s) => s.id !== id),
+					runs,
+					...(clearingSelected
+						? {
+								selectedScheduleId: null,
+								isCreating: false,
+								isEditorOpen: false,
+								editingSchedule: null,
+							}
+						: {}),
+				};
 			});
 			toast.success(tNow("schedules.toastDeleteSuccess"));
 		} catch (e) {
@@ -179,6 +217,9 @@ export const useSchedulesStore = create<SchedulesState>((set, get) => ({
 						: [saved, ...state.schedules];
 				return {
 					schedules: nextList,
+					selectedScheduleId: saved.id,
+					workspaceTab: "overview",
+					isCreating: false,
 					isEditorOpen: false,
 					editingSchedule: null,
 					draftTemplate: null,
@@ -191,8 +232,68 @@ export const useSchedulesStore = create<SchedulesState>((set, get) => ({
 		}
 	},
 
+	setCreatingViaChat: (open: boolean) => {
+		set({ creatingViaChat: open });
+	},
+
+	setSubpageBackHandler: (handler: (() => void) | null) => {
+		set({ subpageBackHandler: handler });
+	},
+
+	leaveSubpage: () => {
+		const handler = get().subpageBackHandler;
+		if (handler) {
+			handler();
+			return;
+		}
+		set({ creatingViaChat: false });
+		get().openHome();
+	},
+
+	openHome: () => {
+		set({
+			selectedScheduleId: null,
+			workspaceTab: "overview",
+			isCreating: false,
+			creatingViaChat: false,
+			isEditorOpen: false,
+			editingSchedule: null,
+			draftTemplate: null,
+			editorTab: "settings",
+		});
+	},
+
+	openWorkspace: (schedule: Schedule, tab: WorkspaceTab = "overview") => {
+		set({
+			selectedScheduleId: schedule.id,
+			workspaceTab: tab,
+			isCreating: false,
+			creatingViaChat: false,
+			isEditorOpen: tab === "config",
+			editingSchedule: schedule,
+			draftTemplate: null,
+			editorTab: tab === "overview" ? "history" : "settings",
+		});
+		void get().loadRuns(schedule.id, 30);
+	},
+
+	setWorkspaceTab: (tab: WorkspaceTab) => {
+		set((state) => {
+			if (state.isCreating) return { workspaceTab: "config" };
+			return {
+				workspaceTab: tab,
+				isEditorOpen: tab === "config",
+				editorTab: tab === "overview" ? "history" : "settings",
+			};
+		});
+	},
+
 	openCreate: (template?: Partial<ScheduleDraft>) => {
 		set({
+			selectedScheduleId: null,
+			workspaceTab: "config",
+			isCreating: true,
+			creatingViaChat: false,
 			isEditorOpen: true,
 			editingSchedule: null,
 			draftTemplate: template ?? null,
@@ -201,20 +302,10 @@ export const useSchedulesStore = create<SchedulesState>((set, get) => ({
 	},
 
 	openEdit: (schedule: Schedule, tab: EditorTab = "settings") => {
-		set({
-			isEditorOpen: true,
-			editingSchedule: schedule,
-			draftTemplate: null,
-			editorTab: tab,
-		});
+		get().openWorkspace(schedule, toWorkspaceTab(tab));
 	},
 
 	closeEditor: () => {
-		set({
-			isEditorOpen: false,
-			editingSchedule: null,
-			draftTemplate: null,
-			editorTab: "settings",
-		});
+		get().openHome();
 	},
 }));

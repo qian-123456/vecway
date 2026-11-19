@@ -397,6 +397,126 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             Ok(())
         })?;
     }
+    if version < 25 {
+        step_with(conn, 25, |tx| {
+            let add_col = |table: &str, col: &str, ddl: &str| -> rusqlite::Result<()> {
+                let exists: bool = tx.query_row(
+                    &format!("SELECT COUNT(*) > 0 FROM pragma_table_info('{table}') WHERE name = '{col}'"),
+                    [],
+                    |r| r.get(0),
+                )?;
+                if !exists {
+                    tx.execute_batch(ddl)?;
+                }
+                Ok(())
+            };
+            add_col(
+                "schedules",
+                "probe_command",
+                "ALTER TABLE schedules ADD COLUMN probe_command TEXT;",
+            )?;
+            add_col(
+                "schedules",
+                "probe_description",
+                "ALTER TABLE schedules ADD COLUMN probe_description TEXT;",
+            )?;
+            add_col(
+                "schedules",
+                "agent_trigger",
+                "ALTER TABLE schedules ADD COLUMN agent_trigger TEXT NOT NULL DEFAULT 'always';",
+            )?;
+            add_col(
+                "schedule_runs",
+                "phase",
+                "ALTER TABLE schedule_runs ADD COLUMN phase TEXT NOT NULL DEFAULT 'agent';",
+            )?;
+            add_col(
+                "schedule_runs",
+                "probe_output",
+                "ALTER TABLE schedule_runs ADD COLUMN probe_output TEXT;",
+            )?;
+            Ok(())
+        })?;
+    }
+    if version < 26 {
+        step_with(conn, 26, |tx| {
+            let exists: bool = tx.query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('schedules') WHERE name = 'overlapPolicy'",
+                [],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                tx.execute_batch("ALTER TABLE schedules ADD COLUMN overlapPolicy TEXT NOT NULL DEFAULT 'skip';")?;
+            }
+            let has_owner: bool = tx.query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('schedule_runs') WHERE name = 'owner_pid'",
+                [],
+                |r| r.get(0),
+            )?;
+            if !has_owner {
+                tx.execute_batch("ALTER TABLE schedule_runs ADD COLUMN owner_pid INTEGER;")?;
+            }
+            for (column, ddl) in [
+                ("resume_attempt", "ALTER TABLE schedule_runs ADD COLUMN resume_attempt TEXT;"),
+                ("resume_owner_pid", "ALTER TABLE schedule_runs ADD COLUMN resume_owner_pid INTEGER;"),
+            ] {
+                let exists: bool = tx.query_row(
+                    &format!("SELECT COUNT(*) > 0 FROM pragma_table_info('schedule_runs') WHERE name = '{column}'"),
+                    [], |r| r.get(0),
+                )?;
+                if !exists { tx.execute_batch(ddl)?; }
+            }
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS schedule_pending (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+                    scheduled_at TEXT NOT NULL,
+                    reason TEXT NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_schedule_pending_schedule ON schedule_pending(schedule_id, id);",
+            )?;
+            Ok(())
+        })?;
+    }
+    if version < 27 {
+        step_with(conn, 27, |tx| {
+            // v26 is historical. No task policy becomes the global preference.
+            let exists: bool = tx.query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('schedules') WHERE name = 'overlapPolicy'",
+                [], |r| r.get(0),
+            )?;
+            if exists {
+                tx.execute_batch("ALTER TABLE schedules DROP COLUMN overlapPolicy;")?;
+            }
+            Ok(())
+        })?;
+    }
+    if version < 28 {
+        step_with(conn, 28, |tx| {
+            for (column, ddl) in [
+                (
+                    "result_mode",
+                    "ALTER TABLE schedules ADD COLUMN result_mode TEXT NOT NULL DEFAULT 'structured';",
+                ),
+                (
+                    "invokes_external_model",
+                    "ALTER TABLE schedules ADD COLUMN invokes_external_model INTEGER NOT NULL DEFAULT 0;",
+                ),
+            ] {
+                let exists: bool = tx.query_row(
+                    &format!(
+                        "SELECT COUNT(*) > 0 FROM pragma_table_info('schedules') WHERE name = '{column}'"
+                    ),
+                    [],
+                    |r| r.get(0),
+                )?;
+                if !exists {
+                    tx.execute_batch(ddl)?;
+                }
+            }
+            Ok(())
+        })?;
+    }
     Ok(())
 }
 
@@ -425,6 +545,22 @@ pub fn load_settings(conn: &Connection) -> Settings {
         }
     }
     serde_json::from_value(value).unwrap_or_default()
+}
+
+/// Read the authoritative preference inside the same transaction as a claim.
+/// Decode only this field rather than cloning every application setting.
+pub fn load_automation_overlap_policy(conn: &Connection) -> crate::contracts::AutomationOverlapPolicy {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(rename_all = "camelCase")]
+    struct Policy {
+        #[serde(default)]
+        automation_overlap_policy: crate::contracts::AutomationOverlapPolicy,
+    }
+    let stored: Option<String> = conn.query_row(
+        "SELECT value FROM settings WHERE key = 'settings'", [], |row| row.get(0),
+    ).ok();
+    stored.as_deref().and_then(|json| serde_json::from_str::<Policy>(json).ok())
+        .unwrap_or_default().automation_overlap_policy
 }
 
 /// Persist Settings into the single-row `settings` table.
@@ -462,6 +598,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn migrate_v25_to_v27_defaults_settings_and_preserves_runs() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE schedule_pending;
+             ALTER TABLE schedule_runs DROP COLUMN owner_pid;
+             ALTER TABLE schedule_runs DROP COLUMN resume_attempt;
+             ALTER TABLE schedule_runs DROP COLUMN resume_owner_pid;
+             INSERT INTO schedules(id, name, prompt, cwd, cadence, created_at, updated_at)
+             VALUES('old', 'old', 'prompt', '/tmp', '{\"kind\":\"interval\",\"minutes\":30}', 't', 't');
+             INSERT INTO schedule_runs(id, schedule_id, status, started_at)
+             VALUES('old-run', 'old', 'running', 't');",
+        ).unwrap();
+        conn.pragma_update(None, "user_version", 25).unwrap();
+        migrate(&conn).unwrap();
+        let has_policy: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('schedules') WHERE name = 'overlapPolicy'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert!(!has_policy);
+        assert_eq!(load_settings(&conn).automation_overlap_policy, crate::contracts::AutomationOverlapPolicy::Skip);
+        let owner: Option<u32> = conn.query_row("SELECT owner_pid FROM schedule_runs WHERE id = 'old-run'", [], |r| r.get(0)).unwrap();
+        assert_eq!(owner, None);
+        conn.execute("INSERT INTO schedule_pending(schedule_id, scheduled_at, reason) VALUES('old', 't', 'waiting')", []).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM schedule_pending", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v27_discards_no_accepted_work_and_inherits_no_task_policy() {
+        use crate::contracts::AutomationOverlapPolicy;
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE schedules ADD COLUMN overlapPolicy TEXT NOT NULL DEFAULT 'parallel';
+             INSERT INTO schedules(id, name, prompt, cwd, cadence, created_at, updated_at)
+             VALUES('legacy', 'legacy', 'prompt', '/tmp', '{\"kind\":\"interval\",\"minutes\":30}', 't', 't');
+             INSERT INTO schedule_runs(id, schedule_id, status, started_at)
+             VALUES('running', 'legacy', 'running', 't');
+             INSERT INTO schedule_pending(schedule_id, scheduled_at, reason)
+             VALUES('legacy', 'first', 'waiting'), ('legacy', 'second', 'waiting');",
+        ).unwrap();
+        conn.pragma_update(None, "user_version", 26).unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(load_settings(&conn).automation_overlap_policy, AutomationOverlapPolicy::Skip);
+        assert_eq!(load_automation_overlap_policy(&conn), AutomationOverlapPolicy::Skip);
+        let pending: Vec<String> = conn.prepare("SELECT scheduled_at FROM schedule_pending ORDER BY id")
+            .unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(pending, ["first", "second"]);
+        assert_eq!(conn.query_row("SELECT status FROM schedule_runs WHERE id = 'running'", [], |r| r.get::<_, String>(0)).unwrap(), "running");
+        let has_policy: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('schedules') WHERE name = 'overlapPolicy'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert!(!has_policy);
+        // The removal is idempotent even if only the schema version is rewound.
+        conn.pragma_update(None, "user_version", 26).unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM schedule_pending", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    }
+
+    #[test]
+    fn global_automation_policy_defaults_and_round_trips_without_changing_other_settings() {
+        use crate::contracts::AutomationOverlapPolicy;
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let mut legacy = serde_json::to_value(Settings::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("automationOverlapPolicy");
+        conn.execute("INSERT INTO settings(key, value) VALUES('settings', ?1)", [legacy.to_string()]).unwrap();
+        assert_eq!(load_settings(&conn).automation_overlap_policy, AutomationOverlapPolicy::Skip);
+        assert_eq!(load_automation_overlap_policy(&conn), AutomationOverlapPolicy::Skip);
+        for policy in [AutomationOverlapPolicy::Skip, AutomationOverlapPolicy::Coalesce,
+            AutomationOverlapPolicy::Queue, AutomationOverlapPolicy::Parallel] {
+            let mut settings = load_settings(&conn);
+            settings.automation_overlap_policy = policy;
+            settings.doctor_model = "preserve-this-model".into();
+            save_settings(&conn, &settings).unwrap();
+            assert_eq!(load_settings(&conn).automation_overlap_policy, policy);
+            assert_eq!(load_automation_overlap_policy(&conn), policy);
+            assert_eq!(load_settings(&conn).doctor_model, "preserve-this-model");
+        }
+    }
+
+    #[test]
     fn migrate_v24_preserves_distinct_legacy_device_credentials() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -476,6 +695,8 @@ mod tests {
                 ('credential-d', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)', '2026-04-01', NULL);",
         )
         .unwrap();
+        create_v9_schedule_fixture(&conn);
+        conn.execute_batch("ALTER TABLE schedules ADD COLUMN mode TEXT NOT NULL DEFAULT 'code';").unwrap();
         conn.pragma_update(None, "user_version", 23).unwrap();
         migrate(&conn).unwrap();
 
@@ -569,7 +790,7 @@ mod tests {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 27);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(session_meta)")
             .unwrap()
@@ -592,7 +813,7 @@ mod tests {
         let v3: u32 = fresh
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v3, 24);
+        assert_eq!(v3, 27);
     }
 
     #[test]
@@ -602,7 +823,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 24);
+        assert_eq!(v, 27);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('schedules', 'schedule_runs')",
@@ -629,7 +850,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 24);
+        assert_eq!(v, 27);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(schedules)")
             .unwrap()
@@ -704,7 +925,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 24);
+        assert_eq!(v, 27);
         // Pre-existing row inherits the documented defaults.
         let (notify, new_chat): (String, i64) = conn
             .query_row(
@@ -805,7 +1026,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 24);
+        assert_eq!(v, 27);
         // Pre-existing row: NULL cap, zero runs.
         let (max_runs, runs_done): (Option<i64>, i64) = conn
             .query_row(
@@ -866,7 +1087,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 24);
+        assert_eq!(v, 27);
         let schedule_mode: String = conn
             .query_row("SELECT mode FROM schedules WHERE id='scheduled'", [], |r| {
                 r.get(0)
@@ -1017,7 +1238,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 24);
+        assert_eq!(v, 27);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(model_replace_log)")
             .unwrap()
@@ -1268,5 +1489,56 @@ mod backlog_v19_tests {
             )
             .unwrap();
         assert_eq!(restored.as_deref(), Some("restored time"));
+    }
+
+    #[test]
+    fn migrate_v25_adds_automation_probe_columns_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        // Roll back v25 columns by rebuilding v24 shape.
+        conn.execute_batch(
+            "ALTER TABLE schedules DROP COLUMN probe_command;
+             ALTER TABLE schedules DROP COLUMN probe_description;
+             ALTER TABLE schedules DROP COLUMN agent_trigger;
+             ALTER TABLE schedule_runs DROP COLUMN phase;
+             ALTER TABLE schedule_runs DROP COLUMN probe_output;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, enabled, created_at, updated_at, notify, new_chat_each_run, runs_done, mode)
+             VALUES('legacy-s', 'Legacy', 'check', '/tmp', 'local', '{\"kind\":\"interval\",\"minutes\":60}', 1, '2026-01-01', '2026-01-01', 'all', 1, 0, 'code')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schedule_runs(id, schedule_id, status, started_at)
+             VALUES('legacy-r', 'legacy-s', 'ok', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 24).unwrap();
+
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let (trigger, probe_cmd): (String, Option<String>) = conn
+            .query_row(
+                "SELECT agent_trigger, probe_command FROM schedules WHERE id = 'legacy-s'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(trigger, "always");
+        assert!(probe_cmd.is_none());
+
+        let (phase, probe_out): (String, Option<String>) = conn
+            .query_row(
+                "SELECT phase, probe_output FROM schedule_runs WHERE id = 'legacy-r'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(phase, "agent");
+        assert!(probe_out.is_none());
     }
 }

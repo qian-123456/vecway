@@ -2,11 +2,12 @@
 //! Cross-module API per docs/ARCHITECTURE.md §9.
 #![allow(dead_code)]
 
+mod automation_ext;
 mod autotitle;
 pub mod commands;
 pub(crate) mod fork;
 mod forkcut;
-mod frame;
+pub(crate) mod frame;
 mod lifecycle;
 #[cfg(test)]
 mod live_test;
@@ -39,6 +40,69 @@ static IDLE_TIMERS: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, u64>>
     std::sync::LazyLock::new(Default::default);
 static ACTIVITY_GUARDS: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, HashSet<String>>>> =
     std::sync::LazyLock::new(Default::default);
+// Process-scoped reservation installed under dispatch_lock before a correlated
+// automation continuation is submitted. Ordinary mutating commands cannot race it.
+static AUTOMATION_RESUME_GUARDS: std::sync::LazyLock<parking_lot::Mutex<HashMap<u32, String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn automation_resume_guarded(pid: u32) -> bool {
+    AUTOMATION_RESUME_GUARDS.lock().contains_key(&pid)
+}
+
+pub(crate) fn automation_resume_owned(pid: u32, attempt: &str) -> bool {
+    AUTOMATION_RESUME_GUARDS.lock().get(&pid).is_some_and(|v| v == attempt)
+}
+
+pub(crate) fn clear_automation_resume_guard(pid: u32, attempt: &str) {
+    let mut guards = AUTOMATION_RESUME_GUARDS.lock();
+    if guards.get(&pid).is_some_and(|v| v == attempt) {
+        guards.remove(&pid);
+    }
+}
+
+pub(crate) fn clear_process_automation_guard(pid: u32) {
+    AUTOMATION_RESUME_GUARDS.lock().remove(&pid);
+}
+
+pub(crate) async fn reserve_automation_resume(
+    state: &AppState,
+    session_id: &str,
+) -> Result<(Arc<SessionHandle>, String), String> {
+    let info = ensure_live(state, session_id, None, None).await?;
+    if info.session_id != session_id {
+        return Err("恢复的会话与原运行不匹配".to_string());
+    }
+    let handle = get_handle(session_id).ok_or("会话未运行")?;
+    let attempt = uuid::Uuid::new_v4().to_string();
+    {
+        let _dispatch = handle.dispatch_lock.lock().await;
+        if automation_resume_guarded(handle.pid) {
+            return Err("该会话已有恢复任务".to_string());
+        }
+        let response = process::send_command_locked(&handle, json!({"type":"get_state"})).await?;
+        let data = response.get("data").unwrap_or(&response);
+        let idle = data.get("isSettled").and_then(Value::as_bool) == Some(true)
+            && data.get("isStreaming").and_then(Value::as_bool) == Some(false)
+            && data.get("hasPendingAsyncWork").and_then(Value::as_bool) == Some(false)
+            && data.get("queuedMessageCount").and_then(Value::as_u64) == Some(0);
+        if !idle {
+            return Err("会话仍在运行或有待处理内容，请完成后重试".to_string());
+        }
+        AUTOMATION_RESUME_GUARDS.lock().insert(handle.pid, attempt.clone());
+    }
+    Ok((handle, attempt))
+}
+
+pub(crate) async fn send_automation_resume(
+    state: &AppState,
+    handle: &Arc<SessionHandle>,
+    attempt: &str,
+    text: &str,
+) -> Result<Value, String> {
+    let response = process::send_automation_resume(handle, prompt_command(text, Vec::new(), None), attempt).await?;
+    state.emit(AppEvent::PromptSent { session_id: handle.session_id.read().clone() });
+    Ok(response)
+}
 
 pub(crate) fn registry() -> &'static parking_lot::RwLock<HashMap<String, Arc<SessionHandle>>> {
     REGISTRY.get_or_init(Default::default)
@@ -74,13 +138,19 @@ pub fn get_handle(session_id: &str) -> Option<Arc<SessionHandle>> {
         .cloned()
 }
 
+/// Install all app-bundled OMP extensions and skill plugins into `<data_dir>`.
+pub fn install_bundled_extensions() {
+    privacy_ext::install();
+    plan_ext::install();
+    automation_ext::install();
+    crate::visualize::install();
+}
+
 /// Settlement starts an event-driven countdown; a low-frequency sweep remains
 /// as a fallback for missed events and system sleep. Every actual suspension
 /// repeats the complete check under the session's dispatch lock.
 pub fn init(state: AppState) {
-    privacy_ext::install();
-    plan_ext::install();
-    crate::visualize::install();
+    install_bundled_extensions();
     autotitle::spawn(state.clone());
     let mut events = state.bus.subscribe();
     let event_state = state.clone();
@@ -183,6 +253,7 @@ pub fn touch_session(session_id: &str) {
 /// Cheap local eligibility. Unknown runtime state is not proof of idleness.
 fn maintenance_idle(handle: &SessionHandle) -> bool {
     handle.alive.load(Ordering::SeqCst)
+        && !automation_resume_guarded(handle.pid)
         && !handle.streaming.load(Ordering::SeqCst)
         && handle.settled.load(Ordering::SeqCst)
         && !handle.awaiting_async_work.load(Ordering::SeqCst)
@@ -643,6 +714,9 @@ pub async fn refresh_privacy(
     let lock = session_resume_lock(session_id);
     let _resume = lock.lock().await;
     let handle = get_handle(session_id).ok_or("session is not live")?;
+    if automation_resume_guarded(handle.pid) {
+        return Ok(handle);
+    }
     if !privacy_ext::needs_restart(&handle.native_hash, &crate::privacy::native_hash(), false) {
         return Ok(handle);
     }
@@ -1014,6 +1088,23 @@ fn session_header_cwd(file: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn automation_resume_guard_blocks_other_mutations_and_is_attempt_scoped() {
+        let mut handle = SessionHandle::for_test();
+        handle.pid = 4_000_000_001;
+        let handle = Arc::new(handle);
+        AUTOMATION_RESUME_GUARDS.lock().insert(handle.pid, "first".to_string());
+        assert!(process::send_command(&handle, json!({"type":"prompt","message":"other"})).await.is_err());
+        assert!(process::send_command(&handle, json!({"type":"navigate_tree"})).await.is_err());
+        assert!(process::send_automation_resume(&handle, json!({"type":"prompt"}), "wrong").await.is_err());
+        clear_automation_resume_guard(handle.pid, "wrong");
+        assert!(automation_resume_owned(handle.pid, "first"));
+        AUTOMATION_RESUME_GUARDS.lock().insert(handle.pid, "second".to_string());
+        clear_automation_resume_guard(handle.pid, "first");
+        assert!(automation_resume_owned(handle.pid, "second"));
+        clear_automation_resume_guard(handle.pid, "second");
+    }
 
     fn maintenance_test_handle() -> (
         Arc<SessionHandle>,

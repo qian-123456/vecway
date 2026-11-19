@@ -6,7 +6,9 @@ import {
 	dateValueToEndOfDay,
 	defaultForm,
 	deriveName,
+	draftFromSchedule,
 	formFromSchedule,
+	formFromTemplate,
 	isRecentRun,
 	lifecycleOf,
 	presetOfForm,
@@ -188,11 +190,13 @@ describe("validateForm", () => {
 		});
 	});
 
-	it("clamps minute unit to >= 5", () => {
-		const bad = validateForm({ ...base, every: 3, unit: "minute" });
-		expect(bad.errors.cadence).toBe("间隔至少 5 分钟");
-		const ok = validateForm({ ...base, every: 15, unit: "minute" });
-		expect(ok.cadence).toEqual({ kind: "interval", minutes: 15 });
+	it("accepts intervals from one minute and rejects shorter intervals", () => {
+		const bad = validateForm({ ...base, every: 0, unit: "minute" });
+		expect(bad.errors.cadence).toBe("间隔至少 1 分钟");
+		for (const minutes of [1, 4, 5]) {
+			const ok = validateForm({ ...base, every: minutes, unit: "minute" });
+			expect(ok.cadence).toEqual({ kind: "interval", minutes });
+		}
 	});
 
 	it("maps every-2-hours to interval minutes", () => {
@@ -268,8 +272,27 @@ describe("validateForm", () => {
 
 	it("requires prompt and cwd", () => {
 		const { errors } = validateForm({ ...base, prompt: "  ", cwd: "" });
-		expect(errors.prompt).toBe("请填写任务指令");
+		expect(errors.prompt).toBe("请填写自动化指令");
 		expect(errors.cwd).toBe("请选择项目目录");
+	});
+
+	it("validates on_signal requires both probe and prompt, while never requires only probe", () => {
+		const sigEmpty = validateForm({
+			...base,
+			agentTrigger: "on_signal",
+			probeCommand: "",
+			prompt: "",
+		});
+		expect(sigEmpty.errors.probe).toBe("请填写本地脚本或命令");
+		expect(sigEmpty.errors.prompt).toBe("请填写自动化指令");
+
+		const scriptOnlyOk = validateForm({
+			...base,
+			agentTrigger: "never",
+			probeCommand: "echo ok",
+			prompt: "",
+		});
+		expect(scriptOnlyOk.errors).toEqual({});
 	});
 });
 
@@ -279,8 +302,9 @@ describe("deriveName", () => {
 		const long = "a".repeat(40);
 		expect(deriveName(long)).toBe(`${"a".repeat(24)}…`);
 	});
-	it("falls back to the default name", () => {
-		expect(deriveName("   ")).toBe("未命名定时任务");
+	it("falls back to probe description then the default name", () => {
+		expect(deriveName("   ", "检查错误日志")).toBe("检查错误日志");
+		expect(deriveName("   ")).toBe("未命名自动化");
 	});
 });
 
@@ -300,7 +324,7 @@ describe("buildDraft", () => {
 		expect(d.thinking).toBe("high");
 		expect(d.name).toBe("run tests");
 	});
-	it("passes null model for the default", () => {
+	it("passes null model for the default while preserving explicit thinking", () => {
 		const d = buildDraft(
 			{ ...form, modelSel: "" },
 			{ kind: "daily", time: "09:00", weekdays: [] },
@@ -308,6 +332,20 @@ describe("buildDraft", () => {
 		);
 		expect(d.model).toBeNull();
 		expect(d.thinking).toBeNull();
+
+		const dThinking = buildDraft(
+			{ ...form, modelSel: ":high" },
+			{ kind: "daily", time: "09:00", weekdays: [] },
+			null,
+		);
+		expect(dThinking.model).toBeNull();
+		expect(dThinking.thinking).toBe("high");
+		expect(
+			formFromTemplate(
+				{ model: null, thinking: "high", prompt: "x", cwd: "/tmp/p" },
+				"/tmp/p",
+			).modelSel,
+		).toBe(":high");
 	});
 	it("clears endAt and maxRuns for once cadences", () => {
 		const d = buildDraft(
@@ -337,6 +375,53 @@ describe("buildDraft", () => {
 		expect(d.notify).toBe("important");
 		expect(d.newChatEachRun).toBe(false);
 	});
+	it("carries probe fields and agentTrigger", () => {
+		const d = buildDraft(
+			{
+				...form,
+				prompt: "",
+				probeCommand: "npm test",
+				probeDescription: "跑单测",
+				agentTrigger: "never",
+			},
+			{ kind: "daily", time: "09:00", weekdays: [] },
+			null,
+		);
+		expect(d.name).toBe("跑单测");
+		expect(d.probeCommand).toBe("npm test");
+		expect(d.probeDescription).toBe("跑单测");
+		expect(d.agentTrigger).toBe("never");
+	});
+	it("clears probeCommand and probeDescription when agentTrigger is always", () => {
+		const d = buildDraft(
+			{
+				...form,
+				probeCommand: "git status --porcelain",
+				probeDescription: "检查工作区",
+				agentTrigger: "always",
+			},
+			{ kind: "daily", time: "09:00", weekdays: [] },
+			null,
+		);
+		expect(d.probeCommand).toBeNull();
+		expect(d.probeDescription).toBeNull();
+		expect(d.agentTrigger).toBe("always");
+	});
+	it("forces runMode to local when agentTrigger is never", () => {
+		const d = buildDraft(
+			{
+				...form,
+				prompt: "",
+				runMode: "worktree",
+				probeCommand: "npm test",
+				agentTrigger: "never",
+			},
+			{ kind: "daily", time: "09:00", weekdays: [] },
+			null,
+		);
+		expect(d.runMode).toBe("local");
+		expect(d.agentTrigger).toBe("never");
+	});
 });
 
 describe("formFromSchedule", () => {
@@ -364,6 +449,17 @@ describe("formFromSchedule", () => {
 		notify: "none",
 		newChatEachRun: false,
 	} satisfies Schedule;
+
+	it("does not propagate legacy per-task policies through edit, copy, rename or templates", () => {
+		const schedule = { ...sched, overlapPolicy: "parallel" };
+		const form = formFromSchedule(schedule);
+		expect(defaultForm("/x")).not.toHaveProperty("overlapPolicy");
+		expect(form).not.toHaveProperty("overlapPolicy");
+		expect(buildDraft(form, sched.cadence, null)).not.toHaveProperty("overlapPolicy");
+		expect(draftFromSchedule(schedule)).not.toHaveProperty("overlapPolicy");
+		expect(renameDraft(schedule, "renamed")).not.toHaveProperty("overlapPolicy");
+		expect(formFromTemplate(schedule, "/x")).not.toHaveProperty("overlapPolicy");
+	});
 
 	it("round-trips monthly + end date", () => {
 		const f = formFromSchedule(sched);
@@ -438,8 +534,9 @@ describe("isRecentRun", () => {
 			isRecentRun({ ...run, status: "error" as const }),
 		).toBe(true);
 	});
-	it("is not recent for running/skipped or old runs", () => {
+	it("is not recent for running/skipped, old runs, or probe_quiet runs", () => {
 		expect(isRecentRun({ ...run, status: "running" as const })).toBe(false);
+		expect(isRecentRun({ ...run, phase: "probe_quiet" as const })).toBe(false);
 		expect(
 			isRecentRun({
 				...run,

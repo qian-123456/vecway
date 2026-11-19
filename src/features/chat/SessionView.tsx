@@ -45,6 +45,7 @@ import { useFindHighlights } from "./find/useFindHighlights";
 import { useThreadFind } from "./find/threadFindStore";
 import { TopCapsule } from "./subagents/TopCapsule";
 import { useGutterSelection } from "./gutterSelection";
+import { AutomationDraftCard } from "./automation/AutomationDraftCard";
 
 const EMPTY_PENDING_UI: PendingUiRequest[] = [];
 const NO_REF = { current: null };
@@ -79,6 +80,10 @@ export function SessionView({
 	useQueueAutoSend(sessionId, streaming);
 	const alive = useLive((s) => s.sessions[sessionId]?.alive === true);
 	const interruption = useLive((s) => s.sessions[sessionId]?.interruption);
+	const automationState = useLive((s) => s.sessions[sessionId]?.automationState);
+	const visibleAutomationDrafts = (automationState?.drafts ?? []).filter(
+		(d) => d.status === "pending" || d.status === "saved",
+	);
 	const pendingUi = useLive((s) => s.sessions[sessionId]?.pendingUi ?? EMPTY_PENDING_UI);
 	const setPendingUi = useLive((s) => s.setPendingUi);
 	const ask = useAskRouting(sessionId, pendingUi);
@@ -403,6 +408,17 @@ export function SessionView({
 								<Notice tone="warning">
 									{t(interruption === "restart" ? "chatView.streamRestore.restarted" : interruption === "stop" ? "chatView.streamRestore.stopped" : "chatView.streamRestore.disconnected")}
 								</Notice>
+							</div>
+						)}
+						{!compact && visibleAutomationDrafts.length > 0 && (
+							<div className="space-y-1.5">
+								{visibleAutomationDrafts.map((draftStatus) => (
+									<AutomationDraftCard
+										key={draftStatus.draftId}
+										sessionId={sessionId}
+										status={draftStatus}
+									/>
+								))}
 							</div>
 						)}
 						<StopTimeoutBanner sessionId={sessionId} />

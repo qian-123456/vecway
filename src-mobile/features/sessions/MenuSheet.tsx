@@ -288,7 +288,7 @@ export function MenuSheet({
 							className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-m-md px-2 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
 						>
 							<Clock {...I} size={18} className="shrink-0 text-m-text-2" />
-							<span className="whitespace-nowrap">定时任务</span>
+							<span className="whitespace-nowrap">自动化</span>
 						</button>
 						<span aria-hidden="true" className="my-auto h-5 w-px shrink-0 bg-m-border" />
 						<button

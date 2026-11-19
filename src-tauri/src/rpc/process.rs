@@ -537,6 +537,8 @@ pub fn prompt_shape_args(
     // `/skill:visualize` command in omp. A short standing hint tells the model
     // to use it proactively; the skill alone is only used when asked.
     let viz_dir = crate::visualize::spawn_plugin_dir(settings.visualize_enabled);
+    let automation_ext = paths::automation_extension_path();
+    let has_automation_ext = automation_ext.exists();
     let mut append_prompt = append_system_prompt
         .map(str::trim)
         .filter(|t| !t.is_empty())
@@ -553,8 +555,8 @@ pub fn prompt_shape_args(
         args.push(append_prompt);
     }
     // Extension list and order are part of the prompt shape: the status extension
-    // reports progress (§8), checkpoints is opt-in (§8), privacy placeholders and
-    // plan mode (`/plan`, which omp only ships in its TUI) are always on.
+    // reports progress (§8), checkpoints is opt-in (§8), privacy placeholders,
+    // plan mode (`/plan`), and automations (`vecway_automation`) follow when installed.
     let status_ext = paths::extension_path();
     if status_ext.exists() {
         args.push("-e".to_string());
@@ -576,6 +578,10 @@ pub fn prompt_shape_args(
     if plan_ext.exists() {
         args.push("-e".to_string());
         args.push(plan_ext.to_string_lossy().into_owned());
+    }
+    if has_automation_ext {
+        args.push("-e".to_string());
+        args.push(automation_ext.to_string_lossy().into_owned());
     }
     if let Some(dir) = viz_dir {
         args.push("--plugin-dir".to_string());
@@ -761,7 +767,23 @@ impl CommandObservation {
 /// model switch) to be dispatched while a long command (e.g. `compact`) runs.
 pub async fn send_command(
     handle: &Arc<SessionHandle>,
+    command: Value,
+) -> Result<Value, String> {
+    send_command_inner(handle, command, None).await
+}
+
+pub(crate) async fn send_automation_resume(
+    handle: &Arc<SessionHandle>,
+    command: Value,
+    attempt: &str,
+) -> Result<Value, String> {
+    send_command_inner(handle, command, Some(attempt)).await
+}
+
+async fn send_command_inner(
+    handle: &Arc<SessionHandle>,
     mut command: Value,
+    automation_resume: Option<&str>,
 ) -> Result<Value, String> {
     let mut observation = CommandObservation::new(&command);
     let result = async {
@@ -772,6 +794,16 @@ pub async fn send_command(
             let _dispatch = handle.dispatch_lock.lock().await;
             if !handle.alive.load(Ordering::SeqCst) || *handle.shutdown.borrow() {
                 return Err("session process is not running".into());
+            }
+            let guarded = rpc::automation_resume_guarded(handle.pid);
+            if automation_resume.is_some_and(|attempt| !rpc::automation_resume_owned(handle.pid, attempt)) {
+                return Err("自动化恢复保护已失效".into());
+            }
+            if guarded && automation_resume.is_none() && !matches!(
+                command.get("type").and_then(Value::as_str),
+                Some("get_state" | "get_entries" | "get_subagents" | "abort")
+            ) {
+                return Err("自动化恢复运行中，暂不能执行此操作".into());
             }
             let id = format!("req_{}", REQ_COUNTER.fetch_add(1, Ordering::Relaxed));
             command["id"] = json!(id);
@@ -1436,6 +1468,7 @@ async fn monitor(
 }
 
 fn publish_exit(sink: &OutSink, handle: &Arc<SessionHandle>, code: Option<i32>) {
+    rpc::clear_process_automation_guard(handle.pid);
     let mut output_closed = handle.output_closed.lock();
     *output_closed = true;
     let session_id = handle.session_id.read().clone();

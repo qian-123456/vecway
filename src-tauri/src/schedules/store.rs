@@ -6,8 +6,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
 
 use crate::contracts::{
-    Schedule, ScheduleCadence, ScheduleDraft, ScheduleLifecycle, ScheduleNotify, ScheduleRun,
-    ScheduleRunMode, ScheduleRunStatus,
+    Schedule, ScheduleAgentTrigger, ScheduleCadence, ScheduleDraft, ScheduleLifecycle,
+    ScheduleNotify, AutomationOverlapPolicy, ScheduleRun, ScheduleRunMode, ScheduleRunPhase, ScheduleRunStatus,
 };
 
 pub fn parse_time(s: &str) -> Option<(u32, u32)> {
@@ -65,7 +65,7 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 pub fn next_run(cadence: &ScheduleCadence, after: DateTime<Local>) -> Option<DateTime<Local>> {
     match cadence {
         ScheduleCadence::Interval { minutes } => {
-            let mins = (*minutes).max(5) as i64;
+            let mins = (*minutes).max(1) as i64;
             Some(after + Duration::minutes(mins))
         }
         ScheduleCadence::Once { at } => DateTime::parse_from_rfc3339(at)
@@ -235,11 +235,34 @@ pub fn derive_lifecycle(s: &Schedule, _has_run: bool, now: DateTime<Local>) -> S
 
 /// Draft validation shared by create and edit; errors are Chinese UI strings.
 fn validate_draft(draft: &ScheduleDraft, prev: Option<&Schedule>) -> Result<(), String> {
+    let has_probe = draft
+        .probe_command
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty());
+    let has_prompt = !draft.prompt.trim().is_empty();
+    match draft.agent_trigger {
+        ScheduleAgentTrigger::Never => {
+            if !has_probe {
+                return Err("请填写本地脚本或命令".to_string());
+            }
+        }
+        ScheduleAgentTrigger::OnSignal => {
+            if !has_probe || !has_prompt {
+                return Err("请填写前置脚本与唤醒后的处理指令".to_string());
+            }
+        }
+        ScheduleAgentTrigger::Always => {
+            if !has_prompt {
+                return Err("请填写自动化指令".to_string());
+            }
+        }
+    }
     let now = Local::now();
     match &draft.cadence {
         ScheduleCadence::Interval { minutes } => {
-            if *minutes < 5 {
-                return Err("间隔至少 5 分钟".to_string());
+            if *minutes < 1 {
+                return Err("间隔至少 1 分钟".to_string());
             }
         }
         ScheduleCadence::Daily {
@@ -302,12 +325,61 @@ pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+fn parse_agent_trigger(s: &str) -> ScheduleAgentTrigger {
+    match s {
+        "on_signal" => ScheduleAgentTrigger::OnSignal,
+        "never" => ScheduleAgentTrigger::Never,
+        _ => ScheduleAgentTrigger::Always,
+    }
+}
+
+fn agent_trigger_as_str(t: ScheduleAgentTrigger) -> &'static str {
+    match t {
+        ScheduleAgentTrigger::Always => "always",
+        ScheduleAgentTrigger::OnSignal => "on_signal",
+        ScheduleAgentTrigger::Never => "never",
+    }
+}
+
+fn parse_result_mode(s: &str) -> crate::contracts::ScheduleResultMode {
+    match s {
+        "llm_summary" => crate::contracts::ScheduleResultMode::LlmSummary,
+        _ => crate::contracts::ScheduleResultMode::Structured,
+    }
+}
+
+fn result_mode_as_str(m: crate::contracts::ScheduleResultMode) -> &'static str {
+    match m {
+        crate::contracts::ScheduleResultMode::Structured => "structured",
+        crate::contracts::ScheduleResultMode::LlmSummary => "llm_summary",
+    }
+}
+
+fn parse_run_phase(s: &str) -> ScheduleRunPhase {
+    match s {
+        "probe_quiet" => ScheduleRunPhase::ProbeQuiet,
+        "probe_only" => ScheduleRunPhase::ProbeOnly,
+        "awaiting" => ScheduleRunPhase::Awaiting,
+        _ => ScheduleRunPhase::Agent,
+    }
+}
+
+fn run_phase_as_str(p: ScheduleRunPhase) -> &'static str {
+    match p {
+        ScheduleRunPhase::ProbeQuiet => "probe_quiet",
+        ScheduleRunPhase::ProbeOnly => "probe_only",
+        ScheduleRunPhase::Agent => "agent",
+        ScheduleRunPhase::Awaiting => "awaiting",
+    }
+}
+
 fn row_to_schedule(r: &Row) -> rusqlite::Result<Schedule> {
     let run_mode_str: String = r.get(4)?;
     let cadence_str: String = r.get(5)?;
     let enabled_int: i32 = r.get(9)?;
     let notify_str: String = r.get(17)?;
     let new_chat_int: i32 = r.get(18)?;
+    let agent_trigger_str: String = r.get(24)?;
 
     let run_mode = match run_mode_str.as_str() {
         "worktree" => ScheduleRunMode::Worktree,
@@ -350,6 +422,16 @@ fn row_to_schedule(r: &Row) -> rusqlite::Result<Schedule> {
             .and_then(|v| u32::try_from(v).ok()),
         runs_done: r.get::<_, i64>(20)?.max(0) as u32,
         lifecycle: ScheduleLifecycle::Active,
+        probe_command: r.get(22)?,
+        probe_description: r.get(23)?,
+        agent_trigger: parse_agent_trigger(&agent_trigger_str),
+        last_run_phase: r
+            .get::<_, Option<String>>(25)?
+            .as_deref()
+            .map(parse_run_phase),
+        last_run_session_id: r.get(26)?,
+        result_mode: parse_result_mode(&r.get::<_, String>(27)?),
+        invokes_external_model: r.get::<_, i32>(28)? != 0,
     };
     let lifecycle = derive_lifecycle(&schedule, has_run, Local::now());
     Ok(Schedule {
@@ -370,6 +452,7 @@ fn parse_run_status(s: &str) -> ScheduleRunStatus {
 fn row_to_run(r: &Row) -> rusqlite::Result<ScheduleRun> {
     let status_str: String = r.get(3)?;
     let status = parse_run_status(&status_str);
+    let phase_str: String = r.get(7)?;
 
     Ok(ScheduleRun {
         id: r.get(0)?,
@@ -379,21 +462,70 @@ fn row_to_run(r: &Row) -> rusqlite::Result<ScheduleRun> {
         started_at: r.get(4)?,
         finished_at: r.get(5)?,
         summary: r.get(6)?,
+        phase: parse_run_phase(&phase_str),
+        probe_output: r.get(8)?,
     })
 }
 
 const SCHEDULE_COLS: &str = "id, name, prompt, cwd, run_mode, cadence, model, thinking, approval_mode, enabled, next_run_at, last_run_at, created_at, updated_at, end_at, \
     (SELECT status FROM schedule_runs WHERE schedule_runs.schedule_id = schedules.id ORDER BY started_at DESC LIMIT 1), \
     (SELECT count(*) FROM schedule_runs WHERE schedule_runs.schedule_id = schedules.id), \
-    notify, new_chat_each_run, max_runs, runs_done, mode";
+    notify, new_chat_each_run, max_runs, runs_done, mode, \
+    probe_command, probe_description, agent_trigger, \
+    (SELECT phase FROM schedule_runs WHERE schedule_runs.schedule_id = schedules.id ORDER BY started_at DESC LIMIT 1), \
+    (SELECT session_id FROM schedule_runs WHERE schedule_runs.schedule_id = schedules.id ORDER BY started_at DESC LIMIT 1), \
+    result_mode, invokes_external_model";
 
-const RUN_COLS: &str = "id, schedule_id, session_id, status, started_at, finished_at, summary";
+const RUN_COLS: &str =
+    "id, schedule_id, session_id, status, started_at, finished_at, summary, phase, probe_output";
 pub fn list(conn: &Connection) -> Result<Vec<Schedule>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {SCHEDULE_COLS} FROM schedules ORDER BY created_at DESC"
     ))?;
     let rows = stmt.query_map([], row_to_schedule)?;
     rows.collect()
+}
+
+/// Atomically persist `<data_dir>/automations/catalog.json` so the OMP automation
+/// extension can inspect existing automations synchronously without spawning a DB reader.
+pub fn write_catalog_snapshot(conn: &Connection) {
+    let Ok(items) = list(conn) else {
+        return;
+    };
+    let dir = crate::paths::automations_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let summary: Vec<serde_json::Value> = items
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "enabled": s.enabled,
+                "lifecycle": s.lifecycle,
+                "cwd": s.cwd,
+                "cadence": s.cadence,
+                "agentTrigger": s.agent_trigger,
+                "resultMode": s.result_mode,
+                "invokesExternalModel": s.invokes_external_model,
+                "model": s.model,
+                "thinking": s.thinking,
+                "probeDescription": s.probe_description,
+                "probeCommand": s.probe_command,
+                "nextRunAt": s.next_run_at,
+                "lastRunStatus": s.last_run_status,
+            })
+        })
+        .collect();
+    let Ok(body) = serde_json::to_string_pretty(&summary) else {
+        return;
+    };
+    let target = dir.join("catalog.json");
+    let tmp = dir.join(format!("catalog.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, body).is_ok() {
+        let _ = std::fs::rename(&tmp, &target);
+    }
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Option<Schedule>, rusqlite::Error> {
@@ -459,6 +591,21 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
         ScheduleCadence::Once { .. } => None,
         _ => draft.max_runs,
     };
+    let probe_command = draft
+        .probe_command
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let probe_description = draft
+        .probe_description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let agent_trigger_str = agent_trigger_as_str(draft.agent_trigger);
+    let result_mode_str = result_mode_as_str(draft.result_mode);
+    let invokes_external_model_int = draft.invokes_external_model as i32;
 
     if let (Some(id), Some(prev)) = (draft.id.as_ref(), prev) {
         let rescheduled_once = match (&prev.cadence, &cadence) {
@@ -513,7 +660,9 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
                  model = ?7, thinking = ?8, approval_mode = ?9, enabled = ?10,
                  next_run_at = ?11, end_at = ?12, updated_at = ?13,
                  notify = ?14, new_chat_each_run = ?15, max_runs = ?16,
-                 last_run_at = CASE WHEN ?17 THEN NULL ELSE last_run_at END, mode = ?18
+                 last_run_at = CASE WHEN ?17 THEN NULL ELSE last_run_at END, mode = ?18,
+                 probe_command = ?19, probe_description = ?20, agent_trigger = ?21,
+                 result_mode = ?22, invokes_external_model = ?23
              WHERE id = ?1",
             params![
                 id,
@@ -534,13 +683,18 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
                 max_runs,
                 rescheduled_once,
                 draft.mode.as_str(),
+                probe_command,
+                probe_description,
+                agent_trigger_str,
+                result_mode_str,
+                invokes_external_model_int,
             ],
         )
         .map_err(|e| e.to_string())?;
 
         return get(conn, id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| "定时任务不存在".to_string());
+            .ok_or_else(|| "自动化不存在".to_string());
     }
 
     let id = draft
@@ -557,8 +711,8 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
     let enabled = (draft.enabled && next_run_at.is_some()) as i32;
 
     conn.execute(
-        "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, model, thinking, approval_mode, enabled, next_run_at, last_run_at, end_at, notify, new_chat_each_run, max_runs, created_at, updated_at, mode)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12, ?13, ?14, ?15, ?16, ?16, ?17)",
+        "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, model, thinking, approval_mode, enabled, next_run_at, last_run_at, end_at, notify, new_chat_each_run, max_runs, created_at, updated_at, mode, probe_command, probe_description, agent_trigger, result_mode, invokes_external_model)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12, ?13, ?14, ?15, ?16, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
             id,
             draft.name,
@@ -577,13 +731,18 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
             max_runs,
             ts,
             draft.mode.as_str(),
+            probe_command,
+            probe_description,
+            agent_trigger_str,
+            result_mode_str,
+            invokes_external_model_int,
         ],
     )
     .map_err(|e| e.to_string())?;
 
     get(conn, &id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "定时任务不存在".to_string())
+        .ok_or_else(|| "自动化不存在".to_string())
 }
 
 pub fn delete(conn: &Connection, id: &str) -> Result<(), String> {
@@ -600,7 +759,7 @@ pub fn delete(conn: &Connection, id: &str) -> Result<(), String> {
 pub fn set_enabled(conn: &Connection, id: &str, enabled: bool) -> Result<Schedule, String> {
     let prev = get(conn, id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "定时任务不存在".to_string())?;
+        .ok_or_else(|| "自动化不存在".to_string())?;
     let next_run_at = if enabled {
         if matches!(prev.cadence, ScheduleCadence::Once { .. }) && prev.last_run_at.is_some() {
             return Err("一次性任务已执行，请复制或重新创建".to_string());
@@ -632,7 +791,7 @@ pub fn set_enabled(conn: &Connection, id: &str, enabled: bool) -> Result<Schedul
 
     get(conn, id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "定时任务不存在".to_string())
+        .ok_or_else(|| "自动化不存在".to_string())
 }
 
 /// Advance a schedule after a run was dispatched: stamps `last_run_at` and
@@ -698,11 +857,13 @@ pub fn claim_run(
     schedule_id: &str,
     run_id: &str,
     expected_next: Option<&str>,
-) -> Result<(Schedule, ScheduleRun), String> {
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+) -> Result<(Schedule, ScheduleRun, AutomationOverlapPolicy), String> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let schedule = get(&tx, schedule_id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "定时任务不存在".to_string())?;
+        .ok_or_else(|| "自动化不存在".to_string())?;
+    let policy = crate::db::load_automation_overlap_policy(&tx);
     let now = Local::now();
     if let Some(expected) = expected_next {
         let due = DateTime::parse_from_rfc3339(expected)
@@ -712,6 +873,12 @@ pub fn claim_run(
             return Err("任务的计划时间已改变".to_string());
         }
     }
+    let fired_at = if policy == AutomationOverlapPolicy::Skip {
+        now
+    } else {
+        expected_next.and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Local)).unwrap_or(now)
+    };
     if schedule
         .max_runs
         .is_some_and(|max| schedule.runs_done >= max)
@@ -721,21 +888,66 @@ pub fn claim_run(
     if matches!(schedule.cadence, ScheduleCadence::Once { .. }) && schedule.last_run_at.is_some() {
         return Err("一次性任务已执行，请先改期或复制任务".to_string());
     }
-    if has_active_run(&tx, schedule_id).map_err(|e| e.to_string())? {
-        if expected_next.is_some() {
-            create_run(
-                &tx,
-                run_id,
-                schedule_id,
-                None,
-                ScheduleRunStatus::Skipped,
-                Some("上一次运行仍在进行中，已跳过"),
-            )
-            .map_err(|e| e.to_string())?;
-            advance_after_run(&tx, &schedule, now).map_err(|e| e.to_string())?;
-            tx.commit().map_err(|e| e.to_string())?;
-        }
+    let active = has_active_run(&tx, schedule_id).map_err(|e| e.to_string())?;
+    if expected_next.is_none() && active {
         return Err("该任务上一次运行仍在进行中".to_string());
+    }
+    if let Some(expected) = expected_next {
+        let serial = policy != AutomationOverlapPolicy::Parallel;
+        let awaiting = if serial {
+            find_open_awaiting_session(&tx, schedule_id).map_err(|e| e.to_string())?
+        } else {
+            None
+        };
+        let pending: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schedule_pending WHERE schedule_id = ?1)",
+            params![schedule_id],
+            |r| r.get(0),
+        ).map_err(|e| e.to_string())?;
+        let active_waiting: Option<String> = if active {
+            tx.query_row(
+                "SELECT COALESCE(summary, '等待人工确认') FROM schedule_runs
+                 WHERE schedule_id = ?1 AND status = 'running' AND phase = 'awaiting' LIMIT 1",
+                params![schedule_id], |r| r.get(0),
+            ).optional().map_err(|e| e.to_string())?
+        } else {
+            None
+        };
+        if serial && (active || awaiting.is_some() || pending) {
+            let reason = if let Some(reason) = active_waiting.as_deref() {
+                reason
+            } else if awaiting.is_some() {
+                "等待人工确认"
+            } else if active {
+                "上一次运行仍在进行中"
+            } else {
+                "此前触发仍在排队"
+            };
+            match policy {
+                AutomationOverlapPolicy::Skip => {
+                    let summary = format!("{reason}，已跳过");
+                    let sid = awaiting.as_deref().filter(|s| !s.is_empty());
+                    create_run(&tx, run_id, schedule_id, sid, ScheduleRunStatus::Skipped, Some(&summary))
+                        .map_err(|e| e.to_string())?;
+                    update_run_with_phase(&tx, run_id, sid, ScheduleRunStatus::Skipped,
+                        Some(&now_rfc3339()), Some(&summary),
+                        if awaiting.is_some() { ScheduleRunPhase::Awaiting } else { ScheduleRunPhase::Agent },
+                        None).map_err(|e| e.to_string())?;
+                }
+                AutomationOverlapPolicy::Coalesce | AutomationOverlapPolicy::Queue => {
+                    if policy == AutomationOverlapPolicy::Queue || !pending {
+                        tx.execute(
+                            "INSERT INTO schedule_pending(schedule_id, scheduled_at, reason) VALUES(?1, ?2, ?3)",
+                            params![schedule_id, expected, reason],
+                        ).map_err(|e| e.to_string())?;
+                    }
+                }
+                AutomationOverlapPolicy::Parallel => unreachable!(),
+            }
+            advance_after_run(&tx, &schedule, fired_at).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            return Err(reason.to_string());
+        }
     }
     let run = create_run(
         &tx,
@@ -747,11 +959,59 @@ pub fn claim_run(
     )
     .map_err(|e| e.to_string())?;
     if expected_next.is_some() || matches!(schedule.cadence, ScheduleCadence::Once { .. }) {
-        advance_after_run(&tx, &schedule, now).map_err(|e| e.to_string())?;
+        advance_after_run(&tx, &schedule, fired_at).map_err(|e| e.to_string())?;
     }
     record_run_start(&tx, schedule_id, &run.started_at).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
-    Ok((schedule, run))
+    Ok((schedule, run, policy))
+}
+
+/// Claim the oldest accepted occurrence using the current global policy.
+/// Policy changes never discard or re-coalesce accepted rows; they survive
+/// restarts and do not advance cadence twice. Existing run-cap behavior remains.
+pub fn claim_pending_run(
+    conn: &Connection,
+    schedule_id: &str,
+    run_id: &str,
+) -> Result<Option<(Schedule, ScheduleRun, AutomationOverlapPolicy)>, String> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(schedule) = get(&tx, schedule_id).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let policy = crate::db::load_automation_overlap_policy(&tx);
+    let pending_id: Option<i64> = tx.query_row(
+        "SELECT id FROM schedule_pending WHERE schedule_id = ?1 ORDER BY id LIMIT 1",
+        params![schedule_id], |r| r.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    let Some(pending_id) = pending_id else { return Ok(None); };
+    if schedule.max_runs.is_some_and(|max| schedule.runs_done >= max) {
+        tx.execute("DELETE FROM schedule_pending WHERE schedule_id = ?1", params![schedule_id])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok(None);
+    }
+    if policy != AutomationOverlapPolicy::Parallel
+        && (has_active_run(&tx, schedule_id).map_err(|e| e.to_string())?
+            || find_open_awaiting_session(&tx, schedule_id).map_err(|e| e.to_string())?.is_some())
+    {
+        return Ok(None);
+    }
+    let run = create_run(&tx, run_id, schedule_id, None, ScheduleRunStatus::Running, None)
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM schedule_pending WHERE id = ?1", params![pending_id])
+        .map_err(|e| e.to_string())?;
+    record_run_start(&tx, schedule_id, &run.started_at).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Some((schedule, run, policy)))
+}
+
+pub fn pending_schedule_ids(conn: &Connection) -> Result<Vec<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT schedule_id FROM schedule_pending GROUP BY schedule_id ORDER BY MIN(id)",
+    )?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    rows.collect()
 }
 /// Due = parsed instant of `next_run_at` <= `before`. Compared as instants in Rust:
 /// stored strings carry local UTC offsets that differ across DST / timezone changes,
@@ -812,9 +1072,9 @@ pub fn create_run(
     };
 
     conn.execute(
-        "INSERT INTO schedule_runs(id, schedule_id, session_id, status, started_at, finished_at, summary)
-         VALUES(?1, ?2, ?3, ?4, ?5, NULL, ?6)",
-        params![id, schedule_id, session_id, status_str, ts, summary],
+        "INSERT INTO schedule_runs(id, schedule_id, session_id, status, started_at, finished_at, summary, phase, probe_output, owner_pid)
+         VALUES(?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, NULL, ?8)",
+        params![id, schedule_id, session_id, status_str, ts, summary, run_phase_as_str(ScheduleRunPhase::Agent), std::process::id()],
     )?;
 
     Ok(ScheduleRun {
@@ -825,9 +1085,12 @@ pub fn create_run(
         started_at: ts,
         finished_at: None,
         summary: summary.map(str::to_string),
+        phase: ScheduleRunPhase::Agent,
+        probe_output: None,
     })
 }
 
+#[allow(dead_code)]
 pub fn update_run(
     conn: &Connection,
     run_id: &str,
@@ -835,6 +1098,29 @@ pub fn update_run(
     status: ScheduleRunStatus,
     finished_at: Option<&str>,
     summary: Option<&str>,
+) -> Result<(), rusqlite::Error> {
+    update_run_with_phase(
+        conn,
+        run_id,
+        session_id,
+        status,
+        finished_at,
+        summary,
+        ScheduleRunPhase::Agent,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_run_with_phase(
+    conn: &Connection,
+    run_id: &str,
+    session_id: Option<&str>,
+    status: ScheduleRunStatus,
+    finished_at: Option<&str>,
+    summary: Option<&str>,
+    phase: ScheduleRunPhase,
+    probe_output: Option<&str>,
 ) -> Result<(), rusqlite::Error> {
     let status_str = match status {
         ScheduleRunStatus::Running => "running",
@@ -845,9 +1131,22 @@ pub fn update_run(
 
     conn.execute(
         "UPDATE schedule_runs
-         SET session_id = COALESCE(?2, session_id), status = ?3, finished_at = ?4, summary = ?5
+         SET session_id = COALESCE(?2, session_id),
+             status = ?3,
+             finished_at = ?4,
+             summary = ?5,
+             phase = ?6,
+             probe_output = COALESCE(?7, probe_output)
          WHERE id = ?1",
-        params![run_id, session_id, status_str, finished_at, summary],
+        params![
+            run_id,
+            session_id,
+            status_str,
+            finished_at,
+            summary,
+            run_phase_as_str(phase),
+            probe_output,
+        ],
     )?;
     Ok(())
 }
@@ -864,6 +1163,15 @@ pub fn list_runs(
     rows.collect()
 }
 
+pub fn list_awaiting_runs(conn: &Connection, schedule_id: &str) -> Result<Vec<ScheduleRun>, rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {RUN_COLS} FROM schedule_runs WHERE schedule_id = ?1 AND phase = 'awaiting'
+         AND status NOT IN ('running', 'skipped') ORDER BY started_at, id"
+    ))?;
+    let rows = stmt.query_map(params![schedule_id], row_to_run)?;
+    rows.collect()
+}
+
 pub fn has_active_run(conn: &Connection, schedule_id: &str) -> Result<bool, rusqlite::Error> {
     let count: i64 = conn.query_row(
         "SELECT count(*) FROM schedule_runs WHERE schedule_id = ?1 AND status = 'running'",
@@ -873,19 +1181,122 @@ pub fn has_active_run(conn: &Connection, schedule_id: &str) -> Result<bool, rusq
     Ok(count > 0)
 }
 
+/// Return any unresolved paused run, regardless of its Inbox acknowledgement.
+pub fn find_open_awaiting_session(
+    conn: &Connection,
+    schedule_id: &str,
+) -> Result<Option<String>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT COALESCE(session_id, '') FROM schedule_runs
+         WHERE schedule_id = ?1 AND phase = 'awaiting' AND status != 'skipped'
+         ORDER BY started_at, id LIMIT 1",
+        params![schedule_id], |r| r.get(0),
+    ).optional()
+}
+
+fn process_alive(owner: Option<u32>) -> bool {
+    #[cfg(unix)]
+    {
+        owner.is_some_and(|pid| {
+            let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        })
+    }
+    #[cfg(not(unix))]
+    { owner.is_some() }
+}
+
+/// Reserve a uniquely identified continuation attempt without releasing the
+/// original run. A dead process's unfinished attempt can be replaced.
+pub fn begin_awaiting_resume(
+    conn: &Connection, schedule_id: &str, run_id: &str, session_id: &str, attempt: &str,
+) -> Result<(), String> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let owner: Option<Option<u32>> = tx.query_row(
+        "SELECT resume_owner_pid FROM schedule_runs WHERE id = ?1 AND schedule_id = ?2
+         AND session_id = ?3 AND phase = 'awaiting' AND status NOT IN ('running', 'skipped')",
+        params![run_id, schedule_id, session_id], |r| r.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    let Some(owner) = owner else { return Err("该运行不存在或不再等待确认".to_string()); };
+    if process_alive(owner) {
+        return Err("该运行已有恢复任务".to_string());
+    }
+    tx.execute("UPDATE schedule_runs SET resume_attempt = ?2, resume_owner_pid = ?3 WHERE id = ?1",
+        params![run_id, attempt, std::process::id()]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub fn abandon_awaiting_resume(conn: &Connection, run_id: &str, attempt: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE schedule_runs SET resume_attempt = NULL, resume_owner_pid = NULL
+         WHERE id = ?1 AND resume_attempt = ?2",
+        params![run_id, attempt],
+    )?;
+    Ok(())
+}
+
+/// Called only after the dedicated request's correlated successful result.
+pub fn finish_awaiting_resume(conn: &Connection, run_id: &str, session_id: &str, attempt: &str) -> rusqlite::Result<bool> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let changed = tx.execute(
+        "UPDATE schedule_runs SET phase = 'agent', status = 'ok', finished_at = ?4,
+         summary = '确认后继续运行已完成', resume_attempt = NULL, resume_owner_pid = NULL
+         WHERE id = ?1 AND session_id = ?2 AND resume_attempt = ?3 AND phase = 'awaiting'",
+        params![run_id, session_id, attempt, now_rfc3339()],
+    )?;
+    if changed > 0 {
+        tx.execute("UPDATE todos SET status = 'done', updated_at = ?2 WHERE dedupe_key = ?1 AND status = 'open'",
+            params![format!("sched:{run_id}"), now_rfc3339()])?;
+    }
+    tx.commit()?;
+    Ok(changed > 0)
+}
+
+/// Explicit user override. This does not stop or complete the old session.
+pub fn release_awaiting(conn: &Connection, schedule_id: &str, run_id: &str) -> Result<(), String> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let changed = tx.execute(
+        "UPDATE schedule_runs
+         SET phase = 'agent', status = 'error', resume_attempt = NULL, resume_owner_pid = NULL,
+             finished_at = ?3, summary = '用户明确解除等待，原运行未确认完成'
+         WHERE id = ?1 AND schedule_id = ?2 AND phase = 'awaiting' AND status != 'running' AND status != 'skipped'",
+        params![run_id, schedule_id, now_rfc3339()],
+    ).map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("该运行不存在或不再等待确认".to_string());
+    }
+    tx.execute(
+        "UPDATE todos SET status = 'done', updated_at = ?2 WHERE dedupe_key = ?1 AND status = 'open'",
+        params![format!("sched:{run_id}"), now_rfc3339()],
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Settle runs left `running` by a previous app process (crash, force quit,
 /// power loss) so they cannot block the schedule forever: `has_active_run`
 /// would keep reporting a run in progress and every later trigger would be
 /// skipped. Called once at scheduler startup, before the catch-up pass.
 /// Returns how many runs were closed.
 pub fn recover_stale_runs(conn: &Connection, at: &str) -> Result<usize, rusqlite::Error> {
-    conn.execute(
-        "UPDATE schedule_runs
-         SET status = 'error', finished_at = ?1,
-             summary = COALESCE(NULLIF(TRIM(summary), ''), '应用异常退出，本次运行未完成')
-         WHERE status = 'running'",
-        params![at],
-    )
+    let mut stmt = conn.prepare("SELECT id, owner_pid FROM schedule_runs WHERE status = 'running'")?;
+    let runs = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<u32>>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    let mut count = 0;
+    for (id, owner) in runs {
+        if !process_alive(owner) {
+            count += conn.execute(
+                "UPDATE schedule_runs SET status = 'error', finished_at = ?2,
+                 summary = COALESCE(NULLIF(TRIM(summary), ''), '应用异常退出，本次运行未完成')
+                 WHERE id = ?1 AND status = 'running'",
+                params![id, at],
+            )?;
+        }
+    }
+    Ok(count)
 }
 
 /// File path of the session used by this schedule's most recent run that has

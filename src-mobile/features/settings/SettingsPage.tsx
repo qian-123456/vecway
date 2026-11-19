@@ -26,7 +26,7 @@ import {
 	WebSheet,
 } from "./sheets";
 import type { MobileInfo } from "./sheets/ConnectionSheet";
-import { APPROVAL_MODES, isApprovalMode, SCHEMES, type ApprovalMode, type OmpValue } from "./settingsMap";
+import { APPROVAL_MODES, isApprovalMode, isAutomationOverlapPolicy, SCHEMES, type ApprovalMode, type OmpValue } from "./settingsMap";
 
 interface SettingsData {
 	appVersion?: string | null;
@@ -34,6 +34,7 @@ interface SettingsData {
 	defaultModel?: string | null;
 	defaultModelSource?: string | null;
 	defaultApprovalMode?: string | null;
+	automationOverlapPolicy?: string | null;
 	omp?: Record<string, OmpValue>;
 	ompError?: string | null;
 }
@@ -81,6 +82,7 @@ export function SettingsPage() {
 	}, [load]);
 
 	const mode: ApprovalMode | null = isApprovalMode(data?.defaultApprovalMode) ? data.defaultApprovalMode : null;
+	const automationOverlapPolicy = isAutomationOverlapPolicy(data?.automationOverlapPolicy) ? data.automationOverlapPolicy : null;
 	const setOmp = useCallback((key: string, value: OmpValue) => setData((d) => (d ? { ...d, omp: { ...d.omp, [key]: value } } : d)), []);
 	// Retain the selected instance on close for its exit animation and local draft.
 	const close = () => setSheetOpen(false);
@@ -219,6 +221,8 @@ export function SettingsPage() {
 				defaultModel={data?.defaultModel}
 				defaultModelSource={data?.defaultModelSource}
 				onModeChange={(m) => setData((d) => (d ? { ...d, defaultApprovalMode: m } : d))}
+				automationOverlapPolicy={automationOverlapPolicy}
+				onAutomationOverlapPolicyChange={(policy) => setData((d) => (d ? { ...d, automationOverlapPolicy: policy } : d))}
 			/>}
 			{activeSheet === "appearance" && <AppearanceSheet open={sheetOpen} onClose={close} />}
 			{activeSheet === "notifications" && <NotifySheet open={sheetOpen} onClose={close} />}

@@ -64,7 +64,7 @@ describe("MenuSheet (Left Navigation Sheet)", () => {
 		fireEvent.click(searchBtn);
 		expect(pushMock).toHaveBeenCalledWith("/search");
 
-		const schedulesBtn = screen.getByRole("button", { name: /定时任务/i });
+		const schedulesBtn = screen.getByRole("button", { name: /自动化/i });
 		expect(schedulesBtn).not.toBeNull();
 		fireEvent.click(schedulesBtn);
 		expect(pushMock).toHaveBeenCalledWith("/schedules");

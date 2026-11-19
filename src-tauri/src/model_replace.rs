@@ -763,7 +763,7 @@ fn guarded_schedule_update(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
-        .map_err(|error| EditError::Failed(format!("读取定时任务失败：{error}")))?;
+        .map_err(|error| EditError::Failed(format!("读取自动化失败：{error}")))?;
     let Some((stored_model, stored_thinking)) = stored else {
         return Err(EditError::Mismatch);
     };
@@ -792,7 +792,7 @@ fn guarded_schedule_update(
                 stored_thinking
             ],
         )
-        .map_err(|error| EditError::Failed(format!("写入定时任务失败：{error}")))?;
+        .map_err(|error| EditError::Failed(format!("写入自动化失败：{error}")))?;
     if changed == 0 {
         return Err(EditError::Mismatch);
     }
@@ -1058,7 +1058,7 @@ pub async fn model_usage_scan(state: tauri::State<'_, AppState>) -> Result<Model
         (
             list_project_workspaces(&conn)?,
             crate::schedules::store::list(&conn)
-                .map_err(|error| format!("读取定时任务失败：{error}"))?,
+                .map_err(|error| format!("读取自动化失败：{error}"))?,
         )
     };
     let settings = state.settings.read().clone();

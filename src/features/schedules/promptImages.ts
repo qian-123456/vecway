@@ -1,32 +1,55 @@
 /**
- * Scheduled-task instruction ↔ editable text with image tokens.
- * The stored prompt carries `[Image #N: path]` markers (what the chat composer
- * sends), so the run needs no schema change: the prompt text is the payload.
- * The editor shows the same `🖼️ #N` tokens as the composer. Images exist only
- * through their markers, so deleting a token drops its image.
+ * Scheduled-task instruction ↔ Composer draft with inline image & file tokens.
+ * Stored prompts carry `[Image #N: path]` / `[文件 #N: path]` markers (the same
+ * wire form Composer sends), so no backend schema change is required.
  */
-import { imageTokenRegex, type TokenDoc } from "../backlog/ideaTokens";
 
 const WIRE_RE = /\[(?:Image|图片)\s*#?\d*(?:,\s*\d+x\d+)?:\s*([^\]]+?)\s*\]/gu;
+const FILE_WIRE_RE = /\[(?:File|文件)\s*#?\d*:\s*([^\]]+?)\s*\]/gu;
+const COMPOSER_IMAGE_RE = /🖼️\s*#(\d+)/gu;
+const COMPOSER_FILE_RE = /📎\s*#(\d+)/gu;
 
-/** Stored prompt → editable doc (tokens + ordered unique image paths). */
-export function promptToDoc(prompt: string): TokenDoc {
+export interface ComposerAttachmentDoc {
+	text: string;
+	images: string[];
+	files: string[];
+}
+
+/** Stored schedule prompt → Composer store draft + ordered unique image/file paths. */
+export function promptToComposerDoc(prompt: string): ComposerAttachmentDoc {
 	const images: string[] = [];
-	const text = prompt.replace(WIRE_RE, (_m, path: string) => {
+	const files: string[] = [];
+	const withImages = prompt.replace(WIRE_RE, (_m, path: string) => {
 		let i = images.indexOf(path);
 		if (i < 0) {
 			images.push(path);
 			i = images.length - 1;
 		}
-		return `🖼️ #${i + 1}`;
+		return `🖼️#${i + 1}`;
 	});
-	return { text, images };
+	const text = withImages.replace(FILE_WIRE_RE, (_m, path: string) => {
+		let i = files.indexOf(path);
+		if (i < 0) {
+			files.push(path);
+			i = files.length - 1;
+		}
+		return `📎#${i + 1}`;
+	});
+	return { text, images, files };
 }
 
-/** Editable doc → stored prompt with `[Image #N: path]` markers. Orphan tokens are dropped. */
-export function docToPrompt(doc: TokenDoc): string {
-	return doc.text.replace(imageTokenRegex(), (_m, n: string) => {
-		const p = doc.images[Number(n) - 1];
-		return p ? `[Image #${n}: ${p}]` : "";
+/** Composer draft + attachments → stored schedule prompt; orphan tokens are dropped. */
+export function composerDocToPrompt(
+	text: string,
+	images: ReadonlyArray<{ path?: string }>,
+	files: ReadonlyArray<{ path?: string }>,
+): string {
+	const withImages = text.replace(COMPOSER_IMAGE_RE, (_m, n: string) => {
+		const path = images[Number(n) - 1]?.path;
+		return path ? `[Image #${n}: ${path}]` : "";
+	});
+	return withImages.replace(COMPOSER_FILE_RE, (_m, n: string) => {
+		const path = files[Number(n) - 1]?.path;
+		return path ? `[文件 #${n}: ${path}]` : "";
 	});
 }

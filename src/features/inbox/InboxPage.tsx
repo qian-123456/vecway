@@ -2,10 +2,13 @@ import { Check, CheckCheck, CheckCircle2, Loader2, RefreshCw, Settings as Settin
 import { useEffect, useState } from "react";
 import type { Todo } from "../../lib/contracts";
 import { relativeTime } from "../../lib/format";
+import { listSchedules } from "../../lib/ipc";
 import { toast } from "../../lib/toast";
 import { useLive } from "../../stores/live";
 import { markSessionSeen, useSessions } from "../../stores/sessions";
 import { useUi } from "../../stores/ui";
+import { resumeOrOpenAutomationSession } from "../schedules/automationAttention";
+import { useSchedulesStore } from "../schedules/schedulesStore";
 import { useTodos } from "../todos/store";
 import { INBOX_ORDER, type InboxEntry, type InboxKind, type InboxSessionKind } from "./attention";
 import { useInboxGroups } from "./useInboxBadge";
@@ -64,6 +67,12 @@ export function InboxPage() {
 	const openEntry = (e: InboxEntry) => {
 		if (e.type === "session") {
 			selectSession(e.session.id);
+			return;
+		}
+		const payload = e.todo.payload as { scheduleId?: string; awaiting?: boolean } | null;
+		void actTodo(e.todo.id, "done");
+		if (e.todo.sessionId && payload?.awaiting) {
+			void resumeOrOpenAutomationSession({ id: payload.scheduleId ?? "" }, e.todo.sessionId, true);
 		} else if (e.todo.sessionId) {
 			selectSession(e.todo.sessionId);
 		} else {
@@ -343,8 +352,29 @@ function ScheduleRow({
 	onAct: (action: "done" | "ignore") => void;
 }) {
 	const { t } = useT();
+	const payload = todo.payload as { scheduleId?: string; probeError?: boolean; awaiting?: boolean } | null;
 	const actBtn =
-		"inline-flex shrink-0 items-center gap-0.5 rounded-md border border-[var(--border-divider)] px-1.5 py-0.5 text-[11px] text-[var(--text-dim)] hover:bg-[var(--bg-panel)] hover:text-[var(--text)]";
+		"inline-flex shrink-0 whitespace-nowrap items-center gap-0.5 rounded-md border border-[var(--border-divider)] px-1.5 py-0.5 text-[11px] text-[var(--text-dim)] hover:bg-[var(--bg-panel)] hover:text-[var(--text)]";
+	const handleInspectInAutomations = async () => {
+		const sid = payload?.scheduleId;
+		if (!sid) {
+			useUi.getState().setCenter("schedules");
+			return;
+		}
+		let sched = useSchedulesStore.getState().schedules.find((s) => s.id === sid);
+		if (!sched) {
+			try {
+				const all = await listSchedules();
+				sched = all.find((s) => s.id === sid);
+			} catch {
+				// Best-effort lookup; fall back to opening Automations page.
+			}
+		}
+		if (sched) {
+			useSchedulesStore.getState().openWorkspace(sched, "overview");
+		}
+		useUi.getState().setCenter("schedules");
+	};
 	return (
 		<div
 			ref={(el) => {
@@ -354,20 +384,41 @@ function ScheduleRow({
 		>
 			<div className="flex w-full min-w-0 items-center gap-2">
 				<button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-2 text-left">
-					<span className="shrink-0 whitespace-nowrap rounded-[4px] bg-blue-500/15 px-1 text-[9px] font-semibold leading-[14px] text-sky-600 dark:text-sky-300">
-						{t("inbox.badgeSchedule")}
+					<span
+						className={
+							payload?.awaiting
+								? "shrink-0 whitespace-nowrap rounded-[4px] bg-amber-500/15 px-1.5 text-[9.5px] font-semibold leading-[15px] text-amber-500 dark:text-amber-300"
+								: payload?.probeError
+									? "shrink-0 whitespace-nowrap rounded-[4px] bg-rose-500/15 px-1.5 text-[9.5px] font-semibold leading-[15px] text-rose-400"
+									: "shrink-0 whitespace-nowrap rounded-[4px] bg-blue-500/15 px-1.5 text-[9.5px] font-semibold leading-[15px] text-sky-600 dark:text-sky-300"
+						}
+					>
+						{payload?.awaiting
+							? t("schedules.statusBadgeAwaitingConfirm")
+							: payload?.probeError
+								? t("inbox.badgeScriptError")
+								: t("inbox.badgeSchedule")}
 					</span>
 					<span className="min-w-0 flex-1 truncate text-sm font-medium">{todo.title}</span>
 					<span className="shrink-0 text-[11px] tabular-nums text-[var(--text-dim)]">
 						{relativeTime(todo.createdAt)}
 					</span>
 				</button>
+				{payload?.probeError && (
+					<button
+						type="button"
+						className="inline-flex shrink-0 whitespace-nowrap items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-0.5 text-[11px] font-medium text-rose-300 hover:bg-rose-500/20"
+						onClick={() => void handleInspectInAutomations()}
+					>
+						{t("inbox.fixWithAi")}
+					</button>
+				)}
 				<button type="button" className={actBtn} onClick={() => onAct("done")} title={t("inbox.markDoneTitle")}>
-					<Check className="h-3 w-3" />
+					<Check className="h-3 w-3 shrink-0" />
 					{t("inbox.markDone")}
 				</button>
 				<button type="button" className={actBtn} onClick={() => onAct("ignore")} title={t("inbox.ignoreTitle")}>
-					<X className="h-3 w-3" />
+					<X className="h-3 w-3 shrink-0" />
 					{t("inbox.ignore")}
 				</button>
 			</div>

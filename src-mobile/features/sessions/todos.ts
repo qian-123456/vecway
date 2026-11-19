@@ -32,7 +32,7 @@ export const KIND_LABEL: Record<string, string> = {
 	review: "验收",
 	suggestion: "建议",
 	service_left: "服务",
-	schedule_run: "定时任务",
+	schedule_run: "自动化",
 };
 
 export interface TodoChoice {

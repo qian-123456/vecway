@@ -86,6 +86,9 @@ export interface ComposerState {
 	drafts: Record<string, string>;
 	setDraft(sessionId: string, text: string): void;
 	clearDraft(sessionId: string): void;
+	/** Soft dismissible hint shown above the composer when a template is prefilled (never sent). */
+	prefillHints: Record<string, string | null>;
+	setPrefillHint(sessionId: string, hint: string | null): void;
 	/** Side-chat input drafts keyed by parent sessionId. */
 	sideChatDrafts: Record<string, string>;
 	setSideChatDraft: (parentId: string, text: string) => void;
@@ -452,6 +455,11 @@ export const useComposer = create<ComposerState>((set, get) => ({
 				...s.focusNonce,
 				[sessionId]: (s.focusNonce[sessionId] ?? 0) + 1,
 			},
+		})),
+	prefillHints: {},
+	setPrefillHint: (sessionId, hint) =>
+		set((s) => ({
+			prefillHints: { ...s.prefillHints, [sessionId]: hint },
 		})),
 	pruneSessions: (ids) =>
 		set((s) => {

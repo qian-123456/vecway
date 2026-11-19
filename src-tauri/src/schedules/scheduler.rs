@@ -16,7 +16,7 @@ pub fn get_notify() -> Arc<tokio::sync::Notify> {
         .clone()
 }
 pub fn notify_scheduler() {
-    get_notify().notify_waiters();
+    get_notify().notify_one();
 }
 
 /// Start the scheduler background loop.
@@ -59,6 +59,21 @@ pub fn start(state: AppState) {
 
         // 2. Main sleep-and-wake loop.
         loop {
+            // A daemon may have crashed after the GUI started; only dead
+            // owners are recovered, so live cross-process runs remain intact.
+            {
+                let db = state.db.lock();
+                if let Err(e) = store::recover_stale_runs(&db, &store::now_rfc3339()) {
+                    tracing::warn!("recover interrupted scheduled runs: {e}");
+                }
+            }
+            let pending = {
+                let db = state.db.lock();
+                store::pending_schedule_ids(&db).unwrap_or_default()
+            };
+            for id in pending {
+                runner::spawn_pending(state.clone(), &id);
+            }
             let earliest = {
                 let db = state.db.lock();
                 store::earliest_next_run(&db).unwrap_or(None)
@@ -85,7 +100,7 @@ pub fn start(state: AppState) {
                     let sleep_duration = if diff_ms <= 0 {
                         Duration::from_millis(200)
                     } else {
-                        Duration::from_millis(diff_ms as u64).min(Duration::from_secs(3600))
+                        Duration::from_millis(diff_ms as u64).min(Duration::from_secs(5))
                     };
 
                     tokio::select! {
@@ -94,7 +109,10 @@ pub fn start(state: AppState) {
                     }
                 }
                 None => {
-                    notify.notified().await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                        _ = notify.notified() => {}
+                    }
                 }
             }
         }

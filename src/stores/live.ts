@@ -24,6 +24,12 @@ import { useComposer } from "./composer";
 import { useSessions } from "./sessions";
 import { pauseHeldAutoSend, useHeldQueue } from "../features/chat/heldQueue";
 import { PLAN_STATUS_KEY, type PlanStatus, parsePlanStatus } from "../features/chat/plan/planStatus";
+import {
+	AUTOMATION_STATUS_KEY,
+	type AutomationDraftStatus,
+	type AutomationSessionState,
+	parseAutomationSessionState,
+} from "../features/chat/automation/automationStatus";
 import { createFrameBatcher, scheduleFlush } from "./frameBatch";
 import { invalidateTranscriptCache } from "./transcript";
 import {
@@ -277,6 +283,11 @@ export interface SessionLive {
 	ompQueue: OmpQueue;
 	/** Plan-mode state from the plan extension's setStatus frames; absent until one arrives. */
 	plan?: PlanStatus;
+	/** Pending/resolved automation draft card from `omp-workspace-automation.ts`. */
+	/** Interactive automation mode + draft cards published by `omp-workspace-automation.ts`. */
+	automationState?: AutomationSessionState;
+	/** Latest automation draft (derived alias for compatibility). */
+	automationDraft?: AutomationDraftStatus;
 	/** Retained half-answer of an interrupted run (crash / restart), restored
 	 * as an "未完成回答" row until removed or a real source carries it. */
 	restoredUnfinished?: StreamSnapshot | null;
@@ -1137,6 +1148,12 @@ function reduce(
 				const plan = parsePlanStatus(frame.statusText);
 				return plan ? { ...live, plan } : live;
 			}
+			if (method === "setStatus" && str(frame.statusKey) === AUTOMATION_STATUS_KEY) {
+				const automationState = parseAutomationSessionState(frame.statusText);
+				if (!automationState) return live;
+				const latest = automationState.drafts[automationState.drafts.length - 1];
+				return { ...live, automationState, automationDraft: latest };
+			}
 			if (!INTERACTIVE_METHODS.has(method)) return live;
 			return {
 				...live,
@@ -1656,6 +1673,59 @@ export function setExitIntent(sessionId: string, intent: SessionLive["exitIntent
 		const live = state.sessions[sessionId];
 		if (!live || live.exitIntent === intent) return state;
 		return { sessions: { ...state.sessions, [sessionId]: { ...live, exitIntent: intent } } };
+	});
+}
+
+/** Optimistically update a session's interactive automation draft card state. */
+export function setAutomationDraftStatus(
+	sessionId: string,
+	automationDraft: AutomationDraftStatus,
+): void {
+	useLive.setState((state) => {
+		const live = state.sessions[sessionId];
+		if (!live) return state;
+		const existing = live.automationState?.drafts ?? [];
+		const idx = existing.findIndex((d) => d.draftId === automationDraft.draftId);
+		const nextDrafts =
+			idx >= 0
+				? existing.map((d, i) => (i === idx ? automationDraft : d))
+				: [...existing, automationDraft];
+		const hasPending = nextDrafts.some((d) => d.status === "pending");
+		const nextState: AutomationSessionState = {
+			mode: hasPending ? (live.automationState?.mode ?? "active") : "idle",
+			drafts: nextDrafts,
+		};
+		return {
+			sessions: {
+				...state.sessions,
+				[sessionId]: {
+					...live,
+					automationState: nextState,
+					automationDraft,
+				},
+			},
+		};
+	});
+}
+
+/** Optimistically update a session's on-demand automation mode flag. */
+export function setAutomationSessionMode(
+	sessionId: string,
+	mode: "active" | "idle",
+): void {
+	useLive.setState((state) => {
+		const live = state.sessions[sessionId];
+		if (!live) return state;
+		const nextState: AutomationSessionState = {
+			mode,
+			drafts: live.automationState?.drafts ?? [],
+		};
+		return {
+			sessions: {
+				...state.sessions,
+				[sessionId]: { ...live, automationState: nextState },
+			},
+		};
 	});
 }
 

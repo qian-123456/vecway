@@ -3,11 +3,10 @@
 
 import clsx from "clsx";
 import { caretVisualLines } from "./caretLine";
-import { getImageTokenPalette } from "./imageTokens";
 import { useTreeEditPending } from "./treeNav";
 import {
 	ArrowUp,
-	ChevronDown,
+	Clock,
 	CornerDownRight,
 	Loader2,
 	Mic,
@@ -19,7 +18,7 @@ import {
 } from "lucide-react";
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVoiceInput } from "./useVoiceInput";
-import { clipboardFilePaths, clipboardTextBesideFiles, importImageFile, listWorkspaceFiles, ompConfigList, ompModelRolesRead, ompModelRolesSet, readTextFile, rpcSend, saveClipboardFile, saveClipboardImage, sessionSnapshot, sessionUsage, skillsList, validatePath } from "../../lib/ipc";
+import { clipboardFilePaths, clipboardTextBesideFiles, importImageFile, ompConfigList, ompModelRolesRead, ompModelRolesSet, readTextFile, rpcSend, saveClipboardFile, saveClipboardImage, sessionSnapshot, sessionUsage, skillsList, validatePath } from "../../lib/ipc";
 import { useModelCatalog, useModelOptions } from "../../stores/modelCatalog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ImageAttachment, ModelRoleSnapshot, SessionSnapshot } from "../../lib/contracts";
@@ -28,9 +27,34 @@ import { PLAN_ROLE, effectiveRoles, planRoleScope, resolvePlanChoice, savedPlanV
 import { useDraftBaseContext, useDraftDefaultModel } from "./useDraftDefaultModel";
 import { clearPlanModelApplied, hasPlanModelApplied, markPlanModelApplied } from "./plan/planModelApplied";
 import { parseSavedPlanStatus, usePlanPanelLifecycle } from "./plan/usePlanPanelLifecycle";
+import { setAutomationModeAction } from "./automation/automationStatus";
+import { setAutomationSessionMode } from "../../stores/live";
 import { applyArgName, buildArgItems, type ArgCandidate } from "./slash/argComplete";
 import { findArgProvider } from "./slash/argProviders";
-import { AttachmentThumb, FileChip } from "./ImageChips";
+import { AtFileMenu, useAtFileMenu } from "./AtFileMenu";
+import { ComposerAttachmentStrip } from "./ComposerAttachmentStrip";
+import { ComposerModelControls } from "./ComposerModelControls";
+import {
+	COMPOSER_TEXT_METRICS_CLASS,
+	COMPOSER_TEXT_METRICS_STYLE,
+	getImageTokenRanges,
+	IMAGE_EXT_RE,
+	INLINE_IMAGE_RE,
+	parseInlineImages,
+	renderHighlightedText,
+	type HighlightImageOpen,
+	type InlineImageToken,
+} from "./composerTextTokens";
+export {
+	COMPOSER_TEXT_METRICS_CLASS,
+	COMPOSER_TEXT_METRICS_STYLE,
+	getImageTokenRanges,
+	INLINE_IMAGE_RE,
+	parseInlineImages,
+	renderHighlightedText,
+	type HighlightImageOpen,
+	type InlineImageToken,
+};
 
 import {
 	baseName,
@@ -39,151 +63,14 @@ import {
 	expandFilesForSend,
 } from "./fileAttach";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-export interface InlineImageToken {
-	match: string;
-	index: number;
-	path?: string;
-}
 /** Sessions with a pending `/plan` (menu-picked or typed) that has not been sent yet. */
 const planIntentBySession = new Set<string>();
-/** Shared by the textarea and its token backdrop so glyph advances and wrapping stay identical. */
-export const COMPOSER_TEXT_METRICS_CLASS =
-	"whitespace-pre-wrap break-words font-sans text-[var(--chat-font-size,14px)] leading-[1.35]";
-export const COMPOSER_TEXT_METRICS_STYLE = {
-	letterSpacing: "normal",
-	wordSpacing: "normal",
-	fontKerning: "normal",
-	fontVariantLigatures: "none",
-	fontFeatureSettings: "normal",
-	wordBreak: "normal",
-	overflowWrap: "break-word",
-	tabSize: 8,
-} as const;
-/** Interactive image tokens: the rendered token itself is the pointer target (see backdrop layering). */
-export interface HighlightImageOpen {
-	/** 1-based image number. */
-	onOpen: (num: number) => void;
-	/** Accessible name for an image token. */
-	label: string;
-	/** Only numbers with an attached image are interactive. */
-	count: number;
-}
-export function renderHighlightedText(content: string, image?: HighlightImageOpen) {
-	const regex = /(🖼️\s*#\d+|📎\s*#\d+|\[(?:Image|图片|File|文件)\s*#\d+\])/gu;
-	const parts: React.ReactNode[] = [];
-	let lastIdx = 0;
-	let match: RegExpExecArray | null;
-	// Plain text is mirrored for the textarea (already exposed to assistive tech): hide the copy
-	// per span so the interactive tokens stay in the accessibility tree. Inline spans keep layout.
-	const plain = (text: string, key: string) => (
-		<span key={key} aria-hidden="true">
-			{text}
-		</span>
-	);
-
-	while ((match = regex.exec(content)) !== null) {
-		if (match.index > lastIdx) {
-			parts.push(plain(content.slice(lastIdx, match.index), `t${lastIdx}`));
-		}
-		const tokenText = match[0];
-		const numMatch = /\d+/.exec(tokenText);
-		const num = numMatch ? parseInt(numMatch[0], 10) : 1;
-		const palette = getImageTokenPalette(num);
-		const isImage = /^(?:🖼️|\[(?:Image|图片))/u.test(tokenText);
-		const interactive = image !== undefined && isImage && num >= 1 && num <= image.count;
-
-		parts.push(
-			<span
-				key={match.index}
-				className={clsx("underline decoration-2 underline-offset-[3px]", interactive && "relative z-20 pointer-events-auto cursor-pointer rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-current")}
-				style={{ color: palette.hex, textDecorationColor: palette.hex }}
-				{...(interactive
-					? {
-							role: "button",
-							tabIndex: 0,
-							"aria-label": `${image.label} ${tokenText}`,
-							title: image.label,
-							// Keep the textarea focused and its caret untouched; the token only activates.
-							onMouseDown: (e: React.MouseEvent) => e.preventDefault(),
-							onClick: () => image.onOpen(num),
-							// Native button semantics: Enter/Space only while this control itself has focus.
-							onKeyDown: (e: React.KeyboardEvent) => {
-								if (e.key !== "Enter" && e.key !== " ") return;
-								e.preventDefault();
-								e.stopPropagation();
-								image.onOpen(num);
-							},
-						}
-					: { "aria-hidden": true })}
-			>
-				{tokenText}
-			</span>,
-		);
-		lastIdx = regex.lastIndex;
-	}
-
-	if (lastIdx < content.length) {
-		parts.push(plain(content.slice(lastIdx), `t${lastIdx}`));
-	}
-	if (content.endsWith("\n")) {
-		parts.push("\n ");
-	}
-	return parts;
-}
-export function getImageTokenRanges(content: string): Array<{
-	start: number;
-	end: number;
-	num: number;
-	token: string;
-}> {
-	const regex = /(?:🖼️\s*#\d+|\[(?:Image|图片)\s*#\d+\])/gu;
-	const ranges: Array<{ start: number; end: number; num: number; token: string }> = [];
-	let match: RegExpExecArray | null;
-	while ((match = regex.exec(content)) !== null) {
-		const numMatch = /\d+/.exec(match[0]);
-		const num = numMatch ? parseInt(numMatch[0], 10) : 1;
-		ranges.push({
-			start: match.index,
-			end: match.index + match[0].length,
-			num,
-			token: match[0],
-		});
-	}
-	return ranges;
-}
-
-
-
-export const INLINE_IMAGE_RE =
-	/(?:\[(?:Image|图片)\s*#(?<num1>\d+)\]|🖼️\s*#(?<num2>\d+)|\[(?:Image|图片)\s*#(?<num3>\d+)(?:,\s*\d+x\d+)?:\s*(?<path3>[^\]]+)\])/gu;
-
-export function parseInlineImages(
-	text: string,
-	knownImages?: Array<{ path: string }>,
-): InlineImageToken[] {
-	const tokens: InlineImageToken[] = [];
-	const re = new RegExp(INLINE_IMAGE_RE.source, "gu");
-	let m: RegExpExecArray | null;
-	while ((m = re.exec(text)) !== null) {
-		const numStr = m.groups?.num1 || m.groups?.num2 || m.groups?.num3 || "1";
-		const num = parseInt(numStr, 10);
-		let path = (m.groups?.path3 || "").trim() || undefined;
-		if (!path && knownImages && knownImages[num - 1]) {
-			path = knownImages[num - 1].path;
-		}
-		tokens.push({ match: m[0], index: num, path });
-	}
-	return tokens;
-}
-
-const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
+/** Sessions with a pending on-demand Automation customization tag that has not been sent yet. */
+const automationIntentBySession = new Set<string>();
 
 import { ensureLive, isResumeCancelled } from "../../lib/ensureLive";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ContextRing } from "./ContextRing";
-import { ImagePreviewModal } from "../../components/ImagePreviewModal";
-import { FloatingLayer } from "../../components/FloatingLayer";
-import { ThinkingLevelPicker, ThinkingLevelStrip } from "../../components/ThinkingLevelPicker";
 import { copiedMessageFor, errMsg } from "../../lib/dialogs";
 import { planMessagePaste } from "./messagePastePlan";
 import { toast } from "../../lib/toast";
@@ -224,9 +111,8 @@ import {
 	thinkingChipState,
 	toModelKey,
 } from "../../lib/models";
-import { ModelMenuContent } from "../../components/ModelSelect";
 import { resolveModelCapabilities } from "../../components/modelSelectLogic";
-import { mergedSuffix, pickToolbarTier, TIER_FULL, TIER_MERGED, TIER_BADGE, TIER_TIGHT } from "./composerToolbar";
+import { pickToolbarTier, TIER_FULL, TIER_TIGHT } from "./composerToolbar";
 import {
 	buildSlashSections,
 	buildSubcommandItems,
@@ -326,15 +212,18 @@ export function Composer({
 	sessionId,
 	readonly,
 	compact,
+	placeholder: placeholderOverride,
 }: {
 	sessionId: string;
 	/** External session — observation only. */
 	readonly?: boolean;
 	compact?: boolean;
+	placeholder?: string;
 }) {
 	const { t, locale } = useT();
 	const isLocalDraft = isLocalDraftId(sessionId);
 	const localDraft = usePendingSession((s) => isLocalDraft ? s.drafts[sessionId] : undefined);
+	const isAutomationStudioDraft = Boolean(isLocalDraft && localDraft?.opts.automationMode);
 	const [busy, setBusy] = useState(false);
 	const pendingTreeEdit = useTreeEditPending((s) => Boolean(s.entries[sessionId]));
 	const [menuIndex, setMenuIndex] = useState(0);
@@ -348,7 +237,6 @@ export function Composer({
 	const [rpcModels, setRpcModels] = useState<ModelOption[] | null>(null);
 	const models = catalogModels ?? rpcModels;
 	const [modelOpen, setModelOpen] = useState(false);
-	const modelMenuRef = useRef<HTMLDivElement>(null);
 
 	const [thinkingOpen, setThinkingOpen] = useState(false);
 
@@ -542,6 +430,7 @@ export function Composer({
 	// @ file-completion state
 	const realSessionMeta = useSessions((s) => s.sessions[sessionId]);
 	const sessionMeta = isLocalDraft && localDraft ? draftMeta(localDraft) : realSessionMeta;
+	const effectiveCwd = sessionMeta?.cwd ?? null;
 	// Typing into a stopped session starts its omp process in the background so
 	// the slash menu lists omp's own commands (incl. skills); the disk-skill
 	// fallback below covers the spawn window and failed starts.
@@ -570,43 +459,12 @@ export function Composer({
 		if ((sessionMeta?.forkDepth ?? 0) >= MAX_SIDE_CHAT_DEPTH) return null;
 		return { label: t("composer.moveToSideChat"), run: (id: string) => moveToSideChat(sessionId, id) };
 	}, [compact, sessionId, sessionMeta?.parentId, sessionMeta?.forkDepth, locale]);
-	const [atFiles, setAtFiles] = useState<string[] | null>(null);
-	const atToken = useMemo(() => {
-		const beforeCursor = text.slice(0, cursorPos);
-		const m = /(?:^|\s)@([^\s@]*)$/.exec(beforeCursor);
-		if (!m) return null;
-		return { query: m[1], start: beforeCursor.length - m[1].length - 1 };
-	}, [text, cursorPos]);
-	// Esc / outside click dismisses the @ menu for the token it was opened on;
-	// it stays closed until that token is gone (a new `@` reopens it).
-	const [atDismissedStart, setAtDismissedStart] = useState<number | null>(null);
-	useEffect(() => {
-		if (!atToken && atDismissedStart !== null) setAtDismissedStart(null);
-	}, [atToken, atDismissedStart]);
-	const atMenu = useMemo(() => {
-		if (!atToken || !atFiles || atDismissedStart === atToken.start) return [];
-		const q = atToken.query.toLowerCase();
-		return atFiles
-			.filter((p) => !q || p.toLowerCase().includes(q))
-			.slice(0, 10);
-	}, [atToken, atFiles, atDismissedStart]);
-	// The `@` file list belongs to one workspace: reload when the session or its cwd changes.
-	useEffect(() => {
-		setAtFiles(null);
-	}, [sessionId, sessionMeta?.cwd]);
-	useEffect(() => {
-		if (atToken && atFiles === null) {
-			const cwd = sessionMeta?.cwd;
-			if (!cwd) return;
-			let cancelled = false;
-			void listWorkspaceFiles(cwd)
-				.then((files) => !cancelled && setAtFiles(files))
-				.catch(() => !cancelled && setAtFiles([]));
-			return () => {
-				cancelled = true;
-			};
-		}
-	}, [atToken !== null, atFiles === null, sessionMeta?.cwd]);
+	const { atToken, atMenu, dismiss: dismissAtMenu, reset: resetAtFiles } = useAtFileMenu(
+		effectiveCwd,
+		text,
+		cursorPos,
+		sessionId,
+	);
 	const isAborting = useAbortState((s) => s.aborting[sessionId] === true);
 
 
@@ -718,6 +576,25 @@ export function Composer({
 	);
 	const planPending = !readonly && (planIntent || (chip?.name === "plan" && !chip.sub && chip.offset === undefined));
 	const planPreview = planMode || planPending;
+	const automationMode = useLive((s) => s.sessions[sessionId]?.automationState?.mode === "active");
+	const [automationIntentBox, setAutomationIntentBox] = useState<{ sid: string; on: boolean }>(() => ({
+		sid: sessionId,
+		on: automationIntentBySession.has(sessionId),
+	}));
+	const automationIntent =
+		automationIntentBox.sid === sessionId
+			? automationIntentBox.on
+			: automationIntentBySession.has(sessionId);
+	const setAutomationIntent = useCallback(
+		(on: boolean) => {
+			if (on) automationIntentBySession.add(sessionId);
+			else automationIntentBySession.delete(sessionId);
+			setAutomationIntentBox({ sid: sessionId, on });
+		},
+		[sessionId],
+	);
+	const prefillHint = useComposer((s) => s.prefillHints[sessionId] ?? null);
+	const setPrefillHint = useComposer((s) => s.setPrefillHint);
 	// Raw `plan` role spec from the status frame (null when the role is unset).
 	const planStatusModel = useLive((s) => s.sessions[sessionId]?.plan?.planModel);
 	// Picker edit made during this plan-mode visit (a `plan` role value); wins over the status spec.
@@ -852,9 +729,9 @@ export function Composer({
 		if (!wasFocused) ta.setSelectionRange(ta.value.length, ta.value.length);
 	}, [focusNonce]);
 	// Keys typed while nothing editable is focused go to the composer.
-	useTypeToFocus(taRef, compact);
+	useTypeToFocus(taRef, compact, true);
 	// Keep focus in the composer (session entry, closed popovers, blank clicks).
-	useRestoreComposerFocus(taRef, compact, sessionId);
+	useRestoreComposerFocus(taRef, compact, sessionId, true);
 
 	// Slash token at cursor position (opens the command menu)
 	const slashToken = useMemo(() => {
@@ -867,7 +744,7 @@ export function Composer({
 	// or the process still spawning after the first keystroke — see
 	// useStartOnType — or its start failed): list skills from disk.
 	const wantsDiskSkills = slashToken !== null && !liveCommands?.length;
-	const skillsCwd = sessionMeta?.cwd ?? null;
+	const skillsCwd = effectiveCwd;
 	useEffect(() => {
 		if (!wantsDiskSkills) return;
 		let cancelled = false;
@@ -985,7 +862,11 @@ export function Composer({
 	const planChoiceUnknown = planPreview && !planChoice && (!planRoles || planRoleError !== null);
 	const currentThinking = planChoice?.level ?? localDraft?.thinking ?? stateThinkingLevel ?? "auto";
 
-	const draftDefaultModel = useDraftDefaultModel(isLocalDraft && !sessionMeta?.model, sessionMeta?.cwd, models);
+	const draftDefaultModel = useDraftDefaultModel(
+		isLocalDraft && !sessionMeta?.model,
+		effectiveCwd,
+		models,
+	);
 	const sessionCurrent = useMemo(
 		// A read-only (terminal-driven) session has no live process of ours: its model
 		// is whatever the transcript last recorded, not a leftover get_state frame.
@@ -1039,7 +920,7 @@ export function Composer({
 	const contextWindow = currentModelOption?.contextWindow;
 	const liveUsage =
 		typeof contextRaw === "object" && contextRaw !== null ? (contextRaw as Record<string, unknown>) : null;
-	const draftBaseTokens = useDraftBaseContext(isLocalDraft, sessionId, sessionMeta?.cwd);
+	const draftBaseTokens = useDraftBaseContext(isLocalDraft, sessionId, effectiveCwd);
 	const contextUsageObj: Record<string, unknown> | null = liveUsage
 		? contextWindow
 			? { ...liveUsage, contextWindow, percent: typeof liveUsage.tokens === "number" ? (liveUsage.tokens / contextWindow) * 100 : undefined }
@@ -1221,7 +1102,11 @@ export function Composer({
 	}, []);
 	const modelLabel = planChoiceUnknown
 		? t(planRoleError ? "composer.planModelReadFailed" : "composer.planModelLoading")
-		: current.value ? current.label : models === null ? t("chat.loadingShort") : t("composer.selectModel");
+		: current.value
+			? current.label
+			: models === null
+				? t("chat.loadingShort")
+				: t("composer.selectModel");
 	const thinkingKind = thinkingChipState(thinkingLevels, currentModelOption?.reasoning).kind;
 	const toolbarTier = pickToolbarTier({
 		width: toolbarWidth,
@@ -1368,6 +1253,30 @@ export function Composer({
 				toast.error(t("composer.cmdFailed", { name: "plan", error: errMsg(err) }));
 			return null;
 		}
+	};
+
+	/** On-demand automation customization mode owned by `omp-workspace-automation.ts`. */
+	const setAutomationMode = async (enable: boolean): Promise<string | null> => {
+		try {
+			const target = await slashTarget("automate");
+			setAutomationSessionMode(target, enable ? "active" : "idle");
+			await setAutomationModeAction(target, enable);
+			return target;
+		} catch (err) {
+			if (!isResumeCancelled(err))
+				toast.error(t("composer.cmdFailed", { name: "automate", error: errMsg(err) }));
+			return null;
+		}
+	};
+
+	const toggleAutomationMode = () => {
+		const currentlyOn = automationMode || automationIntent;
+		if (isLocalDraft) {
+			setAutomationIntent(!currentlyOn);
+			return;
+		}
+		setAutomationIntent(false);
+		void setAutomationMode(!currentlyOn);
 	};
 
 	/** Menu selection: arg commands become an atomic chip at the input start
@@ -1563,6 +1472,7 @@ export function Composer({
 		const ownsSubmittedDraft = (targetId: string) =>
 			!relinquishedDrafts.has(sessionId) && !relinquishedDrafts.has(targetId);
 		try {
+			setPrefillHint(sessionId, null);
 			if (planIntent && !planMode) {
 				// `/plan` picked alongside other chips: enable plan mode first, the prompt (and any
 				// `/skill:` chip) then runs inside the plan turn. A failed enable keeps the draft,
@@ -1571,6 +1481,12 @@ export function Composer({
 				if (!target) return;
 				inputOwner = target;
 				setPlanIntent(false);
+			}
+			if ((automationIntent || isAutomationStudioDraft) && !automationMode) {
+				const target = await setAutomationMode(true);
+				if (!target) return;
+				inputOwner = target;
+				setAutomationIntent(false);
 			}
 			// Chip + args serialize to the exact `/name args` the user would have
 			// typed — history, masking and dispatch all run on that form.
@@ -1854,7 +1770,7 @@ export function Composer({
 		setText(nextText);
 		const nextCursor = before.length + replacement.length;
 		setCursorPos(nextCursor);
-		setAtFiles(null); // reset; re-fetch next @
+		resetAtFiles(); // reset; re-fetch next @
 		setTimeout(() => {
 			taRef.current?.focus();
 			taRef.current?.setSelectionRange(nextCursor, nextCursor);
@@ -2389,7 +2305,7 @@ export function Composer({
 			}
 			if (e.key === "Escape") {
 				claimEscape(e);
-				setAtDismissedStart(atToken.start);
+				dismissAtMenu();
 				return;
 			}
 		}
@@ -2616,30 +2532,63 @@ export function Composer({
 						onClose={() => setWorkspacePickerOpen(false)}
 					/>
 				)}
-				{planMode && (
-					<div className="flex items-center gap-1 px-3 pt-2">
-						<button
-							type="button"
-							onClick={() => void setPlanMode(false)}
-							title={t("chat.planMode.clickToDisable")}
-							className="flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 hover:bg-amber-500/20"
-						>
-							<Lightbulb size={11} />
-							{t("chat.planMode.enabled")}
-							<X size={10} />
-						</button>
+				{(planMode || (!planMode && planIntent && !readonly) || automationMode || (!automationMode && (automationIntent || isAutomationStudioDraft) && !readonly)) && (
+					<div className="flex flex-wrap items-center gap-1.5 px-3 pt-2">
+						{planMode && (
+							<button
+								type="button"
+								onClick={() => void setPlanMode(false)}
+								title={t("chat.planMode.clickToDisable")}
+								className="flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 hover:bg-amber-500/20"
+							>
+								<Lightbulb size={11} />
+								{t("chat.planMode.enabled")}
+								<X size={10} />
+							</button>
+						)}
+						{!planMode && planIntent && !readonly && (
+							<button
+								type="button"
+								onClick={() => setPlanIntent(false)}
+								title={t("chat.planMode.clickToDisable")}
+								className="flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 hover:bg-amber-500/20"
+							>
+								<Lightbulb size={11} />
+								{t("chat.planMode.enabled")}
+								<X size={10} />
+							</button>
+						)}
+						{(automationMode || (!automationMode && automationIntent && !readonly)) ? (
+							<button
+								type="button"
+								onClick={() => {
+									if (automationMode) void setAutomationMode(false);
+									else setAutomationIntent(false);
+								}}
+								title={t("chat.automationMode.clickToDisable")}
+								className="flex items-center gap-1 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-600 dark:text-cyan-400 hover:bg-cyan-500/20"
+							>
+								<Clock size={11} />
+								{t("chat.automationMode.enabled")}
+								<X size={10} />
+							</button>
+						) : isAutomationStudioDraft && !readonly ? (
+							<span className="flex items-center gap-1 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-600 dark:text-cyan-400">
+								<Clock size={11} />
+								{t("chat.automationMode.enabled")}
+							</span>
+						) : null}
 					</div>
 				)}
-				{!planMode && planIntent && !readonly && (
-					<div className="flex items-center gap-1 px-3 pt-2">
+				{prefillHint && !readonly && (
+					<div className="mx-3 mt-2 flex items-center justify-between gap-2 rounded-lg border border-sky-500/25 bg-sky-500/8 px-2.5 py-1 text-[11px] text-[var(--text-60)]">
+						<span className="min-w-0 leading-snug">{prefillHint}</span>
 						<button
 							type="button"
-							onClick={() => setPlanIntent(false)}
-							title={t("chat.planMode.clickToDisable")}
-							className="flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 hover:bg-amber-500/20"
+							onClick={() => setPrefillHint(sessionId, null)}
+							aria-label={t("schedules.draftDismiss")}
+							className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--text-40)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 						>
-							<Lightbulb size={11} />
-							{t("chat.planMode.enabled")}
 							<X size={10} />
 						</button>
 					</div>
@@ -2658,42 +2607,15 @@ export function Composer({
 				)}
 
 				{/* Attached image cards + file chips (Codex style), above the input */}
-				{(composerImages.length > 0 || composerFiles.length > 0) && (
-					<div className="flex flex-wrap items-center gap-1.5 px-3.5 pt-2.5">
-						{composerImages.map((img, i) => (
-							<AttachmentThumb
-								key={img.id || `${i + 1}-${img.path}`}
-								path={img.path}
-								index={i + 1}
-								showIndex
-								variant="strip"
-								onOpen={() => setPreviewImageIndex(i)}
-								onRemove={() => removeImageByIndex(i)}
-							/>
-						))}
-						{composerFiles.map((f, i) => (
-							<FileChip
-								key={f.id || `${i + 1}-${f.path}`}
-								path={f.path}
-								index={i + 1}
-								name={f.name}
-								variant="strip"
-								onRemove={() => removeFileByIndex(i)}
-							/>
-						))}
-					</div>
-				)}
-				{previewImageIndex !== null && (
-					<ImagePreviewModal
-						images={composerImages.map((img, i) => ({
-							path: img.path,
-							name: img.name,
-							marker: `🖼️#${i + 1}`,
-						}))}
-						initialIndex={previewImageIndex}
-						onClose={() => setPreviewImageIndex(null)}
-					/>
-				)}
+				<ComposerAttachmentStrip
+					images={composerImages}
+					files={composerFiles}
+					previewImageIndex={previewImageIndex}
+					onOpenImage={setPreviewImageIndex}
+					onClosePreview={() => setPreviewImageIndex(null)}
+					onRemoveImage={removeImageByIndex}
+					onRemoveFile={removeFileByIndex}
+				/>
 				{!readonly && cameraOwner === sessionId && (
 					<PhoneCameraDialog
 						onPhoto={(photo, isCurrent) => insertImageToken(photo.path, photo.name, () => cameraSessionRef.current === cameraOwner && isCurrent())}
@@ -2945,7 +2867,7 @@ export function Composer({
 										? t("composer.placeholderStreaming")
 										: compact
 											? t("sidechat.inputPlaceholder")
-											: t("composer.placeholderDefault")
+											: (placeholderOverride ?? t("composer.placeholderDefault"))
 						}
 						style={{ outline: "none", boxShadow: "none", textIndent: legacyChip ? chipIndent : 0, ...COMPOSER_TEXT_METRICS_STYLE }}
 						className={clsx(
@@ -3025,6 +2947,7 @@ export function Composer({
 								anchor={addBtnRef.current}
 								ignoreRef={addBtnRef}
 								planMode={planMode}
+								automationMode={automationMode || automationIntent || isAutomationStudioDraft}
 								onClose={() => setAddMenuOpen(false)}
 								onAddFiles={() => void handleAddAttachment()}
 								onAttachFinder={() => void handleAttachFinder()}
@@ -3032,6 +2955,7 @@ export function Composer({
 								onPickProject={() => setWorkspacePickerOpen(true)}
 								onGoal={handleInsertGoal}
 								onTogglePlan={() => void setPlanMode(!planMode)}
+								onToggleAutomation={toggleAutomationMode}
 								onSketch={() => setSketchOpen(true)}
 							/>
 						)}
@@ -3040,88 +2964,40 @@ export function Composer({
 								<Lightbulb size={13} />
 							</span>
 						)}
-
-						{/* Model picker */}
-						<div className="relative min-w-0" ref={modelMenuRef}>
-							<button
-								type="button"
-								data-model-picker={sessionId}
-								onClick={() => {
-									setModelOpen((v) => !v);
-									if (!models || models.length === 0) void loadModels();
-								}}
-							title={
-								planPreview
-									? t("composer.planModelTitle")
-									: toolbarTier >= TIER_MERGED && thinkingKind !== "unsupported"
-										? t("composer.modelThinkingTooltip", { model: modelLabel, level: currentThinking })
-										: modelLabel
-							}
-							className={clsx(
-								"flex min-w-0 items-center gap-1 rounded-md py-1 text-[12px] text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors",
-								toolbarTier >= TIER_TIGHT ? "px-1.5" : "px-2",
-							"max-w-full",
-							)}
-						>
-							<span className={clsx("min-w-0 truncate", !compact && "max-w-36")}>{modelLabel}</span>
-							{toolbarTier >= TIER_MERGED && !planChoiceUnknown && (
-								<span className="shrink-0 whitespace-pre">
-									{mergedSuffix(thinkingKind, currentThinking, toolbarTier === TIER_BADGE)}
-								</span>
-							)}
-							<ChevronDown size={10} className="shrink-0 text-[var(--text-30,var(--text-dim))]" />
-						</button>
-
-							{modelOpen && (
-								<FloatingLayer
-									anchor={modelMenuRef.current}
-									placement="top-start"
-									offset={6}
-									layer="popover"
-									ignoreRefs={[modelMenuRef]}
-									onDismiss={() => setModelOpen(false)}
-									className="w-[min(440px,calc(100vw-24px))] rounded-xl border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] py-1"
-								>
-									<ModelMenuContent
-										catalogManaged
-										models={models}
-										currentValue={planChoiceUnknown ? "" : current.value}
-										contextTokens={currentTokens}
-										onSelect={async (key) => {
-											if (compacting) {
-												toast.error(t("chat.context.cannotSwitchModelWhileCompacting"));
-												return;
-											}
-											await selectModel(key);
-											setModelOpen(false);
-										}}
-									/>
-									{toolbarTier >= TIER_MERGED && !planChoiceUnknown && (
-										<ThinkingLevelStrip
-											levels={thinkingLevels}
-											reasoning={currentModelOption?.reasoning}
-											value={currentThinking}
-											onSelect={(level) => {
-												void selectThinkingLevel(level);
-											}}
-										/>
-									)}
-								</FloatingLayer>
-							)}
-						</div>
-
-						{/* Thinking chip: levels from the catalog, or a grey 未配置/不支持 chip; never hidden */}
-						{toolbarTier < TIER_MERGED && !planChoiceUnknown && (
-							<ThinkingLevelPicker
-								levels={thinkingLevels}
-								reasoning={currentModelOption?.reasoning}
-								value={currentThinking}
-								open={thinkingOpen}
-								onOpenChange={setThinkingOpen}
-								onSelect={(level) => void selectThinkingLevel(level)}
-								tight={toolbarTier >= TIER_TIGHT}
-							/>
+						{(automationMode || automationIntent || isAutomationStudioDraft) && (
+							<span title={t("chat.automationMode.enabled")} className="flex h-7 items-center px-1 text-cyan-500">
+								<Clock size={13} />
+							</span>
 						)}
+
+						<ComposerModelControls
+							pickerId={sessionId}
+							compact={compact}
+							toolbarTier={toolbarTier}
+							models={models}
+							modelLabel={modelLabel}
+							currentValue={current.value}
+							currentThinking={currentThinking}
+							thinkingKind={thinkingKind}
+							thinkingLevels={thinkingLevels}
+							reasoning={currentModelOption?.reasoning}
+							planPreview={planPreview}
+							planChoiceUnknown={planChoiceUnknown}
+							contextTokens={currentTokens}
+							modelOpen={modelOpen}
+							onModelOpenChange={setModelOpen}
+							thinkingOpen={thinkingOpen}
+							onThinkingOpenChange={setThinkingOpen}
+							onEnsureModels={() => void loadModels()}
+							onSelectModel={async (key) => {
+								if (compacting) {
+									toast.error(t("chat.context.cannotSwitchModelWhileCompacting"));
+									return;
+								}
+								await selectModel(key);
+							}}
+							onSelectThinking={(level) => void selectThinkingLevel(level)}
+						/>
 					</div>
 					)}
 
@@ -3275,34 +3151,14 @@ export function Composer({
 			</div>
 
 			{/* @ file-completion menu — floats above the composer box. */}
-			{!readonly && atMenu.length > 0 && atToken && (
-				<FloatingLayer
+			{!readonly && atToken && (
+				<AtFileMenu
 					anchor={composerCardRef.current}
-					placement="top-start"
-					offset={6}
-					layer="popover"
-					onDismiss={() => atToken && setAtDismissedStart(atToken.start)}
-					className="max-h-64 overflow-y-auto overflow-x-hidden rounded-xl border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] p-1 w-[min(calc(100vw-32px),600px)]"
-				>
-					{atMenu.map((p, i) => (
-						<button
-							key={p}
-							type="button"
-							onMouseDown={(e) => {
-								e.preventDefault();
-								applyAtCompletion(p);
-							}}
-							className={clsx(
-								"flex w-full items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-left text-[12px] transition-colors",
-								i === menuIndex
-									? "bg-[var(--ghost-hover,var(--bg-hover))] text-[var(--text)]"
-									: "text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))]",
-							)}
-						>
-							<span className="min-w-0 break-all font-mono" title={p}>{p}</span>
-						</button>
-					))}
-				</FloatingLayer>
+					items={atMenu}
+					activeIndex={menuIndex}
+					onSelect={applyAtCompletion}
+					onDismiss={dismissAtMenu}
+				/>
 			)}
 
 			{/* Slash-command menu — Codex-style grouped popup. */}

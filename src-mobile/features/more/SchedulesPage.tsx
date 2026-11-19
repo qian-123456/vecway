@@ -69,7 +69,7 @@ export function SchedulesPage() {
 	};
 	const del = async (s: Schedule) => {
 		setMenuId(null);
-		if (!(await confirm({ title: "删除定时任务", message: `删除定时任务「${s.name}」？此操作不可撤销。`, danger: true, confirmText: "删除" }))) return;
+		if (!(await confirm({ title: "删除自动化", message: `删除自动化「${s.name}」？此操作不可撤销。`, danger: true, confirmText: "删除" }))) return;
 		await run(s, () => api("DELETE", `/left/schedules/${enc(s.id)}`), "已删除", "删除失败");
 	};
 	const go = (path: string) => {
@@ -80,9 +80,9 @@ export function SchedulesPage() {
 	return (
 		<div className="flex h-full min-h-0 flex-col bg-m-bg-elev text-m-text">
 			<PageHeader
-				title="定时任务"
+				title="自动化"
 				className="bg-m-bg-elev!"
-				right={<IconButton variant="filled" icon={<Plus {...ICON} />} label="新建定时任务" onClick={() => nav.push(paths.scheduleNew())} />}
+				right={<IconButton variant="filled" icon={<Plus {...ICON} />} label="新建自动化" onClick={() => nav.push(paths.scheduleNew())} />}
 			/>
 			<PullToRefresh onRefresh={reload}>
 				{data === null ? (
@@ -91,11 +91,11 @@ export function SchedulesPage() {
 					<EmptyState
 						className="min-h-[70dvh]"
 						icon={<CalendarClock size={26} strokeWidth={1.75} />}
-						title="还没有定时任务"
-						hint="让 agent 按固定节奏自动执行提示词"
+						title="还没有自动化"
+						hint="让智能体或本地脚本按固定节奏自动执行"
 						action={
 							<Button variant="primary" icon={<Plus size={18} />} onClick={() => nav.push(paths.scheduleNew())}>
-								新建定时任务
+								新建自动化
 							</Button>
 						}
 					/>

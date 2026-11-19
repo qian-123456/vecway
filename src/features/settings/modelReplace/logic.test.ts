@@ -321,8 +321,8 @@ describe("buildOverview", () => {
 			{ scope: "alpha", title: "fast" },
 			{ scope: "全局", title: "子代理 worker" },
 			{ scope: "应用设置", title: "辅助对话专用模型" },
-			{ scope: "定时任务", title: "日报" },
-			{ scope: "定时任务", title: "周报" },
+			{ scope: "自动化", title: "日报" },
+			{ scope: "自动化", title: "周报" },
 			{ scope: "回退链", title: "链 default" },
 		]);
 	});
@@ -358,7 +358,7 @@ describe("buildPlan value rows", () => {
 		]);
 		const plan = buildPlan({ scan, fromModel: OPUS, toModel: SMOL, level: null });
 
-		expect(plan.groups.map((g) => g.title)).toEqual(["全局", "每个项目", "应用设置", "定时任务"]);
+		expect(plan.groups.map((g) => g.title)).toEqual(["全局", "每个项目", "应用设置", "自动化"]);
 		expect(plan.edits).toHaveLength(5);
 
 		const [role, fast, override, app, schedule] = plan.rows;
@@ -378,7 +378,7 @@ describe("buildPlan value rows", () => {
 		// resulting model + thinking pair.
 		expect(schedule).toMatchObject({
 			group: "schedule",
-			context: "定时任务",
+			context: "自动化",
 			before: `${OPUS}:low`,
 			after: `${SMOL}:low`,
 		});
@@ -713,7 +713,7 @@ describe("results merging and undo display", () => {
 			),
 		).toMatchObject({
 			title: "日报",
-			context: "定时任务",
+			context: "自动化",
 			// The model column and the thinking column render as the pair the row holds.
 			before: OPUS,
 			after: `${SMOL}:high`,

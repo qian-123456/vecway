@@ -102,6 +102,7 @@ async fn save_settings(
     let saved = settings::save(&state, settings).await?;
     notify::refresh_badge(&state).await;
     settings::apply_window_title(&state);
+    schedules::daemon::sync_launch_agent(saved.automation_background_enabled);
     Ok(saved)
 }
 
@@ -445,6 +446,14 @@ pub fn run_key_cli(id: Option<String>) -> i32 {
     providers::key_ref::run_cli(id)
 }
 
+/// CLI flag of the headless automation daemon (`omp-workspace --ompws-automation-daemon`).
+pub const AUTOMATION_DAEMON_FLAG: &str = schedules::daemon::DAEMON_FLAG;
+
+/// Run one headless automation sweep without creating any window or Dock icon.
+pub fn run_automation_daemon() -> i32 {
+    schedules::daemon::run_cli()
+}
+
 /// Report an unrecoverable startup error (stderr + native dialog on macOS) and exit cleanly
 /// instead of surfacing a raw panic.
 fn fatal_startup(what: &str, err: &dyn std::fmt::Display) -> ! {
@@ -474,6 +483,7 @@ fn fatal_startup(what: &str, err: &dyn std::fmt::Display) -> ! {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     paths::ensure_dirs().unwrap_or_else(|e| fatal_startup("无法创建数据目录 ~/.omp-workspace", &e));
+    schedules::daemon::hold_gui_lock();
     let conn = db::open().unwrap_or_else(|e| fatal_startup("无法打开应用数据库", &e));
     let settings = db::load_settings(&conn);
     let _diagnostics_guard =
@@ -760,13 +770,18 @@ pub fn run() {
             terminal::commands::session_resume_command,
             terminal::commands::terminal_set_current_session,
             terminal::commands::install_status_extension_globally,
-            // E — schedules (定时任务)
+            // E — schedules (自动化)
             schedules::commands::schedules_list,
             schedules::commands::schedules_save,
             schedules::commands::schedules_delete,
             schedules::commands::schedules_set_enabled,
             schedules::commands::schedules_run_now,
+            schedules::commands::schedules_resume_awaiting,
+            schedules::commands::schedules_release_awaiting,
+            schedules::commands::schedules_list_awaiting,
             schedules::commands::schedule_runs,
+            schedules::commands::schedules_test_probe,
+            schedules::commands::schedules_generate_draft,
             // F — skills & extensions (技能与扩展)
             skills::commands::skills_list,
             skills::commands::skills_read,

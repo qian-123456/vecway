@@ -22,6 +22,9 @@ export interface CreateSessionOpts {
 	 * `working` (vs `idle`); callers still send it via `sendFirstPrompt`. */
 	prompt?: string;
 	planYolo?: boolean | null;
+	appendSystemPrompt?: string | null;
+	/** Explicit marker for drafts launched from the Automations studio so Composer enables automation mode without fragile prompt string matching. */
+	automationMode?: boolean;
 }
 
 export interface CreateSessionResult {
@@ -48,6 +51,7 @@ export async function createSession(
 		model: opts.model?.trim() || null,
 		approvalMode: opts.approvalMode || null,
 		planYolo: opts.planYolo ?? null,
+		appendSystemPrompt: opts.appendSystemPrompt ?? null,
 		mode,
 		groupId,
 	});

@@ -159,6 +159,9 @@ Rules for parallel work:
 | `~/.omp-workspace/extension/omp-workspace-status.ts` | extension installed at startup from `include_str!` |
 | `~/.omp-workspace/extension/omp-workspace-checkpoints.ts` | turn checkpoints extension (§8.1), installed at startup; loaded only when `settings.turn_checkpoints == Some(true)` |
 | `~/.omp-workspace/extension/omp-workspace-plan.ts` | plan mode extension (§8.3), installed at startup by `rpc/plan_ext.rs`; always loaded via `-e` after the privacy extension |
+| `~/.omp-workspace/extension/omp-workspace-automation.ts` | automations extension (§8.4), installed at startup by `rpc/automation_ext.rs`; loaded via `-e` after plan mode |
+| `~/.omp-workspace/automations/<id>/` | per-automation managed scripts + persistent `state/` dir (`OMPWS_STATE_DIR`) + `catalog.json` snapshot |
+| `~/.omp-workspace/logs/automation-daemon.log` | stdout/stderr log for the macOS `--ompws-automation-daemon` LaunchAgent (`ai.omp.workspace.automation`) |
 | `~/.omp-workspace/plugins/omp-workspace-visualize/` | bundled omp plugin (`plugin.json` + `skills/visualize/SKILL.md`) embedded via `include_str!` from `src-tauri/resources/plugins/`; installed at startup, spawned via `--plugin-dir` when `settings.visualize_enabled` (default true) |
 | `~/.omp-workspace/diagnostics/events.jsonl`, `events.previous.jsonl` | Content-free schema-v1 diagnostics; each file ≤2 MiB, each full line ≤8 KiB; honors `OMPWS_DATA_DIR`. Directory 0700, files and stable `.writer.lock` 0600; Unix-only secure writer, no symlinks |
 | `~/.omp-workspace/rpc-lifecycle.jsonl`, `rpc-lifecycle.previous.jsonl` | Retired lifecycle files, left untouched; no dual write, migration or default query |
@@ -426,10 +429,15 @@ pub struct Settings {
   pub window_worktree_title: bool,   // default true; OS window title = "omp-workspace · <app worktree branch>" (worktree dir name when HEAD detached; plain title when lookup fails/off)
   pub side_chat_model: Option<String>, // default None; dedicated model for new side chats ("<selector>" or "<selector>:<level>"), None/unavailable → inherit parent model
   pub visualize_enabled: bool,        // default true; spawn adds `--plugin-dir ~/.omp-workspace/plugins/omp-workspace-visualize` (bundled `visualize` skill) and the chat renders ```` ```visualize ```` fragments in a sandboxed viewer; false = no skill + plain code block
+  pub automation_background_enabled: bool, // default true; syncs ~/Library/LaunchAgents/ai.omp.workspace.automation.plist on production instances
+  pub automation_overlap_policy: AutomationOverlapPolicy, // global automationOverlapPolicy; default Skip
 }
 
-// Schedules (定时任务)
+// Schedules (自动化 / Automations)
 pub enum ScheduleRunMode { Local, Worktree }
+pub enum AutomationOverlapPolicy { Skip, Coalesce, Queue, Parallel } // global application setting; lowercase wire strings
+pub enum ScheduleAgentTrigger { Always, OnSignal, Never } // snake_case; default Always
+pub enum ScheduleRunPhase { ProbeQuiet, ProbeOnly, Agent, Awaiting } // snake_case; default Agent
 pub enum ScheduleCadence {                    // #[serde(tag="kind")]
   Interval { minutes: u32 },                  // ≥5
   Daily { time: String, weekdays: Vec<u32>,   // HH:MM local; empty weekdays = every `every` days;
@@ -460,6 +468,11 @@ pub struct Schedule {
   pub new_chat_each_run: bool,          // stored, default true; false = resume previous run's session (local mode only)
   pub max_runs: Option<u32>,          // recurring-only run cap; NULL = unlimited; `once` ignores it
   pub runs_done: u32,                 // runs started so far (counts toward `max_runs`)
+  pub probe_command: Option<String>,    // v25: optional lightweight shell check / local script
+  pub probe_description: Option<String>, // v25: one-line summary of pre-check
+  pub agent_trigger: ScheduleAgentTrigger, // v25: always | on_signal | never
+  pub last_run_phase: Option<ScheduleRunPhase>, // derived from newest schedule_runs row
+  pub last_run_session_id: Option<String>, // derived from newest schedule_runs row
 }
 pub struct ScheduleDraft {
   pub id: Option<String>, pub name: String, pub prompt: String, pub cwd: String,
@@ -471,11 +484,26 @@ pub struct ScheduleDraft {
   pub enabled: bool,
   pub notify: ScheduleNotify,           // serde default All when absent
   pub new_chat_each_run: bool,          // serde default true when absent
+  pub probe_command: Option<String>,
+  pub probe_description: Option<String>,
+  pub agent_trigger: ScheduleAgentTrigger,
 }
 pub struct ScheduleRun {
   pub id: String, pub schedule_id: String, pub session_id: Option<String>,
   pub status: ScheduleRunStatus, pub started_at: String, pub finished_at: Option<String>,
   pub summary: Option<String>,
+  pub phase: ScheduleRunPhase,
+  pub probe_output: Option<String>,
+}
+pub struct ProbeTestResult {
+  pub exit_code: Option<i32>, pub timed_out: bool, pub duration_ms: u64,
+  pub output: String, pub outcome: String, // "quiet" | "signal" | "ok" | "error"
+}
+pub struct AutomationAuthorResult {
+  pub schedule_id: String, pub name: String, pub cadence: ScheduleCadence,
+  pub agent_trigger: ScheduleAgentTrigger, pub probe_description: Option<String>,
+  pub probe_command: Option<String>, pub prompt: String, pub notify: ScheduleNotify,
+  pub explanation: String,
 }
 
 // Skills & Extensions catalog
@@ -632,13 +660,28 @@ CREATE TABLE schedules(
   new_chat_each_run INTEGER NOT NULL DEFAULT 1, -- v8: 0 = resume previous run's session (local mode)
   max_runs INTEGER,                           -- v9: recurring-only run cap; NULL = unlimited
   runs_done INTEGER NOT NULL DEFAULT 0,       -- v9: runs started so far
+  probe_command TEXT,                         -- v25: optional lightweight pre-check command/script
+  probe_description TEXT,                     -- v25: one-line pre-check summary
+  agent_trigger TEXT NOT NULL DEFAULT 'always' -- v25: 'always' | 'on_signal' | 'never'
 );
 CREATE TABLE schedule_runs(
   id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL, session_id TEXT,
   status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, summary TEXT,
+  phase TEXT NOT NULL DEFAULT 'agent',        -- v25: 'probe_quiet' | 'probe_only' | 'agent' | 'awaiting'
+  probe_output TEXT,                          -- v25: bounded pre-check stdout/stderr output
+  owner_pid INTEGER,                          -- v26: process owning a running row
+  resume_attempt TEXT, resume_owner_pid INTEGER, -- v26: correlated continuation reservation
   FOREIGN KEY(schedule_id) REFERENCES schedules(id) ON DELETE CASCADE
 );
 CREATE INDEX idx_schedule_runs_schedule_id ON schedule_runs(schedule_id, started_at DESC);
+CREATE TABLE schedule_pending(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+  scheduled_at TEXT NOT NULL, reason TEXT NOT NULL
+); -- v26: persistent automatic occurrences
+CREATE INDEX idx_schedule_pending_schedule ON schedule_pending(schedule_id, id);
+-- v27 removes the historical v26 schedules.overlapPolicy column without changing runs or schedule_pending.
+-- Settings JSON alone owns automationOverlapPolicy; absent means skip, never inferred from an old task.
 -- v5: privacy placeholders
 CREATE TABLE secret_entries(id TEXT PRIMARY KEY, value TEXT NOT NULL UNIQUE, label TEXT, placeholder TEXT NOT NULL UNIQUE,
   risk TEXT NOT NULL /* safe|risky */, track INTEGER NOT NULL DEFAULT 1, in_library INTEGER NOT NULL DEFAULT 0,
@@ -663,7 +706,7 @@ CREATE TABLE model_switch_log(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, rul
   edits TEXT NOT NULL, previous_template_id TEXT, session_results TEXT NOT NULL DEFAULT '[]', undone_at TEXT);
 -- v18: each of the three tables above gained `scope TEXT NOT NULL DEFAULT 'global'` ('global' or an absolute project directory)
 ```
-Use a `user_version` pragma for migrations (current: v23; v12 deletes legacy `suggestion`/`supervisor` todo rows; v13 adds `model_replace_log`; v14 adds `session_meta.kind`; v15 adds `local_rows`; v17 adds the three `model_*` template/rule/log tables; v18 adds their `scope` column, added only when missing so a rewound `user_version` re-migrates cleanly; v19 adds `backlog.deleted_at` and converts `backlog.kind = 'todo'` rows to `idea`; v20 adds `idx_session_meta_parent` on `session_meta(parent_session_id)` for side-chat child lookups; v22 adds nullable `backlog.restored_at`, preserving explicit restoration across startup and age-based archiving; v23 adds `schedules.mode TEXT NOT NULL DEFAULT 'code'`, without inferring old task modes from cwd). `db.rs` also provides `load_settings`/`save_settings` and
+Use a `user_version` pragma for migrations (current: v27; v12 deletes legacy `suggestion`/`supervisor` todo rows; v13 adds `model_replace_log`; v14 adds `session_meta.kind`; v15 adds `local_rows`; v17 adds the three `model_*` template/rule/log tables; v18 adds their `scope` column, added only when missing so a rewound `user_version` re-migrates cleanly; v19 adds `backlog.deleted_at` and converts `backlog.kind = 'todo'` rows to `idea`; v20 adds `idx_session_meta_parent` on `session_meta(parent_session_id)` for side-chat child lookups; v22 adds nullable `backlog.restored_at`, preserving explicit restoration across startup and age-based archiving; v23 adds `schedules.mode TEXT NOT NULL DEFAULT 'code'`, without inferring old task modes from cwd; v25 idempotently adds `schedules.{probe_command,probe_description,agent_trigger}` and `schedule_runs.{phase,probe_output}`; v26 adds the historical task overlap policy, durable pending occurrences and run owner; v27 removes the task policy column in favor of global Settings without altering accepted pending work). `db.rs` also provides `load_settings`/`save_settings` and
 `ensure_global_workspace(conn)` (creates the single global workspace row `global`/`~/.omp-workspace/global`, owned by
 the `chat` space). v11 moves the global row and every session group (and grouped sessions) to `chat` and drops the
 v10 per-mode `global:<mode>` rows (their dirs stay on disk).
@@ -842,13 +885,18 @@ Plugin-SDK internal IPC and mobile are outside this capture boundary.
 - Provider-wide chat context defaults persist as `ompws.providerContextWindows.v1`, a localStorage object from exact provider id to positive integer (maximum 2,000,000). Only successful provider saves persist them; cancellation does not. After a successful backend deletion or ID rename, the provider store clears or migrates only the owning default before any catalog refresh, regardless of chat/other-model entry; failed backend mutations leave defaults untouched. Empty providers retain the number. Provider defaults precede generic model-keyword rules; explicit per-model overrides remain highest priority. Active user saves update existing model windows through the ordinary writer; later discoveries use conditional writes.
 - `install_status_extension_globally() -> String` — copies the extension into `~/.omp/agent/extensions/` (opt-in button)
 
-**E — schedules (定时任务):**
+**E — schedules (自动化):**
 - `schedules_list() -> Vec<Schedule>`
 - `schedules_save(schedule: ScheduleDraft) -> Schedule`
 - `schedules_delete(id: String)`
 - `schedules_set_enabled(id: String, enabled: bool) -> Schedule`
 - `schedules_run_now(id: String) -> ScheduleRun`
 - `schedule_runs(schedule_id: String, limit: Option<u32>) -> Vec<ScheduleRun>`
+- `schedules_list_awaiting(schedule_id: String) -> Vec<ScheduleRun>` returns every explicitly releasable paused run, independent of history paging.
+- `schedules_resume_awaiting(schedule_id: String, run_id: String)` reserves an idle original session and submits a continuation. Mobile: `POST /left/schedules/{id}/runs/{run_id}/resume-awaiting`. Success means the request was accepted, not that it finished.
+- `schedules_release_awaiting(schedule_id: String, run_id: String)` explicitly releases one paused run and records it as unconfirmed/error; it does not stop the original session. Mobile equivalents: `GET /left/schedules/{id}/awaiting` and `POST /left/schedules/{id}/runs/{run_id}/release-awaiting`. Confirming UI must warn about possible concurrent execution.
+- `schedules_test_probe(cwd: String, probe_command: String, agent_trigger: ScheduleAgentTrigger, schedule_id: Option<String>) -> ProbeTestResult`
+- `schedules_generate_draft(request: String, cwd: String, current: Option<ScheduleDraft>) -> AutomationAuthorResult`
 
 **F — skills & extensions (技能与扩展):**
 - `skills_list(cwd: Option<String>) -> SkillsCatalog`
@@ -984,6 +1032,12 @@ Plan selection highlights and pending-comment highlights are mounted inside the 
   `compact` = compact context, then execute in the same session; `keep` = execute in the same session with history kept, refused above 95%
   context (`keepDisabled`); the mobile 「执行计划」 button sends `/plan-action approve keep`), and `run [@role] <file>` (run the plan file,
   optionally switching to the model of `role`). The `[role]` argument of `approve`/`run` accepts either a model role name or a direct model spec `provider/model[:thinking]` (anything containing `/` passes through unchanged; `extension/omp-workspace-plan.ts::resolveSpec`).
+
+### 8.4 Automations extension
+
+`extension/omp-workspace-automation.ts`, installed at startup by `src-tauri/src/rpc/automation_ext.rs` to `~/.omp-workspace/extension/omp-workspace-automation.ts` and passed via `-e` in `prompt_shape_args` (with `AUTOMATION_HINT` appended while present).
+- Exposes tool `vecway_automation` (`list`: reads `~/.omp-workspace/automations/catalog.json`; `stage_script`: writes scripts into `~/.omp-workspace/automations/<id>/` + `state/`; `propose`: stores `"ompws-automation-draft"` custom entry and emits `setStatus` under `"ompws-automation"` so `SessionView` renders `AutomationDraftCard` above the composer for user confirmation).
+- Exposes host command `/automation-action resolve <draftId> saved|dismissed`.
 
 ## 9. Cross-module Rust API (stubbed at scaffold; signatures frozen)
 
@@ -1546,7 +1600,7 @@ containment, and sessions in deleted worktree dirs group under a default-collaps
   - `GET /sessions/:id/tree` → upstream `get_tree` verbatim (`{tree, leafId}`); 409 when the session is not live. Clients filter their transcript to the root→leaf path (`src-mobile/features/chat/lib/tree.ts`).
   - `POST /presence {sessionId, visible}` records receipt time. Chat views send a 15-second foreground heartbeat and clear presence on hide/unmount; push suppression expires after 45 seconds. Approval notifications are deduplicated by request identity, not only session.
   - Before prompt dispatch, the client persists the original payload and attachment paths. Any ambiguous HTTP failure is shown as delivery-unknown, never automatically restored/retried as unsent; a deliberate risk confirmation is required to recover it. This is not a server exactly-once guarantee.
-  - `GET /left/settings/desktop` → `{defaultApprovalMode, capsuleVisible}`; `POST /left/settings/approval-mode {mode: always-ask|write|yolo}`.
+  - `GET /left/settings/desktop` → `{defaultApprovalMode, capsuleVisible, automationOverlapPolicy}`; `GET /left/settings` also includes the global `automationOverlapPolicy` at top level. `POST /left/settings/approval-mode {mode: always-ask|write|yolo}` remains unchanged. `POST /left/settings/set {key:"automationOverlapPolicy", value:"skip"|"coalesce"|"queue"|"parallel"}` returns `{ok,key,value}`; this app-setting allowlist entry uses the serialized Settings writer, never `omp config set`.
   - Existing `POST /left/settings/set` writes are serialized per key. Numeric changes debounce for 350ms with one in-flight write plus the latest trailing value; unrelated keys may run concurrently. Blur/group exit/hide/pagehide/unmount flush pending numeric values, and owned writes may finish after unmount without stale UI callbacks. Boolean/enum writes are immediate but use the same keyed serialization; a latest failure restores the last successful value and exposes the full error.
   - Role edits read `GET /left/roles[?cwd]` before `POST /left/roles/set`, retaining the previous raw scope-layer value (including null). Model-only/thinking-only changes save directly; compound edits and restore-inheritance retain confirmation. Provider edits read `GET /left/providers` before `POST /left/providers/save`; URL-only changes with a known nonempty inverse save directly, while a typed key or unavailable inverse keeps masked confirmation. Undo rereads the same scope/provider and requires the exact expected value plus the matching edit version; newer edits invalidate it. Provider URL undo never sends an API key. Writes/undo lock their affected target; role locks/version guards survive remounts.
   - Quota uses `GET /quota` for cached data and `GET /quota?refresh=true` for an explicit refresh, single-flight with a queued refresh after the initial cache read when necessary. Refresh failures retain the previous real snapshot/timestamp with stale/error/retry UI; unmount aborts the owned read. These persistence/undo changes add no backend endpoints.
@@ -1581,14 +1635,24 @@ containment, and sessions in deleted worktree dirs group under a default-collaps
   Quote capture: Cmd+Shift+A (and floating/context buttons) adds the current selection as an Annotation `{source:"terminal"}` to the composer, or sends to side chat.
 - Extension (§8) + install at startup to `extension_path()` (overwrite when content differs) + `install_status_extension_globally`.
 
-### F — Scheduled tasks (backend + frontend)
+### F — Automations (backend + frontend)
+- Two-stage execution (`probe_command` + `ScheduleAgentTrigger`, DB v25):
+  - `on_signal`: runs `probe_command` first in base `cwd` (before creating any worktree) with login `PATH` and `OMPWS_AUTOMATION_ID` / `OMPWS_AUTOMATION_DIR` / `OMPWS_STATE_DIR` (`~/.omp-workspace/automations/<id>/state/`). Exit `0` with empty stdout or exit `10` → `ProbeQuiet` (`0` tokens, no Inbox todo, collapsed in History); exit `0` with stdout or exit `20` → wakes OMP session with `<automation_check_output>` context; non-zero/timeout → `Error` + `probeError: true` todo («让 AI 修复»).
+  - `never`: local script-only mode (`ProbeOnly` on exit `0`, `Error` + `probeError: true` on failure).
+  - `always`: always invokes OMP session (passing `probe_command` stdout if configured).
+- Automatic overlap is an application preference, `Settings.automationOverlapPolicy` (`automation_overlap_policy` in Rust), with four values: `skip` records a skipped run; `coalesce` accepts at most one additional waiting occurrence; `queue` accepts every waiting occurrence FIFO; `parallel` starts independent sessions even while another run or approval is active. The default is `skip`, never chosen from a historical task. Tasks and AI drafts have no overlap-policy authority. Manual runs keep the active-run guard and their existing session reuse semantics.
+- GUI and daemon claims read the latest persisted global preference inside their immediate SQLite claim transaction and pass that immutable policy snapshot into execution. Saving Settings wakes the GUI scheduler; the daemon rereads settings for each new job. Changing policy affects future claims only, never interrupts current runs, and cannot enable session reuse or remove worktree isolation from an already-claimed parallel run.
+- Pending occurrences are persisted in `schedule_pending` with the scheduled instant and blocking reason, and claimed with the run row and run counter in one immediate SQLite transaction. Policy changes preserve every accepted row without re-coalescing or discarding it: switching to `skip` still drains the old FIFO; switching to `parallel` may drain concurrently using fresh sessions. Existing `maxRuns` semantics are unchanged: started occurrences count toward the cap, and remaining pending occurrences are discarded when it is reached. Accepted occurrences remain eligible after a schedule is disabled or its end time passes. Deleting the schedule explicitly cascades its pending entries.
+- If a turn awaits approval or an answer with the window open, its run remains active without timing out until work resumes. With no visible window or in the headless daemon, the child is stopped and an awaiting run and Inbox todo are persisted; acknowledging the todo alone does not release serial policies. The dedicated resume command reserves the original idle session, prevents competing mutations, and releases only on a matching RPC request's successful `prompt_result` and settled session. Failed or unobserved results remain blocked and can be retried or explicitly released. The GUI wakes on completion or explicit release and polls every five seconds; the LaunchAgent polls every 60 seconds while no GUI is running.
+- Each automatic `parallel` run uses a new session regardless of `newChatEachRun`. Local mode deliberately shares the selected working directory, so concurrent changes can conflict; worktree mode uses a separate worktree for the probe and agent of each parallel run. Managed automation state directories and external resources remain shared.
+- Dedicated macOS background LaunchAgent (`schedules/daemon.rs`, `--ompws-automation-daemon`): synced to `~/Library/LaunchAgents/ai.omp.workspace.automation.plist` when `automation_background_enabled` is true (never modified by `OMPWS_DATA_DIR` dev/test instances). Wakes every 60s, defers immediately if `<data_dir>/gui.lock` is held, and concurrently executes claimed runs while polling for additional due occurrences. It yields new claims to the GUI when the GUI starts.
+- Synchronized attention & AI authoring (`automationAttention.ts`, `schedules/author.rs`, `AutomationConfigTab.tsx`, `AutomationOverviewTab.tsx`): sidebar「自动化」row, per-row status/action controls, and Topbar Inbox share open `schedule_run` todo + awaiting session state bidirectionally; clicking acknowledges, opens the task workspace, or resumes cleanly. `AutomationOverviewTab` supports live dry-run checks, worktree diff preview/merge/discard (`automationWorktree.ts`), and inline AI repair comparisons (`schedules_generate_draft`) alongside deep chat troubleshooting.
 - Cadence semantics: `ScheduleCadence::Interval { minutes }` (pure interval math), `Daily { time, weekdays, every, anchor }` (local-time, DST-safe; empty weekdays = every `every` days counted from `anchor`, weekday subset = every `every` weeks — Monday-start weeks — counted from the anchor's week, on the listed days; `every`=1/absent ignores `anchor` = legacy daily/weekly), `Once { at: RFC3339 }` (absolute one-shot instant), `Monthly { day, time, every, anchor }` (every `every` months counted from the anchor's month; `day` clamps to the month's length — day 31 in Feb runs on the 28th/29th). On save (`upsert`), a missing `anchor` is filled with today's local date when `every`>1, and any `anchor` is dropped when `every`<=1.
 - Validation (`schedules_save`): `once.at` must be a future RFC3339 instant on create/new-time ("请选择未来的时间"; an unchanged past instant stays valid); `endAt` must be in the future ("结束时间需晚于现在"); monthly `day` 1-31; `time` HH:MM; interval ≥ 5 min; `every` 1-999 ("重复间隔需在 1-999 之间"); `anchor` parses as YYYY-MM-DD when present ("重复起始日期格式需为 YYYY-MM-DD"); `maxRuns` ≥ 1 when present ("运行次数需至少为 1").
 - Lifecycle (derived in `row_to_schedule`, never stored): `completed` = a `once` that already ran (a run row exists or `last_run_at` set) or a recurring schedule past `end_at` or at its `max_runs` cap (`runs_done >= max_runs`); `paused` = `!enabled` and not completed; else `active`. When a `once` fires or an `end_at`/cap is passed, `advance_after_run`/`record_run_start` sets `enabled=0, next_run_at=NULL` so the scheduler stops considering it.
 - Run counting (DB v9): `record_run_start` (renamed `stamp_last_run`) stamps `last_run_at` and increments `runs_done` where a run actually starts — scheduled dispatches and manual "run now" alike; `skipped` runs don't count. Reaching `max_runs` completes the schedule; editing `maxRuns`/`cadence` keeps `runs_done` (raising/clearing the cap re-activates, lowering to ≤ `runs_done` completes again); `schedules_set_enabled` refuses while capped ("已达到运行次数上限，请先编辑任务").
-- Background scheduler (`schedules::scheduler`): calculates earliest `next_run_at` across enabled schedules; sleeps via `tokio::select!` with `tokio::sync::Notify` wakeups on mutations (`schedules_save`, `schedules_delete`, `schedules_set_enabled`).
-- Catch-up: on startup and sleep-wake loop, checks all enabled schedules where `next_run_at <= now`; executes them immediately and advances `next_run_at` to prevent missed runs (a missed `once` runs once, then completes).
-- Skip-if-running: if a schedule's previous run is still `Running`, automated triggers mark the run `Skipped` ("上一次运行仍在进行中，已跳过") and advance `next_run_at` without duplicate executions; manual `schedules_run_now` returns an explicit error.
+- Background scheduler (`schedules::scheduler`): calculates earliest `next_run_at` across enabled schedules; sleeps via `tokio::select!` with `tokio::sync::Notify` wakeups on mutations (`schedules_save`, `schedules_delete`, `schedules_set_enabled`, and Settings saves).
+- Catch-up: `skip` preserves the legacy one-occurrence catch-up; the other policies advance from each stored scheduled instant so missed occurrences are considered individually.
 - Re-enable guards (`schedules_set_enabled` / re-enable via save): `once` that already ran → Err "一次性任务已执行，请复制或重新创建"; recurring past `end_at` → Err "结束时间已过，请先修改结束时间".
 - Execution options: spawned RPC session gets `--model`/`--approval-mode`/`label` from the schedule and applies the stored `thinking` level via the `set_thinking_level` RPC (same command as the interactive composer) before the prompt is sent.
 - Isolated execution: supports `local` cwd or `worktree` mode (creates isolated worktree `.worktrees/sched-<slug>-<id8>` via git).
@@ -1602,7 +1666,7 @@ containment, and sessions in deleted worktree dirs group under a default-collaps
   `schedule_runs` row with a `session_id`, resolves its `session_meta.file_path` and starts the RPC session with
   `StartOpts.resume_file`; a missing file or failed resume (incl. `SESSION_HELD:`) logs a warning and falls back
   to a fresh session. The run row records the session id actually used. Worktree mode always starts fresh.
-- Frontend `SchedulesPage` (`centerView === "schedules"`): lists scheduled tasks with toggle switches, human-readable cadence descriptions (`humanCadence.ts`), last run status badges (运行中/成功/失败/跳过), expandable run histories with log snippets, manual "立即运行" trigger, inline rename (row pencil / 更多 ▸ 重命名; saves the full draft with only `name` changed, so `next_run_at` is kept), and `ScheduleEditorPage` (full-page editor replacing the list) for creating/editing drafts. The editor's composer toolbar has a Worktree chip (git repos only): pick an existing worktree of the repo as `cwd` (`runMode: "local"`) or "每次新建独立 Worktree" (`runMode: "worktree"`); the workspace chip resolves a linked-worktree `cwd` to its project via `gitRepoRoot`. The model chip shows the model only; the thinking level lives in the separate thinking picker.
+- Frontend `SchedulesPage` (`centerView === "schedules"`): strict 2-column viewport (global sidebar + centered `max-w-[780px]` canvas). Lands on a clean empty state (when empty, zero preset template cards and no forced bare composer; offers `+ 新建自动化` or explicit directory-gated `AutomationComposerStudio`) or a single-row compact Home header + high-density automation list (`ScheduleRow` separating passive noun status badges on the left from explicit `→` review/fix buttons or `立即运行` on the right). Clicking any row or action opens the unified 2-tab task workspace (`概览与记录` `AutomationOverviewTab` | `规则配置` `AutomationConfigTab`) combining 1-line workflow summary with expandable `<details>`, anti-pileup skipped & quiet run grouping, worktree diff preview/merge/discard, zero-jargon 3-mode selector, grouped `ModelSelect` + `ThinkingLevelPicker`, and context-preserving jump to chat composer.
 
 ### G — Skills & extensions catalog (backend + frontend)
 - Discovery roots:

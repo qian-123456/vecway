@@ -110,9 +110,52 @@ pub fn plan_extension_path() -> PathBuf {
     data_dir().join("extension").join("omp-workspace-plan.ts")
 }
 
+/// `~/.omp-workspace/extension/omp-workspace-automation.ts`
+pub fn automation_extension_path() -> PathBuf {
+    data_dir()
+        .join("extension")
+        .join("omp-workspace-automation.ts")
+}
+
+/// True when using the default `~/.omp-workspace` user data dir (not an isolated dev/test dir).
+pub fn is_default_data_dir() -> bool {
+    std::env::var_os("OMPWS_DATA_DIR").is_none_or(|v| v.to_string_lossy().trim().is_empty())
+}
+
+/// `~/.omp-workspace/logs/`
+pub fn logs_dir() -> PathBuf {
+    data_dir().join("logs")
+}
+
 /// `~/.omp-workspace/oneshot-sessions/`
 pub fn oneshot_dir() -> PathBuf {
     data_dir().join("oneshot-sessions")
+}
+
+/// `~/.omp-workspace/automations/`
+pub fn automations_dir() -> PathBuf {
+    data_dir().join("automations")
+}
+
+/// `~/.omp-workspace/automations/<sanitized-id>/`
+pub fn automation_dir(id: &str) -> PathBuf {
+    let safe: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = safe.trim_matches('.');
+    let name = if trimmed.is_empty() {
+        "default"
+    } else {
+        trimmed
+    };
+    automations_dir().join(name)
 }
 
 /// `~/.omp/agent/sessions/`
@@ -122,7 +165,13 @@ pub fn omp_sessions_dir() -> PathBuf {
 
 /// Create all app-owned directories at startup.
 pub fn ensure_dirs() -> io::Result<()> {
-    for dir in [data_dir(), global_dir(), status_dir(), oneshot_dir()] {
+    for dir in [
+        data_dir(),
+        global_dir(),
+        status_dir(),
+        oneshot_dir(),
+        automations_dir(),
+    ] {
         std::fs::create_dir_all(&dir)?;
     }
     if let Some(parent) = extension_path().parent() {

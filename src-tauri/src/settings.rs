@@ -65,6 +65,18 @@ pub async fn set_default_approval_mode(state: &AppState, mode: &str) -> Result<(
     Ok(())
 }
 
+/// Phone edits share the full-settings writer's lock and preserve every other key.
+pub async fn set_automation_overlap_policy(
+    state: &AppState,
+    policy: crate::contracts::AutomationOverlapPolicy,
+) -> Result<(), String> {
+    let _guard = SAVE_LOCK.lock().await;
+    let mut settings = state.settings.read().clone();
+    settings.automation_overlap_policy = policy;
+    apply_locked(state, settings)?;
+    Ok(())
+}
+
 /// Validates, persists, and updates memory while the caller holds `SAVE_LOCK`.
 /// Avoids holding parking_lot synchronization guards across asynchronous await points.
 fn apply_locked(state: &AppState, settings: Settings) -> Result<Settings, String> {
@@ -85,6 +97,7 @@ fn apply_locked(state: &AppState, settings: Settings) -> Result<Settings, String
         let mut mem = state.settings.write();
         *mem = settings.clone();
     }
+    crate::schedules::scheduler::notify_scheduler();
 
     Ok(settings)
 }

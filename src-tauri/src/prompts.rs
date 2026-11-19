@@ -13,6 +13,8 @@ pub const SUMMARY: &str = include_str!("../prompts/summary.md");
 pub const DIAGNOSE: &str = include_str!("../prompts/diagnose.md");
 pub const BACKLOG_DISPATCH: &str = include_str!("../prompts/backlog_dispatch.md");
 pub const VISUALIZE_HINT: &str = include_str!("../prompts/visualize_hint.md");
+pub const AUTOMATION_AUTHOR: &str = include_str!("../prompts/automation_author.md");
+pub const AUTOMATION_HINT: &str = "Automations & scheduled tasks in Vecway: when the user asks to create, schedule, or monitor a recurring task or background workflow, ALWAYS use the `vecway_automation` tool to stage check scripts inside Vecway's managed automations directory and surface an interactive Automation Draft Card in chat. NEVER directly modify OS `crontab` or `~/Library/LaunchAgents`.";
 
 pub fn render(template: &str, vars: &HashMap<&str, String>) -> String {
     let non_empty = |k: &str| vars.get(k).is_some_and(|v| !v.trim().is_empty());
@@ -108,6 +110,8 @@ mod tests {
             SUMMARY,
             DIAGNOSE,
             BACKLOG_DISPATCH,
+            VISUALIZE_HINT,
+            AUTOMATION_AUTHOR,
         ] {
             assert!(t.len() > 50);
         }

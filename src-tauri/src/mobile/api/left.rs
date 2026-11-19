@@ -52,6 +52,9 @@
 //! - `POST /left/schedules/{id}/enabled` `{enabled}` → `Schedule`.
 //! - `POST /left/schedules/{id}/run` → `ScheduleRun` (run now; the UI must confirm first).
 //! - `GET /left/schedules/{id}/runs?limit=20` → `ScheduleRun[]`.
+//! - `POST /left/schedules/{id}/runs/{run_id}/release-awaiting` explicitly releases a paused run.
+//! - `GET /left/schedules/{id}/awaiting` → unresolved paused runs.
+//! - `POST /left/schedules/{id}/runs/{run_id}/resume-awaiting` starts a correlated continuation.
 //!
 //! Skills
 //! - `GET /left/skills?cwd=` → `{skills: (SkillItem + {enabled, disabledReason: null|{kind,..}})[],
@@ -137,6 +140,9 @@ pub fn routes<B: Backend>() -> Router<Arc<Ctx<B>>> {
         .route("/left/schedules/{id}/enabled", post(schedules_enabled::<B>))
         .route("/left/schedules/{id}/run", post(schedules_run::<B>))
         .route("/left/schedules/{id}/runs", get(schedules_runs::<B>))
+        .route("/left/schedules/{id}/runs/{run_id}/release-awaiting", post(schedules_release_awaiting::<B>))
+        .route("/left/schedules/{id}/awaiting", get(schedules_awaiting::<B>))
+        .route("/left/schedules/{id}/runs/{run_id}/resume-awaiting", post(schedules_resume_awaiting::<B>))
         .route("/left/skills", get(skills_list::<B>))
         .route("/left/skills/content", get(skill_content::<B>))
         .route("/left/skills/toggle", post(skill_toggle::<B>))
@@ -1282,7 +1288,7 @@ fn schedule_exists(st: &AppState, id: &str) -> Result<(), ApiError> {
         let db = st.db.lock();
         sched_store::get(&db, id).map_err(internal)?
     };
-    found.map(|_| ()).ok_or_else(|| not_found("定时任务不存在"))
+    found.map(|_| ()).ok_or_else(|| not_found("自动化不存在"))
 }
 
 async fn validate_draft<B: Backend>(
@@ -1291,10 +1297,20 @@ async fn validate_draft<B: Backend>(
     draft: &ScheduleDraft,
 ) -> Result<(), ApiError> {
     if draft.name.trim().is_empty() {
-        return Err(bad_request("请填写任务名称"));
+        return Err(bad_request("请填写自动化名称"));
     }
-    if draft.prompt.trim().is_empty() {
+    let has_probe = draft
+        .probe_command
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty());
+    if draft.agent_trigger != crate::contracts::ScheduleAgentTrigger::Never
+        && draft.prompt.trim().is_empty()
+    {
         return Err(bad_request("请填写提示词"));
+    }
+    if draft.agent_trigger != crate::contracts::ScheduleAgentTrigger::Always && !has_probe {
+        return Err(bad_request("请填写本地脚本"));
     }
     let metas = ctx.backend.sessions().await;
     let dirs = allowed_dirs(st, &metas).await?;
@@ -1382,6 +1398,43 @@ async fn schedules_run<B: Backend>(
     schedule_exists(st, &id)?;
     let run = runner::run_now(st.clone(), id).await.map_err(bad_request)?;
     Ok(Json(run))
+}
+
+async fn schedules_release_awaiting<B: Backend>(
+    State(ctx): State<Arc<Ctx<B>>>,
+    Path((id, run_id)): Path<(String, String)>,
+) -> ApiResult<Value> {
+    let st = app(&ctx)?;
+    schedule_exists(st, &id)?;
+    crate::schedules::commands::schedules_release_awaiting(
+        st.app.state::<AppState>(), id, run_id,
+    ).await.map_err(bad_request)?;
+    Ok(ok_json())
+}
+
+async fn schedules_resume_awaiting<B: Backend>(
+    State(ctx): State<Arc<Ctx<B>>>,
+    Path((id, run_id)): Path<(String, String)>,
+) -> ApiResult<Value> {
+    let st = app(&ctx)?;
+    schedule_exists(st, &id)?;
+    crate::schedules::commands::schedules_resume_awaiting(
+        st.app.state::<AppState>(), id, run_id,
+    ).await.map_err(bad_request)?;
+    Ok(ok_json())
+}
+
+async fn schedules_awaiting<B: Backend>(
+    State(ctx): State<Arc<Ctx<B>>>,
+    Path(id): Path<String>,
+) -> ApiResult<Vec<crate::contracts::ScheduleRun>> {
+    let st = app(&ctx)?;
+    schedule_exists(st, &id)?;
+    let runs = {
+        let db = st.db.lock();
+        sched_store::list_awaiting_runs(&db, &id).map_err(internal)?
+    };
+    Ok(Json(runs))
 }
 
 #[derive(Deserialize)]
@@ -1777,6 +1830,7 @@ async fn settings_summary<B: Backend>(State(ctx): State<Arc<Ctx<B>>>) -> ApiResu
         "defaultModelSource": source,
         "defaultApprovalMode": st.settings.read().default_approval_mode,
         "capsuleVisible": st.settings.read().capsule_visible,
+        "automationOverlapPolicy": st.settings.read().automation_overlap_policy,
         "omp": omp,
         "ompError": omp_error,
     })))
@@ -1798,10 +1852,11 @@ fn desktop_settings_json(st: &AppState) -> Value {
     json!({
         "defaultApprovalMode": s.default_approval_mode,
         "capsuleVisible": s.capsule_visible,
+        "automationOverlapPolicy": s.automation_overlap_policy,
     })
 }
 
-/// `GET /left/settings/desktop` → `{defaultApprovalMode, capsuleVisible}`.
+/// `GET /left/settings/desktop` → `{defaultApprovalMode, capsuleVisible, automationOverlapPolicy}`.
 async fn desktop_settings<B: Backend>(State(ctx): State<Arc<Ctx<B>>>) -> ApiResult<Value> {
     Ok(Json(desktop_settings_json(app(&ctx)?)))
 }
@@ -1903,11 +1958,43 @@ struct SettingSetBody {
     value: Value,
 }
 
+/// App-settings allowlist entry, intentionally separate from OMP config keys.
+fn automation_overlap_policy(value: &Value) -> Result<crate::contracts::AutomationOverlapPolicy, String> {
+    use crate::contracts::AutomationOverlapPolicy;
+    match value.as_str() {
+        Some("skip") => Ok(AutomationOverlapPolicy::Skip),
+        Some("coalesce") => Ok(AutomationOverlapPolicy::Coalesce),
+        Some("queue") => Ok(AutomationOverlapPolicy::Queue),
+        Some("parallel") => Ok(AutomationOverlapPolicy::Parallel),
+        _ => Err("automationOverlapPolicy 的取值必须是：skip / coalesce / queue / parallel".into()),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn global_automation_policy_allowlist_accepts_only_wire_values() {
+    for value in ["skip", "coalesce", "queue", "parallel"] {
+        let policy = automation_overlap_policy(&json!(value)).unwrap();
+        assert_eq!(serde_json::to_value(policy).unwrap(), json!(value));
+        // This preference must never be forwarded to `omp config set`.
+        assert!(validate_mobile_setting("automationOverlapPolicy", &json!(value)).is_err());
+    }
+    for value in [json!(true), json!(1), Value::Null, json!("Queue"), json!("queue "), json!("")] {
+        assert!(automation_overlap_policy(&value).is_err());
+    }
+}
+
 async fn setting_set<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Json(body): Json<SettingSetBody>,
 ) -> ApiResult<Value> {
     let st = app(&ctx)?;
+    if body.key == "automationOverlapPolicy" {
+        let policy = automation_overlap_policy(&body.value).map_err(bad_request)?;
+        crate::settings::set_automation_overlap_policy(st, policy)
+            .await.map_err(bad_request)?;
+        return Ok(Json(json!({ "ok": true, "key": body.key, "value": policy })));
+    }
     let value = validate_mobile_setting(&body.key, &body.value).map_err(bad_request)?;
     crate::settings::omp_config_set(st.app.state::<AppState>(), body.key.clone(), value)
         .await

@@ -6,14 +6,16 @@ use chrono::{
 use rusqlite::{params, Connection};
 
 use crate::contracts::{
-    Schedule, ScheduleCadence, ScheduleDraft, ScheduleLifecycle, ScheduleNotify, ScheduleRunMode,
-    ScheduleRunStatus,
+    Schedule, ScheduleAgentTrigger, ScheduleCadence, ScheduleDraft, ScheduleLifecycle,
+    ScheduleNotify, ScheduleRunMode, ScheduleRunPhase, ScheduleRunStatus,
 };
+use crate::schedules::probe::{classify_probe, execute_probe, ProbeOutcome};
 use crate::schedules::runner::should_create_inbox_todo;
 use crate::schedules::store::{
     advance_after_run, claim_run, create_run, delete, derive_lifecycle, from_local_result, get,
     has_active_run, last_run_session_file, list, list_runs, next_run, next_run_bounded,
-    now_rfc3339, record_run_start, recover_stale_runs, set_enabled, update_run, upsert,
+    now_rfc3339, record_run_start, recover_stale_runs, set_enabled, update_run,
+    update_run_with_phase, upsert,
 };
 
 fn make_local(year: i32, month: u32, day: u32, hour: u32, min: u32) -> DateTime<Local> {
@@ -32,10 +34,13 @@ fn test_next_run_interval() {
     let n1 = next_run(&c1, after);
     assert_eq!(n1.unwrap(), after + Duration::minutes(15));
 
-    // Below minimum of 5 minutes: clamped to 5 minutes
-    let c2 = ScheduleCadence::Interval { minutes: 2 };
-    let n2 = next_run(&c2, after);
-    assert_eq!(n2.unwrap(), after + Duration::minutes(5));
+    // A one-minute interval is accepted.
+    let c2 = ScheduleCadence::Interval { minutes: 1 };
+    assert_eq!(next_run(&c2, after).unwrap(), after + Duration::minutes(1));
+
+    // Below the one-minute minimum: clamped to one minute.
+    let c3 = ScheduleCadence::Interval { minutes: 0 };
+    assert_eq!(next_run(&c3, after).unwrap(), after + Duration::minutes(1));
 }
 
 #[test]
@@ -247,7 +252,12 @@ fn setup_test_db() -> Connection {
            max_runs INTEGER,
            runs_done INTEGER NOT NULL DEFAULT 0,
            created_at TEXT NOT NULL,
-           updated_at TEXT NOT NULL
+           updated_at TEXT NOT NULL,
+           probe_command TEXT,
+           probe_description TEXT,
+           agent_trigger TEXT NOT NULL DEFAULT 'always',
+           result_mode TEXT NOT NULL DEFAULT 'structured',
+           invokes_external_model INTEGER NOT NULL DEFAULT 0
          );
          CREATE TABLE schedule_runs(
            id TEXT PRIMARY KEY,
@@ -257,9 +267,20 @@ fn setup_test_db() -> Connection {
            started_at TEXT NOT NULL,
            finished_at TEXT,
            summary TEXT,
+           phase TEXT NOT NULL DEFAULT 'agent',
+           owner_pid INTEGER,
+           resume_attempt TEXT,
+           resume_owner_pid INTEGER,
+           probe_output TEXT,
            FOREIGN KEY(schedule_id) REFERENCES schedules(id) ON DELETE CASCADE
          );
          CREATE INDEX idx_schedule_runs_schedule_id ON schedule_runs(schedule_id, started_at DESC);
+         CREATE TABLE schedule_pending(
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+           scheduled_at TEXT NOT NULL,
+           reason TEXT NOT NULL
+         );
          CREATE TABLE session_meta(
            session_id TEXT PRIMARY KEY,
            file_path TEXT
@@ -295,6 +316,11 @@ fn test_store_crud() {
         max_runs: None,
         notify: ScheduleNotify::All,
         new_chat_each_run: true,
+        probe_command: None,
+        probe_description: None,
+        agent_trigger: ScheduleAgentTrigger::Always,
+        result_mode: crate::contracts::ScheduleResultMode::Structured,
+        invokes_external_model: false,
     };
 
     let created = upsert(&conn, &draft).unwrap();
@@ -329,6 +355,11 @@ fn test_store_crud() {
         max_runs: None,
         notify: ScheduleNotify::All,
         new_chat_each_run: true,
+        probe_command: None,
+        probe_description: None,
+        agent_trigger: ScheduleAgentTrigger::Always,
+        result_mode: crate::contracts::ScheduleResultMode::Structured,
+        invokes_external_model: false,
     };
 
     let updated = upsert(&conn, &update_draft).unwrap();
@@ -409,6 +440,11 @@ fn recover_stale_runs_settles_leftover_running_rows() {
         max_runs: None,
         notify: ScheduleNotify::All,
         new_chat_each_run: true,
+        probe_command: None,
+        probe_description: None,
+        agent_trigger: ScheduleAgentTrigger::Always,
+        result_mode: crate::contracts::ScheduleResultMode::Structured,
+        invokes_external_model: false,
     };
     let schedule = upsert(&conn, &draft).unwrap();
     create_run(
@@ -420,6 +456,7 @@ fn recover_stale_runs_settles_leftover_running_rows() {
         None,
     )
     .unwrap();
+    conn.execute("UPDATE schedule_runs SET owner_pid = NULL WHERE id = 'orphan'", []).unwrap();
     assert!(has_active_run(&conn, &schedule.id).unwrap());
 
     assert_eq!(
@@ -458,6 +495,11 @@ fn once_draft(at: &str, enabled: bool) -> ScheduleDraft {
         enabled,
         notify: ScheduleNotify::All,
         new_chat_each_run: true,
+        probe_command: None,
+        probe_description: None,
+        agent_trigger: ScheduleAgentTrigger::Always,
+        result_mode: crate::contracts::ScheduleResultMode::Structured,
+        invokes_external_model: false,
     }
 }
 
@@ -483,6 +525,11 @@ fn daily_draft(end_at: Option<String>, enabled: bool) -> ScheduleDraft {
         enabled,
         notify: ScheduleNotify::All,
         new_chat_each_run: true,
+        probe_command: None,
+        probe_description: None,
+        agent_trigger: ScheduleAgentTrigger::Always,
+        result_mode: crate::contracts::ScheduleResultMode::Structured,
+        invokes_external_model: false,
     }
 }
 
@@ -497,10 +544,12 @@ fn test_validation_errors() {
     assert_eq!(e, "请选择未来的时间");
     // once.at unparseable.
     assert!(upsert(&conn, &once_draft("not-a-date", true)).is_err());
-    // interval < 5 → Err.
+    // interval < 1 → Err; one minute is accepted.
     let mut d = daily_draft(None, true);
-    d.cadence = ScheduleCadence::Interval { minutes: 3 };
-    assert_eq!(upsert(&conn, &d).unwrap_err(), "间隔至少 5 分钟");
+    d.cadence = ScheduleCadence::Interval { minutes: 0 };
+    assert_eq!(upsert(&conn, &d).unwrap_err(), "间隔至少 1 分钟");
+    d.cadence = ScheduleCadence::Interval { minutes: 1 };
+    assert!(upsert(&conn, &d).is_ok());
     // bad HH:MM → Err.
     let mut d2 = daily_draft(None, true);
     d2.cadence = ScheduleCadence::Daily {
@@ -596,6 +645,13 @@ fn test_derive_lifecycle_states() {
         new_chat_each_run: true,
         max_runs: None,
         runs_done: 0,
+        probe_command: None,
+        probe_description: None,
+        agent_trigger: ScheduleAgentTrigger::Always,
+        result_mode: crate::contracts::ScheduleResultMode::Structured,
+        invokes_external_model: false,
+        last_run_phase: None,
+        last_run_session_id: None,
     };
     assert_eq!(
         derive_lifecycle(&base, false, now),
@@ -1176,7 +1232,7 @@ fn manual_and_automatic_claims_use_latest_mode_and_workspace() {
         } else {
             None
         };
-        let (claimed, run) = claim_run(&conn, &snapshot.id, "current", expected_next).unwrap();
+        let (claimed, run, _) = claim_run(&conn, &snapshot.id, "current", expected_next).unwrap();
         assert_eq!(claimed.mode, crate::contracts::SpaceMode::Research);
         assert_eq!(claimed.cwd, "/tmp/scheduled-research");
         assert_eq!(run.schedule_id, schedule.id);
@@ -1185,7 +1241,8 @@ fn manual_and_automatic_claims_use_latest_mode_and_workspace() {
 
 #[test]
 fn manual_and_timer_claims_share_active_guard_without_counting_skips() {
-    let conn = setup_test_db();
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
     let schedule = upsert(&conn, &daily_draft(None, true)).unwrap();
     let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
     conn.execute(
@@ -1241,7 +1298,8 @@ fn deletion_cannot_outlive_an_active_claim_or_create_an_orphan() {
 #[test]
 fn concurrent_manual_and_timer_dispatch_have_one_active_run() {
     use std::sync::{Arc, Barrier, Mutex};
-    let conn = setup_test_db();
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
     let schedule = upsert(&conn, &daily_draft(None, true)).unwrap();
     let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
     conn.execute(
@@ -1341,4 +1399,667 @@ fn stale_timer_snapshot_cannot_claim_after_pause_or_delete() {
         assert!(claim_run(&conn, &schedule.id, "stale-timer", Some(&due)).is_err());
         assert!(list_runs(&conn, &schedule.id, 10).unwrap().is_empty());
     }
+}
+
+#[test]
+fn test_classify_probe_variants() {
+    // OnSignal: exit 10 or empty exit 0 => Quiet; exit 20 or stdout exit 0 => WakeAgent; else Failed.
+    assert_eq!(
+        classify_probe(
+            ScheduleAgentTrigger::OnSignal,
+            Some(10),
+            false,
+            "ignored",
+            ""
+        ),
+        ProbeOutcome::Quiet
+    );
+    assert_eq!(
+        classify_probe(ScheduleAgentTrigger::OnSignal, Some(0), false, "  \n", ""),
+        ProbeOutcome::Quiet
+    );
+    assert_eq!(
+        classify_probe(
+            ScheduleAgentTrigger::OnSignal,
+            Some(0),
+            false,
+            "3 new errors\n",
+            ""
+        ),
+        ProbeOutcome::WakeAgent {
+            context: "3 new errors".to_string()
+        }
+    );
+    assert_eq!(
+        classify_probe(
+            ScheduleAgentTrigger::OnSignal,
+            Some(20),
+            false,
+            "warn",
+            "detail"
+        ),
+        ProbeOutcome::WakeAgent {
+            context: "warn\n[stderr]\ndetail".to_string()
+        }
+    );
+    assert!(matches!(
+        classify_probe(ScheduleAgentTrigger::OnSignal, Some(1), false, "", "boom"),
+        ProbeOutcome::Failed { .. }
+    ));
+
+    // Never: exit 0 => ScriptOk; non-zero or timeout => Failed.
+    assert_eq!(
+        classify_probe(ScheduleAgentTrigger::Never, Some(0), false, "done\n", ""),
+        ProbeOutcome::ScriptOk {
+            output: "done".to_string()
+        }
+    );
+    assert!(matches!(
+        classify_probe(ScheduleAgentTrigger::Never, Some(2), false, "", "bad"),
+        ProbeOutcome::Failed { .. }
+    ));
+    assert!(matches!(
+        classify_probe(ScheduleAgentTrigger::Never, Some(0), true, "", ""),
+        ProbeOutcome::Failed { .. }
+    ));
+
+    // Always: exit 0 => WakeAgent (even empty); non-zero => Failed.
+    assert_eq!(
+        classify_probe(ScheduleAgentTrigger::Always, Some(0), false, "", ""),
+        ProbeOutcome::WakeAgent {
+            context: String::new()
+        }
+    );
+    assert!(matches!(
+        classify_probe(ScheduleAgentTrigger::Always, Some(1), false, "", "err"),
+        ProbeOutcome::Failed { .. }
+    ));
+}
+
+#[tokio::test]
+async fn test_execute_probe_and_state_dir_persistence() {
+    let dir = std::env::temp_dir().join(format!("ompws-probe-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let auto_id = format!("test-auto-{}", uuid::Uuid::new_v4());
+    let expected_auto_dir = crate::paths::automation_dir(&auto_id);
+
+    // 1. Quiet on empty stdout
+    let (code, timed_out, _ms, outcome, _raw) = execute_probe(
+        &dir,
+        "true",
+        ScheduleAgentTrigger::OnSignal,
+        Some(&auto_id),
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(code, Some(0));
+    assert!(!timed_out);
+    assert_eq!(outcome, ProbeOutcome::Quiet);
+
+    // 2. State file written to OMPWS_STATE_DIR persists across runs
+    let (_c1, _t1, _m1, out1, _r1) = execute_probe(
+        &dir,
+        "echo saved > \"$OMPWS_STATE_DIR/cursor.txt\"",
+        ScheduleAgentTrigger::OnSignal,
+        Some(&auto_id),
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(out1, ProbeOutcome::Quiet);
+
+    let (_c2, _t2, _m2, out2, _r2) = execute_probe(
+        &dir,
+        "cat \"$OMPWS_STATE_DIR/cursor.txt\"",
+        ScheduleAgentTrigger::OnSignal,
+        Some(&auto_id),
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(
+        out2,
+        ProbeOutcome::WakeAgent {
+            context: "saved".to_string()
+        }
+    );
+
+    // 3. Non-zero exit yields Failed
+    let (c3, _t3, _m3, out3, _r3) = execute_probe(
+        &dir,
+        "echo broken >&2; exit 2",
+        ScheduleAgentTrigger::OnSignal,
+        Some(&auto_id),
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(c3, Some(2));
+    assert_eq!(
+        out3,
+        ProbeOutcome::Failed {
+            output: "broken".to_string()
+        }
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&expected_auto_dir);
+}
+
+#[test]
+fn test_probe_fields_validation_and_roundtrip() {
+    let conn = setup_test_db();
+
+    // Never requires probe_command
+    let mut bad_never = daily_draft(None, true);
+    bad_never.prompt = String::new();
+    bad_never.agent_trigger = ScheduleAgentTrigger::Never;
+    assert_eq!(
+        upsert(&conn, &bad_never).unwrap_err(),
+        "请填写本地脚本或命令"
+    );
+
+    // OnSignal requires both probe_command and prompt
+    let mut bad_sig = daily_draft(None, true);
+    bad_sig.agent_trigger = ScheduleAgentTrigger::OnSignal;
+    assert_eq!(
+        upsert(&conn, &bad_sig).unwrap_err(),
+        "请填写前置脚本与唤醒后的处理指令"
+    );
+
+    // Valid OnSignal round-trip + update_run_with_phase
+    let mut d = daily_draft(None, true);
+    d.agent_trigger = ScheduleAgentTrigger::OnSignal;
+    d.probe_command = Some("  echo diff  ".to_string());
+    d.probe_description = Some("  检查改动  ".to_string());
+    let saved = upsert(&conn, &d).unwrap();
+    assert_eq!(saved.agent_trigger, ScheduleAgentTrigger::OnSignal);
+    assert_eq!(saved.probe_command.as_deref(), Some("echo diff"));
+    assert_eq!(saved.probe_description.as_deref(), Some("检查改动"));
+
+    create_run(
+        &conn,
+        "r-q",
+        &saved.id,
+        None,
+        ScheduleRunStatus::Running,
+        None,
+    )
+    .unwrap();
+    update_run_with_phase(
+        &conn,
+        "r-q",
+        None,
+        ScheduleRunStatus::Ok,
+        Some(&now_rfc3339()),
+        Some("脚本正常，无新变化"),
+        ScheduleRunPhase::ProbeQuiet,
+        Some("ok"),
+    )
+    .unwrap();
+
+    let fetched = get(&conn, &saved.id).unwrap().unwrap();
+    assert_eq!(fetched.last_run_phase, Some(ScheduleRunPhase::ProbeQuiet));
+    let runs = list_runs(&conn, &saved.id, 5).unwrap();
+    assert_eq!(runs[0].phase, ScheduleRunPhase::ProbeQuiet);
+    assert_eq!(runs[0].probe_output.as_deref(), Some("ok"));
+}
+
+#[test]
+fn awaiting_run_skips_automatic_triggers_until_explicit_release() {
+    use crate::contracts::{TodoKind, TodoSource};
+    use crate::todos::store::NewTodo;
+
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let schedule = upsert(&conn, &daily_draft(None, true)).unwrap();
+
+    claim_run(&conn, &schedule.id, "r1", None).unwrap();
+    update_run_with_phase(
+        &conn,
+        "r1",
+        Some("sess-await-1"),
+        ScheduleRunStatus::Ok,
+        Some(&now_rfc3339()),
+        Some("等待审批"),
+        ScheduleRunPhase::Awaiting,
+        None,
+    )
+    .unwrap();
+
+    crate::todos::store::upsert(
+        &conn,
+        "sched:r1",
+        &NewTodo {
+            kind: TodoKind::ScheduleRun,
+            source: TodoSource::Schedule,
+            session_id: Some("sess-await-1".to_string()),
+            title: "等待确认".to_string(),
+            detail: "已暂停".to_string(),
+            payload: serde_json::json!({
+                "scheduleId": schedule.id,
+                "runId": "r1",
+                "ok": true,
+                "awaiting": true,
+            }),
+        },
+        true,
+    )
+    .unwrap();
+
+    // First and second overdue automatic triggers must skip while preserving Awaiting phase
+    for skip_id in ["r-skip-1", "r-skip-2"] {
+        let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
+        conn.execute(
+            "UPDATE schedules SET next_run_at = ?2 WHERE id = ?1",
+            params![schedule.id, due],
+        )
+        .unwrap();
+        let err = claim_run(&conn, &schedule.id, skip_id, Some(&due)).unwrap_err();
+        assert!(err.contains("等待人工确认"));
+
+        // Make sure subsequent runs sort cleanly later in started_at order
+        let later = (chrono::Utc::now() + Duration::seconds(5)).to_rfc3339();
+        conn.execute(
+            "UPDATE schedule_runs SET started_at = ?2 WHERE id = ?1",
+            params![skip_id, later],
+        )
+        .unwrap();
+
+        let current = get(&conn, &schedule.id).unwrap().unwrap();
+        assert_eq!(current.last_run_phase, Some(ScheduleRunPhase::Awaiting));
+        assert_eq!(current.last_run_session_id.as_deref(), Some("sess-await-1"));
+    }
+
+    // Acknowledging the Inbox item alone does not prove the turn finished.
+    conn.execute("UPDATE todos SET status = 'done'", [])
+        .unwrap();
+    assert!(crate::schedules::store::find_open_awaiting_session(&conn, &schedule.id).unwrap().is_some());
+    crate::schedules::store::release_awaiting(&conn, &schedule.id, "r1").unwrap();
+    let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
+    conn.execute(
+        "UPDATE schedules SET next_run_at = ?2 WHERE id = ?1",
+        params![schedule.id, due],
+    )
+    .unwrap();
+    let (_s, next_run, _) = claim_run(&conn, &schedule.id, "r-next", Some(&due)).unwrap();
+    assert_eq!(next_run.status, ScheduleRunStatus::Running);
+}
+
+#[test]
+fn queued_and_coalesced_occurrences_survive_and_drain_in_order() {
+    use crate::contracts::AutomationOverlapPolicy;
+    use crate::schedules::store::claim_pending_run;
+    for (policy, expected) in [(AutomationOverlapPolicy::Queue, 3), (AutomationOverlapPolicy::Coalesce, 1)] {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        let draft = daily_draft(None, true);
+        crate::db::save_settings(&conn, &crate::contracts::Settings {
+            automation_overlap_policy: policy, ..Default::default()
+        }).unwrap();
+        let schedule = upsert(&conn, &draft).unwrap();
+        claim_run(&conn, &schedule.id, "active", None).unwrap();
+        for n in 0..3 {
+            let due = (chrono::Utc::now() - Duration::minutes(3 - n)).to_rfc3339();
+            conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1",
+                params![schedule.id, due]).unwrap();
+            assert!(claim_run(&conn, &schedule.id, &format!("due-{n}"), Some(&due)).is_err());
+        }
+        let reasons: Vec<String> = conn.prepare(
+            "SELECT reason FROM schedule_pending WHERE schedule_id = ?1 ORDER BY id"
+        ).unwrap().query_map(params![schedule.id], |r| r.get(0)).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert_eq!(reasons.len(), expected);
+        assert!(reasons.iter().all(|reason| reason == "上一次运行仍在进行中"));
+        assert!(claim_pending_run(&conn, &schedule.id, "blocked").unwrap().is_none());
+        update_run(&conn, "active", None, ScheduleRunStatus::Ok, Some(&now_rfc3339()), None).unwrap();
+        for n in 0..expected {
+            let id = format!("queued-{n}");
+            assert!(claim_pending_run(&conn, &schedule.id, &id).unwrap().is_some());
+            assert!(claim_pending_run(&conn, &schedule.id, "second").unwrap().is_none());
+            update_run(&conn, &id, None, ScheduleRunStatus::Ok, Some(&now_rfc3339()), None).unwrap();
+        }
+        assert!(claim_pending_run(&conn, &schedule.id, "empty").unwrap().is_none());
+    }
+}
+
+#[test]
+fn policy_switches_preserve_every_accepted_occurrence() {
+    use crate::contracts::{AutomationOverlapPolicy, Settings};
+    use crate::schedules::store::claim_pending_run;
+    for policy in [AutomationOverlapPolicy::Skip, AutomationOverlapPolicy::Coalesce,
+        AutomationOverlapPolicy::Parallel] {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        crate::db::save_settings(&conn, &Settings {
+            automation_overlap_policy: AutomationOverlapPolicy::Queue, ..Default::default()
+        }).unwrap();
+        let schedule = upsert(&conn, &daily_draft(None, true)).unwrap();
+        claim_run(&conn, &schedule.id, "active", None).unwrap();
+        for n in 0..3 {
+            let due = (chrono::Utc::now() - Duration::minutes(3 - n)).to_rfc3339();
+            conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1", params![schedule.id, due]).unwrap();
+            assert!(claim_run(&conn, &schedule.id, &format!("due-{n}"), Some(&due)).is_err());
+        }
+        let accepted: Vec<(i64, String)> = conn.prepare("SELECT id, scheduled_at FROM schedule_pending ORDER BY id")
+            .unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
+        crate::db::save_settings(&conn, &Settings {
+            automation_overlap_policy: policy, ..Default::default()
+        }).unwrap();
+        if policy != AutomationOverlapPolicy::Parallel {
+            assert!(claim_pending_run(&conn, &schedule.id, "blocked").unwrap().is_none());
+        }
+        update_run(&conn, "active", None, ScheduleRunStatus::Ok, Some(&now_rfc3339()), None).unwrap();
+        for (n, (pending_id, scheduled_at)) in accepted.iter().enumerate() {
+            let oldest: (i64, String) = conn.query_row(
+                "SELECT id, scheduled_at FROM schedule_pending ORDER BY id LIMIT 1", [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).unwrap();
+            assert_eq!(&oldest, &(*pending_id, scheduled_at.clone()));
+            let id = format!("drained-{n}");
+            let (_, _, claimed_policy) = claim_pending_run(&conn, &schedule.id, &id).unwrap().unwrap();
+            assert_eq!(claimed_policy, policy);
+            if policy != AutomationOverlapPolicy::Parallel {
+                assert!(claim_pending_run(&conn, &schedule.id, "blocked-again").unwrap().is_none());
+            }
+            update_run(&conn, &id, None, ScheduleRunStatus::Ok, Some(&now_rfc3339()), None).unwrap();
+        }
+        assert!(claim_pending_run(&conn, &schedule.id, "empty").unwrap().is_none());
+    }
+}
+
+#[test]
+fn legacy_task_policy_is_not_authoritative_or_reemitted_in_ai_drafts() {
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let mut legacy = serde_json::to_value(daily_draft(None, true)).unwrap();
+    legacy["overlapPolicy"] = serde_json::json!("parallel");
+    let draft: ScheduleDraft = serde_json::from_value(legacy).unwrap();
+    // AI authoring receives the serialized current ScheduleDraft, not old client keys.
+    assert!(serde_json::to_value(&draft).unwrap().get("overlapPolicy").is_none());
+    let schedule = upsert(&conn, &draft).unwrap();
+    assert!(serde_json::to_value(&schedule).unwrap().get("overlapPolicy").is_none());
+    claim_run(&conn, &schedule.id, "active", None).unwrap();
+    let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
+    conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1", params![schedule.id, due]).unwrap();
+    assert!(claim_run(&conn, &schedule.id, "automatic", Some(&due)).is_err());
+    assert_eq!(list_runs(&conn, &schedule.id, 10).unwrap().iter()
+        .filter(|run| run.status == ScheduleRunStatus::Running).count(), 1);
+}
+
+#[test]
+fn latest_global_policy_applies_to_all_claims_and_claimed_snapshots_do_not_change() {
+    use crate::contracts::{AutomationOverlapPolicy, Settings};
+    let uri = format!("file:global-policy-{}?mode=memory&cache=shared", uuid::Uuid::new_v4());
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+        | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+    let conn = Connection::open_with_flags(&uri, flags).unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let writer = Connection::open_with_flags(&uri, flags).unwrap();
+    let schedules = [upsert(&conn, &daily_draft(None, true)).unwrap(), upsert(&conn, &daily_draft(None, true)).unwrap()];
+    let mut claimed_policies = Vec::new();
+    for schedule in &schedules {
+        claim_run(&conn, &schedule.id, &format!("manual-{}", schedule.id), None).unwrap();
+        let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
+        conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1", params![schedule.id, due]).unwrap();
+        assert!(claim_run(&conn, &schedule.id, &format!("skip-{}", schedule.id), Some(&due)).is_err());
+    }
+    crate::db::save_settings(&writer, &Settings {
+        automation_overlap_policy: AutomationOverlapPolicy::Parallel, ..Default::default()
+    }).unwrap();
+    for schedule in &schedules {
+        let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
+        conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1", params![schedule.id, due]).unwrap();
+        let (claimed, _, policy) = claim_run(&conn, &schedule.id, &format!("parallel-{}", schedule.id), Some(&due)).unwrap();
+        assert_eq!(policy, AutomationOverlapPolicy::Parallel);
+        assert!(serde_json::to_value(claimed).unwrap().get("overlapPolicy").is_none());
+        claimed_policies.push(policy);
+    }
+    crate::db::save_settings(&writer, &Settings::default()).unwrap();
+    for (schedule, claimed_policy) in schedules.iter().zip(claimed_policies) {
+        assert_eq!(claimed_policy, AutomationOverlapPolicy::Parallel);
+        let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
+        conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1", params![schedule.id, due]).unwrap();
+        assert!(claim_run(&conn, &schedule.id, &format!("serial-{}", schedule.id), Some(&due)).is_err());
+        assert_eq!(list_runs(&conn, &schedule.id, 20).unwrap().iter()
+            .filter(|run| run.status == ScheduleRunStatus::Running).count(), 2);
+        for prefix in ["manual", "parallel"] {
+            update_run(&conn, &format!("{prefix}-{}", schedule.id), None,
+                ScheduleRunStatus::Ok, Some(&now_rfc3339()), None).unwrap();
+        }
+        conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1", params![schedule.id, due]).unwrap();
+        let (_, _, policy) = claim_run(&conn, &schedule.id, &format!("after-{}", schedule.id), Some(&due)).unwrap();
+        assert_eq!(policy, AutomationOverlapPolicy::Skip);
+    }
+}
+
+#[test]
+fn queued_occurrence_waits_for_explicit_release() {
+    use crate::contracts::{AutomationOverlapPolicy, TodoKind, TodoSource};
+    use crate::schedules::store::claim_pending_run;
+    use crate::todos::store::NewTodo;
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let draft = daily_draft(None, true);
+    crate::db::save_settings(&conn, &crate::contracts::Settings {
+        automation_overlap_policy: AutomationOverlapPolicy::Queue, ..Default::default()
+    }).unwrap();
+    let schedule = upsert(&conn, &draft).unwrap();
+    claim_run(&conn, &schedule.id, "awaiting", None).unwrap();
+    update_run_with_phase(&conn, "awaiting", Some("session"), ScheduleRunStatus::Ok,
+        Some(&now_rfc3339()), Some("等待审批"), ScheduleRunPhase::Awaiting, None).unwrap();
+    crate::todos::store::upsert(&conn, "sched:awaiting", &NewTodo {
+        kind: TodoKind::ScheduleRun, source: TodoSource::Schedule,
+        session_id: Some("session".into()), title: "等待审批".into(), detail: String::new(),
+        payload: serde_json::json!({"scheduleId": schedule.id, "runId": "awaiting", "awaiting": true}),
+    }, true).unwrap();
+    let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
+    conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1", params![schedule.id, due]).unwrap();
+    assert!(claim_run(&conn, &schedule.id, "due", Some(&due)).is_err());
+    let reason: String = conn.query_row("SELECT reason FROM schedule_pending", [], |r| r.get(0)).unwrap();
+    assert_eq!(reason, "等待人工确认");
+    assert!(claim_pending_run(&conn, &schedule.id, "queued").unwrap().is_none());
+    conn.execute("UPDATE todos SET status = 'done'", []).unwrap();
+    assert!(claim_pending_run(&conn, &schedule.id, "queued").unwrap().is_none());
+    crate::schedules::store::release_awaiting(&conn, &schedule.id, "awaiting").unwrap();
+    assert!(claim_pending_run(&conn, &schedule.id, "queued").unwrap().is_some());
+}
+
+#[test]
+fn parallel_automatic_occurrences_claim_together_but_manual_guard_remains() {
+    use crate::contracts::AutomationOverlapPolicy;
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let draft = daily_draft(None, true);
+    crate::db::save_settings(&conn, &crate::contracts::Settings {
+        automation_overlap_policy: AutomationOverlapPolicy::Parallel, ..Default::default()
+    }).unwrap();
+    let schedule = upsert(&conn, &draft).unwrap();
+    claim_run(&conn, &schedule.id, "manual", None).unwrap();
+    let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
+    conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1", params![schedule.id, due]).unwrap();
+    assert!(claim_run(&conn, &schedule.id, "automatic", Some(&due)).is_ok());
+    assert!(claim_run(&conn, &schedule.id, "second-manual", None).is_err());
+    assert_eq!(list_runs(&conn, &schedule.id, 10).unwrap().iter()
+        .filter(|r| r.status == ScheduleRunStatus::Running).count(), 2);
+    assert_eq!(recover_stale_runs(&conn, &now_rfc3339()).unwrap(), 0);
+}
+
+#[test]
+fn concurrent_connections_cannot_claim_the_same_occurrence() {
+    use std::sync::{Arc, Barrier};
+    let uri = format!("file:overlap-{}?mode=memory&cache=shared", uuid::Uuid::new_v4());
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+        | rusqlite::OpenFlags::SQLITE_OPEN_CREATE | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+    let conn = Connection::open_with_flags(&uri, flags).unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let schedule = upsert(&conn, &daily_draft(None, true)).unwrap();
+    let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
+    conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1", params![schedule.id, due]).unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let threads: Vec<_> = (0..2).map(|n| {
+        let uri = uri.clone();
+        let id = schedule.id.clone();
+        let due = due.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            let db = Connection::open_with_flags(&uri, flags).unwrap();
+            barrier.wait();
+            claim_run(&db, &id, &format!("race-{n}"), Some(&due)).is_ok()
+        })
+    }).collect();
+    assert_eq!(threads.into_iter().map(|t| t.join().unwrap()).filter(|ok| *ok).count(), 1);
+    assert_eq!(get(&conn, &schedule.id).unwrap().unwrap().runs_done, 1);
+}
+
+#[test]
+fn queued_occurrence_persists_across_database_reopen_and_orphan_recovery() {
+    use crate::contracts::AutomationOverlapPolicy;
+    let path = std::env::temp_dir().join(format!("schedule-queue-{}.sqlite", uuid::Uuid::new_v4()));
+    let conn = Connection::open(&path).unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let draft = daily_draft(None, true);
+    crate::db::save_settings(&conn, &crate::contracts::Settings {
+        automation_overlap_policy: AutomationOverlapPolicy::Queue, ..Default::default()
+    }).unwrap();
+    let schedule = upsert(&conn, &draft).unwrap();
+    claim_run(&conn, &schedule.id, "orphan", None).unwrap();
+    let due = (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339();
+    conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1", params![schedule.id, due]).unwrap();
+    assert!(claim_run(&conn, &schedule.id, "due", Some(&due)).is_err());
+    conn.execute("UPDATE schedule_runs SET owner_pid = NULL WHERE id = 'orphan'", []).unwrap();
+    drop(conn);
+
+    let conn = Connection::open(&path).unwrap();
+    crate::db::migrate(&conn).unwrap();
+    assert_eq!(recover_stale_runs(&conn, &now_rfc3339()).unwrap(), 1);
+    assert!(crate::schedules::store::claim_pending_run(&conn, &schedule.id, "recovered").unwrap().is_some());
+    assert!(crate::schedules::store::claim_pending_run(&conn, &schedule.id, "duplicate").unwrap().is_none());
+    drop(conn);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn explicit_release_targets_only_the_selected_paused_run() {
+    use crate::schedules::store::{list_awaiting_runs, release_awaiting};
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let schedule = upsert(&conn, &daily_draft(None, true)).unwrap();
+    claim_run(&conn, &schedule.id, "pause", None).unwrap();
+    update_run_with_phase(&conn, "pause", Some("session"), ScheduleRunStatus::Ok,
+        Some(&now_rfc3339()), Some("等待审批"), ScheduleRunPhase::Awaiting, None).unwrap();
+    assert_eq!(list_awaiting_runs(&conn, &schedule.id).unwrap()[0].id, "pause");
+    assert!(release_awaiting(&conn, "different-schedule", "pause").is_err());
+    assert!(release_awaiting(&conn, &schedule.id, "missing").is_err());
+    release_awaiting(&conn, &schedule.id, "pause").unwrap();
+    assert!(list_awaiting_runs(&conn, &schedule.id).unwrap().is_empty());
+    let runs = list_runs(&conn, &schedule.id, 10).unwrap();
+    assert_eq!(runs[0].status, ScheduleRunStatus::Error);
+    assert_eq!(runs[0].summary.as_deref(), Some("用户明确解除等待，原运行未确认完成"));
+    assert!(release_awaiting(&conn, &schedule.id, "pause").is_err());
+}
+
+#[test]
+fn queue_catches_up_each_missed_interval_while_blocked() {
+    use crate::contracts::AutomationOverlapPolicy;
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let mut draft = daily_draft(None, true);
+    draft.cadence = ScheduleCadence::Interval { minutes: 1 };
+    crate::db::save_settings(&conn, &crate::contracts::Settings {
+        automation_overlap_policy: AutomationOverlapPolicy::Queue, ..Default::default()
+    }).unwrap();
+    let schedule = upsert(&conn, &draft).unwrap();
+    claim_run(&conn, &schedule.id, "active", None).unwrap();
+    let first = (chrono::Utc::now() - Duration::seconds(150)).to_rfc3339();
+    conn.execute("UPDATE schedules SET next_run_at = ?2 WHERE id = ?1",
+        params![schedule.id, first]).unwrap();
+    for n in 0..3 {
+        let current = get(&conn, &schedule.id).unwrap().unwrap();
+        let due = current.next_run_at.unwrap();
+        assert!(claim_run(&conn, &schedule.id, &format!("missed-{n}"), Some(&due)).is_err());
+    }
+    assert!(crate::schedules::store::find_due(&conn, &chrono::Utc::now().to_rfc3339()).unwrap().is_empty());
+    let queued: Vec<String> = conn.prepare("SELECT scheduled_at FROM schedule_pending ORDER BY id").unwrap()
+        .query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(queued.len(), 3);
+    assert_eq!(queued[0], first);
+    assert!(DateTime::parse_from_rfc3339(&queued[0]).unwrap() < DateTime::parse_from_rfc3339(&queued[1]).unwrap());
+    assert!(DateTime::parse_from_rfc3339(&queued[1]).unwrap() < DateTime::parse_from_rfc3339(&queued[2]).unwrap());
+}
+
+#[test]
+fn resume_completion_requires_correct_attempt_and_session() {
+    use crate::schedules::store::{begin_awaiting_resume, finish_awaiting_resume};
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let schedule = upsert(&conn, &daily_draft(None, true)).unwrap();
+    claim_run(&conn, &schedule.id, "paused", None).unwrap();
+    update_run_with_phase(&conn, "paused", Some("original"), ScheduleRunStatus::Ok,
+        Some(&now_rfc3339()), Some("等待审批"), ScheduleRunPhase::Awaiting, None).unwrap();
+    assert!(begin_awaiting_resume(&conn, &schedule.id, "paused", "other", "attempt").is_err());
+    begin_awaiting_resume(&conn, &schedule.id, "paused", "original", "attempt").unwrap();
+    assert!(begin_awaiting_resume(&conn, &schedule.id, "paused", "original", "duplicate").is_err());
+    assert!(!finish_awaiting_resume(&conn, "paused", "other", "attempt").unwrap());
+    assert!(!finish_awaiting_resume(&conn, "paused", "original", "wrong").unwrap());
+    assert!(crate::schedules::store::find_open_awaiting_session(&conn, &schedule.id).unwrap().is_some());
+    assert!(finish_awaiting_resume(&conn, "paused", "original", "attempt").unwrap());
+    assert!(crate::schedules::store::find_open_awaiting_session(&conn, &schedule.id).unwrap().is_none());
+    assert!(!finish_awaiting_resume(&conn, "paused", "original", "attempt").unwrap());
+}
+
+#[test]
+fn resume_result_must_match_request_and_explicit_success() {
+    use crate::schedules::runner::{classify_resume_result, ResumeResult};
+    let good = serde_json::json!({
+        "type": "prompt_result", "id": "req_42", "agentInvoked": true,
+        "status": "completed", "sessionSettled": true
+    });
+    assert_eq!(classify_resume_result(&good, "req_42"), ResumeResult::CompletedSettled);
+    assert_eq!(classify_resume_result(&good, "req_other"), ResumeResult::Unrelated);
+    for status in ["error", "aborted"] {
+        let mut frame = good.clone();
+        frame["status"] = status.into();
+        assert_eq!(classify_resume_result(&frame, "req_42"), ResumeResult::Failed);
+    }
+    let mut frame = good.clone();
+    frame["agentInvoked"] = false.into();
+    assert_eq!(classify_resume_result(&frame, "req_42"), ResumeResult::Failed);
+    frame["agentInvoked"] = true.into();
+    frame["sessionSettled"] = false.into();
+    assert_eq!(classify_resume_result(&frame, "req_42"), ResumeResult::CompletedUnsettled);
+    frame.as_object_mut().unwrap().remove("sessionSettled");
+    assert_eq!(classify_resume_result(&frame, "req_42"), ResumeResult::Failed);
+}
+
+#[test]
+fn released_or_abandoned_attempt_cannot_finish_a_later_attempt() {
+    use crate::schedules::store::{abandon_awaiting_resume, begin_awaiting_resume, finish_awaiting_resume, release_awaiting};
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let schedule = upsert(&conn, &daily_draft(None, true)).unwrap();
+    claim_run(&conn, &schedule.id, "paused", None).unwrap();
+    update_run_with_phase(&conn, "paused", Some("session"), ScheduleRunStatus::Ok,
+        Some(&now_rfc3339()), Some("等待回答"), ScheduleRunPhase::Awaiting, None).unwrap();
+    begin_awaiting_resume(&conn, &schedule.id, "paused", "session", "first").unwrap();
+    abandon_awaiting_resume(&conn, "paused", "first").unwrap();
+    begin_awaiting_resume(&conn, &schedule.id, "paused", "session", "second").unwrap();
+    assert!(!finish_awaiting_resume(&conn, "paused", "session", "first").unwrap());
+    release_awaiting(&conn, &schedule.id, "paused").unwrap();
+    assert!(!finish_awaiting_resume(&conn, "paused", "session", "second").unwrap());
+    assert_eq!(list_runs(&conn, &schedule.id, 1).unwrap()[0].status, ScheduleRunStatus::Error);
+}
+
+#[test]
+fn dead_resume_owner_can_be_replaced_without_unblocking_queue() {
+    use crate::schedules::store::{begin_awaiting_resume, finish_awaiting_resume, find_open_awaiting_session};
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
+    let schedule = upsert(&conn, &daily_draft(None, true)).unwrap();
+    claim_run(&conn, &schedule.id, "paused", None).unwrap();
+    update_run_with_phase(&conn, "paused", Some("session"), ScheduleRunStatus::Ok,
+        Some(&now_rfc3339()), Some("等待确认"), ScheduleRunPhase::Awaiting, None).unwrap();
+    begin_awaiting_resume(&conn, &schedule.id, "paused", "session", "old").unwrap();
+    conn.execute("UPDATE schedule_runs SET resume_owner_pid = NULL WHERE id = 'paused'", []).unwrap();
+    begin_awaiting_resume(&conn, &schedule.id, "paused", "session", "new").unwrap();
+    assert!(!finish_awaiting_resume(&conn, "paused", "session", "old").unwrap());
+    assert!(find_open_awaiting_session(&conn, &schedule.id).unwrap().is_some());
+    assert!(finish_awaiting_resume(&conn, "paused", "session", "new").unwrap());
 }

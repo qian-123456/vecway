@@ -1,5 +1,5 @@
 /** Codex-style "+" Add menu in the Composer bottom toolbar. */
-import { Camera, Check, FolderOpen, ImagePlus, Lightbulb, Monitor, Paperclip, Signature, Target } from "lucide-react";
+import { Camera, Check, Clock, FolderOpen, ImagePlus, Lightbulb, Monitor, Paperclip, Signature, Target } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
 import { useT } from "../../stores/language";
@@ -18,6 +18,7 @@ const TONE = {
 	project: tone("#8b5cf6"),
 	goal: tone("#f43f5e"),
 	plan: tone("#f59e0b"),
+	automation: tone("#06b6d4"),
 	sketch: tone("#10b981"),
 };
 
@@ -62,6 +63,7 @@ export function AddMenuPopover({
 	anchor,
 	ignoreRef,
 	planMode = false,
+	automationMode = false,
 	onClose,
 	onAddFiles,
 	onAttachFinder,
@@ -70,11 +72,13 @@ export function AddMenuPopover({
 	onPickProject,
 	onGoal,
 	onTogglePlan,
+	onToggleAutomation,
 	onSketch,
 }: {
 	anchor: HTMLElement | null;
 	ignoreRef: RefObject<HTMLElement | null>;
 	planMode?: boolean;
+	automationMode?: boolean;
 	onClose: () => void;
 	onAddFiles?: () => void;
 	onAttachFinder?: () => void;
@@ -83,6 +87,7 @@ export function AddMenuPopover({
 	onPickProject?: () => void;
 	onGoal?: () => void;
 	onTogglePlan?: () => void;
+	onToggleAutomation?: () => void;
 	onSketch?: () => void;
 }) {
 	const { t } = useT();
@@ -91,7 +96,7 @@ export function AddMenuPopover({
 		fn();
 	};
 	const hasAttachGroup = Boolean(onAddFiles || onAttachFinder);
-	const hasModeGroup = Boolean(onPickProject || onGoal || onTogglePlan || onSketch);
+	const hasModeGroup = Boolean(onPickProject || onGoal || onTogglePlan || onToggleAutomation || onSketch);
 	return (
 		<FloatingLayer
 			anchor={anchor}
@@ -118,6 +123,16 @@ export function AddMenuPopover({
 					desc={planMode ? t("chat.addMenu.disablePlan") : t("chat.addMenu.enablePlan")}
 					active={planMode}
 					onClick={run(onTogglePlan)}
+				/>
+			)}
+			{onToggleAutomation && (
+				<Item
+					icon={<Clock size={14} />}
+					color={TONE.automation}
+					title={t("chat.addMenu.automationMode")}
+					desc={automationMode ? t("chat.addMenu.disableAutomation") : t("chat.addMenu.enableAutomation")}
+					active={automationMode}
+					onClick={run(onToggleAutomation)}
 				/>
 			)}
 			{onSketch && <Item icon={<Signature size={14} />} color={TONE.sketch} title={t("chat.addMenu.sketch")} desc={t("chat.addMenu.sketchDesc")} onClick={run(onSketch)} />}

@@ -109,6 +109,21 @@ export function approvalEffect(mode: ApprovalMode): string {
 	return APPROVAL_MODES.find((m) => m.value === mode)?.effect ?? "";
 }
 
+/* ---------------------------------------------------------------- application automation policy */
+
+export type AutomationOverlapPolicy = "skip" | "coalesce" | "queue" | "parallel";
+
+export const AUTOMATION_OVERLAP_POLICIES: ReadonlyArray<{ value: AutomationOverlapPolicy; label: string; effect: string }> = [
+	{ value: "skip", label: "跳过", effect: "上次仍在运行时跳过本次触发（默认）。" },
+	{ value: "coalesce", label: "合并", effect: "运行期间的多个触发合并为一次，完成后运行。" },
+	{ value: "queue", label: "排队", effect: "每次触发都会排队，等待期间可能积压。" },
+	{ value: "parallel", label: "并行", effect: "允许同时运行，可能产生资源竞争或冲突。" },
+];
+
+export function isAutomationOverlapPolicy(value: unknown): value is AutomationOverlapPolicy {
+	return value === "skip" || value === "coalesce" || value === "queue" || value === "parallel";
+}
+
 /* ---------------------------------------------------------------- local display prefs <-> core prefs */
 
 export const SCHEMES: ReadonlyArray<{ value: SchemePref; label: string }> = [

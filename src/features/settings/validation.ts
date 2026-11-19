@@ -345,5 +345,13 @@ export function validateSettingsShape(input: unknown): ValidationResult {
 		out.followUpBehavior = val;
 	}
 
+	if ("automationOverlapPolicy" in raw) {
+		const value = raw.automationOverlapPolicy;
+		if (value !== "skip" && value !== "coalesce" && value !== "queue" && value !== "parallel") {
+			return { ok: false, error: tNow("settingsCore.validation.automationOverlapPolicyInvalid") };
+		}
+		out.automationOverlapPolicy = value;
+	}
+
 	return { ok: true, value: out };
 }

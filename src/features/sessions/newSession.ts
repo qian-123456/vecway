@@ -161,7 +161,7 @@ export function installDraftAutoCleanup(): () => void {
 		const pending = usePendingSession.getState();
 		const shown = pending.selectedId;
 		if (shown && (state.selectedSessionId !== null ||
-			(state.centerView !== "session" && state.centerView !== "settings"))) {
+			(state.centerView !== "session" && state.centerView !== "schedules" && state.centerView !== "settings"))) {
 			pending.select(null);
 			void releaseBlankDraft(shown);
 		}

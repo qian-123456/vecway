@@ -104,6 +104,9 @@ export default defineMessages({
 		"cmd.plan.title": "规划模式",
 		"cmd.plan.desc": "只读规划并交给你审阅，确认后再实施",
 		"cmd.plan.argHint": "要规划的任务（可留空，只切换规划模式）",
+		"cmd.automate.title": "定制自动化",
+		"cmd.automate.desc": "将当前对话流程或新需求制作成定时自动化任务",
+		"cmd.automate.argHint": "自动化需求（可留空，直接基于当前对话生成）",
 
 		"cmd.goal.title": "目标",
 		"cmd.goal.desc": "设置或更新持续追求的目标",
@@ -316,6 +319,9 @@ export default defineMessages({
 		"cmd.plan.title": "Plan Mode",
 		"cmd.plan.desc": "Read-only planning with review before implementation",
 		"cmd.plan.argHint": "Task to plan (optional; leave empty to just toggle plan mode)",
+		"cmd.automate.title": "Customize Automation",
+		"cmd.automate.desc": "Turn the current chat workflow or a new idea into a scheduled automation",
+		"cmd.automate.argHint": "Automation goal (optional; leave empty to distill from this chat)",
 
 		"cmd.goal.title": "Goal",
 		"cmd.goal.desc": "Set or update ongoing objective",

@@ -4,6 +4,7 @@ import {
 	BookOpen,
 	Bot,
 	Brain,
+	Clock,
 	Cpu,
 	FileCode,
 	FileText,
@@ -74,6 +75,7 @@ export const NAV_GROUPS: NavGroup[] = [
 		id: "sessions",
 		items: [
 			{ id: "sessions", icon: Bot },
+			{ id: "automations", icon: Clock },
 			{ id: "inbox", icon: Sparkles },
 			{ id: "doctor", icon: Stethoscope },
 			{ id: "agents-md", icon: FileText },

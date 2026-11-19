@@ -750,6 +750,24 @@ export interface Settings {
 	sendShortcut: "enter" | "mod-enter";
 	/** Follow-up when a message is sent during a running turn: steer | queue | interrupt (interrupt aborts, then sends). */
 	followUpBehavior: "steer" | "queue" | "interrupt";
+	/** Default true: keep automations running in background after closing the app. */
+	automationBackgroundEnabled?: boolean;
+	/** Global automatic-trigger overlap policy; defaults to skip. Running claims keep their policy. */
+	automationOverlapPolicy: AutomationOverlapPolicy;
+	/** Default script result reporting mode for new automations. */
+	automationDefaultResultMode?: ScheduleResultMode;
+	/** Optional default model selector for new automations (`<provider>/<id>`). */
+	automationDefaultModel?: string | null;
+	/** Optional default thinking level for new automations. */
+	automationDefaultThinking?: string | null;
+	/** Editable prefill template for mock-environment automation testing (`{{name}}`). */
+	automationPromptMockTest?: string | null;
+	/** Editable prefill template for single-shot real-environment automation testing (`{{name}}`). */
+	automationPromptRealOnceTest?: string | null;
+	/** Editable prefill template for iterative real-environment automation debugging (`{{name}}`). */
+	automationPromptRealLoopTest?: string | null;
+	/** Editable prefill template for "Ask AI to adjust" on an automation draft card (`{{name}}`). */
+	automationPromptAdjust?: string | null;
 }
 
 /** Privacy placeholder risk tier (§4 [P]). */
@@ -1522,6 +1540,8 @@ export interface RuleConflict {
 
 export type ScheduleRunMode = "local" | "worktree";
 
+export type AutomationOverlapPolicy = "skip" | "coalesce" | "queue" | "parallel";
+
 export type ScheduleCadence =
 	/** Every `minutes` minutes (UI offers minute/hour units). */
 	| { kind: "interval"; minutes: number }
@@ -1549,6 +1569,12 @@ export type ScheduleLifecycle = "active" | "paused" | "completed";
 export type ScheduleNotify = "all" | "important" | "none";
 
 export type ScheduleRunStatus = "running" | "ok" | "error" | "skipped";
+
+export type ScheduleAgentTrigger = "always" | "on_signal" | "never";
+
+export type ScheduleResultMode = "structured" | "llm_summary";
+
+export type ScheduleRunPhase = "probe_quiet" | "probe_only" | "agent" | "awaiting";
 
 export interface Schedule {
 	id: string;
@@ -1581,6 +1607,13 @@ export interface Schedule {
 	runsDone: number;
 	notify: ScheduleNotify;
 	newChatEachRun: boolean;
+	probeCommand?: string | null;
+	probeDescription?: string | null;
+	agentTrigger?: ScheduleAgentTrigger;
+	resultMode?: ScheduleResultMode;
+	invokesExternalModel?: boolean;
+	lastRunPhase?: ScheduleRunPhase | null;
+	lastRunSessionId?: string | null;
 }
 
 export interface ScheduleDraft {
@@ -1603,6 +1636,11 @@ export interface ScheduleDraft {
 	notify?: ScheduleNotify;
 	/** false = reuse the previous run's session when resumable; absent = true. */
 	newChatEachRun?: boolean;
+	probeCommand?: string | null;
+	probeDescription?: string | null;
+	agentTrigger?: ScheduleAgentTrigger;
+	resultMode?: ScheduleResultMode;
+	invokesExternalModel?: boolean;
 }
 
 export interface ScheduleRun {
@@ -1613,6 +1651,30 @@ export interface ScheduleRun {
 	startedAt: string;
 	finishedAt: string | null;
 	summary: string | null;
+	phase?: ScheduleRunPhase;
+	probeOutput?: string | null;
+}
+
+export interface ProbeTestResult {
+	exitCode: number | null;
+	timedOut: boolean;
+	durationMs: number;
+	output: string;
+	outcome: "quiet" | "signal" | "ok" | "error";
+}
+
+export interface AutomationAuthorResult {
+	scheduleId: string;
+	name: string;
+	cadence: ScheduleCadence;
+	agentTrigger: ScheduleAgentTrigger;
+	resultMode?: ScheduleResultMode;
+	invokesExternalModel?: boolean;
+	probeDescription: string | null;
+	probeCommand: string | null;
+	prompt: string;
+	notify: ScheduleNotify;
+	explanation: string;
 }
 
 // ---- Skills & Extensions ----

@@ -73,6 +73,7 @@ export default defineMessages({
 			newSessionModel: { label: "全局默认模型", description: "新对话与常规问答默认使用的主力模型（对应 OMP 全局角色 default）" },
 			sideChatModel: { label: "辅助对话专用模型", description: "开启后新建辅助对话使用专用模型；关闭则继承主对话的模型与 thinking level" },
 			defaultApprovalMode: { label: "审批模式", description: "AI 改文件或执行命令前是否先征得你同意（每步都问 / 改动前问 / 全自动）" },
+			automationOverlapPolicy: { label: "运行重合策略", description: "所有自动化统一使用：跳过、合并等待一次、每次排队或同时运行；立即用于后续触发，当前执行不中断，已有队列保留" },
 			gitDeliveryMode: { label: "主干交付模式", description: "从功能分支交付到 main 主干时的默认行为方式（GitHub Pull Request / 本地直接合并并推送到 main）" },
 			capsuleVisible: { label: "顶部子代理胶囊", description: "对话派生并发子代理（Subagents）时，在窗口顶部显示胶囊指示条与进度" },
 			windowWorktreeTitle: { label: "窗口标题显示分支名", description: "在系统窗口标题中附加当前工作树的 Git 分支，便于区分同时打开的多个实例" },
@@ -360,6 +361,7 @@ export default defineMessages({
 			doctorScheduleTimeInvalid: "每日体检时间需要 HH:MM 格式",
 			sendShortcutInvalid: "发送快捷键必须为 enter 或 mod-enter",
 			followUpBehaviorInvalid: "任务进行中发送方式必须为 steer、queue 或 interrupt",
+			automationOverlapPolicyInvalid: "自动化重合策略必须为 skip、coalesce、queue 或 parallel",
 		},
 		ui: {
 			saving: "保存中",
@@ -458,6 +460,7 @@ export default defineMessages({
 			newSessionModel: { label: "Global Default Model", description: "Default primary model used for new chats and general Q&A" },
 			sideChatModel: { label: "Side Chat Dedicated Model", description: "Dedicated model for new side chats; inherits main chat model when disabled" },
 			defaultApprovalMode: { label: "Default Approval Mode", description: "Whether AI asks for permission before modifying files or executing commands" },
+			automationOverlapPolicy: { label: "Overlap policy", description: "Global automation policy: skip, coalesce, queue or run in parallel. Applies to future triggers without interrupting active runs or discarding accepted queued runs" },
 			gitDeliveryMode: { label: "Main Branch Delivery Mode", description: "Default behavior when delivering changes to main branch" },
 			capsuleVisible: { label: "Subagent Capsule in Top Bar", description: "Show subagent progress indicator in the top bar during parallel runs" },
 			windowWorktreeTitle: { label: "Show Git Branch in Window Title", description: "Append current worktree branch to window title" },
@@ -745,6 +748,7 @@ export default defineMessages({
 			doctorScheduleTimeInvalid: "Daily doctor schedule time requires HH:MM format",
 			sendShortcutInvalid: "Send shortcut must be enter or mod-enter",
 			followUpBehaviorInvalid: "In-progress message behavior must be steer, queue, or interrupt",
+			automationOverlapPolicyInvalid: "Automation overlap policy must be skip, coalesce, queue, or parallel",
 		},
 		ui: {
 			saving: "Saving…",

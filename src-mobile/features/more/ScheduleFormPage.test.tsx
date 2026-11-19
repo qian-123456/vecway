@@ -40,6 +40,14 @@ describe("ScheduleFormPage", () => {
 		await act(async () => root.unmount());
 	});
 
+	it("does not offer a per-automation overlap policy", async () => {
+		const root = createRoot(host);
+		await act(async () => root.render(<ScheduleFormPage />));
+		expect(host.querySelector('[role="radiogroup"][aria-label="运行重合策略"]')).toBeNull();
+		expect(host.textContent).not.toContain("上次运行未结束时");
+		await act(async () => root.unmount());
+	});
+
 	it("constrains date, time and interval inputs to the form width", async () => {
 		const root = createRoot(host);
 		await act(async () => root.render(<ScheduleFormPage />));

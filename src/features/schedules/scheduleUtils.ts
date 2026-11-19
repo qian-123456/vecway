@@ -6,6 +6,7 @@
  */
 import type {
 	Schedule,
+	ScheduleAgentTrigger,
 	ScheduleCadence,
 	ScheduleDraft,
 	ScheduleLifecycle,
@@ -13,8 +14,32 @@ import type {
 	ScheduleRun,
 	ScheduleRunMode,
 } from "../../lib/contracts";
-import { composeSelection, parseSelection } from "../../components/modelSelectLogic";
+import {
+	THINKING_LEVELS,
+	composeSelection,
+	parseSelection,
+	type Selection,
+} from "../../components/modelSelectLogic";
 import { tNow } from "../../stores/language";
+
+const THINKING_SET = new Set<string>(THINKING_LEVELS);
+
+/** Parse schedule `modelSel` (`""`, `":level"`, `"provider/id"`, or `"provider/id:level"`). */
+export function parseScheduleModelSelection(value: string | null | undefined): Selection {
+	const trimmed = (value ?? "").trim();
+	if (trimmed.startsWith(":")) {
+		const level = trimmed.slice(1);
+		if (THINKING_SET.has(level)) return { selector: "", level };
+	}
+	return parseSelection(trimmed);
+}
+
+/** Compose schedule `modelSel`; preserves explicit thinking even when following default model (`selector === ""`). */
+export function composeScheduleModelSelection(selector: string, level?: string | null): string {
+	const sel = selector.trim();
+	if (!sel) return level ? `:${level}` : "";
+	return composeSelection(sel, level);
+}
 
 /** 周期 menu modes: a one-shot date-time, or the recurring `每 N unit` composer. */
 export type RepeatMode = "once" | "recur";
@@ -110,9 +135,10 @@ export function lifecycleOf(
 	return schedule.lifecycle ?? (schedule.enabled ? "active" : "paused");
 }
 
-/** Most recent run counts as "fresh" for 24h after it finished. */
+/** Most recent run counts as "fresh" for 24h after it finished (never for quiet checks). */
 export function isRecentRun(run: ScheduleRun | null | undefined, now = Date.now()): boolean {
 	if (!run) return false;
+	if (run.phase === "probe_quiet") return false;
 	if (run.status !== "ok" && run.status !== "error") return false;
 	const end = run.finishedAt ?? run.startedAt;
 	const t = new Date(end).getTime();
@@ -200,6 +226,12 @@ export interface EditorForm {
 	/** Combined `provider/model[:thinking]` selector; "" = default model. */
 	modelSel: string;
 	approvalMode: string;
+	/** Pre-check shell command or script path. */
+	probeCommand: string;
+	/** One-line description of what the pre-check does. */
+	probeDescription: string;
+	/** Whether to run agent always, only on pre-check signal, or never. */
+	agentTrigger: ScheduleAgentTrigger;
 	/** false on a fresh create form until the user picks a cadence (请添加计划). */
 	hasSchedule: boolean;
 	/** "once" = 不重复（仅一次）; "recur" = the `每 N unit` composer. */
@@ -264,6 +296,9 @@ export function defaultForm(cwd: string): EditorForm {
 		newChatEachRun: true,
 		modelSel: "",
 		approvalMode: "write",
+		probeCommand: "",
+		probeDescription: "",
+		agentTrigger: "always",
 		hasSchedule: false,
 		repeat: "recur",
 		every: 1,
@@ -325,10 +360,13 @@ export function formFromSchedule(s: Schedule): EditorForm {
 	base.name = s.name;
 	base.prompt = s.prompt;
 	base.runMode = s.runMode;
-	base.modelSel = s.model ? composeSelection(s.model, s.thinking) : "";
+	base.modelSel = composeScheduleModelSelection(s.model ?? "", s.thinking);
 	base.approvalMode = s.approvalMode ?? "write";
 	base.notify = s.notify;
 	base.newChatEachRun = s.newChatEachRun;
+	base.probeCommand = s.probeCommand ?? "";
+	base.probeDescription = s.probeDescription ?? "";
+	base.agentTrigger = s.agentTrigger ?? "always";
 	base.hasSchedule = true;
 	applyCadenceToForm(base, s.cadence);
 	applyEndToForm(base, s.endAt, s.maxRuns);
@@ -344,10 +382,13 @@ export function formFromTemplate(
 	base.name = template.name ?? "";
 	base.prompt = template.prompt ?? "";
 	base.runMode = template.runMode ?? "local";
-	base.modelSel = template.model ? composeSelection(template.model, template.thinking ?? null) : "";
+	base.modelSel = composeScheduleModelSelection(template.model ?? "", template.thinking ?? null);
 	base.approvalMode = template.approvalMode ?? "write";
 	base.notify = template.notify ?? "important";
 	base.newChatEachRun = template.newChatEachRun ?? true;
+	base.probeCommand = template.probeCommand ?? "";
+	base.probeDescription = template.probeDescription ?? "";
+	base.agentTrigger = template.agentTrigger ?? "always";
 	base.hasSchedule = !!template.cadence;
 	if (template.cadence) applyCadenceToForm(base, template.cadence);
 	applyEndToForm(base, template.endAt, template.maxRuns);
@@ -356,6 +397,7 @@ export function formFromTemplate(
 
 export interface FormErrors {
 	prompt?: string;
+	probe?: string;
 	cwd?: string;
 	cadence?: string;
 	endAt?: string;
@@ -385,7 +427,16 @@ export function validateForm(
 	const errors: FormErrors = {};
 	let cadence: ScheduleCadence | null = null;
 
-	if (!form.prompt.trim()) errors.prompt = tNow("schedules.errorPromptRequired");
+	const hasProbe = Boolean(form.probeCommand.trim());
+	const hasPrompt = Boolean(form.prompt.trim());
+	if (form.agentTrigger === "never") {
+		if (!hasProbe) errors.probe = tNow("schedules.errorProbeRequired");
+	} else if (form.agentTrigger === "on_signal") {
+		if (!hasProbe) errors.probe = tNow("schedules.errorProbeRequired");
+		if (!hasPrompt) errors.prompt = tNow("schedules.errorPromptRequired");
+	} else if (!hasPrompt) {
+		errors.prompt = tNow("schedules.errorPromptRequired");
+	}
 	if (!form.cwd.trim()) errors.cwd = tNow("schedules.errorCwdRequired");
 
 	if (!form.hasSchedule) {
@@ -403,7 +454,7 @@ export function validateForm(
 		const every = Math.floor(form.every);
 		switch (form.unit) {
 		case "minute": {
-			if (!Number.isFinite(every) || every < 5) {
+			if (!Number.isFinite(every) || every < 1) {
 				errors.cadence = tNow("schedules.errorMinIntervalMinutes");
 			} else {
 				cadence = { kind: "interval", minutes: every };
@@ -493,16 +544,18 @@ export function validateForm(
 	return { cadence, endAt, maxRuns, errors };
 }
 
-/** Derive a display name from the first line of the instructions. */
-export function deriveName(prompt: string): string {
-	const first =
-		prompt
-			.replace(/\[(?:Image|图片)\s*#?\d*(?:,\s*\d+x\d+)?:\s*[^\]]+\]/gu, "")
-			.trim()
-			.split("\n")[0]
-			?.trim() ?? "";
-	const clipped = first.length > 24 ? `${first.slice(0, 24)}…` : first;
-	return clipped || tNow("schedules.unnamedTask");
+/** Derive a display name from the first line of the instructions or fallback description. */
+export function deriveName(prompt: string, fallback = ""): string {
+	const extractFirst = (raw: string) => {
+		const first =
+			raw
+				.replace(/\[(?:Image|图片)\s*#?\d*(?:,\s*\d+x\d+)?:\s*[^\]]+\]/gu, "")
+				.trim()
+				.split("\n")[0]
+				?.trim() ?? "";
+		return first.length > 24 ? `${first.slice(0, 24)}…` : first;
+	};
+	return extractFirst(prompt) || extractFirst(fallback) || tNow("schedules.unnamedTask");
 }
 
 /** Build the IPC draft; splits the combined model selector into model+thinking. */
@@ -514,14 +567,23 @@ export function buildDraft(
 	id?: string,
 	enabled?: boolean,
 ): ScheduleDraft {
-	const sel = parseSelection(form.modelSel);
+	const sel = parseScheduleModelSelection(form.modelSel);
 	const once = cadence.kind === "once";
+	const isDirectAgent = form.agentTrigger === "always";
+	const probeCommand = isDirectAgent ? null : form.probeCommand.trim() || null;
+	const probeDescription = isDirectAgent
+		? null
+		: form.probeDescription.trim() || null;
+	const runMode: ScheduleRunMode =
+		form.agentTrigger === "never" ? "local" : form.runMode;
 	return {
 		id,
-		name: form.name.trim() || deriveName(form.prompt),
+		name:
+			form.name.trim() ||
+			deriveName(form.prompt, (probeDescription ?? probeCommand) || ""),
 		prompt: form.prompt.trim(),
 		cwd: form.cwd.trim(),
-		runMode: form.runMode,
+		runMode,
 		cadence,
 		notify: form.notify,
 		newChatEachRun: form.newChatEachRun,
@@ -532,6 +594,9 @@ export function buildDraft(
 		// `once` ignores endAt/maxRuns entirely.
 		endAt: once ? null : endAt,
 		maxRuns: once ? null : (maxRuns ?? null),
+		probeCommand,
+		probeDescription,
+		agentTrigger: form.agentTrigger,
 	};
 }
 
@@ -552,6 +617,11 @@ export function draftFromSchedule(s: Schedule): ScheduleDraft {
 		enabled: true,
 		endAt: s.endAt,
 		maxRuns: s.maxRuns,
+		probeCommand: s.probeCommand ?? null,
+		probeDescription: s.probeDescription ?? null,
+		agentTrigger: s.agentTrigger ?? "always",
+		resultMode: s.resultMode ?? "structured",
+		invokesExternalModel: s.invokesExternalModel ?? false,
 	};
 }
 

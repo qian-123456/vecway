@@ -78,8 +78,11 @@ import type {
 	SessionGroup,
 	Settings,
 	Schedule,
+	ScheduleAgentTrigger,
 	ScheduleDraft,
 	ScheduleRun,
+	ProbeTestResult,
+	AutomationAuthorResult,
 	SkillsCatalog,
 	SkillUsageReport,
 	StartOpts,
@@ -935,7 +938,7 @@ export const terminalSetCurrentSession = (path: string | null) =>
 export const installStatusExtensionGlobally = () =>
 	invoke<string>("install_status_extension_globally");
 
-// ---- E — schedules (定时任务) ----
+// ---- E — schedules (自动化) ----
 
 export const listSchedules = () => invoke<Schedule[]>("schedules_list");
 
@@ -955,6 +958,39 @@ export const listScheduleRuns = (scheduleId: string, limit?: number) =>
 	invoke<ScheduleRun[]>("schedule_runs", {
 		scheduleId,
 		limit: limit ?? null,
+	});
+
+export const listReleasableScheduleRuns = (scheduleId: string) =>
+	invoke<ScheduleRun[]>("schedules_list_awaiting", { scheduleId });
+
+export const releaseAwaitingScheduleRun = (scheduleId: string, runId: string) =>
+	invoke<void>("schedules_release_awaiting", { scheduleId, runId });
+
+export const resumeAwaitingScheduleRun = (scheduleId: string, runId: string) =>
+	invoke<void>("schedules_resume_awaiting", { scheduleId, runId });
+
+export const testScheduleProbe = (params: {
+	cwd: string;
+	probeCommand: string;
+	agentTrigger: ScheduleAgentTrigger;
+	scheduleId?: string | null;
+}) =>
+	invoke<ProbeTestResult>("schedules_test_probe", {
+		cwd: params.cwd,
+		probeCommand: params.probeCommand,
+		agentTrigger: params.agentTrigger,
+		scheduleId: params.scheduleId ?? null,
+	});
+
+export const generateScheduleDraft = (params: {
+	request: string;
+	cwd: string;
+	current?: ScheduleDraft | null;
+}) =>
+	invoke<AutomationAuthorResult>("schedules_generate_draft", {
+		request: params.request,
+		cwd: params.cwd,
+		current: params.current ?? null,
 	});
 
 // ---- F — skills & extensions (Skills 管理) ----

@@ -51,11 +51,33 @@ describe("schedule form", () => {
 		});
 	});
 
+	it("does not add overlap settings to new schedules", () => {
+		const form = emptyForm();
+		expect(form).not.toHaveProperty("overlapPolicy");
+		expect(buildPayload(form)).not.toHaveProperty("overlapPolicy");
+		expect(buildPayload(form)).not.toHaveProperty("automationOverlapPolicy");
+	});
+
+	it.each(["skip", "coalesce", "queue", "parallel"] as const)("drops a legacy %s overlap policy when editing", (overlapPolicy) => {
+		const existing = { ...base, overlapPolicy };
+		const form = formFromSchedule(existing);
+		expect(form).not.toHaveProperty("overlapPolicy");
+		expect(buildPayload(form, existing)).not.toHaveProperty("overlapPolicy");
+		expect(buildPayload(form, existing)).not.toHaveProperty("automationOverlapPolicy");
+	});
+
 	it("maps interval units to minutes and restores the unit when editing", () => {
 		const f = { ...emptyForm("/w"), name: "a", prompt: "b", kind: "interval" as const, ivNum: "2", ivUnit: "hour" as const };
 		expect(buildPayload(f).cadence).toEqual({ kind: "interval", minutes: 120 });
 		const back = formFromSchedule({ ...base, cadence: { kind: "interval", minutes: 90 } });
 		expect([back.ivNum, back.ivUnit]).toEqual(["90", "min"]);
+	});
+
+	it("accepts a one-minute interval and rejects zero", () => {
+		const f = { ...emptyForm("/w"), name: "a", prompt: "b", kind: "interval" as const, ivNum: "1", ivUnit: "min" as const };
+		expect(validateForm(f)).toEqual({});
+		expect(buildPayload(f).cadence).toEqual({ kind: "interval", minutes: 1 });
+		expect(validateForm({ ...f, ivNum: "0" }).iv).toBe("间隔至少为 1");
 	});
 
 	it("drops end/max for one-shot schedules and clears thinking without a model", () => {

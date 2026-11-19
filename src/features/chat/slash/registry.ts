@@ -16,6 +16,7 @@ import {
 	ChartPie,
 	ClipboardCheck,
 	ClipboardCopy,
+	Clock,
 	Cpu,
 	Database,
 	Download,
@@ -319,6 +320,17 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
 		// Runs the bundled plan extension's `/plan [task]` in omp (read-only
 		// planning, plan file). The right-side 计划 tab opens when a finished
 		// plan revision arrives (Composer), not when plan mode starts.
+		run: async (ctx) => {
+			await sendAsPrompt(ctx);
+		},
+	},
+	{
+		name: "automate",
+		get title() { return tNow("slash.cmd.automate.title"); },
+		get description() { return tNow("slash.cmd.automate.desc"); },
+		icon: Clock,
+		group: "session",
+		get argHint() { return tNow("slash.cmd.automate.argHint"); },
 		run: async (ctx) => {
 			await sendAsPrompt(ctx);
 		},

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act, waitFor, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SettingsPage } from "./SettingsPage";
 import * as apiModule from "../../core/api";
@@ -21,6 +21,7 @@ describe("SettingsPage navigation and groups", () => {
 					appVersion: "1.0.0",
 					defaultModel: "claude-3-7-sonnet",
 					defaultApprovalMode: "write",
+					automationOverlapPolicy: "skip",
 					mobile: { running: true, port: 1425, lanUrl: "http://192.168.1.10:1425" },
 				});
 			}
@@ -121,6 +122,91 @@ describe("SettingsPage navigation and groups", () => {
 		// Bottom sheet title should appear
 		expect(await screen.findByText("通用设置")).toBeDefined();
 		expect(screen.getByText("审批权限模式")).toBeDefined();
+		expect(within(screen.getByRole("radiogroup", { name: "运行重合策略" })).getByRole("radio", { name: "跳过" }).getAttribute("aria-checked")).toBe("true");
+	});
+
+	it.each([
+		["skip", "跳过"],
+		["coalesce", "合并"],
+		["queue", "排队"],
+		["parallel", "并行"],
+	] as const)("reads and saves the global %s overlap policy in General settings", async (value, label) => {
+		const initial = value === "skip" ? "queue" : "skip";
+		const load = vi.mocked(apiModule.api).getMockImplementation()!;
+		vi.mocked(apiModule.api).mockImplementation((method, path, body) => {
+			if (method === "POST" && path === "/left/settings/set") return Promise.resolve({ ok: true, key: "automationOverlapPolicy", value });
+			if (path === "/left/settings") return Promise.resolve({ defaultApprovalMode: "write", automationOverlapPolicy: initial });
+			return load(method, path, body);
+		});
+		render(<SettingsPage />);
+		fireEvent.click(await screen.findByText("通用"));
+		const group = within(screen.getByRole("radiogroup", { name: "运行重合策略" }));
+		expect(group.getByRole("radio", { name: initial === "queue" ? "排队" : "跳过" }).getAttribute("aria-checked")).toBe("true");
+		fireEvent.click(group.getByRole("radio", { name: label }));
+		await waitFor(() => expect(group.getByRole("radio", { name: label }).getAttribute("aria-checked")).toBe("true"));
+		expect(apiModule.api).toHaveBeenCalledWith("POST", "/left/settings/set", { key: "automationOverlapPolicy", value });
+		expect(screen.getByText(/对所有自动化的后续触发立即生效，不中断当前运行/)).toBeDefined();
+	});
+
+	it("keeps the confirmed policy selected while saving and blocks duplicate writes", async () => {
+		let finishSave!: (result: unknown) => void;
+		const load = vi.mocked(apiModule.api).getMockImplementation()!;
+		vi.mocked(apiModule.api).mockImplementation((method, path, body) => {
+			// ES2021 target does not expose Promise.withResolvers.
+			if (method === "POST" && path === "/left/settings/set") return new Promise((resolve) => { finishSave = resolve; });
+			return load(method, path, body);
+		});
+		render(<SettingsPage />);
+		fireEvent.click(await screen.findByText("通用"));
+		const group = within(screen.getByRole("radiogroup", { name: "运行重合策略" }));
+		fireEvent.click(group.getByRole("radio", { name: "排队" }));
+		fireEvent.click(group.getByRole("radio", { name: "并行" }));
+		expect(group.getByRole("radio", { name: "跳过" }).getAttribute("aria-checked")).toBe("true");
+		expect((group.getByRole("radio", { name: "并行" }) as HTMLButtonElement).disabled).toBe(true);
+		expect(vi.mocked(apiModule.api).mock.calls.filter(([method]) => method === "POST")).toHaveLength(1);
+		await act(async () => finishSave({ ok: true, key: "automationOverlapPolicy", value: "queue" }));
+		expect(group.getByRole("radio", { name: "排队" }).getAttribute("aria-checked")).toBe("true");
+	});
+
+	it.each([
+		{ name: "network failure", response: null, error: new Error("cannot save\nfull detail"), message: "cannot save" },
+		{ name: "missing confirmation", response: {}, error: null, message: "电脑未返回有效的自动化重合策略" },
+		{ name: "invalid policy", response: { ok: true, key: "automationOverlapPolicy", value: "discard" }, error: null, message: "电脑未返回有效的自动化重合策略" },
+		{ name: "wrong key", response: { ok: true, key: "overlapPolicy", value: "queue" }, error: null, message: "电脑未返回有效的自动化重合策略" },
+	])("shows $name without changing the confirmed policy and permits retry", async ({ response, error, message }) => {
+		let failed = true;
+		const load = vi.mocked(apiModule.api).getMockImplementation()!;
+		vi.mocked(apiModule.api).mockImplementation((method, path, body) => {
+			if (method === "POST" && path === "/left/settings/set") {
+				if (!failed) return Promise.resolve({ ok: true, key: "automationOverlapPolicy", value: "queue" });
+				return error ? Promise.reject(error) : Promise.resolve(response);
+			}
+			return load(method, path, body);
+		});
+		render(<SettingsPage />);
+		fireEvent.click(await screen.findByText("通用"));
+		const group = within(screen.getByRole("radiogroup", { name: "运行重合策略" }));
+		fireEvent.click(group.getByRole("radio", { name: "排队" }));
+		await waitFor(() => expect(screen.getAllByRole("alert").some((alert) => alert.textContent?.includes(message))).toBe(true));
+		expect(group.getByRole("radio", { name: "跳过" }).getAttribute("aria-checked")).toBe("true");
+		if (error) expect(screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("full detail"))).toBe(true);
+		failed = false;
+		fireEvent.click(group.getByRole("radio", { name: "排队" }));
+		await waitFor(() => expect(group.getByRole("radio", { name: "排队" }).getAttribute("aria-checked")).toBe("true"));
+	});
+
+	it.each([undefined, "unknown"])("does not invent a policy when the server returns %s", async (automationOverlapPolicy) => {
+		const load = vi.mocked(apiModule.api).getMockImplementation()!;
+		vi.mocked(apiModule.api).mockImplementation((method, path, body) => {
+			if (path === "/left/settings") return Promise.resolve({ defaultApprovalMode: "write", automationOverlapPolicy });
+			return load(method, path, body);
+		});
+		render(<SettingsPage />);
+		fireEvent.click(await screen.findByText("通用"));
+		const radios = within(screen.getByRole("radiogroup", { name: "运行重合策略" })).getAllByRole("radio") as HTMLButtonElement[];
+		expect(radios.every((radio) => radio.disabled && radio.getAttribute("aria-checked") === "false")).toBe(true);
+		expect(screen.getByText("无法读取自动化重合策略，请返回设置后下拉刷新。")).toBeDefined();
+		expect(apiModule.api).not.toHaveBeenCalledWith("POST", expect.anything(), expect.anything());
 	});
 
 	it("opens the Appearance bottom sheet on tapping 外观", async () => {

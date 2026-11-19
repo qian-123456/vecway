@@ -42,16 +42,19 @@ export function useRestoreComposerFocus(
 	taRef: RefObject<HTMLTextAreaElement | null>,
 	compact: boolean | undefined,
 	sessionId: string,
+	enabled = true,
 ): void {
 	const isCompact = compact === true;
 
 	// Entering / switching to this session.
 	useEffect(() => {
+		if (!enabled) return;
 		const id = requestAnimationFrame(() => restoreComposerFocus(taRef.current, isCompact));
 		return () => cancelAnimationFrame(id);
-	}, [taRef, isCompact, sessionId]);
+	}, [taRef, isCompact, sessionId, enabled]);
 
 	useEffect(() => {
+		if (!enabled) return;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const schedule = (delay: number, clickTarget: Element | null) => {
 			clearTimeout(timer);

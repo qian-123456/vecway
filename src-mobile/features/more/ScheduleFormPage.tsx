@@ -101,7 +101,7 @@ export function ScheduleFormPage({ id }: { id?: string }) {
 
 	return (
 		<div className="flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-m-bg text-m-text">
-			<PageHeader title={id ? "编辑定时任务" : "新建定时任务"} />
+			<PageHeader title={id ? "编辑自动化" : "新建自动化"} />
 			{data ? (
 				<Form key={data.existing?.id ?? "new"} dirs={data.dirs} existing={data.existing} />
 			) : (

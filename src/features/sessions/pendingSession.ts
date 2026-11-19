@@ -104,7 +104,9 @@ export function draftMeta(draft: LocalDraft): SessionMeta {
 function matches(d: LocalDraft, opts: CreateSessionOpts): boolean {
 	return d.cwd === opts.cwd && d.mode === (opts.mode ?? "code") &&
 		d.groupId === (opts.groupId ?? null) &&
-		(d.opts.model ?? null) === (opts.model ?? null);
+		(d.opts.model ?? null) === (opts.model ?? null) &&
+		(d.opts.appendSystemPrompt ?? null) === (opts.appendSystemPrompt ?? null) &&
+		Boolean(d.opts.automationMode) === Boolean(opts.automationMode);
 }
 
 /** Id of a blank draft already waiting in the same cwd + mode + group, if any. */

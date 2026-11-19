@@ -46,6 +46,26 @@ export const FIELD_REGISTRY: FieldDefinition[] = [
 		keywords: ["approval", "always-ask", "write", "yolo", "审批模式", "权限", "模式"],
 	},
 	{
+		id: "automationOverlapPolicy",
+		sectionId: "general",
+		keywords: ["automation", "schedule", "overlap", "skip", "coalesce", "queue", "parallel", "自动化", "定时", "重合", "跳过", "合并", "排队", "并行", "同时运行"],
+	},
+	{
+		id: "automationDefaultResultMode",
+		sectionId: "automations",
+		keywords: ["automation", "result", "structured", "summary", "llm", "自动化", "回报", "结果", "摘要", "总结", "结构化"],
+	},
+	{
+		id: "automationDefaultModel",
+		sectionId: "automations",
+		keywords: ["automation", "model", "default", "自动化", "默认模型", "模型"],
+	},
+	{
+		id: "automationTestPrompts",
+		sectionId: "automations",
+		keywords: ["automation", "prompt", "template", "test", "mock", "real", "自动化", "提示词", "模板", "测试", "模拟测试", "真实测试"],
+	},
+	{
 		id: "gitDeliveryMode",
 		sectionId: "general",
 		keywords: ["git", "delivery", "pr", "pull request", "merge", "main", "主干", "交付", "推送"],

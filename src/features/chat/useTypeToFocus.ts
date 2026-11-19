@@ -97,8 +97,13 @@ function trackReading(e: Event): void {
 	lastReadView = t?.closest(`[${SESSION_VIEW_ATTR}]`) ?? null;
 }
 
-export function useTypeToFocus(taRef: RefObject<HTMLTextAreaElement | null>, compact: boolean | undefined): void {
+export function useTypeToFocus(
+	taRef: RefObject<HTMLTextAreaElement | null>,
+	compact: boolean | undefined,
+	enabled = true,
+): void {
 	useEffect(() => {
+		if (!enabled) return;
 		const onKey = (e: KeyboardEvent) => {
 			const ta = taRef.current;
 			if (!ta || !shouldRedirectKey(e, ta, compact === true)) return;

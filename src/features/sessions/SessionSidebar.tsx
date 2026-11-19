@@ -88,6 +88,8 @@ import { useAppUpdate } from "../../stores/appUpdate";
 import { useSettings } from "../settings/store";
 import { WorktreeHoverCard } from "../git/WorktreeHoverCard";
 import { useInboxBadge, useModeActivity } from "../inbox/useInboxBadge";
+import { useAutomationAttention } from "../schedules/automationAttention";
+import { useSchedulesStore } from "../schedules/schedulesStore";
 import { ModeActivityDot } from "./ModeActivityDot";
 import { switchSpaceMode } from "./switchMode";
 import { ArchiveUndoBar } from "./ArchiveUndoBar";
@@ -249,6 +251,7 @@ export function SessionSidebar() {
 	const closeSettings = useUi((s) => s.closeSettings);
 
 	const inboxBadge = useInboxBadge();
+	const automationAttention = useAutomationAttention();
 	// Windowed macOS (overlay traffic lights visible) splits the topbar into
 	// two rows; fullscreen / non-mac keeps one row.
 	const trafficLightsVisible = useTrafficLightsVisible();
@@ -1304,10 +1307,13 @@ export function SessionSidebar() {
 						</span>
 					</button>
 
-					{/* 3. 定时任务 */}
+					{/* 3. 自动化 */}
 					<button
 						type="button"
-						onClick={() => setCenter("schedules")}
+						onClick={() => {
+							useSchedulesStore.getState().openHome();
+							setCenter("schedules");
+						}}
 						className={clsx(
 							"group flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-left text-[14px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
 							centerView === "schedules"
@@ -1327,6 +1333,21 @@ export function SessionSidebar() {
 							)}
 						/>
 						<span className="truncate">{t("sidebar.schedules")}</span>
+						{automationAttention.totalCount > 0 && (
+							<span
+								className={clsx(
+									"ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-semibold leading-none tabular-nums",
+									automationAttention.highestTone === "error"
+										? "border-rose-500/35 bg-rose-500/15 text-rose-400"
+										: automationAttention.highestTone === "awaiting"
+											? "border-amber-500/35 bg-amber-500/15 text-amber-400"
+											: "border-sky-500/35 bg-sky-500/15 text-sky-400",
+								)}
+							>
+								<Bell size={10} className="shrink-0" />
+								{automationAttention.totalCount > 99 ? "99+" : automationAttention.totalCount}
+							</span>
+						)}
 					</button>
 
 					{/* 4. Skills 管理 */}

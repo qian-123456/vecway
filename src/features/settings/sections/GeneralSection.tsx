@@ -1,6 +1,6 @@
 /**
- * Settings ▸ 通用 (`general`): new-session defaults, UI switches, Git delivery,
- * plus the omp 系统 section (sleep prevention).
+ * Settings ▸ 通用 (`general`): new-session defaults, automation, UI switches,
+ * Git delivery, plus the omp 系统 section (sleep prevention).
  */
 import { AlertTriangle, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -27,6 +27,7 @@ import {
 import { SectionJumpBar } from "../SectionJumpBar";
 
 type ApprovalMode = "always-ask" | "write" | "yolo";
+const AUTOMATION_OVERLAP_POLICIES = ["skip", "coalesce", "queue", "parallel"] as const;
 
 
 export function GeneralSection() {
@@ -35,6 +36,7 @@ export function GeneralSection() {
 	const { models } = useCatalogModels();
 	const { navigate } = useSettingsNav();
 	const approvalSave = useSaveStatus();
+	const overlapSave = useSaveStatus();
 	const ompEntries = useOmpConfigStore((s) => s.entries);
 	const ompLoaded = useOmpConfigStore((s) => s.loaded);
 	const loadOmp = useOmpConfigStore((s) => s.load);
@@ -99,6 +101,7 @@ export function GeneralSection() {
 
 	const approval = (settings?.defaultApprovalMode ?? "write") as ApprovalMode;
 	const currentApprovalOption = approvalOptions.find((o) => o.value === approval) ?? approvalOptions[1];
+	const overlapPolicy = settings?.automationOverlapPolicy ?? "skip";
 	return (
 		<div className="space-y-6">
 			<SectionHeader title={t("settingsSections.general.title")} description={t("settingsSections.general.description")} />
@@ -166,6 +169,41 @@ export function GeneralSection() {
 					control={
 						<Button size="sm" variant="ghost" onClick={() => navigate("agents-md")}>
 							{t("settingsSections.general.goToRulesFiles")}
+							<ChevronRight className="h-3 w-3" />
+						</Button>
+					}
+				/>
+			</SettingsCard>
+
+			<SettingsCard jump={t("settingsSections.general.titleAutomation")} title={t("settingsSections.general.titleAutomation")}>
+				<SettingRow
+					fieldId="automationOverlapPolicy"
+					label={t("settingsSections.general.overlapPolicyLabel")}
+					stacked
+					description={t(`settingsSections.general.overlap.${overlapPolicy}.description`)}
+					hint={t("settingsSections.general.overlapPolicyHint")}
+					status={overlapSave.status}
+					statusError={overlapSave.error}
+					control={
+						<Segmented
+							aria-label={t("settingsSections.general.overlapPolicyLabel")}
+							value={overlapPolicy}
+							disabled={!settings || overlapSave.status === "saving"}
+							onChange={(value) => void overlapSave.run(() => save({ automationOverlapPolicy: value }))}
+							options={AUTOMATION_OVERLAP_POLICIES.map((value) => ({
+								value,
+								label: t(`settingsSections.general.overlap.${value}.label`),
+								title: t(`settingsSections.general.overlap.${value}.description`),
+							}))}
+						/>
+					}
+				/>
+				<SettingRow
+					label={t("settingsSections.automations.moreShortcutLabel")}
+					description={t("settingsSections.automations.moreShortcutDesc")}
+					control={
+						<Button size="sm" variant="ghost" onClick={() => navigate("automations")}>
+							{t("settingsSections.automations.openSectionBtn")}
 							<ChevronRight className="h-3 w-3" />
 						</Button>
 					}

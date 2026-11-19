@@ -29,6 +29,7 @@ describe("createSession", () => {
 			model: null,
 			approvalMode: null,
 			planYolo: true,
+			appendSystemPrompt: null,
 			mode: "code",
 			groupId: null,
 		});
@@ -53,6 +54,7 @@ describe("createSession", () => {
 			model: null,
 			approvalMode: null,
 			planYolo: null,
+			appendSystemPrompt: null,
 			mode: "code",
 			groupId: null,
 		});
@@ -76,6 +78,7 @@ describe("createSession", () => {
 			model: null,
 			approvalMode: null,
 			planYolo: false,
+			appendSystemPrompt: null,
 			mode: "code",
 			groupId: null,
 		});

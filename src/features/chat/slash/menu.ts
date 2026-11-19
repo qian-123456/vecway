@@ -146,8 +146,8 @@ const TUI_ONLY_SUBCOMMANDS: Record<string, readonly string[]> = {
 	mcp: ["reauth", "unauth", "smithery-login", "smithery-logout", "reconnect", "notifications"],
 };
 
-/** omp commands the app drives itself (the plan review panel's actions). */
-const HOST_ONLY_COMMANDS: ReadonlySet<string> = new Set(["plan-action"]);
+/** omp commands the app drives itself (plan review & automation draft card controls). */
+const HOST_ONLY_COMMANDS: ReadonlySet<string> = new Set(["plan-action", "automation-action"]);
 
 function runnableSubs(parent: string, subs: SlashSubcommand[] | undefined): SlashSubcommand[] {
 	const banned = TUI_ONLY_SUBCOMMANDS[parent];
@@ -196,6 +196,8 @@ function toDynamicItem(c: SlashCommand): SlashMenuItem {
 /** App-feature toggles that hide menu items (omitted = feature on). */
 export interface SlashMenuOpts {
 	visualizeEnabled?: boolean;
+	/** Prompt-only editor (automations): omit session-runtime registry commands and keep skills/custom prompts. */
+	promptOnly?: boolean;
 }
 
 /**
@@ -213,12 +215,14 @@ export function buildSlashSections(
 	const q = query.toLowerCase();
 	const scored: ScoredItem[] = [];
 
-	for (const def of SLASH_COMMANDS) {
-		if (composerHasOtherText && def.requiresEmptyComposer) continue;
-		if (def.feature === "visualize" && opts?.visualizeEnabled === false) continue;
-		const item = toItem(def, commands);
-		const score = withSubMatch(q, matchScore(q, def), item);
-		if (score >= 0) scored.push({ item, score });
+	if (!opts?.promptOnly) {
+		for (const def of SLASH_COMMANDS) {
+			if (composerHasOtherText && def.requiresEmptyComposer) continue;
+			if (def.feature === "visualize" && opts?.visualizeEnabled === false) continue;
+			const item = toItem(def, commands);
+			const score = withSubMatch(q, matchScore(q, def), item);
+			if (score >= 0) scored.push({ item, score });
+		}
 	}
 
 	// Names/aliases already covered by the registry.
@@ -229,6 +233,9 @@ export function buildSlashSections(
 	}
 	const seen = new Set<string>();
 	for (const c of commands) {
+		if (opts?.promptOnly && c.source !== "skill" && c.source !== "custom" && c.source !== "file") {
+			continue;
+		}
 		if (taken.has(c.name) || seen.has(c.name) || HOST_ONLY_COMMANDS.has(c.name)) continue;
 		if (c.aliases?.some((a) => taken.has(a))) continue;
 		seen.add(c.name);

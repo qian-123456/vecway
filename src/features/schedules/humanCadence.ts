@@ -46,7 +46,7 @@ export function formatCadence(
 	const loc = getLocale(locale);
 
 	if (cadence.kind === "interval") {
-		const mins = Math.max(5, cadence.minutes);
+		const mins = Math.max(1, cadence.minutes);
 		if (mins >= 60 && mins % 60 === 0) {
 			const hours = mins / 60;
 			if (loc === "en-US") {
