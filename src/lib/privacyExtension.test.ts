@@ -44,7 +44,7 @@ function snapshot(entries: SnapshotEntry[], nativeHash: string) {
 async function hooks(spawnHash: string) {
 	vi.stubEnv("OMPWS_PRIVACY_NATIVE_HASH", spawnHash);
 	// Module loading is under test: its file path is captured from each fixture's env at import time.
-	const extension = (await import("../../extension/omp-workspace-privacy")).default;
+	const extension = (await import("../../extension/vecway-privacy")).default;
 	const handlers: Record<string, Handler> = {};
 	extension({ on: (name, handler) => { handlers[name] = handler; } });
 	return handlers;

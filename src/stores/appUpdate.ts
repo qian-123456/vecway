@@ -1,4 +1,4 @@
-/** App (omp-workspace) update state powered by @tauri-apps/plugin-updater and GitHub Releases. */
+/** App (Vecway) update state powered by @tauri-apps/plugin-updater and GitHub Releases. */
 import { getVersion } from "@tauri-apps/api/app";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { create } from "zustand";

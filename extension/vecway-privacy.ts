@@ -1,6 +1,6 @@
-// omp-workspace privacy placeholders (installed + loaded by the OMP Workspace app).
+// vecway privacy placeholders (installed + loaded by the Vecway app).
 // Upstream only ever sees `⟦LABEL_xxxx⟧`; real values are restored right before tool execution.
-// Mapping: ~/.omp-workspace/privacy/secrets.json (written by the app, re-read on mtime change).
+// Mapping: ~/.vecway/privacy/secrets.json (written by the app, re-read on mtime change).
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +20,7 @@ type Ctx = { sessionManager?: { getSessionId?: () => string } };
 type Pi = { on(event: string, handler: (event: HookEvent, ctx: Ctx) => Promise<unknown>): void };
 
 const SECRETS_PATH =
-	process.env.OMPWS_PRIVACY_FILE || join(homedir(), ".omp-workspace", "privacy", "secrets.json");
+	process.env.OMPWS_PRIVACY_FILE || join(homedir(), ".vecway", "privacy", "secrets.json");
 const SKIP_KEYS: Record<string, true> = {
 	signature: true,
 	thinkingSignature: true,

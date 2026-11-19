@@ -199,6 +199,67 @@ describe("ensureLive", () => {
 		expect(unavailableModelDiagnostic(new Error("SESSION_MODEL_UNAVAILABLE: missing"))).toBe("missing");
 		expect(unavailableModelDiagnostic("spawn failed")).toBeNull();
 	});
+
+	it("clears repoRoot and forwards workspaceMissing when workspace dir is missing", async () => {
+		vi.spyOn(
+			(await import("../stores/sessions")).useSessions,
+			"getState",
+		).mockReturnValue({
+			sessions: {
+				s1: {
+					id: "s1",
+					tool: "omp",
+					file: "/tmp/s1.jsonl",
+					cwd: "/repo/old",
+					title: "T",
+					label: "#1",
+					createdAt: "",
+					updatedAt: "",
+					parentId: null,
+					forkDepth: 0,
+					status: "idle",
+					unread: false,
+					pending: null,
+					live: false,
+					externalPid: null,
+					pinned: false,
+					archived: false,
+					workspaceId: "w1",
+					repoRoot: "/repo/old",
+					git: null,
+					result: null,
+					lastAssistant: null,
+					model: null,
+					attention: null,
+					mode: "code",
+					groupId: null,
+				},
+			},
+			workspaces: [
+				{
+					id: "w1",
+					path: "/repo/old",
+					name: "old",
+					kind: "project",
+					sort: 0,
+					mode: "code",
+					pathMissing: true,
+				},
+			],
+		} as unknown as ReturnType<typeof import("../stores/sessions").useSessions.getState>);
+		vi.mocked(rpcEnsureLive).mockRejectedValueOnce("CWD_MISSING:/repo/old");
+		const p = ensureLive("s1");
+		await vi.waitFor(() => {
+			expect(useUi.getState().modal?.name).toBe(RESUME_MISSING_CWD_MODAL);
+		});
+		const props = useUi.getState().modal!.props;
+		expect(props.workspaceId).toBe("w1");
+		expect(props.workspaceName).toBe("old");
+		expect(props.workspaceMissing).toBe(true);
+		expect(props.repoRoot).toBeNull();
+		resolveResume("s1", liveInfo);
+		await expect(p).resolves.toEqual(liveInfo);
+	});
 });
 
 describe("cwdMissingPath", () => {

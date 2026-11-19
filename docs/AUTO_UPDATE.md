@@ -1,6 +1,6 @@
 # 应用自动更新方案指南 (Tauri 2 + GitHub Release)
 
-本项目（`omp-workspace`）基于 **Tauri 2 官方 Updater 插件 + GitHub Releases** 构建了端到端的安全自动更新体系。
+本项目（`Vecway`）基于 **Tauri 2 官方 Updater 插件 + GitHub Releases** 构建了端到端的安全自动更新体系。
 
 ---
 
@@ -15,7 +15,7 @@
    - 发布端（GitHub Actions）打包并上传 macOS 安装包（`.dmg`、`.tar.gz` 及签名 `.sig`）到 GitHub Releases。
    - 自动在 Release 资源中附带 `latest.json` 清单。
    - 客户端请求官方固定端点：
-     `https://github.com/qian-123456/omp-studio/releases/latest/download/latest.json`
+     `https://github.com/qian-123456/vecway/releases/latest/download/latest.json`
 
 3. **客户端就绪体验**：
    - 「设置 ▸ 版本与更新」中展示当前应用版本及更新状态。

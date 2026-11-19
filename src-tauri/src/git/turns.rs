@@ -18,7 +18,8 @@ use super::cmd::git_ok;
 use super::worktree;
 use crate::contracts::{TurnCheckpoint, TurnFile, TurnUndoResult};
 
-const CHECKPOINT_TYPE: &str = "omp-workspace.turn-checkpoint";
+const CHECKPOINT_TYPE: &str = "vecway.turn-checkpoint";
+const LEGACY_CHECKPOINT_TYPE: &str = "omp-workspace.turn-checkpoint";
 /// Shown when the turn's commits are no longer on top of HEAD.
 const HEAD_WARNING: &str = "这一轮之后又有新的存档，版本历史没有回退，只恢复了文件";
 
@@ -58,9 +59,11 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
 
 /// Parse one `custom` entry into a checkpoint; None when malformed or unrelated.
 fn parse_checkpoint(v: &Value) -> Option<TurnCheckpoint> {
-    if v.get("type").and_then(Value::as_str) != Some("custom")
-        || v.get("customType").and_then(Value::as_str) != Some(CHECKPOINT_TYPE)
-    {
+    if v.get("type").and_then(Value::as_str) != Some("custom") {
+        return None;
+    }
+    let custom_type = v.get("customType").and_then(Value::as_str);
+    if custom_type != Some(CHECKPOINT_TYPE) && custom_type != Some(LEGACY_CHECKPOINT_TYPE) {
         return None;
     }
     let d = v.get("data")?;
@@ -250,6 +253,7 @@ fn parse_file(path: &Path) -> Result<Arc<ParsedSession>, String> {
         // Fast pre-filter: skip lines that cannot be a checkpoint or session header,
         // avoiding expensive serde_json::from_str parsing on message/tool output rows.
         if !line.contains(CHECKPOINT_TYPE)
+            && !line.contains(LEGACY_CHECKPOINT_TYPE)
             && (parsed.cwd.is_some() || !line.contains("\"session\""))
         {
             continue;

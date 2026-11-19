@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import checkpoints from "../../extension/omp-workspace-checkpoints";
+import checkpoints from "../../extension/vecway-checkpoints";
 
 const failures = vi.hoisted(() => ({
 	git: null as ((args: readonly string[]) => boolean) | null,
@@ -84,7 +84,7 @@ describe("checkpoint extension registered handlers", () => {
 		f.edit();
 		await f.fire("agent_end");
 		expect(f.entries).toHaveLength(1);
-		expect(f.entries[0]).toMatchObject({ customType: "omp-workspace.turn-checkpoint", data: {
+		expect(f.entries[0]).toMatchObject({ customType: "vecway.turn-checkpoint", data: {
 			sessionId: "sess1", userItemId: "user1", prompt: "edit file", files: [{ path: "f.txt", status: "M" }],
 		} });
 		const saved = refs(f.cwd);
@@ -237,7 +237,7 @@ describe("checkpoint extension registered handlers", () => {
 
 			expect(f.entries).toHaveLength(1);
 			expect(f.entries[0]).toMatchObject({
-				customType: "omp-workspace.turn-checkpoint",
+				customType: "vecway.turn-checkpoint",
 				data: { turnId: "t1050", files: [{ path: "f.txt", status: "M" }] },
 			});
 			const retained = [...existing.slice(1).flat(), ...pairRefs("t1050"), undoneRef].sort();
@@ -248,7 +248,7 @@ describe("checkpoint extension registered handlers", () => {
 			}
 			const notice = f.fire("before_agent_start") as { message: { content: string } };
 			expect(notice.message.content).toContain(`The user undid your turn ${first}`);
-			expect(f.entries[f.entries.length - 1]).toEqual({ customType: "omp-workspace.turn-undo-notified", data: { v: 1, turnId: first } });
+			expect(f.entries[f.entries.length - 1]).toEqual({ customType: "vecway.turn-undo-notified", data: { v: 1, turnId: first } });
 		} finally {
 			clock.mockRestore();
 			rmSync(f.cwd, { recursive: true, force: true });

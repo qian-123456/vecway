@@ -1,22 +1,22 @@
 //! Agent-aware shell init for drawer terminals (docs/ARCHITECTURE.md §7).
 //!
 //! `term_open` spawns the user's login shell through generated rc files under
-//! `~/.omp-workspace/`: zsh gets `ZDOTDIR` pointed at `zdot/` (whose shims
+//! `~/.vecway/`: zsh gets `ZDOTDIR` pointed at `zdot/` (whose shims
 //! forward to the real `~/.zsh*`), bash gets `--rcfile bashrc`. Both end by
 //! sourcing `terminal-init.*`, which installs `omp`/`claude`/`codex` aliases
-//! that resume the session recorded in `~/.omp-workspace/current-session`.
+//! that resume the session recorded in `~/.vecway/current-session`.
 //! Session terminals (`term_open_session`) bypass all of this: they run
 //! `omp --resume <file>` directly.
 
 use std::path::{Path, PathBuf};
 
 use crate::paths;
-/// `~/.omp-workspace/zdot/` — synthetic ZDOTDIR for drawer zsh sessions.
+/// `~/.vecway/zdot/` — synthetic ZDOTDIR for drawer zsh sessions.
 fn zdot_dir() -> PathBuf {
     paths::data_dir().join("zdot")
 }
 
-/// `~/.omp-workspace/bashrc` — `--rcfile` target for drawer bash sessions.
+/// `~/.vecway/bashrc` — `--rcfile` target for drawer bash sessions.
 fn bashrc_path() -> PathBuf {
     paths::data_dir().join("bashrc")
 }
@@ -26,7 +26,7 @@ fn bashrc_path() -> PathBuf {
 /// Wrappers are *aliases to functions*, not bare functions: `\omp` and
 /// `command omp` then still reach the real binary, and the wrappers never
 /// apply inside user scripts or subshells.
-const TERMINAL_INIT: &str = r#"# OMP Workspace terminal init — generated file; manual edits are overwritten.
+const TERMINAL_INIT: &str = r#"# Vecway terminal init — generated file; manual edits are overwritten.
 #
 # Bare `omp`/`claude`/`codex` continue the session the app has selected;
 # anything else passes through unchanged (`omp list`, `omp -p ...`,
@@ -39,13 +39,13 @@ _ompws_omp() {
         if [ -n "$_ompws_f" ] && [ ! -f "$_ompws_f" ]; then
             case "$1" in
                 -p|--prompt|-h|--help|-V|--version|--resume|-r) ;;
-                ""|-*) printf 'OMP Workspace: session transcript not found: %s\n' "$_ompws_f" >&2; return 1 ;;
+                ""|-*) printf 'Vecway: session transcript not found: %s\n' "$_ompws_f" >&2; return 1 ;;
             esac
         fi
     else
         _ompws_f=""
-        [ -f "$HOME/.omp-workspace/current-session" ] && \
-            _ompws_f="$(<"$HOME/.omp-workspace/current-session")"
+        [ -f "$HOME/.vecway/current-session" ] && \
+            _ompws_f="$(<"$HOME/.vecway/current-session")"
     fi
     # Only resume when the recorded transcript still exists.
     if [ -z "$_ompws_f" ] || [ ! -f "$_ompws_f" ]; then
@@ -86,29 +86,29 @@ alias claude=_ompws_claude
 alias codex=_ompws_codex
 
 # One-time hint (dim gray) so the wrappers are discoverable.
-[ -t 1 ] && printf '\033[90mOMP 工作台终端 · omp/claude/codex 自动接回当前会话（\\前缀可跳过）\033[0m\n'
+[ -t 1 ] && printf '\033[90mVecway 工作台终端 · omp/claude/codex 自动接回当前会话（\\前缀可跳过）\033[0m\n'
 "#;
 
 /// `zdot/.zshrc`: real `~/.zshrc` first, then the agent-aware init. ZDOTDIR is
 /// unset afterwards so nested zsh sessions (and `.zlogin` lookup) fall back to
 /// the user's home directory.
-const ZDOT_ZSHRC: &str = r#"# OMP Workspace ZDOTDIR shim — generated; loads the real ~/.zshrc first.
+const ZDOT_ZSHRC: &str = r#"# Vecway ZDOTDIR shim — generated; loads the real ~/.zshrc first.
 [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"
-[ -f "$HOME/.omp-workspace/terminal-init.zsh" ] && source "$HOME/.omp-workspace/terminal-init.zsh"
+[ -f "$HOME/.vecway/terminal-init.zsh" ] && source "$HOME/.vecway/terminal-init.zsh"
 unset ZDOTDIR
 "#;
 
 /// `bashrc` used via `bash --rcfile`: real `~/.bashrc` first, then the init.
-const BASHRC: &str = r#"# OMP Workspace bashrc — generated; loads the real ~/.bashrc first.
+const BASHRC: &str = r#"# Vecway bashrc — generated; loads the real ~/.bashrc first.
 [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"
-[ -f "$HOME/.omp-workspace/terminal-init.bash" ] && source "$HOME/.omp-workspace/terminal-init.bash"
+[ -f "$HOME/.vecway/terminal-init.bash" ] && source "$HOME/.vecway/terminal-init.bash"
 "#;
 
 /// `zdot/.zshenv`/`.zprofile`/`.zlogin` shim: ZDOTDIR shadows the user's real
 /// dotfiles, so each stub forwards to it.
 fn user_file_shim(name: &str) -> String {
     format!(
-        "# OMP Workspace ZDOTDIR shim — generated; forwards to the user's real ~/{name}.\n\
+        "# Vecway ZDOTDIR shim — generated; forwards to the user's real ~/{name}.\n\
          [ -f \"$HOME/{name}\" ] && source \"$HOME/{name}\"\n"
     )
 }
@@ -235,7 +235,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ompws-bind-{}", uuid::Uuid::new_v4()));
         let home = dir.join("home");
         let bin = dir.join("bin");
-        std::fs::create_dir_all(home.join(".omp-workspace")).unwrap();
+        std::fs::create_dir_all(home.join(".vecway")).unwrap();
         std::fs::create_dir_all(&bin).unwrap();
         let executable = bin.join("omp");
         std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
@@ -245,7 +245,7 @@ mod tests {
         std::fs::write(&a, "{}").unwrap();
         std::fs::write(&b, "{}").unwrap();
         std::fs::write(
-            home.join(".omp-workspace/current-session"),
+            home.join(".vecway/current-session"),
             b.to_str().unwrap(),
         )
         .unwrap();

@@ -116,6 +116,21 @@ function resumeRepoRoot(session: SessionMeta | undefined, cwd: string): string |
 	return best;
 }
 
+function findWorkspaceForMissingCwd(session: SessionMeta | undefined, cwd: string) {
+	const workspaces = useSessions.getState().workspaces;
+	if (session?.workspaceId) {
+		const exact = workspaces.find((w) => w.id === session.workspaceId && w.kind === "project");
+		if (exact) return exact;
+	}
+	let best: (typeof workspaces)[number] | undefined;
+	for (const w of workspaces) {
+		if (w.kind === "project" && isInside(cwd, w.path) && (!best || w.path.length > best.path.length)) {
+			best = w;
+		}
+	}
+	return best;
+}
+
 function offerRecovery(pending: PendingResume, err: unknown): boolean {
 	const cwd = cwdMissingPath(err);
 	const diagnostic = unavailableModelDiagnostic(err);
@@ -123,13 +138,22 @@ function offerRecovery(pending: PendingResume, err: unknown): boolean {
 	if (cwd !== null) {
 		const session = useSessions.getState().sessions[pending.sessionId];
 		const worktree = worktreeLayout(cwd);
+		const matchedWs = findWorkspaceForMissingCwd(session, cwd);
+		const repoRoot = matchedWs?.pathMissing ? null : resumeRepoRoot(session, cwd);
 		modal = {
 			name: RESUME_MISSING_CWD_MODAL,
 			props: {
 				sessionId: pending.sessionId,
 				cwd,
-				repoRoot: resumeRepoRoot(session, cwd),
+				repoRoot,
 				...(worktree ? { worktreeName: worktree.name ?? basename(cwd) } : {}),
+				...(matchedWs
+					? {
+							workspaceId: matchedWs.id,
+							workspaceName: matchedWs.name,
+							workspaceMissing: Boolean(matchedWs.pathMissing),
+						}
+					: {}),
 			},
 		};
 	} else if (diagnostic !== null) {

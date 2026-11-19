@@ -6,7 +6,13 @@ import { tNow } from "./stores/language";
 import { initTheme } from "./lib/theme";
 import { startScrollPills } from "./lib/scrollPills";
 import { installDraftAutoCleanup } from "./features/sessions/newSession";
-import { startSessionEvents, useSessions } from "./stores/sessions";
+import {
+	isRelocationToastSuppressed,
+	startSessionEvents,
+	useSessions,
+} from "./stores/sessions";
+import { onWorkspacesRelocated } from "./lib/events";
+import { toast } from "./lib/toast";
 import { suppressWebViewContextMenu } from "./lib/webviewContextMenu";
 import { captureDiagnosticError, installGlobalDiagnostics } from "./lib/diagnostics";
 
@@ -28,6 +34,19 @@ try {
 			captureDiagnosticError("bootstrap", err);
 			console.error("initial session load failed", err);
 		});
+	void onWorkspacesRelocated((items) => {
+		void useSessions.getState().refreshWorkspaces();
+		for (const item of items) {
+			if (!isRelocationToastSuppressed(item.workspaceId)) {
+				toast.info(
+					tNow("sidebar.workspaceAutoRelocated", {
+						oldName: item.oldName,
+						newName: item.newName,
+					}),
+				);
+			}
+		}
+	}).catch(() => {});
 } catch (err) {
 	captureDiagnosticError("bootstrap", err);
 	console.error("startSessionEvents failed", err);

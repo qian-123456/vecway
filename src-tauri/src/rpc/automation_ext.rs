@@ -4,8 +4,8 @@
 //! sessions can inspect automations, stage check scripts in `~/.omp-workspace/automations/<id>/`,
 //! and present an interactive draft confirmation card via the `ompws-automation` status key.
 
-/// Bundled extension source (repo `extension/omp-workspace-automation.ts`).
-pub const EXT_SOURCE: &str = include_str!("../../../extension/omp-workspace-automation.ts");
+/// Bundled extension source (repo `extension/vecway-automation.ts`).
+pub const EXT_SOURCE: &str = include_str!("../../../extension/vecway-automation.ts");
 
 /// Install the bundled extension into `~/.omp-workspace/extension/` (startup).
 pub fn install() {

@@ -140,6 +140,7 @@ export function FileIcon({
 		const isSpecial =
 			name === ".git" ||
 			name === ".omp" ||
+			name === ".vecway" ||
 			name === ".omp-workspace" ||
 			name === "node_modules" ||
 			name === ".vscode";

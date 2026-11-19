@@ -15,16 +15,16 @@ use std::path::{Path, PathBuf};
 use crate::paths;
 
 /// Bundled plugin manifest (agent-plugins.org 1.0.0 schema).
-const PLUGIN_JSON: &str = include_str!("../resources/plugins/omp-workspace-visualize/plugin.json");
+const PLUGIN_JSON: &str = include_str!("../resources/plugins/vecway-visualize/plugin.json");
 /// Bundled skill guidance (the model-facing visualize contract).
 const SKILL_MD: &str =
-    include_str!("../resources/plugins/omp-workspace-visualize/skills/visualize/SKILL.md");
+    include_str!("../resources/plugins/vecway-visualize/skills/visualize/SKILL.md");
 
-/// `~/.omp-workspace/plugins/omp-workspace-visualize/`
+/// `~/.vecway/plugins/vecway-visualize/`
 pub fn plugin_dir() -> PathBuf {
     paths::data_dir()
         .join("plugins")
-        .join("omp-workspace-visualize")
+        .join("vecway-visualize")
 }
 
 /// Write `content` to `path` when missing or different (atomic temp + rename).

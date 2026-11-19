@@ -1,8 +1,8 @@
 /**
- * OMP status-report extension for omp-workspace (docs/ARCHITECTURE.md §8).
- * Installed at startup to ~/.omp-workspace/extension/omp-workspace-status.ts.
+ * OMP status-report extension for Vecway (docs/ARCHITECTURE.md §8).
+ * Installed at startup to ~/.vecway/extension/vecway-status.ts.
  *
- * Writes ~/.omp-workspace/status/<sessionId>.json atomically (tmp + rename):
+ * Writes ~/.vecway/status/<sessionId>.json atomically (tmp + rename):
  *   { sessionId, sessionFile, pid, state, updatedAt }
  * state: "working" | "idle" | "awaiting_approval" | "exited".
  *
@@ -34,7 +34,7 @@ interface ExtensionApiLike {
 const PROCESS_STARTED_AT = call(() => execFileSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], {
 	encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 1_000,
 }).trim());
-const STATUS_DIR = join(homedir(), ".omp-workspace", "status");
+const STATUS_DIR = join(homedir(), ".vecway", "status");
 
 function call<T>(fn: (() => T) | undefined): T | undefined {
 	try {

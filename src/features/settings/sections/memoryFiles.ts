@@ -9,7 +9,8 @@ export function cwdToMemorySlug(cwd: string): string {
 	return `--${trimmed.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 }
 
-const GLOBAL_SUFFIX = ".omp-workspace-global";
+const GLOBAL_SUFFIX = ".vecway-global";
+const LEGACY_GLOBAL_SUFFIX = ".omp-workspace-global";
 
 function slugInner(slug: string): string {
 	return slug.replace(/^--/, "").replace(/--$/, "");
@@ -51,7 +52,9 @@ export function memoryProjectLabel(
 	knownPaths: readonly string[] = [],
 ): MemoryProjectLabel {
 	const inner = slugInner(slug);
-	if (inner.endsWith(GLOBAL_SUFFIX)) return { label: tNow("memoryRules.globalNoProject"), exact: true };
+	if (inner.endsWith(GLOBAL_SUFFIX) || inner.endsWith(LEGACY_GLOBAL_SUFFIX)) {
+		return { label: tNow("memoryRules.globalNoProject"), exact: true };
+	}
 	for (const known of knownPaths) {
 		for (const p of withAncestors(known)) {
 			if (cwdToMemorySlug(p) === slug) return { label: tildePath(p, home), exact: true };

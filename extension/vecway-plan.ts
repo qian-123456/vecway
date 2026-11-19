@@ -1,4 +1,4 @@
-// omp-workspace plan mode (installed + loaded by the OMP Workspace app).
+// vecway plan mode (installed + loaded by the Vecway app).
 //
 // omp's own `/plan` only exists in the TUI, so app (RPC) sessions get the same
 // workflow from this extension:
@@ -154,7 +154,7 @@ export function turnEnd(messages: unknown): string {
 }
 
 const PLAN_CONTEXT = (planUrl: string | undefined, hasTask: boolean) => `<critical>
-Plan mode active (OMP Workspace).
+Plan mode active (Vecway).
 - Working tree and system are read-only: NEVER create, edit, delete, or rename working-tree files; NEVER run state-changing commands (\`git commit\`, \`pnpm install\`, migrations, redirects into files) or otherwise change the system. Such tool calls are refused.
 - \`local://\`: session-local planning artifacts; MAY create/update them.
 - Canonical plan: MUST write ${planUrl ? `\`${planUrl}\` (existing plan — read it and update it incrementally with \`edit\`)` : "`local://<slug>-plan.md` (short kebab-case `<slug>`, e.g. `local://auth-token-refresh-plan.md`) with `write`, then refine it with `edit`"}.
@@ -617,7 +617,7 @@ export default function planMode(pi: Pi) {
 	});
 
 	pi.registerCommand("plan-action", {
-		description: "OMP Workspace plan actions (enable/disable/approve/save/status/run)",
+		description: "Vecway plan actions (enable/disable/approve/save/status/run)",
 		handler: async (args, ctx) => {
 			if (isSub) return;
 			const [action = "", ...rest] = args.trim().split(/\s+/);

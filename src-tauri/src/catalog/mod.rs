@@ -8,6 +8,7 @@
 pub(crate) mod activity;
 pub mod commands;
 pub(crate) mod external;
+pub(crate) mod fs_id;
 pub(crate) mod parse;
 mod scan;
 pub mod search;
@@ -158,6 +159,67 @@ pub(crate) async fn rebuild(state: &AppState) {
     }
 }
 
+/// Apply post-transaction filesystem repairs and emit frontend notifications for
+/// relocated workspaces (memory dir rename, git worktree repair, UI refresh).
+pub(crate) fn apply_relocation_side_effects(state: &AppState, outcomes: &[store::RelocateOutcome]) {
+    if outcomes.is_empty() {
+        return;
+    }
+    let payloads: Vec<crate::contracts::WorkspaceRelocation> = outcomes
+        .iter()
+        .map(|o| {
+            for old_p in &o.migrated_old_paths {
+                fs_id::migrate_memory_dirs(old_p, &o.relocation.new_path);
+            }
+            fs_id::repair_git_worktrees(&o.relocation.new_path);
+            o.relocation.clone()
+        })
+        .collect();
+    let _ = state.app.emit("workspaces:relocated", &payloads);
+    let _ = state.app.emit("backlog:changed", ());
+    let _ = state.app.emit("schedules:changed", ());
+}
+
+/// Remap a raw transcript header cwd through workspace path aliases when
+/// catalog metadata is not yet available (e.g. cold-start `find_session_file`).
+pub(crate) fn remap_cwd_using_db(state: &AppState, raw_cwd: &str) -> String {
+    let (workspaces, aliases) = {
+        let db = state.db.lock();
+        (
+            store::list_workspaces(&db).unwrap_or_default(),
+            store::list_workspace_aliases(&db).unwrap_or_default(),
+        )
+    };
+    if aliases.is_empty() {
+        return raw_cwd.to_string();
+    }
+    let global_dir = paths::global_dir().to_string_lossy().into_owned();
+    let row = MetaRow::default();
+    let head = parse::HeadInfo {
+        cwd: raw_cwd.to_string(),
+        ..Default::default()
+    };
+    let candidate = scan::effective_cwd_with_aliases(&head, &row, &workspaces, &aliases);
+    if candidate != raw_cwd {
+        return candidate;
+    }
+    // Try remaining modes if the row wasn't Code.
+    for mode in [
+        crate::contracts::SpaceMode::Work,
+        crate::contracts::SpaceMode::Study,
+        crate::contracts::SpaceMode::Research,
+    ] {
+        if scan::path_within(raw_cwd, &global_dir) {
+            break;
+        }
+        let remapped = scan::remap_cwd_with_aliases(raw_cwd, mode, &workspaces, &aliases);
+        if remapped != raw_cwd {
+            return remapped;
+        }
+    }
+    raw_cwd.to_string()
+}
+
 fn rebuild_blocking(state: &AppState) {
     let t0 = Instant::now();
     let dir = paths::omp_sessions_dir();
@@ -165,32 +227,46 @@ fn rebuild_blocking(state: &AppState) {
         let c = cat().lock();
         (c.files.clone(), c.ready)
     };
+    let relocations = {
+        let db = state.db.lock();
+        let _ = crate::db::ensure_global_workspace(&db);
+        store::reconcile_workspaces(&db)
+    };
+    if !relocations.is_empty() {
+        apply_relocation_side_effects(state, &relocations);
+    }
     let files = scan::list_files(&dir);
     let listed = files.len();
     let (map, changed) = scan::scan_files(files, &prev);
     let t_scan = t0.elapsed();
-    // Git facts key on the *effective* cwd (a persisted cwd_override wins over
-    // the transcript header's cwd), so meta rows load before refreshing.
-    let overrides: HashMap<String, MetaRow> = {
+    // Git facts key on the *effective* cwd (a persisted cwd_override or
+    // workspace path alias wins over the transcript header's cwd).
+    let (overrides, workspaces, aliases): (
+        HashMap<String, MetaRow>,
+        Vec<crate::contracts::Workspace>,
+        Vec<store::WorkspaceAlias>,
+    ) = {
         let db = state.db.lock();
-        store::load_meta_rows(&db).unwrap_or_default()
+        (
+            store::load_meta_rows(&db).unwrap_or_default(),
+            store::list_workspaces(&db).unwrap_or_default(),
+            store::list_workspace_aliases(&db).unwrap_or_default(),
+        )
     };
     let empty_row = MetaRow::default();
     refresh_git(
         map.values()
             .map(|s| {
-                scan::effective_cwd(&s.head, overrides.get(&s.head.id).unwrap_or(&empty_row))
-                    .to_string()
+                scan::effective_cwd_with_aliases(
+                    &s.head,
+                    overrides.get(&s.head.id).unwrap_or(&empty_row),
+                    &workspaces,
+                    &aliases,
+                )
             })
             .collect(),
         false,
     );
-    {
-        let db = state.db.lock();
-        // Lazily create global (无项目) workspace rows/dirs for every mode
-        // already referenced by sessions/workspaces/groups.
-        let _ = crate::db::ensure_global_workspace(&db);
-    }
     {
         let db = state.db.lock();
         for path in &changed {
@@ -445,8 +521,8 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
         .map(|s| s.head.id.clone())
         .collect();
 
-    // DB phase: rows (+ seq assignment for labels without "#<n>") and workspaces.
-    let (mut rows, workspaces) = {
+    // DB phase: rows (+ seq assignment for labels without "#<n>"), workspaces, and aliases.
+    let (mut rows, workspaces, aliases) = {
         let db = state.db.lock();
         let mut rows = match &ids {
             None => store::load_meta_rows(&db).unwrap_or_default(),
@@ -466,17 +542,26 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
                 row.seq = store::assign_seq(&db, id).ok();
             }
         }
-        (rows, store::list_workspaces(&db).unwrap_or_default())
+        (
+            rows,
+            store::list_workspaces(&db).unwrap_or_default(),
+            store::list_workspace_aliases(&db).unwrap_or_default(),
+        )
     };
 
-    // Refresh git facts for the effective cwd of each target (override-aware).
+    // Refresh git facts for the effective cwd of each target (override- and alias-aware).
     // (Skipped right after a full rebuild, which already refreshed every cwd.)
     if refresh {
         let empty_row = MetaRow::default();
         let cwds = targets
             .iter()
             .map(|s| {
-                scan::effective_cwd(&s.head, rows.get(&s.head.id).unwrap_or(&empty_row)).to_string()
+                scan::effective_cwd_with_aliases(
+                    &s.head,
+                    rows.get(&s.head.id).unwrap_or(&empty_row),
+                    &workspaces,
+                    &aliases,
+                )
             })
             .collect();
         refresh_git(cwds, false);
@@ -490,10 +575,10 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
             .iter()
             .filter_map(|s| {
                 let row = rows.get(&s.head.id)?;
-                let cwd = scan::effective_cwd(&s.head, row);
-                let repo_root = c.git.get(cwd).and_then(|g| g.1.repo_root.as_deref());
+                let cwd = scan::effective_cwd_with_aliases(&s.head, row, &workspaces, &aliases);
+                let repo_root = c.git.get(&cwd).and_then(|g| g.1.repo_root.as_deref());
                 let mode =
-                    scan::unassigned_code_owner(row, &workspaces, repo_root, cwd, &global_dir)?;
+                    scan::unassigned_code_owner(row, &workspaces, repo_root, &cwd, &global_dir)?;
                 Some((s.head.id.clone(), mode))
             })
             .collect()
@@ -528,9 +613,16 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
                 }
                 c.files.get(&PathBuf::from(p)).map(|ps| ps.head.id.clone())
             });
-            let eff_cwd = scan::effective_cwd(&s.head, &row).to_string();
+            let eff_cwd = scan::effective_cwd_with_aliases(&s.head, &row, &workspaces, &aliases);
             let git = c.git.get(&eff_cwd).map(|g| g.1.clone()).unwrap_or_default();
-            let mut meta = scan::build_meta(s, &row, &git, &workspaces, parent_id);
+            let mut meta = scan::build_meta_with_aliases(
+                s,
+                &row,
+                &git,
+                &workspaces,
+                &aliases,
+                parent_id,
+            );
             let rt = c.runtime.get(id).cloned().unwrap_or_default();
             let is_live = !rt.exited && (rt.live || live.contains(id));
             let path = s.path.to_string_lossy();

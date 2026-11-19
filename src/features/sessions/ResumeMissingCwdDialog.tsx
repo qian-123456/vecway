@@ -6,19 +6,23 @@
  */
 
 import clsx from "clsx";
-import { FolderGit2, GitBranch, Loader2, X } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { FolderGit2, FolderSearch, GitBranch, Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "../../components/Modal";
 import { NativeSelect } from "../../components/NativeSelect";
 import { errMsg } from "../../lib/dialogs";
-import { rejectResume, resumeSession, RESUME_MISSING_CWD_MODAL } from "../../lib/ensureLive";
+import { cwdMissingPath, rejectResume, resumeSession, RESUME_MISSING_CWD_MODAL } from "../../lib/ensureLive";
 import { isComposing } from "../../lib/hooks";
 import {
 	gitCreateWorktree,
 	gitListBranches,
+	relocateWorkspace,
 } from "../../lib/ipc";
+import { suppressRelocationToast, useSessions } from "../../stores/sessions";
 import { useUi } from "../../stores/ui";
 import { useT } from "../../stores/language";
+import { useWorktrees } from "../../stores/worktrees";
 
 const NEW_BRANCH = "__new";
 
@@ -43,9 +47,22 @@ function ResumeMissingCwdForm({ props }: { props: Record<string, unknown> }) {
 		typeof props.worktreeName === "string" && props.worktreeName
 			? props.worktreeName
 			: null;
+	const workspaceId =
+		typeof props.workspaceId === "string" && props.workspaceId
+			? props.workspaceId
+			: null;
+	const workspaceName =
+		typeof props.workspaceName === "string" && props.workspaceName
+			? props.workspaceName
+			: null;
+	const workspaceMissing = props.workspaceMissing === true;
 
-	const [choice, setChoice] = useState<"main" | "worktree">(
-		repoRoot ? "main" : "worktree",
+	const [choice, setChoice] = useState<"main" | "worktree" | "pick">(
+		repoRoot && !workspaceMissing ? "main" : "pick",
+	);
+	const [pickedDir, setPickedDir] = useState("");
+	const [relocateWholeProject, setRelocateWholeProject] = useState(
+		Boolean(workspaceId && workspaceMissing),
 	);
 	const [branches, setBranches] = useState<string[] | null>(null);
 	const [branchSel, setBranchSel] = useState("");
@@ -136,13 +153,66 @@ function ResumeMissingCwdForm({ props }: { props: Record<string, unknown> }) {
 		}
 	};
 
+	const handlePickFolder = async () => {
+		setError(null);
+		try {
+			let selected: string | null = null;
+			try {
+				const res = await open({
+					directory: true,
+					multiple: false,
+					title: t("sessions.chooseFolderButton"),
+				});
+				if (typeof res === "string") selected = res;
+			} catch {
+				selected = window.prompt(t("sessions.inputNewFolderPrompt"));
+			}
+			if (selected?.trim()) {
+				setPickedDir(selected.trim());
+				setChoice("pick");
+			}
+		} catch (err) {
+			setError(errMsg(err));
+		}
+	};
+
+	const submitPick = async () => {
+		const dir = pickedDir.trim();
+		if (!dir) return;
+		setBusy(true);
+		setError(null);
+		try {
+			if (relocateWholeProject && workspaceId) {
+				suppressRelocationToast(workspaceId);
+				await relocateWorkspace(workspaceId, dir);
+				await useSessions.getState().load();
+				void useWorktrees.getState().refresh();
+				try {
+					await resumeSession(sessionId);
+					return;
+				} catch (err) {
+					if (cwdMissingPath(err) === null) throw err;
+				}
+			}
+			await resumeSession(sessionId, dir);
+		} catch (err) {
+			setError(errMsg(err));
+			setBusy(false);
+		}
+	};
+
 	const canConfirm =
 		!busy &&
-		(choice === "main" ? repoRoot !== null : worktreeName !== null && repoRoot !== null && branches !== null);
+		(choice === "main"
+			? repoRoot !== null
+			: choice === "pick"
+				? pickedDir.trim().length > 0
+				: worktreeName !== null && repoRoot !== null && branches !== null);
 
 	const confirm = () => {
 		if (!canConfirm) return;
 		if (choice === "main") void submitMain();
+		else if (choice === "pick") void submitPick();
 		else void submitWorktree();
 	};
 
@@ -260,6 +330,70 @@ function ResumeMissingCwdForm({ props }: { props: Record<string, unknown> }) {
 								<span className="mt-0.5 block text-[11px] text-neutral-500">
 									{t("sessions.cannotDetermineRepoRoot")}
 								</span>
+							)}
+						</span>
+					</label>
+
+					<label
+						className={clsx(
+							"flex cursor-pointer items-start gap-2.5 rounded-xl hairline p-3 transition-colors",
+							choice === "pick"
+								? "bg-[var(--bg-active-fill)]"
+								: "hover:bg-[var(--bg-hover)]",
+						)}
+					>
+						<input
+							type="radio"
+							name="resume-target"
+							className="mt-0.5"
+							checked={choice === "pick"}
+							disabled={busy}
+							onChange={() => setChoice("pick")}
+						/>
+						<span className="min-w-0 flex-1">
+							<span className="flex items-center justify-between gap-2">
+								<span className="flex items-center gap-1.5 text-[12px] text-neutral-200">
+									<FolderSearch size={13} className="shrink-0" />
+									{t("sessions.pickNewFolderAndContinue")}
+								</span>
+								<button
+									type="button"
+									disabled={busy}
+									onClick={(e) => {
+										e.preventDefault();
+										void handlePickFolder();
+									}}
+									className="shrink-0 whitespace-nowrap rounded-lg border border-[var(--border-divider)] bg-[var(--well-bg)] px-2.5 py-1 text-[11px] font-medium text-neutral-200 hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40"
+								>
+									{pickedDir ? t("sessions.reselectFolderButton") : t("sessions.chooseFolderButton")}
+								</button>
+							</span>
+							<span className="mt-0.5 block text-[11px] text-neutral-500">
+								{t("sessions.pickNewFolderDesc")}
+							</span>
+							{pickedDir && (
+								<span className="mt-1.5 block break-all rounded bg-[var(--bg)]/60 px-2 py-1 font-mono text-[11px] text-[var(--accent)]">
+									{t("sessions.selectedNewFolderLabel")} {pickedDir}
+								</span>
+							)}
+							{choice === "pick" && workspaceId && (
+								<label
+									onClick={(e) => e.stopPropagation()}
+									className="mt-2 flex cursor-pointer items-start gap-2 text-[11px] text-neutral-300"
+								>
+									<input
+										type="checkbox"
+										className="mt-0.5"
+										checked={relocateWholeProject}
+										disabled={busy}
+										onChange={(e) => setRelocateWholeProject(e.target.checked)}
+									/>
+									<span>
+										{t("sessions.relocateWholeProjectLabel", {
+											name: workspaceName ?? "",
+										})}
+									</span>
+								</label>
 							)}
 						</span>
 					</label>

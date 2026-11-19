@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import statusExtension from "../../extension/omp-workspace-status";
+import statusExtension from "../../extension/vecway-status";
 
 const storage = vi.hoisted(() => ({ files: new Map<string, string>() }));
 vi.mock("node:fs", () => ({
@@ -25,7 +25,7 @@ function fixture() {
 			handlers.get(event)!({}, { sessionManager: { getSessionId: () => id, getSessionFile: () => file } });
 		},
 		read(id: string) {
-			return JSON.parse(storage.files.get(`/isolated-home/.omp-workspace/status/${id}.json`)!);
+			return JSON.parse(storage.files.get(`/isolated-home/.vecway/status/${id}.json`)!);
 		},
 	};
 }

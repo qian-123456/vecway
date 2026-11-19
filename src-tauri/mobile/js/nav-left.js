@@ -1944,7 +1944,7 @@
 		<div class="topbar">
 			<button id="menu" class="iconbtn" aria-label="菜单">☰</button>
 			<span id="dot" class="dot"></span>
-			<h1>omp-workspace</h1>
+			<h1>Vecway</h1>
 			<span id="conn"></span>
 			<button id="notify-btn" class="iconbtn hidden" aria-label="开启通知" style="font-size: 18px">🔔</button>
 		</div>
@@ -1999,5 +1999,5 @@
 		root = null;
 	}
 
-	M.registerPage("home", { title: "omp-workspace", bare: true, mount, unmount });
+	M.registerPage("home", { title: "Vecway", bare: true, mount, unmount });
 })();

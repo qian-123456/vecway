@@ -30,7 +30,7 @@ use crate::state::{AppEvent, AppState};
 
 const VAPID_SETTING_KEY: &str = "mobile_vapid_pkcs8";
 /// RFC 8292 `sub` claim; push services only require a contact URI.
-const VAPID_SUBJECT: &str = "mailto:omp-workspace@example.com";
+const VAPID_SUBJECT: &str = "mailto:vecway@example.com";
 /// How long a push service keeps an undeliverable message.
 const PUSH_TTL_SECS: u32 = 3600;
 /// VAPID token validity (RFC 8292 caps it at 24 h).

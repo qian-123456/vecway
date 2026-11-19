@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub const EXTENSION_SRC: &str = include_str!("../../../extension/omp-workspace-status.ts");
+pub const EXTENSION_SRC: &str = include_str!("../../../extension/vecway-status.ts");
 
 /// Write the extension to `path` when missing or different. Returns true if written.
 pub fn install_to(path: &Path) -> std::io::Result<bool> {
@@ -18,11 +18,11 @@ pub fn install_to(path: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// `~/.omp/agent/extensions/omp-workspace-status.ts`
+/// `~/.omp/agent/extensions/vecway-status.ts`
 pub fn global_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/"))
-        .join(".omp/agent/extensions/omp-workspace-status.ts")
+        .join(".omp/agent/extensions/vecway-status.ts")
 }
 
 #[cfg(test)]

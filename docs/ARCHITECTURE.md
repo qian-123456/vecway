@@ -1,4 +1,4 @@
-# omp-workspace — Architecture & Module Contracts
+# Vecway — Architecture & Module Contracts
 
 Source of truth for all implementers.
 This file pins the **contracts** (types, commands, events, DB, file layout) so modules can be
@@ -295,7 +295,8 @@ pub struct SessionMeta {                // #[derive(Debug, Clone, Default, Parti
 pub enum Attention { Awaiting, Error, Unread, Running } // snake_case; precedence awaiting > error > unread > running
 
 pub enum WorkspaceKind { Project, Global }
-pub struct Workspace { pub id: String, pub path: String, pub name: String, pub kind: WorkspaceKind, pub sort: i64, pub mode: SpaceMode }
+pub struct Workspace { pub id: String, pub path: String, pub name: String, pub kind: WorkspaceKind, pub sort: i64, pub mode: SpaceMode, pub path_missing: bool }
+pub struct WorkspaceRelocation { pub workspace_id: String, pub old_path: String, pub new_path: String, pub old_name: String, pub new_name: String, pub mode: SpaceMode }
 // workspaces are unique on (path, mode): the same disk directory may be a project in several spaces.
 
 /// User-created named category inside the 通用对话 (`chat`) space — a grouping only,
@@ -614,13 +615,15 @@ Frontend events (`app.emit`), names are exact:
 | `ime:changed` | `boolean` (current input source is an IME) | `ime.rs` (macOS TIS input-source-change notification) |
 | `model_switch:changed` | `null` | D (after a template apply/undo or an automatic quota switch) |
 | `omp:install` | `OmpInstallProgress` `{ line?: string, downloadedBytes?: number }` — one ANSI-stripped installer output line, or the size of the in-progress `.omp.download.*` file (polled ~500 ms) | `omp_install.rs` (during `omp_install_run`) |
+| `workspaces:relocated` | `WorkspaceRelocation[]` — emitted when Layer 2 (filesystem identity) or Layer 3 (`relocate_workspace`) relocates a workspace | A (`catalog/mod.rs`, `catalog/commands.rs`) |
 
 An unexpected `rpc:process` exit during an active turn preserves unfinished output, records a system-disconnection warning without inventing a cause, enables manual Continue, and pauses queued auto-send; it never automatically retries. Deliberate stop/restart intent is not presented as an unknown disconnection.
 
-## 6. SQLite schema (`db.rs`, migrations v1 → … → v18)
+## 6. SQLite schema (`db.rs`, migrations v1 → … → v29)
 
 ```sql
-CREATE TABLE workspaces(id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, sort INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'code', created_at TEXT NOT NULL, UNIQUE(path, mode));  -- v10 rebuilt: uniqueness moved from path to (path, mode); pre-v10 rows keep mode='code'
+CREATE TABLE workspaces(id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, sort INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'code', dir_dev INTEGER, dir_ino INTEGER, created_at TEXT NOT NULL, UNIQUE(path, mode));  -- v10 rebuilt: uniqueness moved from path to (path, mode); v29 adds dir_dev/dir_ino for Layer 2 relocation tracking
+CREATE TABLE workspace_aliases(old_path TEXT NOT NULL, mode TEXT NOT NULL, workspace_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(old_path, mode)); -- v29: prior workspace paths so historical read-only transcripts stay grouped and runnable
 CREATE TABLE session_meta(
   session_id TEXT PRIMARY KEY, file_path TEXT, custom_name TEXT, label TEXT,
   pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
@@ -733,7 +736,7 @@ must not echo malformed diagnostic values before the fixed rejection is applied.
 - `update_session_meta(session_id, patch: {customName?, pinned?, archived?, workspaceId?})  -> SessionMeta`
 - `mark_seen(session_id)` — clears `unread`, stamps `session_meta.last_seen_at`; if pending is Review, also runs the `accept_session(id, false)` logic (view = accept; emits `SessionAccepted`). The frontend calls it right after the selection changes (≈50 ms key-repeat debounce, no dwell) while the app window is visible and focused, and again when a turn finishing leaves the selected session unread/in Review; a hidden or unfocused window keeps its cue until focus returns (`stores/sessions.ts::scheduleMarkSessionSeen`). The local store mirrors the backend accept: only `unread`, `status:"review"` and `pending:"review"` are cleared, other pending kinds are preserved
 - `accept_session(session_id, archive: bool)` — clears `pending=Review`, sets Idle, emits `SessionAccepted`
-- `list_workspaces() -> Vec<Workspace>` (all modes), `add_workspace(path, mode: Option<SpaceMode>) -> Workspace` (default code; `chat` rejected — it has no project directories), `remove_workspace(id)` (global rows refuse; clears `session_meta.workspace_id` overrides pointing at it), `reorder_workspaces(ids: Vec<String>)`
+- `list_workspaces() -> Vec<Workspace>` (all modes; reconciles missing directories via Layer 2 filesystem identity), `add_workspace(path, mode: Option<SpaceMode>) -> Workspace` (default code; `chat` rejected — it has no project directories; automatically links/relocates a missing workspace sharing the same dir inode), `relocate_workspace(id, new_path) -> Workspace` (Layer 3 manual relocate + duplicate merge + app path/memory/worktree sync), `remove_workspace(id)` (global rows refuse; clears `session_meta.workspace_id` overrides pointing at it), `reorder_workspaces(ids: Vec<String>)`
 - `list_session_groups() -> Vec<SessionGroup>` (all modes), `create_session_group(mode, name) -> SessionGroup`, `rename_session_group(id, name) -> SessionGroup`, `delete_session_group(id)` (its sessions become ungrouped, never deleted), `reorder_session_groups(ids: Vec<String>)` — every mutation emits `session_groups:changed`
 - `set_session_group(session_id, group_id: Option<String>)` — file a 通用对话 session under a group or ungroup it (null). Validates: group exists, group and session are `chat`, and the session resolves to the global workspace (else `仅通用对话会话可以加入分组` / `会话与分组不属于同一空间`)
 - `session_usage(session_id) -> UsageSummary`

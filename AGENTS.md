@@ -1,4 +1,4 @@
-# omp-workspace — Agent Rules
+# Vecway — Agent Rules
 
 Tauri 2 + React 19 + TS + Vite + Tailwind v4 desktop workbench for OMP agent sessions.
 

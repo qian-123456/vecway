@@ -466,7 +466,7 @@ fn fatal_startup(what: &str, err: &dyn std::fmt::Display) -> ! {
     diagnostics::record_startup_failure(phase);
     diagnostics::shutdown();
     let msg = format!("{what}：{err}\n请检查 ~/.omp-workspace 的权限与磁盘空间后重试。");
-    eprintln!("omp-workspace: {msg}");
+    eprintln!("vecway: {msg}");
     #[cfg(target_os = "macos")]
     {
         let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
@@ -561,6 +561,7 @@ pub fn run() {
             catalog::commands::accept_session,
             catalog::commands::list_workspaces,
             catalog::commands::add_workspace,
+            catalog::commands::relocate_workspace,
             catalog::commands::remove_workspace,
             catalog::commands::reorder_workspaces,
             catalog::commands::list_session_groups,

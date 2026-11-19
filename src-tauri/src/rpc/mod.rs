@@ -1060,8 +1060,9 @@ pub(crate) async fn find_session_file(
                 continue;
             }
             let file = entry.path().to_string_lossy().to_string();
-            let cwd = session_header_cwd(&file)
+            let raw_cwd = session_header_cwd(&file)
                 .unwrap_or_else(|| paths::global_dir().to_string_lossy().to_string());
+            let cwd = crate::catalog::remap_cwd_using_db(state, &raw_cwd);
             return Some((file, cwd));
         }
     }

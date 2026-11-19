@@ -1,11 +1,14 @@
 //! SQLite access for `session_meta` and `workspaces` (schema in db.rs, §6).
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use super::fs_id::{self, DirIdentity};
 use crate::contracts::{
     PendingKind, SessionGroup, SessionMetaPatch, SpaceMode, Workspace, WorkspaceKind,
+    WorkspaceRelocation,
 };
 
 /// One `session_meta` row.
@@ -313,11 +316,54 @@ pub fn set_mode_group(
 
 // ---- workspaces ----
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceAlias {
+    pub old_path: String,
+    pub mode: SpaceMode,
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RelocateOutcome {
+    pub workspace: Workspace,
+    pub relocation: WorkspaceRelocation,
+    pub migrated_old_paths: Vec<String>,
+}
+
 fn kind_from_str(s: &str) -> WorkspaceKind {
     if s == "global" {
         WorkspaceKind::Global
     } else {
         WorkspaceKind::Project
+    }
+}
+
+fn compute_path_missing(kind: WorkspaceKind, path: &str) -> bool {
+    kind == WorkspaceKind::Project && !Path::new(path).is_dir()
+}
+
+fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |r| r.get(0),
+    )
+}
+
+fn identity_params(id: Option<DirIdentity>) -> (Option<i64>, Option<i64>) {
+    match id {
+        Some(d) => (Some(d.dev as i64), Some(d.ino as i64)),
+        None => (None, None),
+    }
+}
+
+fn identity_from_cols(dev: Option<i64>, ino: Option<i64>) -> Option<DirIdentity> {
+    match (dev, ino) {
+        (Some(d), Some(i)) if d >= 0 && i >= 0 => Some(DirIdentity {
+            dev: d as u64,
+            ino: i as u64,
+        }),
+        _ => None,
     }
 }
 
@@ -327,45 +373,398 @@ pub fn list_workspaces(conn: &Connection) -> rusqlite::Result<Vec<Workspace>> {
          ORDER BY (kind = 'global') DESC, sort, name",
     )?;
     let rows = stmt.query_map([], |r| {
+        let path: String = r.get(1)?;
+        let kind = kind_from_str(&r.get::<_, String>(3)?);
+        let path_missing = compute_path_missing(kind, &path);
         Ok(Workspace {
             id: r.get(0)?,
-            path: r.get(1)?,
+            path,
             name: r.get(2)?,
-            kind: kind_from_str(&r.get::<_, String>(3)?),
+            kind,
             sort: r.get(4)?,
             mode: SpaceMode::from_str_lossy(&r.get::<_, String>(5)?),
+            path_missing,
         })
     })?;
     rows.collect()
 }
 
-/// Normalize a workspace path: trim whitespace and trailing slashes.
+pub fn list_workspace_aliases(conn: &Connection) -> rusqlite::Result<Vec<WorkspaceAlias>> {
+    if !table_exists(conn, "workspace_aliases")? {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare("SELECT old_path, mode, workspace_id FROM workspace_aliases")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(WorkspaceAlias {
+            old_path: r.get(0)?,
+            mode: SpaceMode::from_str_lossy(&r.get::<_, String>(1)?),
+            workspace_id: r.get(2)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Normalize a workspace path: trim whitespace and trailing path separators
+/// (preserving root `/` and Windows drive roots like `C:\`).
 pub fn normalize_path(path: &str) -> String {
     let p = path.trim();
-    let trimmed = p.trim_end_matches('/');
+    let b = p.as_bytes();
+    if b.len() == 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') {
+        return p.to_string();
+    }
+    let trimmed = p.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
         "/".to_string()
+    } else if trimmed.len() == 2 && trimmed.as_bytes()[1] == b':' {
+        format!("{trimmed}\\")
     } else {
         trimmed.to_string()
     }
 }
 
-/// Add a project workspace to `mode`. The same disk directory may exist in
-/// several modes (unique on (path, mode)); re-adding the same (path, mode)
-/// returns the existing row.
-pub fn add_workspace(
+fn rewrite_path_column(
+    tx: &Connection,
+    table: &str,
+    id_col: &str,
+    path_col: &str,
+    old_prefix: &str,
+    new_prefix: &str,
+    exact_only: bool,
+) -> rusqlite::Result<()> {
+    if !table_exists(tx, table)? {
+        return Ok(());
+    }
+    let select_sql = format!("SELECT {id_col}, {path_col} FROM {table} WHERE {path_col} IS NOT NULL");
+    let mut stmt = tx.prepare(&select_sql)?;
+    let updates: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .filter_map(Result::ok)
+        .filter_map(|(row_id, current)| {
+            let next = if exact_only {
+                (current == old_prefix).then(|| new_prefix.to_string())
+            } else {
+                fs_id::remap_path_prefix(&current, old_prefix, new_prefix)
+            }?;
+            (next != current).then_some((row_id, next))
+        })
+        .collect();
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let update_sql = format!("UPDATE {table} SET {path_col} = ?2 WHERE {id_col} = ?1");
+    let mut up = tx.prepare(&update_sql)?;
+    for (row_id, next) in updates {
+        up.execute(params![row_id, next])?;
+    }
+    Ok(())
+}
+
+fn rewrite_project_path_references(
+    tx: &Connection,
+    old_path: &str,
+    new_path: &str,
+) -> rusqlite::Result<()> {
+    rewrite_path_column(
+        tx,
+        "session_meta",
+        "session_id",
+        "cwd_override",
+        old_path,
+        new_path,
+        false,
+    )?;
+    let other_ws_uses_old: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM workspaces WHERE path = ?1 AND kind = 'project')",
+        params![old_path],
+        |r| r.get(0),
+    )?;
+    if !other_ws_uses_old || !Path::new(old_path).is_dir() {
+        rewrite_path_column(tx, "backlog", "id", "project_dir", old_path, new_path, false)?;
+        rewrite_path_column(tx, "schedules", "id", "cwd", old_path, new_path, false)?;
+        rewrite_path_column(tx, "model_templates", "id", "scope", old_path, new_path, true)?;
+        rewrite_path_column(
+            tx,
+            "model_switch_rules",
+            "id",
+            "scope",
+            old_path,
+            new_path,
+            true,
+        )?;
+        rewrite_path_column(
+            tx,
+            "model_switch_log",
+            "id",
+            "scope",
+            old_path,
+            new_path,
+            true,
+        )?;
+    }
+    Ok(())
+}
+
+/// Relocate an existing project workspace (`id`) to `new_path`, recording its
+/// previous path in `workspace_aliases`, merging any duplicate workspace already
+/// occupying `(new_path, mode)`, and rewriting app-stored project paths in one
+/// SQLite transaction.
+pub fn relocate_workspace_tx(
+    conn: &Connection,
+    id: &str,
+    new_path: &str,
+) -> Result<RelocateOutcome, String> {
+    let new_path = normalize_path(new_path);
+    let existing: Option<(String, String, String, i64, String)> = conn
+        .query_row(
+            "SELECT path, name, kind, sort, mode FROM workspaces WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((old_path, old_name, kind_s, sort, mode_s)) = existing else {
+        return Err("工作区不存在".to_string());
+    };
+    if kind_s == "global" {
+        return Err("全局工作区不可重新定位".to_string());
+    }
+    let mode = SpaceMode::from_str_lossy(&mode_s);
+    let new_name = Path::new(&new_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| new_path.clone());
+    let dir_id = fs_id::read_dir_identity(Path::new(&new_path));
+    let (dev, ino) = identity_params(dir_id);
+
+    if old_path == new_path {
+        conn.execute(
+            "UPDATE workspaces SET dir_dev = ?2, dir_ino = ?3 WHERE id = ?1",
+            params![id, dev, ino],
+        )
+        .map_err(|e| e.to_string())?;
+        let ws = Workspace {
+            id: id.to_string(),
+            path: new_path.clone(),
+            name: old_name.clone(),
+            kind: WorkspaceKind::Project,
+            sort,
+            mode,
+            path_missing: compute_path_missing(WorkspaceKind::Project, &new_path),
+        };
+        return Ok(RelocateOutcome {
+            relocation: WorkspaceRelocation {
+                workspace_id: ws.id.clone(),
+                old_path,
+                new_path,
+                old_name: old_name.clone(),
+                new_name: old_name,
+                mode,
+            },
+            workspace: ws,
+            migrated_old_paths: Vec::new(),
+        });
+    }
+
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let dup_id: Option<String> = tx
+        .query_row(
+            "SELECT id FROM workspaces WHERE path = ?1 AND mode = ?2 AND id != ?3",
+            params![new_path, mode.as_str(), id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some(dup) = dup_id {
+        tx.execute(
+            "UPDATE session_meta SET workspace_id = ?1 WHERE workspace_id = ?2",
+            params![id, dup],
+        )
+        .map_err(|e| e.to_string())?;
+        if table_exists(&tx, "workspace_aliases").map_err(|e| e.to_string())? {
+            tx.execute(
+                "UPDATE workspace_aliases SET workspace_id = ?1 WHERE workspace_id = ?2",
+                params![id, dup],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.execute("DELETE FROM workspaces WHERE id = ?1", params![dup])
+            .map_err(|e| e.to_string())?;
+    }
+
+    tx.execute(
+        "UPDATE workspaces SET path = ?2, name = ?3, dir_dev = ?4, dir_ino = ?5 WHERE id = ?1",
+        params![id, new_path, new_name, dev, ino],
+    )
+    .map_err(|e| e.to_string())?;
+
+    if table_exists(&tx, "workspace_aliases").map_err(|e| e.to_string())? {
+        tx.execute(
+            "INSERT INTO workspace_aliases(old_path, mode, workspace_id, created_at)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(old_path, mode) DO UPDATE SET workspace_id = excluded.workspace_id",
+            params![old_path, mode.as_str(), id, now()],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM workspace_aliases WHERE old_path = ?1 AND mode = ?2",
+            params![new_path, mode.as_str()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    rewrite_project_path_references(&tx, &old_path, &new_path).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+
+    let ws = Workspace {
+        id: id.to_string(),
+        path: new_path.clone(),
+        name: new_name.clone(),
+        kind: WorkspaceKind::Project,
+        sort,
+        mode,
+        path_missing: compute_path_missing(WorkspaceKind::Project, &new_path),
+    };
+    Ok(RelocateOutcome {
+        relocation: WorkspaceRelocation {
+            workspace_id: ws.id.clone(),
+            old_path: old_path.clone(),
+            new_path,
+            old_name,
+            new_name,
+            mode,
+        },
+        workspace: ws,
+        migrated_old_paths: vec![old_path],
+    })
+}
+
+/// Reconcile workspaces against disk (Layer 1 & Layer 2):
+/// - Backfills/refreshes `(dir_dev, dir_ino)` for existing directories.
+/// - Auto-relocates missing workspaces when Layer 2 (`/.vol` / parent scan /
+///   same-inode duplicate row) finds the moved/renamed directory.
+pub fn reconcile_workspaces(conn: &Connection) -> Vec<RelocateOutcome> {
+    struct WsRow {
+        id: String,
+        path: String,
+        mode: SpaceMode,
+        identity: Option<DirIdentity>,
+    }
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, path, mode, dir_dev, dir_ino FROM workspaces WHERE kind = 'project' ORDER BY sort, created_at",
+    ) else {
+        return Vec::new();
+    };
+    let rows: Vec<WsRow> = match stmt.query_map([], |r| {
+        Ok(WsRow {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            mode: SpaceMode::from_str_lossy(&r.get::<_, String>(2)?),
+            identity: identity_from_cols(r.get(3)?, r.get(4)?),
+        })
+    }) {
+        Ok(it) => it.filter_map(Result::ok).collect(),
+        Err(_) => return Vec::new(),
+    };
+    drop(stmt);
+
+    let mut live_by_id: HashMap<(SpaceMode, u64, u64), (String, String)> = HashMap::new();
+    let mut missing = Vec::new();
+    for row in rows {
+        if Path::new(&row.path).is_dir() {
+            let actual = fs_id::read_dir_identity(Path::new(&row.path));
+            if let Some(id_now) = actual {
+                if row.identity != Some(id_now) {
+                    let (dev, ino) = identity_params(Some(id_now));
+                    let _ = conn.execute(
+                        "UPDATE workspaces SET dir_dev = ?2, dir_ino = ?3 WHERE id = ?1",
+                        params![row.id, dev, ino],
+                    );
+                }
+                live_by_id
+                    .entry((row.mode, id_now.dev, id_now.ino))
+                    .or_insert((row.id, row.path));
+            }
+        } else {
+            missing.push(row);
+        }
+    }
+
+    let mut outcomes = Vec::new();
+    for row in missing {
+        let Some(stored) = row.identity else {
+            continue;
+        };
+        let target = if let Some((dup_id, dup_path)) =
+            live_by_id.get(&(row.mode, stored.dev, stored.ino))
+        {
+            if dup_id == &row.id {
+                continue;
+            }
+            Some(Path::new(dup_path).to_path_buf())
+        } else {
+            fs_id::resolve_moved_dir(Path::new(&row.path), stored)
+        };
+        let Some(new_path) = target else {
+            continue;
+        };
+        let new_str = new_path.to_string_lossy().into_owned();
+        if let Ok(outcome) = relocate_workspace_tx(conn, &row.id, &new_str) {
+            live_by_id.insert(
+                (row.mode, stored.dev, stored.ino),
+                (row.id.clone(), outcome.workspace.path.clone()),
+            );
+            outcomes.push(outcome);
+        }
+    }
+    outcomes
+}
+
+/// Add a project workspace to `mode` while automatically linking/relocating a
+/// missing workspace with the same filesystem directory identity (Layer 2).
+pub fn add_workspace_with_reconcile(
     conn: &Connection,
     path: &str,
     mode: SpaceMode,
-) -> rusqlite::Result<Workspace> {
+) -> rusqlite::Result<(Workspace, Option<RelocateOutcome>)> {
     let path = normalize_path(path);
+    let incoming_id = fs_id::read_dir_identity(Path::new(&path));
     if let Some(ws) = list_workspaces(conn)?
         .into_iter()
         .find(|w| w.path == path && w.mode == mode)
     {
-        return Ok(ws);
+        if let Some(id_now) = incoming_id {
+            let (dev, ino) = identity_params(Some(id_now));
+            let _ = conn.execute(
+                "UPDATE workspaces SET dir_dev = ?2, dir_ino = ?3 WHERE id = ?1",
+                params![ws.id, dev, ino],
+            );
+        }
+        return Ok((ws, None));
     }
-    let name = std::path::Path::new(&path)
+
+    // Layer 2: check if a missing workspace in this mode has the exact same dir inode.
+    if let Some(id_now) = incoming_id {
+        let mut stmt = conn.prepare(
+            "SELECT id, path FROM workspaces WHERE kind = 'project' AND mode = ?1 AND dir_dev = ?2 AND dir_ino = ?3 ORDER BY sort, created_at",
+        )?;
+        let (dev, ino) = identity_params(Some(id_now));
+        let candidate: Option<String> = stmt
+            .query_map(params![mode.as_str(), dev, ino], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .filter_map(Result::ok)
+            .find(|(_, old_p)| !Path::new(old_p).is_dir())
+            .map(|(id, _)| id);
+        drop(stmt);
+        if let Some(missing_id) = candidate {
+            if let Ok(outcome) = relocate_workspace_tx(conn, &missing_id, &path) {
+                return Ok((outcome.workspace.clone(), Some(outcome)));
+            }
+        }
+    }
+
+    let name = Path::new(&path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.clone());
@@ -374,20 +773,40 @@ pub fn add_workspace(
         params![mode.as_str()],
         |r| r.get(0),
     )?;
+    let (dev, ino) = identity_params(incoming_id);
     let ws = Workspace {
         id: uuid::Uuid::new_v4().to_string(),
-        path,
+        path: path.clone(),
         name,
         kind: WorkspaceKind::Project,
         sort,
         mode,
+        path_missing: compute_path_missing(WorkspaceKind::Project, &path),
     };
     conn.execute(
-        "INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at)
-		 VALUES(?1, ?2, ?3, 'project', ?4, ?5, ?6)",
-        params![ws.id, ws.path, ws.name, ws.sort, mode.as_str(), now()],
+        "INSERT INTO workspaces(id, path, name, kind, sort, mode, dir_dev, dir_ino, created_at)
+		 VALUES(?1, ?2, ?3, 'project', ?4, ?5, ?6, ?7, ?8)",
+        params![ws.id, ws.path, ws.name, ws.sort, mode.as_str(), dev, ino, now()],
     )?;
-    Ok(ws)
+    if table_exists(conn, "workspace_aliases")? {
+        conn.execute(
+            "DELETE FROM workspace_aliases WHERE old_path = ?1 AND mode = ?2",
+            params![ws.path, mode.as_str()],
+        )?;
+    }
+    Ok((ws, None))
+}
+
+/// Add a project workspace to `mode`. The same disk directory may exist in
+/// several modes (unique on (path, mode)); re-adding the same (path, mode)
+/// returns the existing row.
+#[cfg(test)]
+pub fn add_workspace(
+    conn: &Connection,
+    path: &str,
+    mode: SpaceMode,
+) -> rusqlite::Result<Workspace> {
+    add_workspace_with_reconcile(conn, path, mode).map(|(ws, _)| ws)
 }
 
 /// Remove a project workspace (the Global row cannot be removed).
@@ -407,6 +826,13 @@ pub fn remove_workspace(conn: &Connection, id: &str) -> Result<(), String> {
     }
     conn.execute("DELETE FROM workspaces WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    if table_exists(conn, "workspace_aliases").map_err(|e| e.to_string())? {
+        conn.execute(
+            "DELETE FROM workspace_aliases WHERE workspace_id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     conn.execute(
         "UPDATE session_meta SET workspace_id = NULL WHERE workspace_id = ?1",
         params![id],
@@ -560,7 +986,8 @@ pub mod tests {
     pub fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE workspaces(id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, sort INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'code', created_at TEXT NOT NULL, UNIQUE(path, mode));
+            "CREATE TABLE workspaces(id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, sort INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'code', dir_dev INTEGER, dir_ino INTEGER, created_at TEXT NOT NULL, UNIQUE(path, mode));
+             CREATE TABLE workspace_aliases(old_path TEXT NOT NULL, mode TEXT NOT NULL, workspace_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(old_path, mode));
              CREATE TABLE session_meta(
                session_id TEXT PRIMARY KEY, file_path TEXT, custom_name TEXT, label TEXT,
                pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
@@ -571,8 +998,8 @@ pub mod tests {
              CREATE TABLE session_groups(
                id TEXT PRIMARY KEY, mode TEXT NOT NULL, name TEXT NOT NULL,
                sort INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
-             INSERT INTO workspaces VALUES('global', '/g', '🌐 全局', 'global', -1, 'code', 'now');
-             INSERT INTO workspaces VALUES('global:work', '/g-work', '🌐 全局', 'global', -1, 'work', 'now');",
+             INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at) VALUES('global', '/g', '🌐 全局', 'global', -1, 'code', 'now');
+             INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at) VALUES('global:work', '/g-work', '🌐 全局', 'global', -1, 'work', 'now');",
         )
         .unwrap();
         conn
@@ -777,5 +1204,138 @@ pub mod tests {
         let row = load_meta_row(&c, "ghost");
         assert_eq!(row.mode, SpaceMode::Code);
         assert_eq!(row.group_id, None);
+    }
+
+    #[test]
+    fn reconcile_tracks_rename_and_merges_duplicate() {
+        let base = std::env::temp_dir().join(format!("vecway-ws-reloc-{}", uuid::Uuid::new_v4()));
+        let old_dir = base.join("omp-workspace");
+        let new_dir = base.join("Vecway");
+        std::fs::create_dir_all(&old_dir).unwrap();
+
+        let c = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&c).unwrap();
+        let ws = add_workspace(&c, &old_dir.to_string_lossy(), SpaceMode::Code).unwrap();
+        assert!(!ws.path_missing);
+
+        c.execute(
+            "INSERT INTO backlog(id, text, kind, status, created_at, updated_at, project_dir)
+             VALUES('b1', 'idea', 'idea', 'open', 'now', 'now', ?1)",
+            [old_dir.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, created_at, updated_at, mode)
+             VALUES('sch1', 's', 'p', ?1, 'local', '{}', 'now', 'now', 'code')",
+            [format!("{}/.worktrees/feat", old_dir.to_string_lossy())],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO model_templates(id, name, roles, created_at, updated_at, scope)
+             VALUES('t1', 'T', '{}', 'now', 'now', ?1)",
+            [old_dir.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+
+        // Rename on disk; Layer 2 reconcile_workspaces detects via inode and updates everything.
+        std::fs::rename(&old_dir, &new_dir).unwrap();
+        let outcomes = reconcile_workspaces(&c);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].workspace.id, ws.id);
+        assert_eq!(outcomes[0].workspace.name, "Vecway");
+        assert_eq!(
+            outcomes[0].workspace.path,
+            new_dir.to_string_lossy().as_ref()
+        );
+        let aliases = list_workspace_aliases(&c).unwrap();
+        assert_eq!(aliases.len(), 1);
+        assert_eq!(aliases[0].old_path, old_dir.to_string_lossy().as_ref());
+        assert_eq!(aliases[0].workspace_id, ws.id);
+
+        let b_dir: String = c
+            .query_row("SELECT project_dir FROM backlog WHERE id='b1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(b_dir, new_dir.to_string_lossy().as_ref());
+        let s_cwd: String = c
+            .query_row("SELECT cwd FROM schedules WHERE id='sch1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            s_cwd,
+            format!("{}/.worktrees/feat", new_dir.to_string_lossy())
+        );
+        let t_scope: String = c
+            .query_row("SELECT scope FROM model_templates WHERE id='t1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(t_scope, new_dir.to_string_lossy().as_ref());
+
+        // Rename again and simulate user adding new folder manually before reconcile runs.
+        let newer_dir = base.join("Vecway-2");
+        std::fs::rename(&new_dir, &newer_dir).unwrap();
+        let (relinked, reloc) =
+            add_workspace_with_reconcile(&c, &newer_dir.to_string_lossy(), SpaceMode::Code)
+                .unwrap();
+        assert!(reloc.is_some());
+        assert_eq!(relinked.id, ws.id);
+        assert_eq!(relinked.name, "Vecway-2");
+        // Both prior paths remain aliases of the single preserved workspace id.
+        let all_aliases = list_workspace_aliases(&c).unwrap();
+        assert_eq!(all_aliases.len(), 2);
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn relocate_workspace_merges_duplicate_and_rewrites_cwd_override() {
+        let base = std::env::temp_dir().join(format!("vecway-ws-merge-{}", uuid::Uuid::new_v4()));
+        let old_dir = base.join("old-name");
+        let new_dir = base.join("new-name");
+        std::fs::create_dir_all(&new_dir).unwrap();
+
+        let c = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&c).unwrap();
+        let old_ws = add_workspace(&c, &old_dir.to_string_lossy(), SpaceMode::Code).unwrap();
+        let dup_ws = add_workspace(&c, &new_dir.to_string_lossy(), SpaceMode::Code).unwrap();
+        assert!(old_ws.path_missing);
+        assert!(!dup_ws.path_missing);
+
+        apply_patch(
+            &c,
+            "s-old",
+            &SessionMetaPatch {
+                workspace_id: Some(old_ws.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set_cwd_override(&c, "s-old", Some(&old_dir.to_string_lossy())).unwrap();
+        apply_patch(
+            &c,
+            "s-dup",
+            &SessionMetaPatch {
+                workspace_id: Some(dup_ws.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let outcome = relocate_workspace_tx(&c, &old_ws.id, &new_dir.to_string_lossy()).unwrap();
+        assert_eq!(outcome.workspace.id, old_ws.id);
+        assert_eq!(outcome.workspace.sort, old_ws.sort);
+        assert!(!outcome.workspace.path_missing);
+        let list = list_workspaces(&c)
+            .unwrap()
+            .into_iter()
+            .filter(|w| w.kind == WorkspaceKind::Project)
+            .collect::<Vec<_>>();
+        assert_eq!(list.len(), 1);
+        assert_eq!(load_meta_row(&c, "s-dup").workspace_id.as_deref(), Some(old_ws.id.as_str()));
+        assert_eq!(
+            load_meta_row(&c, "s-old").cwd_override.as_deref(),
+            Some(new_dir.to_string_lossy().as_ref())
+        );
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

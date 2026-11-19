@@ -6,8 +6,8 @@
 
 use std::path::Path;
 
-/// Bundled extension source (repo `extension/omp-workspace-checkpoints.ts`).
-pub const EXT_SOURCE: &str = include_str!("../../../extension/omp-workspace-checkpoints.ts");
+/// Bundled extension source (repo `extension/vecway-checkpoints.ts`).
+pub const EXT_SOURCE: &str = include_str!("../../../extension/vecway-checkpoints.ts");
 
 /// Exact auto-commit rule text injected by the extension (`extension/autocommit-rule.md`).
 pub const RULE: &str = include_str!("../../../extension/autocommit-rule.md");

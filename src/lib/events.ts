@@ -11,6 +11,7 @@ import type {
 	ServiceInfo,
 	SessionMeta,
 	TodoCounts,
+	WorkspaceRelocation,
 } from "./contracts";
 
 /** { sessionId, frame } */
@@ -128,3 +129,8 @@ export const onSchedulesChanged = (cb: () => void): Promise<UnlistenFn> =>
 /** A template was applied, reverted or undone (payload is `null`; re-read the snapshot). */
 export const onModelSwitchChanged = (cb: () => void): Promise<UnlistenFn> =>
 	listen<null>("model_switch:changed", () => cb());
+
+export const onWorkspacesRelocated = (
+	cb: (items: WorkspaceRelocation[]) => void,
+): Promise<UnlistenFn> =>
+	listen<WorkspaceRelocation[]>("workspaces:relocated", (e) => cb(e.payload));

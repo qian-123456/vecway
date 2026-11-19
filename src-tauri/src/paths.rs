@@ -39,7 +39,7 @@ pub(crate) fn agent_dir_from(
     home.join(".omp").join("agent")
 }
 
-/// `~/.omp-workspace` (overridable via `OMPWS_DATA_DIR` for isolated dev/preview instances)
+/// `~/.vecway` (overridable via `OMPWS_DATA_DIR` for isolated dev/preview instances)
 pub fn data_dir() -> PathBuf {
     if let Ok(val) = std::env::var("OMPWS_DATA_DIR") {
         let trimmed = val.trim();
@@ -47,20 +47,20 @@ pub fn data_dir() -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
-    home().join(".omp-workspace")
+    home().join(".vecway")
 }
 
-/// `~/.omp-workspace/app.db`
+/// `~/.vecway/app.db`
 pub fn db_path() -> PathBuf {
     data_dir().join("app.db")
 }
 
-/// `~/.omp-workspace/search.db` — disposable full-text index of session transcripts.
+/// `~/.vecway/search.db` — disposable full-text index of session transcripts.
 pub fn search_db_path() -> PathBuf {
     data_dir().join("search.db")
 }
 
-/// `~/.omp-workspace/activity-cache.sqlite` — disposable activity accounting index.
+/// `~/.vecway/activity-cache.sqlite` — disposable activity accounting index.
 pub fn activity_cache_db_path() -> PathBuf {
     data_dir().join("activity-cache.sqlite")
 }
@@ -70,69 +70,69 @@ pub fn omp_root_dir() -> PathBuf {
     home().join(".omp")
 }
 
-/// `~/.omp-workspace/images/` — durable store for pasted/dropped images.
+/// `~/.vecway/images/` — durable store for pasted/dropped images.
 /// The legacy cache dir `<app-cache>/ompws-clip` stays readable.
 pub fn images_dir() -> PathBuf {
     data_dir().join("images")
 }
 
-/// `~/.omp-workspace/global/` — cwd for the 🌐 global workspace.
+/// `~/.vecway/global/` — cwd for the 🌐 global workspace.
 pub fn global_dir() -> PathBuf {
     data_dir().join("global")
 }
 
-/// `~/.omp-workspace/status/` — status files written by the extension (§8).
+/// `~/.vecway/status/` — status files written by the extension (§8).
 pub fn status_dir() -> PathBuf {
     data_dir().join("status")
 }
 
-/// `~/.omp-workspace/extension/omp-workspace-status.ts`
+/// `~/.vecway/extension/vecway-status.ts`
 pub fn extension_path() -> PathBuf {
-    data_dir().join("extension").join("omp-workspace-status.ts")
+    data_dir().join("extension").join("vecway-status.ts")
 }
 
-/// `~/.omp-workspace/extension/omp-workspace-checkpoints.ts`
+/// `~/.vecway/extension/vecway-checkpoints.ts`
 pub fn checkpoints_extension_path() -> PathBuf {
     data_dir()
         .join("extension")
-        .join("omp-workspace-checkpoints.ts")
+        .join("vecway-checkpoints.ts")
 }
 
-/// `~/.omp-workspace/extension/omp-workspace-privacy.ts`
+/// `~/.vecway/extension/vecway-privacy.ts`
 pub fn privacy_extension_path() -> PathBuf {
     data_dir()
         .join("extension")
-        .join("omp-workspace-privacy.ts")
+        .join("vecway-privacy.ts")
 }
 
-/// `~/.omp-workspace/extension/omp-workspace-plan.ts`
+/// `~/.vecway/extension/vecway-plan.ts`
 pub fn plan_extension_path() -> PathBuf {
-    data_dir().join("extension").join("omp-workspace-plan.ts")
+    data_dir().join("extension").join("vecway-plan.ts")
 }
 
-/// `~/.omp-workspace/extension/omp-workspace-automation.ts`
+/// `~/.vecway/extension/vecway-automation.ts`
 pub fn automation_extension_path() -> PathBuf {
     data_dir()
         .join("extension")
-        .join("omp-workspace-automation.ts")
+        .join("vecway-automation.ts")
 }
 
-/// True when using the default `~/.omp-workspace` user data dir (not an isolated dev/test dir).
+/// True when using the default `~/.vecway` user data dir (not an isolated dev/test dir).
 pub fn is_default_data_dir() -> bool {
     std::env::var_os("OMPWS_DATA_DIR").is_none_or(|v| v.to_string_lossy().trim().is_empty())
 }
 
-/// `~/.omp-workspace/logs/`
+/// `~/.vecway/logs/`
 pub fn logs_dir() -> PathBuf {
     data_dir().join("logs")
 }
 
-/// `~/.omp-workspace/oneshot-sessions/`
+/// `~/.vecway/oneshot-sessions/`
 pub fn oneshot_dir() -> PathBuf {
     data_dir().join("oneshot-sessions")
 }
 
-/// `~/.omp-workspace/automations/`
+/// `~/.vecway/automations/`
 pub fn automations_dir() -> PathBuf {
     data_dir().join("automations")
 }
@@ -163,8 +163,24 @@ pub fn omp_sessions_dir() -> PathBuf {
     home().join(".omp").join("agent").join("sessions")
 }
 
+/// One-time migration from `~/.omp-workspace` to `~/.vecway` when upgrading.
+fn migrate_legacy_data_dir_in(legacy: &std::path::Path, target: &std::path::Path) {
+    if !target.exists() && legacy.is_dir() {
+        if let Err(e) = std::fs::rename(legacy, target) {
+            eprintln!(
+                "vecway: migrate {} -> {} failed: {e}",
+                legacy.display(),
+                target.display()
+            );
+        }
+    }
+}
+
 /// Create all app-owned directories at startup.
 pub fn ensure_dirs() -> io::Result<()> {
+    if is_default_data_dir() {
+        migrate_legacy_data_dir_in(&home().join(".omp-workspace"), &data_dir());
+    }
     for dir in [
         data_dir(),
         global_dir(),
@@ -192,11 +208,27 @@ mod tests {
     #[test]
     fn test_data_dir_default_and_override() {
         let default_dir = data_dir();
-        assert!(default_dir.ends_with(".omp-workspace"));
+        assert!(default_dir.ends_with(".vecway"));
 
         std::env::set_var("OMPWS_DATA_DIR", "/tmp/ompws-test-env");
         assert_eq!(data_dir(), PathBuf::from("/tmp/ompws-test-env"));
         std::env::remove_var("OMPWS_DATA_DIR");
         assert_eq!(data_dir(), default_dir);
+    }
+
+    #[test]
+    fn test_migrate_legacy_data_dir() {
+        let base = std::env::temp_dir().join(format!("vecway-mig-{}", uuid::Uuid::new_v4()));
+        let legacy = base.join(".omp-workspace");
+        let target = base.join(".vecway");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("marker.txt"), "ok").unwrap();
+        migrate_legacy_data_dir_in(&legacy, &target);
+        assert!(!legacy.exists());
+        assert_eq!(
+            std::fs::read_to_string(target.join("marker.txt")).unwrap(),
+            "ok"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

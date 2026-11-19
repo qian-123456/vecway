@@ -155,14 +155,14 @@ function cwdOf(pid) {
 	return line ? line.slice(1) : null;
 }
 
-/** Dev binary (`target/debug/omp-workspace`) belonging to `wtPath`. */
+/** Dev binary (`target/debug/vecway`) belonging to `wtPath`. */
 function devPidFor(wtPath) {
 	const roots = [wtPath, path.join(wtPath, "src-tauri")];
 	const out = sh("ps", ["-axo", "pid=,command="]);
 	if (out.status !== 0) return null;
 	for (const line of out.stdout.split("\n")) {
 		const m = line.trim().match(/^(\d+)\s+(.*)$/);
-		if (!m || !m[2].includes("target/debug/omp-workspace")) continue;
+		if (!m || !m[2].includes("target/debug/vecway")) continue;
 		const pid = Number(m[1]);
 		if (roots.includes(cwdOf(pid))) return pid;
 	}
@@ -172,8 +172,8 @@ function devPidFor(wtPath) {
 function dataDirFor(slug) {
 	// Main keeps the historical dev data dir; worktrees get their own.
 	return slug === "main"
-		? path.join(os.homedir(), ".omp-workspace-dev")
-		: path.join(os.homedir(), `.omp-workspace-dev-${slug}`);
+		? path.join(os.homedir(), ".vecway-dev")
+		: path.join(os.homedir(), `.vecway-dev-${slug}`);
 }
 
 /** Best-effort title of the process's main window (proves a window exists). */

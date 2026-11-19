@@ -5,8 +5,8 @@
 
 use std::path::Path;
 
-/// Bundled extension source (repo `extension/omp-workspace-privacy.ts`).
-pub const EXT_SOURCE: &str = include_str!("../../../extension/omp-workspace-privacy.ts");
+/// Bundled extension source (repo `extension/vecway-privacy.ts`).
+pub const EXT_SOURCE: &str = include_str!("../../../extension/vecway-privacy.ts");
 
 /// Write the extension to `path` when missing or different. Returns true if written.
 pub fn install_to(path: &Path) -> std::io::Result<bool> {

@@ -1,5 +1,5 @@
 [package]
-name = "omp-workspace"
+name = "vecway"
 version = "0.1.14"
 description = "Desktop workbench for OMP agent sessions"
 edition = "2021"
@@ -7,7 +7,7 @@ rust-version = "1.85"
 license = "MIT"
 
 [lib]
-name = "omp_workspace_lib"
+name = "vecway_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

@@ -101,7 +101,7 @@ Guidelines:
 
 function dataDir(): string {
 	const override = process.env.OMPWS_DATA_DIR?.trim();
-	return override || join(homedir(), ".omp-workspace");
+	return override || join(homedir(), ".vecway");
 }
 
 function sanitizeSegment(raw: string, fallback: string): string {
@@ -271,7 +271,7 @@ export default function ompWorkspaceAutomation(pi: Pi): void {
 				approval: "read",
 				parameters: z.object({
 					action: z.enum(["list", "stage_script", "propose"]).describe(
-						"list: inspect current automations; stage_script: write a script into ~/.omp-workspace/automations/<id>/; propose: show a confirmation card in chat (multiple distinct drafts can coexist)",
+						"list: inspect current automations; stage_script: write a script into ~/.vecway/automations/<id>/; propose: show a confirmation card in chat (multiple distinct drafts can coexist)",
 					),
 					automationId: z.string().optional().describe("Target automation ID (reuse existing or omit to allocate one)"),
 					scriptFilename: z.string().optional().describe("Script filename for stage_script (e.g. check.sh, check.py, check.mjs)"),

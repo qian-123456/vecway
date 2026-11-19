@@ -348,4 +348,38 @@ describe("Fixed project bar, Display Options menu, and slim AddProjectPopover", 
 			expect(addSpy).toHaveBeenCalledWith("/Users/alice/Documents/repo-x", "code");
 		});
 	});
+
+	it("shows missing badge and relocates workspace via Layer 3 picker", async () => {
+		const missingWs: Workspace = {
+			...WS_ALPHA,
+			pathMissing: true,
+		};
+		useSessions.setState({
+			sessions: {},
+			workspaces: [missingWs],
+			hasLoaded: true,
+			loadError: null,
+		});
+		mockOpenDialog.mockResolvedValueOnce("/Users/alice/projects/Vecway");
+		const relocateSpy = vi.spyOn(ipc, "relocateWorkspace").mockResolvedValue({
+			...WS_ALPHA,
+			path: "/Users/alice/projects/Vecway",
+			name: "Vecway",
+			pathMissing: false,
+		});
+
+		render(<SessionSidebar />);
+
+		const missingBtn = screen.getByRole("button", { name: "目录缺失" });
+		fireEvent.click(missingBtn);
+
+		await waitFor(() => {
+			expect(relocateSpy).toHaveBeenCalledWith(
+				WS_ALPHA.id,
+				"/Users/alice/projects/Vecway",
+			);
+			expect(useSessions.getState().load).toHaveBeenCalled();
+			expect(useWorktrees.getState().refresh).toHaveBeenCalled();
+		});
+	});
 });

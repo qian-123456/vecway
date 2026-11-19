@@ -158,6 +158,9 @@ export const listWorkspaces = () => invoke<Workspace[]>("list_workspaces");
 export const addWorkspace = (path: string, mode?: SpaceMode) =>
 	invoke<Workspace>("add_workspace", { path, mode: mode ?? null });
 
+export const relocateWorkspace = (id: string, newPath: string) =>
+	invoke<Workspace>("relocate_workspace", { id, newPath });
+
 export const removeWorkspace = (id: string) =>
 	invoke<void>("remove_workspace", { id });
 

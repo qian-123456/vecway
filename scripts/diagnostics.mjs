@@ -354,7 +354,7 @@ export async function queryDiagnostics(options = {}) {
   catch { result.selection.status = 'invalid_arguments'; result.exitCode = 2; return fit(result, 8192); }
   result.coverage.window = { since: opts.since, run: opts.run ?? null, session: opts.session ?? null };
   const candidates = opts.dataDir === undefined && opts.instance !== 'installed' ? await manifests(opts.checkoutRoot, result) : [];
-  const installed = { instance: 'installed', dataDir: path.join(os.homedir(), '.omp-workspace') };
+  const installed = { instance: 'installed', dataDir: path.join(os.homedir(), '.vecway') };
   try { await directory(installed.dataDir); candidates.push(installed); } catch { /* Do not fabricate installed instances. */ }
   if (opts.command === 'instances') {
     result.selection = { status: 'instances', candidates };

@@ -69,12 +69,13 @@ import {
 	addWorkspace,
 	createSessionGroup,
 	deleteSessionGroup,
+	relocateWorkspace,
 	removeWorkspace,
 	renameSessionGroup,
 	updateSessionMeta,
 } from "../../lib/ipc";
 import { toast } from "../../lib/toast";
-import { useSessions } from "../../stores/sessions";
+import { suppressRelocationToast, useSessions } from "../../stores/sessions";
 import { onPromptSend } from "../../stores/promptSendEvents";
 import { draftMeta, isBlankLocalDraft, isLocalDraftId, selectSessionOrDraft, usePendingSession } from "./pendingSession";
 import { useComposer } from "../../stores/composer";
@@ -424,7 +425,10 @@ export function SessionSidebar() {
 	}, [workspaces]);
 
 	useEffect(() => {
-		const onFocus = () => void useWorktrees.getState().refresh();
+		const onFocus = () => {
+			void useSessions.getState().refreshWorkspaces();
+			void useWorktrees.getState().refresh();
+		};
 		window.addEventListener("focus", onFocus);
 		return () => window.removeEventListener("focus", onFocus);
 	}, []);
@@ -927,10 +931,47 @@ export function SessionSidebar() {
 		}
 	};
 
+	const handleRelocateWorkspace = async (ws: Workspace) => {
+		setWsMenu(null);
+		if (ws.kind === "global") return;
+		try {
+			let selectedPath: string | null = null;
+			try {
+				const result = await open({
+					directory: true,
+					multiple: false,
+					title: t("sidebar.chooseRelocateWorkspaceDir"),
+				});
+				if (result && typeof result === "string") {
+					selectedPath = result;
+				}
+			} catch {
+				selectedPath = window.prompt(t("sidebar.inputRelocateWorkspaceDirPrompt"));
+			}
+			if (!selectedPath) return;
+			suppressRelocationToast(ws.id);
+			const updated = await relocateWorkspace(ws.id, selectedPath);
+			await loadSessions();
+			void useWorktrees.getState().refresh();
+			toast.success(
+				t("sidebar.workspaceRelocated", {
+					oldName: ws.name,
+					newName: updated.name,
+				}),
+			);
+		} catch (err) {
+			toast.error(t("sidebar.relocateWorkspaceFailed", { error: errMsg(err) }));
+		}
+	};
+
 	// Popover menu opening
 	const handlePlusClick = (ws: Workspace, e: React.MouseEvent) => {
 		e.stopPropagation();
 		e.preventDefault();
+		if (ws.pathMissing) {
+			void handleRelocateWorkspace(ws);
+			return;
+		}
 		if (e.altKey || !groupByWorktree) {
 			void startSessionInDir(ws, false);
 			return;
@@ -1943,19 +1984,42 @@ export function SessionSidebar() {
 													handleWorkspaceContextMenu(wg.workspace, e)
 												}
 												actionButton={
-													<button
-														type="button"
-														onClick={(e) => handlePlusClick(wg.workspace, e)}
-														title={t("sidebar.newSessionTooltip")}
-														disabled={creatingKey !== null}
-														className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] disabled:opacity-40 shrink-0 transition-all duration-150 ease-out focus:opacity-100 focus-visible:opacity-100"
-													>
-														{isCreatingHeader ? (
-															<Loader2 size={13} className="animate-spin" />
-														) : (
-															<Plus size={13} />
+													<div className="flex items-center gap-1">
+														{wg.workspace.pathMissing && (
+															<button
+																type="button"
+																onClick={(e) => {
+																	e.stopPropagation();
+																	void handleRelocateWorkspace(wg.workspace);
+																}}
+																title={t("sidebar.workspacePathMissingTooltip", {
+																	path: wg.workspace.path,
+																})}
+																className="whitespace-nowrap rounded-full border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 hover:bg-amber-500/25 transition-colors shrink-0"
+															>
+																{t("sidebar.workspacePathMissingChip")}
+															</button>
 														)}
-													</button>
+														<button
+															type="button"
+															onClick={(e) => handlePlusClick(wg.workspace, e)}
+															title={
+																wg.workspace.pathMissing
+																	? t("sidebar.workspacePathMissingTooltip", {
+																			path: wg.workspace.path,
+																		})
+																	: t("sidebar.newSessionTooltip")
+															}
+															disabled={creatingKey !== null}
+															className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] disabled:opacity-40 shrink-0 transition-all duration-150 ease-out focus:opacity-100 focus-visible:opacity-100"
+														>
+															{isCreatingHeader ? (
+																<Loader2 size={13} className="animate-spin" />
+															) : (
+																<Plus size={13} />
+															)}
+														</button>
+													</div>
 												}
 											/>
 
@@ -2508,12 +2572,13 @@ export function SessionSidebar() {
 						<button
 							type="button"
 							role="menuitem"
+							disabled={Boolean(wsMenu.ws.pathMissing)}
 							onClick={() => {
 								const ws = wsMenu.ws;
 								setWsMenu(null);
 								void startSessionInDir(ws, false);
 							}}
-							className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left"
+							className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left disabled:opacity-40 disabled:hover:bg-transparent"
 						>
 							<Plus size={13} className="shrink-0" />
 							{t("sidebar.newSession")}…
@@ -2522,8 +2587,9 @@ export function SessionSidebar() {
 						<button
 							type="button"
 							role="menuitem"
+							disabled={Boolean(wsMenu.ws.pathMissing)}
 							onClick={() => void handleRevealWorkspace(wsMenu.ws)}
-							className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left"
+							className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left disabled:opacity-40 disabled:hover:bg-transparent"
 						>
 							<FolderOpen size={13} className="shrink-0" />
 							{t("sidebar.openInFinder")}
@@ -2531,6 +2597,15 @@ export function SessionSidebar() {
 
 						{wsMenu.ws.kind !== "global" && (
 							<>
+								<button
+									type="button"
+									role="menuitem"
+									onClick={() => void handleRelocateWorkspace(wsMenu.ws)}
+									className="flex w-full items-center gap-2 whitespace-nowrap px-3 pr-3.5 py-1.5 hover:bg-neutral-800 hover:text-neutral-100 text-left"
+								>
+									<FolderSearch size={13} className="shrink-0" />
+									{t("sidebar.relocateWorkspace")}
+								</button>
 								<div className="my-1 border-t border-neutral-800" />
 								<button
 									type="button"

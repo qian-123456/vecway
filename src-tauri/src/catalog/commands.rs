@@ -117,6 +117,7 @@ pub async fn list_workspace_files(
         "vendor",
         "Pods",
         ".derived",
+        ".vecway",
         ".omp-workspace",
         ".superset",
         ".worktrees",
@@ -194,8 +195,30 @@ pub async fn accept_session(
 
 #[tauri::command]
 pub async fn list_workspaces(state: tauri::State<'_, AppState>) -> Result<Vec<Workspace>, String> {
-    let db = state.db.lock();
-    store::list_workspaces(&db).map_err(|e| format!("list_workspaces: {e}"))
+    let (list, relocations) = tokio::task::spawn_blocking({
+        let st = state.inner().clone();
+        move || {
+            let db = st.db.lock();
+            let relocations = store::reconcile_workspaces(&db);
+            let list = store::list_workspaces(&db);
+            (list, relocations)
+        }
+    })
+    .await
+    .map_err(|e| format!("list_workspaces: {e}"))?;
+    let list = list.map_err(|e| format!("list_workspaces: {e}"))?;
+    if !relocations.is_empty() {
+        let st = state.inner().clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = tokio::task::spawn_blocking({
+                let st2 = st.clone();
+                move || crate::catalog::apply_relocation_side_effects(&st2, &relocations)
+            })
+            .await;
+            crate::catalog::recompute_async(&st, None).await;
+        });
+    }
+    Ok(list)
 }
 
 #[tauri::command]
@@ -217,7 +240,9 @@ pub async fn reorder_workspaces(
     store::reorder_workspaces(&db, &ids).map_err(|e| format!("reorder_workspaces: {e}"))
 }
 /// Add `path` as a project workspace of `mode` (default code). The 通用对话
-/// (`chat`) space has no project directories.
+/// (`chat`) space has no project directories. If an existing workspace's
+/// directory is missing and shares the same filesystem directory identity
+/// (Layer 2), relocates that workspace in place instead of creating a split.
 #[tauri::command]
 pub async fn add_workspace(
     state: tauri::State<'_, AppState>,
@@ -228,10 +253,52 @@ pub async fn add_workspace(
     if mode == SpaceMode::Chat {
         return Err("通用对话不能添加项目目录".to_string());
     }
-    let ws = {
+    let (ws, relocated) = tokio::task::spawn_blocking({
+        let st = state.inner().clone();
+        move || {
+            let db = st.db.lock();
+            store::add_workspace_with_reconcile(&db, &path, mode)
+        }
+    })
+    .await
+    .map_err(|e| format!("add_workspace: {e}"))?
+    .map_err(|e| format!("add_workspace: {e}"))?;
+    if let Some(outcome) = relocated {
+        let st = state.inner().clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::catalog::apply_relocation_side_effects(&st, &[outcome]);
+        })
+        .await;
+    }
+    crate::catalog::recompute_async(&state, None).await;
+    Ok(ws)
+}
+
+/// Manually relocate an existing project workspace to `new_path` (Layer 3),
+/// preserving workspace ID, sort order, historical sessions (via path alias),
+/// and updating app-owned path references (backlog, schedules, memory, git).
+#[tauri::command]
+pub async fn relocate_workspace(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    new_path: String,
+) -> Result<Workspace, String> {
+    let clean = store::normalize_path(&new_path);
+    if !std::path::Path::new(&clean).is_dir() {
+        return Err(format!("所选目录不存在: {clean}"));
+    }
+    let _mutation = crate::catalog::session_mutation_lock().lock().await;
+    let outcome = {
         let db = state.db.lock();
-        store::add_workspace(&db, &path, mode).map_err(|e| format!("add_workspace: {e}"))?
+        store::relocate_workspace_tx(&db, &id, &clean)
+            .map_err(|e| format!("relocate_workspace: {e}"))?
     };
+    let ws = outcome.workspace.clone();
+    let st = state.inner().clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        crate::catalog::apply_relocation_side_effects(&st, &[outcome]);
+    })
+    .await;
     crate::catalog::recompute_async(&state, None).await;
     Ok(ws)
 }

@@ -199,11 +199,20 @@ pub fn resolve_label(s: &Scanned, row: &MetaRow) -> String {
 }
 
 pub(crate) fn path_within(path: &str, root: &str) -> bool {
-    let root = root.trim_end_matches('/');
-    path == root
-        || path
-            .strip_prefix(root)
-            .is_some_and(|rest| rest.starts_with('/'))
+    let root = root.trim_end_matches(['/', '\\']);
+    #[cfg(windows)]
+    {
+        let p = path.replace('/', "\\").to_ascii_lowercase();
+        let r = root.replace('/', "\\").to_ascii_lowercase();
+        return p == r || p.strip_prefix(&r).is_some_and(|rest| rest.starts_with('\\'));
+    }
+    #[cfg(not(windows))]
+    {
+        path == root
+            || path
+                .strip_prefix(root)
+                .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+    }
 }
 
 fn canon_cache() -> &'static parking_lot::Mutex<HashMap<String, String>> {
@@ -218,15 +227,36 @@ pub fn reset_canon_cache() {
     canon_cache().lock().clear();
 }
 
-/// `canonicalize` (falling back to the input), memoized for the current build.
+/// `canonicalize` (falling back to canonicalizing the deepest existing ancestor
+/// plus the missing tail, or the input string), memoized for the current build.
 fn canon_str(path: &str) -> String {
     if let Some(v) = canon_cache().lock().get(path) {
         return v.clone();
     }
-    let v = std::fs::canonicalize(path)
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string());
+    let v = match std::fs::canonicalize(path) {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => {
+            let p = Path::new(path);
+            let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+            let mut cur = p;
+            let mut resolved = None;
+            while let Some(parent) = cur.parent() {
+                if let Some(name) = cur.file_name() {
+                    tail.push(name);
+                }
+                if let Ok(canon_parent) = std::fs::canonicalize(parent) {
+                    let mut full = canon_parent;
+                    for seg in tail.iter().rev() {
+                        full.push(seg);
+                    }
+                    resolved = Some(full.to_string_lossy().into_owned());
+                    break;
+                }
+                cur = parent;
+            }
+            resolved.unwrap_or_else(|| path.to_string())
+        }
+    };
     canon_cache().lock().insert(path.to_string(), v.clone());
     v
 }
@@ -240,6 +270,18 @@ pub fn resolve_workspace(
     explicit: Option<&str>,
     mode: SpaceMode,
     workspaces: &[Workspace],
+    repo_root: Option<&str>,
+    cwd: &str,
+    global_dir: &str,
+) -> Option<String> {
+    resolve_workspace_with_aliases(explicit, mode, workspaces, &[], repo_root, cwd, global_dir)
+}
+
+pub fn resolve_workspace_with_aliases(
+    explicit: Option<&str>,
+    mode: SpaceMode,
+    workspaces: &[Workspace],
+    aliases: &[super::store::WorkspaceAlias],
     repo_root: Option<&str>,
     cwd: &str,
     global_dir: &str,
@@ -261,6 +303,22 @@ pub fn resolve_workspace(
             .max_by_key(|w| w.path.len());
         if let Some(w) = best {
             return Some(w.id.clone());
+        }
+    }
+    for target in [repo_root, Some(cwd)].into_iter().flatten() {
+        let canon = canon_str(target);
+        let best_alias = aliases
+            .iter()
+            .filter(|a| {
+                a.mode == mode
+                    && workspaces
+                        .iter()
+                        .any(|w| w.id == a.workspace_id && w.kind == WorkspaceKind::Project && w.mode == mode)
+            })
+            .filter(|a| path_within(&canon, &canon_str(&a.old_path)))
+            .max_by_key(|a| a.old_path.len());
+        if let Some(a) = best_alias {
+            return Some(a.workspace_id.clone());
         }
     }
     if path_within(cwd, global_dir) {
@@ -328,11 +386,23 @@ pub(super) fn persist_code_owner(
 /// `chat` (covers legacy rows and sessions without a row); otherwise the
 /// stored `row.mode` applies, except a stale `chat` row outside the global
 /// dir, which falls back to `code`.
+#[cfg(test)]
 pub fn build_meta(
     s: &Scanned,
     row: &MetaRow,
     git: &GitInfo,
     workspaces: &[Workspace],
+    parent_id: Option<String>,
+) -> SessionMeta {
+    build_meta_with_aliases(s, row, git, workspaces, &[], parent_id)
+}
+
+pub fn build_meta_with_aliases(
+    s: &Scanned,
+    row: &MetaRow,
+    git: &GitInfo,
+    workspaces: &[Workspace],
+    aliases: &[super::store::WorkspaceAlias],
     parent_id: Option<String>,
 ) -> SessionMeta {
     // Recency = last real conversation message, not file mtime: a terminal
@@ -345,21 +415,17 @@ pub fn build_meta(
         .map(|t| t.with_timezone(&chrono::Utc))
         .unwrap_or_else(|| chrono::DateTime::<chrono::Utc>::from(s.mtime))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let cwd = effective_cwd(&s.head, row);
     let global_dir = crate::paths::global_dir().to_string_lossy().to_string();
-    let mode = if path_within(cwd, &global_dir) {
-        SpaceMode::Chat
-    } else if row.mode == SpaceMode::Chat {
-        SpaceMode::Code
-    } else {
-        row.mode
-    };
-    let workspace_id = resolve_workspace(
+    let raw_cwd = effective_cwd(&s.head, row);
+    let mode = derived_mode(raw_cwd, row, &global_dir);
+    let cwd = remap_cwd_with_aliases(raw_cwd, mode, workspaces, aliases);
+    let workspace_id = resolve_workspace_with_aliases(
         row.workspace_id.as_deref(),
         mode,
         workspaces,
+        aliases,
         git.repo_root.as_deref(),
-        cwd,
+        &cwd,
         &global_dir,
     );
     // Groups only apply to global-workspace (通用对话) sessions.
@@ -371,7 +437,7 @@ pub fn build_meta(
         id: s.head.id.clone(),
         tool: "omp".to_string(),
         file: s.path.to_string_lossy().to_string(),
-        cwd: cwd.to_string(),
+        cwd,
         title: resolve_title(s, row),
         label: resolve_label(s, row),
         created_at: s.head.created_at.clone(),
@@ -393,6 +459,60 @@ pub fn build_meta(
         created_by_app: row.created_by_app,
         ..Default::default()
     }
+}
+
+fn derived_mode(cwd: &str, row: &MetaRow, global_dir: &str) -> SpaceMode {
+    if path_within(cwd, global_dir) {
+        SpaceMode::Chat
+    } else if row.mode == SpaceMode::Chat {
+        SpaceMode::Code
+    } else {
+        row.mode
+    }
+}
+
+/// Remap a historical cwd under an old/renamed workspace alias to its current
+/// live directory while the old directory no longer exists on disk.
+pub fn remap_cwd_with_aliases(
+    raw_cwd: &str,
+    mode: SpaceMode,
+    workspaces: &[Workspace],
+    aliases: &[super::store::WorkspaceAlias],
+) -> String {
+    if aliases.is_empty() || raw_cwd.trim().is_empty() {
+        return raw_cwd.to_string();
+    }
+    let best = aliases
+        .iter()
+        .filter(|a| a.mode == mode)
+        .filter_map(|a| {
+            let target = workspaces.iter().find(|w| {
+                w.id == a.workspace_id && w.kind == WorkspaceKind::Project && w.mode == mode
+            })?;
+            if Path::new(&a.old_path).is_dir() || !Path::new(&target.path).is_dir() {
+                return None;
+            }
+            let remapped = super::fs_id::remap_path_prefix(raw_cwd, &a.old_path, &target.path)?;
+            Some((a.old_path.len(), remapped))
+        })
+        .max_by_key(|(len, _)| *len);
+    best.map(|(_, path)| path)
+        .unwrap_or_else(|| raw_cwd.to_string())
+}
+
+pub fn effective_cwd_with_aliases(
+    head: &HeadInfo,
+    row: &MetaRow,
+    workspaces: &[Workspace],
+    aliases: &[super::store::WorkspaceAlias],
+) -> String {
+    let raw = effective_cwd(head, row);
+    if aliases.is_empty() {
+        return raw.to_string();
+    }
+    let global_dir = crate::paths::global_dir().to_string_lossy().to_string();
+    let mode = derived_mode(raw, row, &global_dir);
+    remap_cwd_with_aliases(raw, mode, workspaces, aliases)
 }
 
 /// Git facts per cwd (from `git::badge` / `git::repo_root`; may be None while stubbed).
@@ -474,6 +594,7 @@ mod tests {
             } else {
                 SpaceMode::Code
             },
+            path_missing: false,
         };
         let list = vec![
             ws(
@@ -516,6 +637,7 @@ mod tests {
             kind,
             sort: 0,
             mode,
+            path_missing: false,
         };
         let g = "/home/.omp-workspace/global";
         let list = vec![
@@ -560,6 +682,7 @@ mod tests {
             kind: WorkspaceKind::Project,
             sort: 0,
             mode,
+            path_missing: false,
         };
         let row = MetaRow::default();
         let g = "/home/.omp-workspace/global";
@@ -602,6 +725,7 @@ mod tests {
             kind: WorkspaceKind::Project,
             sort: 0,
             mode: SpaceMode::Study,
+            path_missing: false,
         }];
         let mut row = MetaRow::default();
         let before = build_meta(&s, &row, &GitInfo::default(), &workspaces, None);
@@ -654,6 +778,7 @@ mod tests {
                 kind: WorkspaceKind::Global,
                 sort: 0,
                 mode: SpaceMode::Chat,
+                path_missing: false,
             },
             Workspace {
                 id: "repo".into(),
@@ -662,6 +787,7 @@ mod tests {
                 kind: WorkspaceKind::Project,
                 sort: 0,
                 mode: SpaceMode::Code,
+                path_missing: false,
             },
         ];
         // Code-mode row: /repo/app cwd joins the code project.
@@ -695,6 +821,7 @@ mod tests {
             kind: WorkspaceKind::Global,
             sort: 0,
             mode: SpaceMode::Chat,
+            path_missing: false,
         }];
         let row = MetaRow {
             group_id: Some("g1".into()),
@@ -713,6 +840,7 @@ mod tests {
             kind: WorkspaceKind::Project,
             sort: 0,
             mode: SpaceMode::Code,
+            path_missing: false,
         };
         let mut list2 = list.clone();
         list2.push(proj);
@@ -720,6 +848,58 @@ mod tests {
         let meta = build_meta(&s2, &row, &GitInfo::default(), &list2, None);
         assert_eq!(meta.workspace_id.as_deref(), Some("repo"));
         assert_eq!(meta.group_id, None);
+    }
+
+    #[test]
+    fn build_meta_with_aliases_remaps_missing_old_dir() {
+        let base = std::env::temp_dir().join(format!("vecway-scan-alias-{}", uuid::Uuid::new_v4()));
+        let old_dir = base.join("omp-workspace");
+        let new_dir = base.join("Vecway");
+        std::fs::create_dir_all(&new_dir).unwrap();
+
+        let mut s = scanned(None, None, None, None);
+        s.head.cwd = format!("{}/.worktrees/fix", old_dir.to_string_lossy());
+        let list = vec![Workspace {
+            id: "w1".into(),
+            path: new_dir.to_string_lossy().into_owned(),
+            name: "Vecway".into(),
+            kind: WorkspaceKind::Project,
+            sort: 0,
+            mode: SpaceMode::Code,
+            path_missing: false,
+        }];
+        let aliases = vec![super::super::store::WorkspaceAlias {
+            old_path: old_dir.to_string_lossy().into_owned(),
+            mode: SpaceMode::Code,
+            workspace_id: "w1".into(),
+        }];
+        let meta = build_meta_with_aliases(
+            &s,
+            &MetaRow::default(),
+            &GitInfo::default(),
+            &list,
+            &aliases,
+            None,
+        );
+        assert_eq!(meta.workspace_id.as_deref(), Some("w1"));
+        assert_eq!(
+            meta.cwd,
+            format!("{}/.worktrees/fix", new_dir.to_string_lossy())
+        );
+
+        // If an unrelated dir is recreated at old_path, do not hijack its cwd.
+        std::fs::create_dir_all(&old_dir).unwrap();
+        let meta2 = build_meta_with_aliases(
+            &s,
+            &MetaRow::default(),
+            &GitInfo::default(),
+            &list,
+            &aliases,
+            None,
+        );
+        assert_eq!(meta2.cwd, s.head.cwd);
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

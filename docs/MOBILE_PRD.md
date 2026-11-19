@@ -1,10 +1,10 @@
-# omp-workspace 移动端产品需求文档 (PRD)
+# Vecway 移动端产品需求文档 (PRD)
 
 ---
 
 ## 1. 目标与定位
 
-为 `omp-workspace` 构建一个高性能、免安装的移动端 Web 控制台（React 19 + TypeScript + Vite + Tailwind v4），直连电脑宿主后台，在手机上流畅运行完整的 AI 编码代理工作流。
+为 `Vecway` 构建一个高性能、免安装的移动端 Web 控制台（React 19 + TypeScript + Vite + Tailwind v4），直连电脑宿主后台，在手机上流畅运行完整的 AI 编码代理工作流。
 
 **核心解决问题**：
 1. 解决手机端中文输入法打字卡顿、频繁回流掉帧问题。

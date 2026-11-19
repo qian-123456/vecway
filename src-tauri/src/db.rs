@@ -517,6 +517,43 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             Ok(())
         })?;
     }
+    // v29: workspace filesystem identity (Layer 2) + path alias history for
+    // seamless rename/relocation tracking across disk moves.
+    if version < 29 {
+        step_with(conn, 29, |tx| {
+            let has_workspaces: bool = tx.query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_workspaces {
+                for (col, ddl) in [
+                    ("dir_dev", "ALTER TABLE workspaces ADD COLUMN dir_dev INTEGER;"),
+                    ("dir_ino", "ALTER TABLE workspaces ADD COLUMN dir_ino INTEGER;"),
+                ] {
+                    let exists: bool = tx.query_row(
+                        "SELECT COUNT(*) > 0 FROM pragma_table_info('workspaces') WHERE name = ?1",
+                        [col],
+                        |r| r.get(0),
+                    )?;
+                    if !exists {
+                        tx.execute_batch(ddl)?;
+                    }
+                }
+            }
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS workspace_aliases(
+                   old_path TEXT NOT NULL,
+                   mode TEXT NOT NULL,
+                   workspace_id TEXT NOT NULL,
+                   created_at TEXT NOT NULL,
+                   PRIMARY KEY(old_path, mode)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_workspace_aliases_ws ON workspace_aliases(workspace_id);",
+            )?;
+            Ok(())
+        })?;
+    }
     Ok(())
 }
 
@@ -576,19 +613,24 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> Result<(), Strin
 }
 
 /// Ensure the single global (通用对话) workspace row and its cwd dir exist
-/// (§3, §A): id `global`, `~/.omp-workspace/global`, owned by the `chat` space.
+/// (§3, §A): id `global`, `~/.vecway/global`, owned by the `chat` space.
 pub fn ensure_global_workspace(conn: &Connection) -> rusqlite::Result<()> {
     let dir = crate::paths::global_dir();
     let _ = std::fs::create_dir_all(&dir);
+    let path_str = dir.to_string_lossy();
     conn.execute(
         "INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at)
 		 VALUES(?1, ?2, '🌐 全局', 'global', -1, 'chat', ?3)
 		 ON CONFLICT DO NOTHING",
         rusqlite::params![
             crate::contracts::GLOBAL_WORKSPACE_ID,
-            dir.to_string_lossy(),
+            path_str.as_ref(),
             chrono::Utc::now().to_rfc3339()
         ],
+    )?;
+    conn.execute(
+        "UPDATE workspaces SET path = ?2 WHERE id = ?1 AND path <> ?2",
+        rusqlite::params![crate::contracts::GLOBAL_WORKSPACE_ID, path_str.as_ref()],
     )?;
     Ok(())
 }
@@ -790,7 +832,7 @@ mod tests {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 27);
+        assert_eq!(version, 29);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(session_meta)")
             .unwrap()
@@ -813,7 +855,7 @@ mod tests {
         let v3: u32 = fresh
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v3, 27);
+        assert_eq!(v3, 29);
     }
 
     #[test]
@@ -823,7 +865,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 29);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('schedules', 'schedule_runs')",
@@ -850,7 +892,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 29);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(schedules)")
             .unwrap()
@@ -925,7 +967,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 29);
         // Pre-existing row inherits the documented defaults.
         let (notify, new_chat): (String, i64) = conn
             .query_row(
@@ -1026,7 +1068,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 29);
         // Pre-existing row: NULL cap, zero runs.
         let (max_runs, runs_done): (Option<i64>, i64) = conn
             .query_row(
@@ -1087,7 +1129,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 29);
         let schedule_mode: String = conn
             .query_row("SELECT mode FROM schedules WHERE id='scheduled'", [], |r| {
                 r.get(0)
@@ -1238,7 +1280,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 29);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(model_replace_log)")
             .unwrap()
@@ -1540,5 +1582,54 @@ mod backlog_v19_tests {
             .unwrap();
         assert_eq!(phase, "agent");
         assert!(probe_out.is_none());
+    }
+
+    #[test]
+    fn migrate_v29_adds_workspace_identity_and_aliases_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at)
+             VALUES('w1', '/repo/a', 'a', 'project', 1, 'code', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "ALTER TABLE workspaces DROP COLUMN dir_dev;
+             ALTER TABLE workspaces DROP COLUMN dir_ino;
+             DROP TABLE workspace_aliases;",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 28).unwrap();
+
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let has_dev: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('workspaces') WHERE name = 'dir_dev'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let has_ino: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('workspaces') WHERE name = 'dir_ino'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let has_aliases: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='workspace_aliases'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_dev && has_ino && has_aliases);
+        let path: String = conn
+            .query_row("SELECT path FROM workspaces WHERE id = 'w1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(path, "/repo/a");
     }
 }

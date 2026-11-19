@@ -1,12 +1,12 @@
 /**
- * OMP turn-checkpoint extension for omp-workspace.
- * Installed at startup to ~/.omp-workspace/extension/omp-workspace-checkpoints.ts
+ * OMP turn-checkpoint extension for Vecway.
+ * Installed at startup to ~/.vecway/extension/vecway-checkpoints.ts
  * and loaded with `omp -e <path>` for app-launched sessions only.
  *
  * For every agent turn it records a hidden before/after snapshot of the
  * worktree under refs/omp/turns/<sid>/<turnId>/{before,after} — built with a
  * TEMP index (GIT_INDEX_FILE) so the real index and working tree are never
- * touched — and appends an "omp-workspace.turn-checkpoint" custom entry to the
+ * touched — and appends a "vecway.turn-checkpoint" custom entry to the
  * session file so the app can offer 撤回这一轮 / per-turn metadata.
  *
  * It also injects the auto-commit rule below once per session, and a notice
@@ -27,7 +27,7 @@
 /*
 RULE (verbatim copy of extension/autocommit-rule.md — do not edit one without the other):
 
-## Auto-commit on accepted work (omp-workspace)
+## Auto-commit on accepted work (Vecway)
 - After this task's acceptance checks pass, commit it — never mid-task, never before verification.
 - Stage only files this task changed (`git add <paths>`), never `git add -A`: other sessions may share this worktree.
 - Use an English Conventional Commit message (e.g. `fix(git): handle empty repo`). Never push without explicit approval.
@@ -42,16 +42,19 @@ import { join } from "node:path";
 // Same text as the verbatim block above. The assertion needs the literal bytes
 // in source, so the comment is authoritative and this constant is what runs.
 const RULE =
-	"## Auto-commit on accepted work (omp-workspace)\n" +
+	"## Auto-commit on accepted work (Vecway)\n" +
 	"- After this task's acceptance checks pass, commit it — never mid-task, never before verification.\n" +
 	"- Stage only files this task changed (`git add <paths>`), never `git add -A`: other sessions may share this worktree.\n" +
 	"- Use an English Conventional Commit message (e.g. `fix(git): handle empty repo`). Never push without explicit approval.\n" +
 	"- The desktop app snapshots every turn so the user can undo it; do not make your own backup copies.\n";
 
-const CHECKPOINT_TYPE = "omp-workspace.turn-checkpoint";
-const UNDO_NOTIFIED_TYPE = "omp-workspace.turn-undo-notified";
-const RULE_TYPE = "omp-workspace.autocommit-rule";
-const NOTICE_TYPE = "omp-workspace.turn-undo-notice";
+const CHECKPOINT_TYPE = "vecway.turn-checkpoint";
+const LEGACY_CHECKPOINT_TYPE = "omp-workspace.turn-checkpoint";
+const UNDO_NOTIFIED_TYPE = "vecway.turn-undo-notified";
+const LEGACY_UNDO_NOTIFIED_TYPE = "omp-workspace.turn-undo-notified";
+const RULE_TYPE = "vecway.autocommit-rule";
+const LEGACY_RULE_TYPE = "omp-workspace.autocommit-rule";
+const NOTICE_TYPE = "vecway.turn-undo-notice";
 const KEEP_TURNS = 50;
 const CAP_COMMITS = 50;
 const GIT_TIMEOUT_MS = 20_000;
@@ -101,7 +104,7 @@ function turnNum(turnId: string): number {
 
 function note(msg: string): void {
 	try {
-		process.stderr.write(`[omp-workspace-checkpoints] ${msg}\n`);
+		process.stderr.write(`[vecway-checkpoints] ${msg}\n`);
 	} catch {
 		// ignore
 	}
@@ -168,10 +171,10 @@ export default function ompWorkspaceCheckpoints(pi: ExtensionApiLike): void {
 		const env = {
 			GIT_INDEX_FILE: idx,
 			// Snapshot commits must not depend on user config existing.
-			GIT_AUTHOR_NAME: "omp-workspace",
-			GIT_AUTHOR_EMAIL: "omp-workspace@localhost",
-			GIT_COMMITTER_NAME: "omp-workspace",
-			GIT_COMMITTER_EMAIL: "omp-workspace@localhost",
+			GIT_AUTHOR_NAME: "vecway",
+			GIT_AUTHOR_EMAIL: "vecway@localhost",
+			GIT_COMMITTER_NAME: "vecway",
+			GIT_COMMITTER_EMAIL: "vecway@localhost",
 		};
 		try {
 			if (readTreeFrom) {
@@ -349,7 +352,8 @@ export default function ompWorkspaceCheckpoints(pi: ExtensionApiLike): void {
 				ctx,
 				(e) =>
 					e.type === "custom" &&
-					e.customType === UNDO_NOTIFIED_TYPE &&
+					(e.customType === UNDO_NOTIFIED_TYPE ||
+						e.customType === LEGACY_UNDO_NOTIFIED_TYPE) &&
 					(e.data as { turnId?: string } | undefined)?.turnId === turnId,
 			);
 			if (!seen) turnIds.push(turnId);
@@ -368,7 +372,8 @@ export default function ompWorkspaceCheckpoints(pi: ExtensionApiLike): void {
 				};
 				if (
 					e?.type === "custom" &&
-					e.customType === CHECKPOINT_TYPE &&
+					(e.customType === CHECKPOINT_TYPE ||
+						e.customType === LEGACY_CHECKPOINT_TYPE) &&
 					e.data?.turnId === turnId
 				)
 					return e.data;
@@ -450,7 +455,9 @@ export default function ompWorkspaceCheckpoints(pi: ExtensionApiLike): void {
 
 		const needRule = !branchHas(
 			ctx,
-			(e) => e.type === "custom_message" && e.customType === RULE_TYPE,
+			(e) =>
+				e.type === "custom_message" &&
+				(e.customType === RULE_TYPE || e.customType === LEGACY_RULE_TYPE),
 		);
 		const undoneTurnIds = pendingUndone(ctx, g.cwd, sid);
 

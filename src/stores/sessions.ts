@@ -86,7 +86,8 @@ export function isWorkspaceEqual(a: Workspace, b: Workspace): boolean {
 		a.name === b.name &&
 		a.kind === b.kind &&
 		a.sort === b.sort &&
-		a.mode === b.mode
+		a.mode === b.mode &&
+		Boolean(a.pathMissing) === Boolean(b.pathMissing)
 	);
 }
 
@@ -462,6 +463,24 @@ export const useSessions = create<SessionsState>((set) => ({
 
 // Initialize mark-seen subscription eagerly once the store exists.
 setupMarkSeenSubscription();
+
+const suppressedRelocationToasts = new Map<string, number>();
+
+/** Suppress the auto-relocation toast briefly when the user triggered relocation manually. */
+export function suppressRelocationToast(workspaceId: string): void {
+	suppressedRelocationToasts.set(workspaceId, Date.now() + 5000);
+}
+
+export function isRelocationToastSuppressed(workspaceId: string): boolean {
+	const exp = suppressedRelocationToasts.get(workspaceId);
+	if (!exp) return false;
+	if (Date.now() > exp) {
+		suppressedRelocationToasts.delete(workspaceId);
+		return false;
+	}
+	suppressedRelocationToasts.delete(workspaceId);
+	return true;
+}
 
 let activeUnlisteners: UnlistenFn[] | null = null;
 let startEventsPromise: Promise<void> | null = null;

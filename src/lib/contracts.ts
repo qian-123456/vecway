@@ -136,6 +136,17 @@ export interface Workspace {
 	sort: number;
 	/** Space this workspace belongs to (same dir may be a project in several modes). */
 	mode: SpaceMode;
+	/** True when this project workspace's directory does not exist on disk. */
+	pathMissing?: boolean;
+}
+
+export interface WorkspaceRelocation {
+	workspaceId: string;
+	oldPath: string;
+	newPath: string;
+	oldName: string;
+	newName: string;
+	mode: SpaceMode;
 }
 
 /** Named group inside a mode's 无项目 area (grouping only, not a directory). */

@@ -199,6 +199,20 @@ pub struct Workspace {
     /// Space this workspace belongs to; the same disk directory may be a
     /// project in several modes (workspaces unique on (path, mode)).
     pub mode: SpaceMode,
+    /// True when this project workspace's directory does not exist on disk.
+    #[serde(default)]
+    pub path_missing: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRelocation {
+    pub workspace_id: String,
+    pub old_path: String,
+    pub new_path: String,
+    pub old_name: String,
+    pub new_name: String,
+    pub mode: SpaceMode,
 }
 
 /// User-created named category inside a mode's 无项目 area — a grouping only,
