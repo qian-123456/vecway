@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	CITE_CHIP_TAG,
 	formatCitationHost,
+	formatCitationPreview,
 	normalizeCitations,
 	parseCitationUrls,
 	rehypeCitationChips,
@@ -95,5 +96,27 @@ describe("formatCitationHost", () => {
 		expect(formatCitationHost("https://www.apple.com/mac")).toBe("apple.com");
 		expect(formatCitationHost("https://v2.tauri.app/distribute/sign/macos/")).toBe("v2.tauri.app");
 		expect(formatCitationHost("not-a-url")).toBe("not-a-url");
+	});
+});
+
+describe("formatCitationPreview", () => {
+	it("formats URL slugs into readable titles and breadcrumbs", () => {
+		expect(
+			formatCitationPreview(
+				"https://developer.apple.com/help/account/certificates/create-developer-id-certificates/",
+			),
+		).toEqual({
+			host: "developer.apple.com",
+			title: "Create Developer ID Certificates",
+			breadcrumb: "developer.apple.com › help › account",
+		});
+
+		expect(
+			formatCitationPreview("https://v2.tauri.app/distribute/sign/macos/"),
+		).toEqual({
+			host: "v2.tauri.app",
+			title: "macOS",
+			breadcrumb: "v2.tauri.app › distribute › sign",
+		});
 	});
 });

@@ -118,6 +118,72 @@ export function formatCitationHost(url: string): string {
 	}
 }
 
+const KNOWN_TERMS: Record<string, string> = {
+	api: "API",
+	cli: "CLI",
+	css: "CSS",
+	html: "HTML",
+	id: "ID",
+	ios: "iOS",
+	js: "JS",
+	json: "JSON",
+	macos: "macOS",
+	oauth: "OAuth",
+	sdk: "SDK",
+	ts: "TS",
+	ui: "UI",
+	url: "URL",
+};
+
+function humanizeSlug(raw: string): string {
+	let decoded = raw;
+	try {
+		decoded = decodeURIComponent(raw);
+	} catch {
+		/* keep raw */
+	}
+	const cleaned = decoded.replace(/\.(html?|md|php|aspx?)$/i, "");
+	const words = cleaned.split(/[-_+\s]+/).filter(Boolean);
+	if (words.length === 0) return "";
+	return words
+		.map((w) => {
+			const lower = w.toLowerCase();
+			if (KNOWN_TERMS[lower]) return KNOWN_TERMS[lower];
+			return lower.charAt(0).toUpperCase() + lower.slice(1);
+		})
+		.join(" ");
+}
+
+/**
+ * Derive a human-readable title and host breadcrumb from a citation URL
+ * without making any network request.
+ */
+export function formatCitationPreview(url: string): {
+	host: string;
+	title: string;
+	breadcrumb: string;
+} {
+	try {
+		const u = new URL(url);
+		const host = u.hostname.replace(/^www\./i, "");
+		const segments = u.pathname
+			.split("/")
+			.filter(Boolean)
+			.filter((s) => !/^index\.(html?|php)$/i.test(s));
+		if (segments.length === 0) {
+			return { host, title: host, breadcrumb: url };
+		}
+		const last = segments[segments.length - 1];
+		const slugTitle = humanizeSlug(last);
+		const title = slugTitle || host;
+		const parents = segments.slice(0, -1).slice(0, 2);
+		const breadcrumb = parents.length > 0 ? `${host} › ${parents.join(" › ")}` : host;
+		return { host, title, breadcrumb };
+	} catch {
+		return { host: url, title: url, breadcrumb: "" };
+	}
+}
+
 /** Parse `data-cite-urls` / `dataCiteUrls` property back into validated URLs. */
 export function parseCitationUrls(raw: unknown): string[] {
 	if (typeof raw !== "string" || !raw) return [];
