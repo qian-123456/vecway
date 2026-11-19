@@ -29,6 +29,8 @@ import { useSettings } from "../features/settings/store";
 import { FILE_LINK_TAG, rehypeFilePathLinks } from "../features/chat/rehypeFilePathLinks";
 import { MarkdownSecretChip } from "../features/privacy/SecretChip";
 import { SECRET_CHIP_TAG, rehypeSecretChips } from "../features/privacy/render";
+import { MarkdownCitationChip } from "../features/chat/CitationChip";
+import { CITE_CHIP_TAG, normalizeCitations, rehypeCitationChips } from "../features/chat/citations";
 import { VisualizeBlock } from "../features/chat/visualize/VisualizeBlock";
 import { VisualizeSnapshot } from "../features/chat/visualize/VisualizeSnapshot";
 import { findVisualizeFence, isFenceClosed, parseVisualizeInfo } from "../features/chat/visualize/frame";
@@ -450,6 +452,7 @@ const REHYPE_PLUGINS_BASE: RehypePlugins = [
 	rehypeMathBlocks,
 	[rehypeHighlight, HIGHLIGHT_OPTIONS],
 	rehypeSecretChips,
+	rehypeCitationChips,
 	rehypeFilePathLinks,
 ];
 /** Same pipeline with KaTeX in front of rehypeMathBlocks (built once, after KaTeX loads). */
@@ -593,6 +596,7 @@ const MARKDOWN_COMPONENTS = {
 	img: MarkdownImage,
 	[MATH_BLOCK_TAG]: MathBlock,
 	[SECRET_CHIP_TAG]: MarkdownSecretChip,
+	[CITE_CHIP_TAG]: MarkdownCitationChip,
 };
 
 /** One parsed run of markdown. Memoized so finished streaming blocks (the
@@ -615,7 +619,7 @@ const MarkdownSegment = React.memo(function MarkdownSegment({
 }) {
 	// react-markdown parses the normalized text, so node offsets (used to check
 	// whether a trailing fence is closed) index into it, not into the raw text.
-	const mathText = useMemo(() => normalizeMath(text), [text]);
+	const mathText = useMemo(() => normalizeMath(normalizeCitations(text)), [text]);
 	const ctx = useMemo(
 		(): MarkdownContextValue => ({
 			sessionId,
