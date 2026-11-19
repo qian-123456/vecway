@@ -86,44 +86,34 @@ jobs:
           tagName: ${{ github.event.inputs.tag_name || github.ref_name }}
           releaseName: 'Vecway ${{ github.event.inputs.tag_name || github.ref_name }}'
           releaseBody: |
-            ### 下载与架构选择 / Download & Architecture
-            - **Apple Silicon (M1/M2/M3/M4/M5)**: 下载 `*aarch64.dmg`（推荐大多数用户）
+            ### 下载与安装 / Download
+            - **Apple Silicon (M1–M5)**: 下载 `*aarch64.dmg`（推荐） / Download `*aarch64.dmg` (Recommended)
             - **Intel Mac**: 下载 `*x64.dmg`
-            - 自动更新文件（`.app.tar.gz` / `.sig`）由应用内置更新器使用，日常使用直接下载 `.dmg` 即可。
+            - 打开 `.dmg` 后将 `Vecway.app` 拖入「应用程序」即可使用（`.app.tar.gz` 与 `.sig` 供应用内自动更新使用）。
+            - Drag `Vecway.app` into **Applications** to install (`.app.tar.gz` and `.sig` are for the built-in updater).
 
-            ---
-
-            ### ✅ 签名与公证 / Signed & Notarized
-            - 本版本已使用 **Apple Developer ID** 证书签名并通过 **Apple 官方公证（Notarized）**，下载后将 `Vecway.app` 拖入「应用程序」即可直接双击打开。
-            - Signed with an **Apple Developer ID** certificate and notarized by Apple. Drag `Vecway.app` into **Applications** and open directly.
-
-            ---
-
-            ### 运行环境 / Requirements
-            - 需要本地已安装或自动安装 [`omp`](https://github.com/can1357/oh-my-pi) CLI（首次启动未检测到会自动安装）。
-            - 准备至少一个模型供应商凭据（支持 API Key 或 OAuth 订阅）。
+            > **系统与引擎**：macOS 12.0+；首次启动将自动安装底层 [`omp`](https://github.com/can1357/oh-my-pi) CLI 引擎。  
+            > **Requirements**: macOS 12.0+; installs the [`omp`](https://github.com/can1357/oh-my-pi) CLI automatically on first launch if missing.
 
             ---
 
             ### 本次更新 / What's New
             #### 新增功能 / Features
-            - **正式更名为 Vecway**：应用名称、窗口标题、通知与手机端界面全面更新为 **Vecway**（专为 `oh-my-pi` / `omp` 打造的原生桌面 GUI 与智能路由工作台），并同步启用全新黑白灰扳手 V 矢量应用图标。
-            - **Rebranded to Vecway**: Updated app name, window title, notifications, mobile UI, and monochrome wrench-V icon set as the native desktop GUI & intelligent routing workbench for `oh-my-pi` (`omp`).
-            - **仓库迁移与兼容**：GitHub 仓库与自动更新源迁至 `qian-123456/vecway`；本地数据目录（`~/.omp-workspace`）与应用标识保持向后兼容，旧版本升级不丢失任何会话与设置。
-            - **Repository & Upgrade Continuity**: Release and updater endpoints now point to `qian-123456/vecway` while preserving `~/.omp-workspace` and bundle identity so existing users upgrade seamlessly.
+            - **供应商与模型体验升级**：全新供应商配置界面与模型自动发现，支持记录最近使用的模型选择历史。
+            - **Provider & Model Experience**: Reworked provider setup dialog and model discovery with catalog refresh and recent picker history.
+            - **定时自动化工作流重做**：全新任务创建与切换体验，支持指定多个工作目录并行执行。
+            - **Scheduled Automations Overhaul**: Streamlined creation and switching flow with multi-worktree targeting.
+            - **对话与会话交互增强**：新增内联引用来源标签与多源预览弹窗、对话中直接交互式确认、请求统计可点击查看、复制结果提示，以及侧边栏会话悬停预览与筛选。
+            - **Chat & Session Interactions**: Added inline citation chips with multi-source preview popovers, interactive prompts, clickable request stats, copy feedback pill, session hover cards, and sidebar filters.
 
             #### 修复与优化 / Fixes & Improvements
-            - 更新中英双语 README、用户指南与 `llms.txt` 检索索引，完善面向搜索引擎与 AI 搜索的产品发现信息。
-            - Updated bilingual README, user guide, and `llms.txt` for improved search and AI discovery.
+            - 优化会话目录识别、多工作树角色配置继承，以及启动页与侧边栏的排版间距。
+            - Improved session catalog identity resolution, worktree role inheritance, and start/sidebar layout spacing.
 
-            #### 验证范围 / Verification Scope
-            - TypeScript 类型检查、437 个前端与移动端测试文件（4,132 项）、Rust `cargo check`，以及 GitHub Actions macOS 双架构自动发布构建。
-            - Verified: TypeScript type-check, 437 frontend/mobile test files (4,132 tests), Rust `cargo check`, and GitHub Actions macOS universal release workflow.
             ---
 
-            ### 问题反馈与帮助 / Support
-            - [在线用户手册](https://github.com/qian-123456/vecway/tree/main/docs/guide/zh)
-            - [GitHub Issues](https://github.com/qian-123456/vecway/issues)
+            ### 帮助与反馈 / Support
+            - [在线用户手册](https://github.com/qian-123456/vecway/tree/main/docs/guide/zh) · [GitHub Issues](https://github.com/qian-123456/vecway/issues)
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
