@@ -1127,3 +1127,37 @@ export const storageStaleSessionsPreview = (days: number) =>
 /** Move sessions (transcript + lock + artifacts dir) to the macOS Trash. */
 export const storageTrashSessions = (ids: string[]) =>
 	invoke<import("./contracts").StorageTrashReport>("storage_trash_sessions", { ids });
+
+// --- macOS permissions guide ---
+export type MacosPermissionId =
+	| "accessibility"
+	| "screenRecording"
+	| "fullDiskAccess"
+	| "localNetwork"
+	| "developerTools";
+
+export type MacosPermissionState = "granted" | "denied" | "unknown";
+
+export interface MacosPermissionEntry {
+	id: MacosPermissionId;
+	state: MacosPermissionState;
+	canPrompt: boolean;
+}
+
+export interface MacosPermissionsStatus {
+	supported: boolean;
+	appPath: string | null;
+	appName: string;
+	permissions: MacosPermissionEntry[];
+}
+
+export const macosPermissionsStatus = () =>
+	invoke<MacosPermissionsStatus>("macos_permissions_status");
+
+export const macosOpenPermissionPane = (permissionId: MacosPermissionId, prompt?: boolean) =>
+	invoke<void>("macos_open_permission_pane", {
+		permissionId,
+		prompt: prompt ?? null,
+	});
+
+export const macosRevealCurrentApp = () => invoke<void>("macos_reveal_current_app");

@@ -4,6 +4,7 @@
 pub mod clipboard;
 pub mod commands;
 pub mod files;
+pub mod permissions;
 pub mod perf;
 pub mod scan;
 pub mod trash;

@@ -674,6 +674,9 @@ pub fn run() {
             services::commands::save_share_image,
             services::commands::app_memory_usage,
             services::commands::perf_breakdown,
+            services::permissions::macos_permissions_status,
+            services::permissions::macos_open_permission_pane,
+            services::permissions::macos_reveal_current_app,
             // D — todos / summaries / diagnose
             todos::commands::todos_list,
             todos::commands::todos_act,

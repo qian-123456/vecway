@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { SUPPORTED_LOCALES, type Locale } from "../../../lib/i18n";
 import { useT } from "../../../stores/language";
 import { Segmented } from "../../../components/Segmented";
-import { ompConfigSet } from "../../../lib/ipc";
+import { macosPermissionsStatus, ompConfigSet, type MacosPermissionsStatus } from "../../../lib/ipc";
 import { toModelKey } from "../../../lib/models";
 import { formatShortModel } from "../../chat/turnGrouping";
 import { asRecord, roleValue, splitRoleValue } from "../modelRoles";
@@ -18,6 +18,7 @@ import { useAppSettings, useCatalogModels } from "../useAppSettings";
 import { OmpSections } from "../OmpSettingsList";
 import {
 	Button,
+	Chip,
 	SectionHeader,
 	SettingRow,
 	SettingsCard,
@@ -25,6 +26,7 @@ import {
 	useSaveStatus,
 } from "../ui";
 import { SectionJumpBar } from "../SectionJumpBar";
+import { MacosPermissionsDialog } from "../MacosPermissionsDialog";
 
 type ApprovalMode = "always-ask" | "write" | "yolo";
 const AUTOMATION_OVERLAP_POLICIES = ["skip", "coalesce", "queue", "parallel"] as const;
@@ -41,6 +43,29 @@ export function GeneralSection() {
 	const ompLoaded = useOmpConfigStore((s) => s.loaded);
 	const loadOmp = useOmpConfigStore((s) => s.load);
 
+	const [permStatus, setPermStatus] = useState<MacosPermissionsStatus | null>(null);
+	const [permissionsOpen, setPermissionsOpen] = useState(false);
+
+	useEffect(() => {
+		let alive = true;
+		const load = () => {
+			macosPermissionsStatus()
+				.then((s) => {
+					if (alive) setPermStatus(s);
+				})
+				.catch(() => {
+					// Ignore when Tauri IPC is unavailable (e.g. non-Tauri unit tests)
+				});
+		};
+		load();
+		window.addEventListener("focus", load);
+		return () => {
+			alive = false;
+			window.removeEventListener("focus", load);
+		};
+	}, []);
+
+	const deniedCount = permStatus?.permissions.filter((p) => p.state === "denied").length ?? 0;
 	// Cache last known default role in localStorage so frame 1 renders accurately
 	const [cachedRole, setCachedRole] = useState<string | null>(() => {
 		try {
@@ -273,6 +298,31 @@ export function GeneralSection() {
 					}
 				/>
 			</SettingsCard>
+			{permStatus?.supported && (
+				<SettingsCard
+					jump={t("settingsSections.general.macosPermissionsJump")}
+					title={t("settingsSections.general.macosPermissionsTitle")}
+				>
+					<SettingRow
+						fieldId="macosPermissions"
+						label={t("settingsSections.general.macosPermissionsLabel")}
+						description={t("settingsSections.general.macosPermissionsDesc")}
+						control={
+							<div className="flex items-center gap-2">
+								<Chip tone={deniedCount > 0 ? "warning" : "success"}>
+									{deniedCount > 0
+										? t("settingsSections.general.macosPermissionsSummaryAttention", { count: deniedCount })
+										: t("settingsSections.general.macosPermissionsSummaryReady")}
+								</Chip>
+								<Button size="sm" variant="secondary" onClick={() => setPermissionsOpen(true)}>
+									{t("settingsSections.general.macosPermissionsManage")}
+								</Button>
+							</div>
+						}
+					/>
+				</SettingsCard>
+			)}
+
 
 			<SettingsCard jump={t("settingsSections.general.troubleshootingTitle")} title={t("settingsSections.general.troubleshootingTitle")}>
 				<ToggleRow
@@ -286,6 +336,13 @@ export function GeneralSection() {
 			</SettingsCard>
 
 			<OmpSections page="general" />
+			{permissionsOpen && (
+				<MacosPermissionsDialog
+					initialStatus={permStatus}
+					onStatusChange={setPermStatus}
+					onClose={() => setPermissionsOpen(false)}
+				/>
+			)}
 		</div>
 	);
 }

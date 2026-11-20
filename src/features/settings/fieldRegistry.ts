@@ -16,6 +16,9 @@ export interface FieldDefinition {
 	keywords: string[];
 	/** Live (current-locale) text for generated rows whose copy lives in another namespace. */
 	live?: { readonly label: string; readonly description: string };
+	/** Override translation keys when copy lives outside `settingsCore.field.<id>`. */
+	labelKey?: string;
+	descriptionKey?: string;
 }
 
 export const FIELD_REGISTRY: FieldDefinition[] = [
@@ -89,6 +92,28 @@ export const FIELD_REGISTRY: FieldDefinition[] = [
 		id: "diagnosticsEnabled",
 		sectionId: "general",
 		keywords: ["diagnostics", "local", "logs", "troubleshooting", "诊断", "本地", "记录", "故障排查", "隐私"],
+	},
+	{
+		id: "macosPermissions",
+		sectionId: "general",
+		labelKey: "settingsSections.general.macosPermissionsLabel",
+		descriptionKey: "settingsSections.general.macosPermissionsDesc",
+		keywords: [
+			"macos",
+			"permissions",
+			"accessibility",
+			"screen recording",
+			"full disk",
+			"local network",
+			"developer tools",
+			"权限",
+			"辅助功能",
+			"屏幕录制",
+			"完全磁盘访问",
+			"本地网络",
+			"开发者工具",
+			"验收",
+		],
 	},
 	{
 		id: "quickCaptureShortcut",
@@ -363,12 +388,12 @@ export const FIELD_REGISTRY: FieldDefinition[] = [
 
 /** Localized field name (messages `settingsCore.field.<id>.label`). */
 export function fieldLabel(field: FieldDefinition, locale: Locale = currentLocale()): string {
-	return field.live?.label ?? translate(`settingsCore.field.${field.id}.label`, undefined, locale);
+	return field.live?.label ?? translate(field.labelKey ?? `settingsCore.field.${field.id}.label`, undefined, locale);
 }
 
 /** Localized field description (messages `settingsCore.field.<id>.description`). */
 export function fieldDescription(field: FieldDefinition, locale: Locale = currentLocale()): string {
-	return field.live?.description ?? translate(`settingsCore.field.${field.id}.description`, undefined, locale);
+	return field.live?.description ?? translate(field.descriptionKey ?? `settingsCore.field.${field.id}.description`, undefined, locale);
 }
 
 /** Find the first field matching the search query within a section. */
