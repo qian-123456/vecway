@@ -155,4 +155,53 @@ describe("mergeDiskAndLive context + status", () => {
 		expect(rows["0-Explore"].durationMs).toBe(22000);
 		expect(rows["0-Explore"].endedAt).toBeUndefined();
 	});
+
+	it("keeps active runSegments duration on terminal disk rows instead of single-segment live progress.durationMs", () => {
+		const seg1 = { startedAt: "2026-11-19T20:16:12Z", endedAt: "2026-11-19T20:31:32Z" }; // 920s
+		const seg2 = { startedAt: "2026-11-19T20:34:22Z", endedAt: "2026-11-19T20:38:37Z" }; // 255s
+		const { rows } = mergeDiskAndLive(
+			[
+				disk({
+					status: "completed",
+					startedAt: seg1.startedAt,
+					endedAt: seg2.endedAt,
+					runSegments: [seg1, seg2],
+				}),
+			],
+			{
+				"0-Explore": {
+					status: "completed",
+					label: "x",
+					agent: "explore",
+					progress: { durationMs: 255_000, status: "completed" } as never,
+				},
+			},
+		);
+		expect(rows["0-Explore"].runSegments).toEqual([seg1, seg2]);
+		expect(rows["0-Explore"].durationMs).toBe(1_175_000);
+	});
+
+	it("adds prior closed segments when live finishes resumed run before disk poll catches up", () => {
+		const seg1 = { startedAt: "2026-11-19T20:16:12Z", endedAt: "2026-11-19T20:31:32Z" }; // 920s
+		const seg2 = { startedAt: "2026-11-19T20:34:22Z", endedAt: "2026-11-19T20:35:00Z" }; // partial on disk
+		const { rows } = mergeDiskAndLive(
+			[
+				disk({
+					status: "running",
+					startedAt: seg1.startedAt,
+					endedAt: seg2.endedAt,
+					runSegments: [seg1, seg2],
+				}),
+			],
+			{
+				"0-Explore": {
+					status: "completed",
+					label: "x",
+					agent: "explore",
+					progress: { durationMs: 255_000, status: "completed" } as never,
+				},
+			},
+		);
+		expect(rows["0-Explore"].durationMs).toBe(920_000 + 255_000);
+	});
 });

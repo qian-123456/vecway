@@ -365,6 +365,14 @@ pub enum SubagentStatus {
     Aborted,
 }
 
+/// One active execution window of a subagent session (separated by `session_exit`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentRunSegment {
+    pub started_at: String,
+    pub ended_at: String,
+}
+
 /// Lightweight per-agent summary for `subagent_list` (contract C5).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -388,9 +396,12 @@ pub struct SubagentSummary {
     pub tokens: Option<u64>,
     /// USD, summed over assistant usage.
     pub cost: Option<f64>,
-    /// First / last entry timestamps in the jsonl.
+    /// First / last entry timestamps in the jsonl (excluding `session_exit`).
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
+    /// Active run segments when a subagent was stopped (`session_exit`) and resumed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub run_segments: Vec<SubagentRunSegment>,
     /// `<id>.md|.json` artifact when present.
     pub output_path: Option<String>,
     /// Absolute path of `<id>.jsonl`.

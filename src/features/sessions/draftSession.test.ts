@@ -180,6 +180,22 @@ describe("sendFromDraft", () => {
 		expect(useUi.getState().selectedSessionId).toBeNull();
 	});
 
+	it("hands off to the created session from schedules studio even when selectedSessionId holds a prior session", async () => {
+		createSession.mockResolvedValue({ sessionId: "real-1", stub });
+		useUi.setState({ selectedSessionId: "prev-session", centerView: "schedules", previousCenterView: null });
+		const id = usePendingSession.getState().open({ cwd: "/repo", automationMode: true });
+		useComposer.getState().setDraft(id, "run nightly check");
+		const send = vi.fn(async () => {});
+
+		await sendFromDraft(id, send);
+
+		expect(send).toHaveBeenCalledWith("real-1");
+		expect(useComposer.getState().drafts["real-1"]).toBe("run nightly check");
+		expect(usePendingSession.getState().drafts[id]).toBeUndefined();
+		expect(useUi.getState().selectedSessionId).toBe("real-1");
+		expect(useUi.getState().centerView).toBe("session");
+	});
+
 	it("rejects with the draft intact when no process can start", async () => {
 		createSession.mockRejectedValue(new Error("no omp"));
 		const id = open();

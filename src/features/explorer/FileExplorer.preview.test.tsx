@@ -8,13 +8,19 @@ const h = vi.hoisted(() => ({
 		{ name: "chart.png", path: "/project/chart.png", isDir: false },
 		{ name: "chart.mmd", path: "/project/chart.mmd", isDir: false },
 		{ name: "notes.md", path: "/project/notes.md", isDir: false },
+		{ name: "index.ts", path: "/project/index.ts", isDir: false },
+		{ name: "archive.zip", path: "/project/archive.zip", isDir: false },
 	]),
+	listWorkspaceFiles: vi.fn(async () => ["src/app.ts", "archive.zip"]),
 	importImageFile: vi.fn(async (_path: string) => "/allowed/chart.png"),
-	readTextFile: vi.fn(async (_path: string) => "graph TD\nA-->B"),
+	readTextFile: vi.fn(async (path: string) =>
+		path.endsWith(".mmd") ? "graph TD\nA-->B" : "# Notes\nhello",
+	),
 }));
 vi.mock("../../lib/ipc", async (original) => ({
 	...(await original<typeof IpcModule>()),
 	fsReadDir: h.fsReadDir,
+	listWorkspaceFiles: h.listWorkspaceFiles,
 	importImageFile: h.importImageFile,
 	readTextFile: h.readTextFile,
 }));
@@ -33,6 +39,8 @@ import { useExplorer } from "../../stores/explorer";
 import { useFilePreview } from "../../stores/filePreview";
 import { useSessions } from "../../stores/sessions";
 import { useUi } from "../../stores/ui";
+import { useToasts } from "../../lib/toast";
+import { tNow } from "../../stores/language";
 
 describe("file tree preview routing", () => {
 	beforeEach(() => {
@@ -40,7 +48,8 @@ describe("file tree preview routing", () => {
 		useSessions.setState({ workspaces: [{ id: "project", name: "Project", path: "/project", kind: "project", mode: "code" }] } as never);
 		useExplorer.setState({ workspaceId: "project" });
 		useFilePreview.setState({ tabs: [], activePath: null });
-		useUi.setState({ centerView: "session", selectedSessionId: null, docPath: null });
+		useUi.setState({ centerView: "session", selectedSessionId: null, docPath: null, rightTab: null });
+		useToasts.setState({ items: [] });
 	});
 	afterEach(cleanup);
 
@@ -53,13 +62,53 @@ describe("file tree preview routing", () => {
 		expect(useUi.getState().centerView).toBe("session");
 	});
 
-	it("opens a Mermaid tree file as a diagram and leaves ordinary documents in Docs", async () => {
+	it("opens Mermaid, markdown, and code files in right-panel preview tabs without calling openDoc", async () => {
+		const openDocSpy = vi.spyOn(useUi.getState(), "openDoc");
 		render(<><FileExplorer /><FilePreviewPanel /></>);
+
 		fireEvent.click(await screen.findByText("chart.mmd"));
 		await waitFor(() => expect(screen.getByText("图表")).toBeTruthy());
 		expect(h.readTextFile).toHaveBeenCalledWith("/project/chart.mmd");
+
 		fireEvent.click(screen.getByText("notes.md"));
-		expect(useUi.getState().docPath).toBe("/project/notes.md");
-		expect(useUi.getState().centerView).toBe("doc");
+		await waitFor(() => expect(useFilePreview.getState().activePath).toBe("/project/notes.md"));
+
+		fireEvent.click(screen.getByText("index.ts"));
+		await waitFor(() => expect(useFilePreview.getState().activePath).toBe("/project/index.ts"));
+
+		expect(useFilePreview.getState().tabs.map((tab) => tab.path)).toEqual([
+			"/project/chart.mmd",
+			"/project/notes.md",
+			"/project/index.ts",
+		]);
+		expect(openDocSpy).not.toHaveBeenCalled();
+		expect(useUi.getState().docPath).toBeNull();
+		expect(useUi.getState().centerView).toBe("session");
+		expect(useUi.getState().rightTab).toBe("files");
+		openDocSpy.mockRestore();
+	});
+
+	it("opens previewable search results in right-panel tabs and blocks binary files with an error toast", async () => {
+		const openDocSpy = vi.spyOn(useUi.getState(), "openDoc");
+		render(<FileExplorer />);
+
+		fireEvent.click(await screen.findByText("archive.zip"));
+		expect(openDocSpy).not.toHaveBeenCalled();
+		expect(useFilePreview.getState().tabs).toEqual([]);
+		const toasts = useToasts.getState().items;
+		expect(toasts[toasts.length - 1]).toMatchObject({
+			kind: "error",
+			text: tNow("shell.blockedPreviewNonTextOrImage", { name: "archive.zip" }),
+		});
+
+		fireEvent.click(screen.getByTitle(tNow("explorer.searchFilesTip")));
+		const input = screen.getByPlaceholderText(tNow("explorer.searchFilterPlaceholder"));
+		fireEvent.change(input, { target: { value: "app.ts" } });
+
+		fireEvent.click(await screen.findByText("app.ts", {}, { timeout: 2000 }));
+		expect(useFilePreview.getState().activePath).toBe("/project/src/app.ts");
+		expect(openDocSpy).not.toHaveBeenCalled();
+		expect(useUi.getState().centerView).toBe("session");
+		openDocSpy.mockRestore();
 	});
 });

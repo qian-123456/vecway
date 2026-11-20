@@ -148,12 +148,16 @@ function handoff(id: string): Promise<string> {
 			if (!draft) throw new Error("Draft no longer exists");
 			await applyLatestSettings(draft, sessionId);
 			const ui = useUi.getState();
-			const visible = usePendingSession.getState().selectedId === id &&
+			const inSchedules =
+				ui.centerView === "schedules" ||
+				(ui.centerView === "settings" && ui.previousCenterView === "schedules");
+			const inSession =
 				ui.selectedSessionId === null &&
 				(ui.centerView === "session" ||
-					ui.centerView === "schedules" ||
-					(ui.centerView === "settings" &&
-						(ui.previousCenterView === "session" || ui.previousCenterView === "schedules")));
+					(ui.centerView === "settings" && ui.previousCenterView === "session"));
+			const visible =
+				usePendingSession.getState().selectedId === id &&
+				(inSchedules || inSession);
 			transferDraft(id, sessionId);
 			// Select before dropping the draft so the center pane never flashes empty.
 			if (visible) {

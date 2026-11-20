@@ -4,10 +4,11 @@
  * subagentTree.test.ts.
  */
 
+import type { SubagentRunSegment } from "../../../lib/contracts";
 import type { SubagentInfo } from "../../../stores/live";
 import { tNow } from "../../../stores/language";
 import { subagentBucket } from "./counts";
-import type { AgentRow } from "./merge";
+import { type AgentRow, runningElapsedMs, segmentsDurationMs } from "./merge";
 
 export type RowState = "running" | "done" | "failed" | "waiting";
 
@@ -261,11 +262,40 @@ export function elapsedMs(
 	now: number,
 ): number | undefined {
 	if (state === "waiting") return undefined;
-	const recorded = row?.durationMs ?? info.progress?.durationMs;
+	const segMs = segmentsDurationMs(row?.runSegments);
+	const recorded = segMs ?? row?.durationMs ?? info.progress?.durationMs;
 	if (state !== "running") return recorded && recorded > 0 ? recorded : undefined;
-	const start = row?.startedAt ? Date.parse(row.startedAt) : Number.NaN;
-	if (Number.isFinite(start)) return Math.max(0, now - start);
-	return recorded && recorded > 0 ? recorded : undefined;
+	return (
+		runningElapsedMs(row?.runSegments, row?.startedAt, now) ??
+		(recorded && recorded > 0 ? recorded : undefined)
+	);
+}
+
+/** Format each run segment as `"HH:mm:ss - HH:mm:ss · <duration>"` for hovercard / sheet. */
+export function formatRunSegmentLines(
+	segments: readonly SubagentRunSegment[] | undefined,
+	formatDuration: (ms: number) => string = formatElapsed,
+): string[] {
+	if (!segments || segments.length === 0) return [];
+	const lines: string[] = [];
+	for (const seg of segments) {
+		const startClock = formatClockTime(seg.startedAt);
+		const endClock = formatClockTime(seg.endedAt);
+		if (!startClock && !endClock) continue;
+		const startMs = Date.parse(seg.startedAt);
+		const endMs = Date.parse(seg.endedAt);
+		const durMs =
+			Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
+				? endMs - startMs
+				: undefined;
+		const durText = durMs !== undefined ? formatDuration(durMs) : undefined;
+		const range =
+			startClock && endClock
+				? `${startClock} - ${endClock}`
+				: (startClock ?? endClock)!;
+		lines.push(durText && durText !== "—" ? `${range} · ${durText}` : range);
+	}
+	return lines;
 }
 
 const firstLine = (t: string | undefined): string | undefined =>

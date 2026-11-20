@@ -18,6 +18,9 @@ const FILES = new Set([
 	"/Users/me/CodingWiki/wiki/指南.md",
 	"/Users/me/projects/omp-workspace/AGENTS.md",
 	"/Users/me/Evil.app/Contents/MacOS/Evil",
+	"/Users/me/.omp/agent/sessions/proj/sess-1/local/composer-bottombar-alignment-plan.md",
+	"/Users/me/.omp/agent/sessions/proj/sess-1/local/my-plan.md",
+	"/tmp/alt-plan-dir/approved-plan.md",
 ]);
 vi.mock("../../lib/toast", () => ({
 	toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
@@ -38,12 +41,24 @@ vi.mock("../../lib/ipc", () => ({
 import { Markdown } from "../../components/Markdown";
 import { openFileLink, useFilePreview } from "../../stores/filePreview";
 import { useUi } from "../../stores/ui";
+import { emptySessionLive, useLive } from "../../stores/live";
+import { useSessions } from "../../stores/sessions";
+import type { SessionMeta } from "../../lib/contracts";
 
+const sessionMeta = (id: string, file: string): SessionMeta => ({
+	id, tool: "omp", file, cwd: "/repo", title: "", label: "",
+	createdAt: "", updatedAt: "", parentId: null, forkDepth: 0, status: "idle", unread: false,
+	pending: null, live: false, externalPid: null, pinned: false, archived: false, workspaceId: null,
+	repoRoot: null, git: null, result: null, lastAssistant: null, model: null, attention: null,
+	mode: "code", groupId: null,
+});
 describe("Markdown file links", () => {
 	beforeEach(() => {
 		localStorage.clear();
 		useFilePreview.setState({ tabs: [], activePath: null });
-		useUi.setState({ rightTab: null, openRightTabs: [], rightOpen: false });
+		useUi.setState({ selectedSessionId: null, rightTab: null, openRightTabs: [], rightOpen: false });
+		useSessions.setState({ sessions: {} });
+		useLive.setState({ sessions: {} });
 	});
 
 	afterEach(cleanup);
@@ -161,6 +176,73 @@ describe("Markdown file links", () => {
 				"/Users/me/.omp/agent/AGENTS.md",
 			);
 		});
+	});
+
+	it("falls back to the session local/ directory when an absolute plan link points to a missing external path", async () => {
+		useSessions.setState({
+			sessions: {
+				"sess-1": sessionMeta("sess-1", "/Users/me/.omp/agent/sessions/proj/sess-1.jsonl"),
+			},
+		});
+		const view = render(
+			<Markdown
+				sessionId="sess-1"
+				text="[composer-bottombar-alignment-plan.md](file:///Users/me/.local/state/magpie-agy-bridge/agy-home/antigravity-cli/brain/123/composer-bottombar-alignment-plan.md)"
+			/>,
+		);
+		fireEvent.click(view.getByRole("link", { name: "composer-bottombar-alignment-plan.md" }));
+		await waitFor(() => {
+			expect(useFilePreview.getState().tabs[0]?.path).toBe(
+				"/Users/me/.omp/agent/sessions/proj/sess-1/local/composer-bottombar-alignment-plan.md",
+			);
+		});
+	});
+
+	it("falls back to live planFile when an absolute link basename matches the session plan", async () => {
+		useLive.setState({
+			sessions: {
+				"sess-1": {
+					...emptySessionLive(),
+					plan: {
+						enabled: true, phase: "review", planFile: "/tmp/alt-plan-dir/approved-plan.md",
+						planUrl: "local://approved-plan.md", title: "Approved", content: "# Plan",
+						prevContent: null, version: 1, planModel: null, tiers: [], defaultRole: "default",
+						contextPercent: null, keepDisabled: false,
+					},
+				},
+			},
+		});
+		const view = render(
+			<Markdown
+				sessionId="sess-1"
+				text="[approved-plan.md](file:///nonexistent/bridge/approved-plan.md)"
+			/>,
+		);
+		fireEvent.click(view.getByRole("link", { name: "approved-plan.md" }));
+		await waitFor(() => {
+			expect(useFilePreview.getState().tabs[0]?.path).toBe("/tmp/alt-plan-dir/approved-plan.md");
+		});
+	});
+
+	it.each([
+		"[my-plan.md](local://my-plan.md)",
+		"`local://my-plan.md`",
+	])("resolves %s against the session local/ artifacts directory", async (text) => {
+		useSessions.setState({
+			sessions: {
+				"sess-1": sessionMeta("sess-1", "/Users/me/.omp/agent/sessions/proj/sess-1.jsonl"),
+			},
+		});
+		const { container } = render(<Markdown sessionId="sess-1" text={text} />);
+		const link = container.querySelector<HTMLAnchorElement>("a");
+		expect(link).not.toBeNull();
+		fireEvent.click(link!);
+		await waitFor(() => {
+			expect(useFilePreview.getState().tabs[0]?.path).toBe(
+				"/Users/me/.omp/agent/sessions/proj/sess-1/local/my-plan.md",
+			);
+		});
+		expect(openUrl).not.toHaveBeenCalled();
 	});
 });
 

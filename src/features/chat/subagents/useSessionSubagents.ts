@@ -12,7 +12,7 @@ import type { SubagentSummary } from "../../../lib/contracts";
 import { type AgentMessage, type LiveTool, type SubagentInfo, useLive } from "../../../stores/live";
 import { useSessions } from "../../../stores/sessions";
 import { type DiskSubscription, DISK_POLL_MS, subscribeDiskSubagents } from "./diskPoller";
-import { type AgentRow, asTaskDetails, isTerminalStatus, mergeAgents } from "./merge";
+import { type AgentRow, asTaskDetails, isTerminalStatus, mergeAgents, segmentsDurationMs } from "./merge";
 
 export { DISK_POLL_MS };
 
@@ -43,6 +43,17 @@ export function mergeDiskAndLive(
 			task: s.prompt ?? undefined,
 			sessionFile: s.filePath,
 		};
+		const segMs = segmentsDurationMs(s.runSegments);
+		const spanMs =
+			s.startedAt && s.endedAt
+				? Date.parse(s.endedAt) - Date.parse(s.startedAt)
+				: Number.NaN;
+		const diskDurationMs =
+			segMs !== undefined
+				? segMs
+				: Number.isFinite(spanMs) && spanMs > 0
+					? spanMs
+					: undefined;
 		rows[s.id] = {
 			id: s.id,
 			index,
@@ -56,15 +67,13 @@ export function mergeDiskAndLive(
 			requests: s.requestCount || undefined,
 			tokens: s.tokens ?? undefined,
 			cost: s.cost ?? undefined,
+			durationMs: diskDurationMs,
 			startedAt: s.startedAt ?? undefined,
 			endedAt: s.endedAt ?? undefined,
+			runSegments: s.runSegments?.length ? s.runSegments : undefined,
 			outputPath: s.outputPath ?? undefined,
 			filePath: s.filePath,
 		};
-		if (s.startedAt && s.endedAt) {
-			const ms = Date.parse(s.endedAt) - Date.parse(s.startedAt);
-			if (Number.isFinite(ms) && ms > 0) rows[s.id].durationMs = ms;
-		}
 	});
 	Object.entries(live).forEach(([id, info]) => {
 		const diskStatus = subagents[id]?.status;
@@ -101,12 +110,21 @@ export function mergeDiskAndLive(
 			requests: prevRow?.requests ?? (p?.requests ? p.requests : undefined),
 			tokens: prevRow?.tokens ?? (p?.tokens ? p.tokens : undefined),
 			cost: prevRow?.cost ?? (p?.cost && p.cost > 0 ? p.cost : undefined),
-			durationMs:
-				isTerminalStatus(nextStatus) && p?.durationMs && p.durationMs > 0
-					? p.durationMs
-					: (prevRow?.durationMs ?? (p?.durationMs && p.durationMs > 0 ? p.durationMs : undefined)),
+			durationMs: (() => {
+				const liveDur = p?.durationMs && p.durationMs > 0 ? p.durationMs : undefined;
+				if (isDiskTerminal) return prevRow?.durationMs ?? liveDur;
+				if (isTerminalStatus(nextStatus) && liveDur !== undefined) {
+					if (prevRow?.runSegments && prevRow.runSegments.length > 1) {
+						const prior = segmentsDurationMs(prevRow.runSegments.slice(0, -1)) ?? 0;
+						return prior + liveDur;
+					}
+					return liveDur;
+				}
+				return prevRow?.durationMs ?? liveDur;
+			})(),
 			startedAt: prevRow?.startedAt,
 			endedAt: prevRow?.endedAt,
+			runSegments: prevRow?.runSegments,
 			currentTool: nextStatus === "running" ? p?.currentTool : undefined,
 			currentToolDetail: nextStatus === "running" ? (p?.currentToolIntent ?? p?.currentToolArgsKey) : undefined,
 			recentTools: p?.recentTools,

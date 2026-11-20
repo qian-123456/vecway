@@ -11,6 +11,7 @@ import {
 	failureReason,
 	formatClockTime,
 	formatElapsed,
+	formatRunSegmentLines,
 	subagentTitle,
 } from "./subagentTree";
 
@@ -68,8 +69,14 @@ export function SubagentHoverCard({
 
 	const startClock = formatClockTime(row?.startedAt);
 	const endClock = formatClockTime(row?.endedAt);
-	const timeField =
-		state === "done" && endClock
+	const multiSegments =
+		state !== "running" && row?.runSegments && row.runSegments.length > 1
+			? row.runSegments
+			: undefined;
+	const segmentLines = multiSegments ? formatRunSegmentLines(multiSegments, formatElapsed) : [];
+	const timeField = multiSegments
+		? undefined
+		: state === "done" && endClock
 			? [t("subagents.fieldCompletedAt"), startClock ? `${startClock} - ${endClock}` : endClock]
 			: state === "running" && startClock
 				? [t("subagents.fieldStartedAt"), startClock]
@@ -116,10 +123,22 @@ export function SubagentHoverCard({
 				{fields.map(([k, v, isErr]) =>
 					k && v ? (
 						<div key={k} className="contents">
-							<dt className="text-[var(--text-40)]">{k}</dt>
+							<dt className="whitespace-nowrap text-[var(--text-40)]">{k}</dt>
 							<dd className={`m-0 break-words ${isErr ? "text-[var(--status-error)]" : ""}`}>{v}</dd>
 						</div>
 					) : null,
+				)}
+				{segmentLines.length > 0 && (
+					<div className="contents">
+						<dt className="whitespace-nowrap text-[var(--text-40)]">{t("subagents.fieldSegments")}</dt>
+						<dd className="m-0 flex flex-col gap-0.5 tabular-nums">
+							{segmentLines.map((line, i) => (
+								<div key={`${i}-${line}`} className="whitespace-nowrap">
+									{line}
+								</div>
+							))}
+						</dd>
+					</div>
 				)}
 			</dl>
 			<div className="mt-2 text-[11px] text-[var(--text-40)]">{t("subagents.clickToViewProcess")}</div>

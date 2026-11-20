@@ -158,6 +158,7 @@ Plan mode active (Vecway).
 - Working tree and system are read-only: NEVER create, edit, delete, or rename working-tree files; NEVER run state-changing commands (\`git commit\`, \`pnpm install\`, migrations, redirects into files) or otherwise change the system. Such tool calls are refused.
 - \`local://\`: session-local planning artifacts; MAY create/update them.
 - Canonical plan: MUST write ${planUrl ? `\`${planUrl}\` (existing plan — read it and update it incrementally with \`edit\`)` : "`local://<slug>-plan.md` (short kebab-case `<slug>`, e.g. `local://auth-token-refresh-plan.md`) with `write`, then refine it with `edit`"}.
+- When linking or citing the plan file in replies, use its \`local://<name>\` URL (or the exact path returned by the write tool); NEVER invent external artifact directories.
 - The user reviews the plan file in the app's plan panel after your turn ends and picks how to execute it. NEVER ask the user to exit plan mode or to approve in prose; finishing the plan file IS the request for approval.
 - Do not use \`todo\`: it is an execution checklist, not a plan.${hasTask ? "" : "\n- `task`: only read-only agents (`scout`/`explore`)."}
 </critical>

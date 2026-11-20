@@ -258,6 +258,11 @@ export type SubagentStatus =
 	| "failed"
 	| "aborted";
 
+export interface SubagentRunSegment {
+	startedAt: string;
+	endedAt: string;
+}
+
 /** `subagent_list` entry (contract C5). */
 export interface SubagentSummary {
 	id: string;
@@ -274,6 +279,7 @@ export interface SubagentSummary {
 	cost: number | null;
 	startedAt: string | null;
 	endedAt: string | null;
+	runSegments?: SubagentRunSegment[];
 	outputPath: string | null;
 	filePath: string;
 }

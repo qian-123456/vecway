@@ -242,13 +242,13 @@ function PreBlock({
 	);
 }
 
-function useLinkBase(): { cwd: string | null; home: string | null } {
+function useLinkBase(): { cwd: string | null; home: string | null; sessionId?: string } {
 	const ctx = React.useContext(MarkdownContext);
 	const sessionCwd = useSessions((s) =>
 		ctx.sessionId ? (s.sessions[ctx.sessionId]?.cwd ?? null) : null,
 	);
 	const home = useHomeDir();
-	return { cwd: ctx.cwd ?? sessionCwd, home };
+	return { cwd: ctx.cwd ?? sessionCwd, home, sessionId: ctx.sessionId };
 }
 
 /**
@@ -283,7 +283,7 @@ function MarkdownLink({
 	title?: string;
 	id?: string;
 }) {
-	const { cwd, home } = useLinkBase();
+	const { cwd, home, sessionId } = useLinkBase();
 
 	const handleClick = async (e: React.MouseEvent<HTMLAnchorElement>) => {
 		e.preventDefault();
@@ -294,12 +294,12 @@ function MarkdownLink({
 				findInPageTarget(e.currentTarget, href.slice(1))?.scrollIntoView({
 					block: "center",
 				});
-			} else if (/^file:\/\//i.test(href)) {
-				await openFileLink(href, { cwd, home });
+			} else if (/^(?:file|local):\/\//i.test(href)) {
+				await openFileLink(href, { cwd, home, sessionId });
 			} else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) {
 				await openUrl(href);
 			} else if (looksLikeFilePath(href, { allowRelative: true, allowBare: true })) {
-				await openFileLink(href, { cwd, home });
+				await openFileLink(href, { cwd, home, sessionId });
 			} else {
 				// A relative non-file href has nowhere safe to go: never hand an
 				// agent-written path to the system opener (it would execute it).
@@ -334,13 +334,13 @@ function MarkdownFileLink(props: {
 }) {
 	const raw = props["data-file-link-text"] ?? extractText(props.children).trim();
 	const fromCode = props["data-file-link-code"] === "true";
-	const { cwd, home } = useLinkBase();
+	const { cwd, home, sessionId } = useLinkBase();
 	const { t } = useT();
 	const handleClick = async (e: React.MouseEvent) => {
 		e.preventDefault();
 		e.stopPropagation();
 		try {
-			await openFileLink(raw, { cwd, home });
+			await openFileLink(raw, { cwd, home, sessionId });
 		} catch (err) {
 			toast.error(tNow("components.openFileFailed", { error: errMsg(err) }));
 		}
@@ -421,7 +421,7 @@ const SANITIZE_SCHEMA: Schema = {
 	// image sources are handled by MarkdownImage. `javascript:` etc. stay blocked.
 	protocols: {
 		...defaultSchema.protocols,
-		href: [...(defaultSchema.protocols?.href ?? []), "file"],
+		href: [...(defaultSchema.protocols?.href ?? []), "file", "local"],
 		src: [...(defaultSchema.protocols?.src ?? []), "file", "data"],
 	},
 	attributes: {
@@ -439,6 +439,7 @@ const SANITIZE_SCHEMA: Schema = {
 /** react-markdown's default transform drops `file:` hrefs and `data:`/`file:` image sources. */
 export function markdownUrlTransform(url: string, key?: string, node?: { tagName?: string }): string {
 	if (/^file:\/\//i.test(url) && (key === "href" || key === "src")) return url;
+	if (/^local:\/\//i.test(url) && key === "href") return url;
 	if (key === "src" && node?.tagName === "img" && /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);/i.test(url)) {
 		return url;
 	}
@@ -490,7 +491,7 @@ function localImagePath(src: string, cwd: string | null, home: string | null): s
  * (`file:`, `~/`, cwd-relative, asset-scope) images still render immediately.
  */
 function MarkdownImage({ src, alt }: React.ImgHTMLAttributes<HTMLImageElement>) {
-	const { cwd, home } = useLinkBase();
+	const { cwd, home, sessionId } = useLinkBase();
 	const { t } = useT();
 	const [failedSrc, setFailedSrc] = useState<string | null>(null);
 	const [loadedRemote, setLoadedRemote] = useState<string | null>(null);
@@ -516,7 +517,7 @@ function MarkdownImage({ src, alt }: React.ImgHTMLAttributes<HTMLImageElement>) 
 			try {
 				if (inlineData) return;
 				if (remote) await openUrl(src);
-				else await openFileLink(src, { cwd, home });
+				else await openFileLink(src, { cwd, home, sessionId });
 			} catch (err) {
 				toast.error(tNow("components.openImageFailed", { error: errMsg(err) }));
 			}

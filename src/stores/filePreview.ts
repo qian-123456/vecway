@@ -18,6 +18,7 @@ import { basename } from "../lib/paths";
 import { listWorkspaceFiles, validatePath } from "../lib/ipc";
 import { useUi } from "./ui";
 import { useSessions } from "./sessions";
+import { useLive } from "./live";
 
 export type FileViewMode = "preview" | "edit";
 
@@ -87,6 +88,8 @@ interface OpenFileLinkOptions {
 	cwd?: string | null;
 	/** User home directory, for `~/…` targets. */
 	home?: string | null;
+	/** Session id used to resolve `local://` and session-local plan artifacts. */
+	sessionId?: string | null;
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -99,10 +102,48 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /**
+ * Resolve `local://<rel>` or a missing absolute path (e.g. a hallucinated
+ * external artifact directory) against the session's `planFile` or `<session>/local/`.
+ */
+async function resolveSessionLocalFile(
+	nameOrRel: string,
+	sessionId: string | null | undefined,
+	{ matchBasename }: { matchBasename: boolean },
+): Promise<{ path: string | null; found: boolean }> {
+	const sid = sessionId ?? useUi.getState().selectedSessionId;
+	if (!sid) return { path: null, found: false };
+	const clean = nameOrRel.replace(/^\/+/, "");
+	if (!clean || clean.split("/").some((seg) => seg === "..")) {
+		return { path: null, found: false };
+	}
+	const metaFile = useSessions.getState().sessions[sid]?.file;
+	const localCandidate =
+		metaFile && /\.jsonl$/i.test(metaFile)
+			? `${metaFile.replace(/\.jsonl$/i, "")}/local/${matchBasename ? basename(clean) : clean}`
+			: null;
+	if (localCandidate && (await exists(localCandidate))) {
+		return { path: localCandidate, found: true };
+	}
+	const plan = useLive.getState().sessions[sid]?.plan;
+	const targetName = basename(clean);
+	for (const candidate of [plan?.planFile, plan?.approved?.planFile]) {
+		if (!candidate) continue;
+		const matches = matchBasename
+			? basename(candidate) === targetName
+			: candidate.endsWith(`/${clean}`) || (!clean.includes("/") && basename(candidate) === clean);
+		if (matches && (await exists(candidate))) {
+			return { path: candidate, found: true };
+		}
+	}
+	return { path: localCandidate, found: false };
+}
+
+/**
  * Find the file a link points at. Agents write relative paths against different
  * roots, so try the session cwd, its ancestors (repo-name prefixes), the home
  * directory and every open workspace, then fall back to a workspace file search.
- * Absolute paths are trusted as written — the panel shows read errors in place.
+ * Absolute paths check disk first and fall back to session-local artifacts
+ * before trusting the raw path so the panel shows read errors in place.
  */
 async function locateFile(
 	raw: string,
@@ -113,8 +154,18 @@ async function locateFile(
 			.replace(/^file:\/\//i, "")
 			.replace(/[?#].*$/, ""),
 	));
-	if (token.startsWith("/")) return { path: token, found: true };
-
+	if (/^local:\/\//i.test(token)) {
+		const rel = token.replace(/^local:\/\//i, "");
+		const resolved = await resolveSessionLocalFile(rel, opts.sessionId, { matchBasename: false });
+		if (resolved.found && resolved.path) return { path: resolved.path, found: true };
+		return { path: resolved.path || token, found: false };
+	}
+	if (token.startsWith("/")) {
+		if (await exists(token)) return { path: token, found: true };
+		const fallback = await resolveSessionLocalFile(token, opts.sessionId, { matchBasename: true });
+		if (fallback.found && fallback.path) return { path: fallback.path, found: true };
+		return { path: token, found: true };
+	}
 	const candidates: string[] = [];
 	const add = (p: string | undefined | null) => {
 		if (p && !candidates.includes(p)) candidates.push(p);

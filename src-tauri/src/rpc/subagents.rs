@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 use serde_json::Value;
 
 use crate::catalog::{parse as cat_parse, transcript as cat_transcript};
-use crate::contracts::{SubagentStatus, SubagentSummary, SubagentTranscript};
+use crate::contracts::{SubagentRunSegment, SubagentStatus, SubagentSummary, SubagentTranscript};
 use crate::paths;
 
 /// Locks touched within this window mark the agent as still running.
@@ -192,13 +192,88 @@ fn accumulate(meta: &mut AgentMeta, v: &Value) {
 
 /// Parsed pass over a subagent jsonl: meta + transcript items (only lines
 /// at/after `from_byte` are normalized).
+#[derive(Default)]
 struct AgentScan {
     meta: AgentMeta,
     items: Vec<crate::contracts::TranscriptItem>,
-    started_at: Option<String>,
-    ended_at: Option<String>,
+    closed_segments: Vec<SubagentRunSegment>,
+    current_segment: Option<(String, String)>,
     next_byte: u64,
     reset: bool,
+}
+
+impl AgentScan {
+    fn all_segments(&self) -> Vec<SubagentRunSegment> {
+        let mut out = self.closed_segments.clone();
+        if let Some((s, e)) = &self.current_segment {
+            out.push(SubagentRunSegment {
+                started_at: s.clone(),
+                ended_at: e.clone(),
+            });
+        }
+        out
+    }
+
+    fn started_at(&self) -> Option<String> {
+        self.closed_segments
+            .first()
+            .map(|seg| seg.started_at.clone())
+            .or_else(|| self.current_segment.as_ref().map(|(s, _)| s.clone()))
+    }
+
+    fn ended_at(&self) -> Option<String> {
+        self.current_segment
+            .as_ref()
+            .map(|(_, e)| e.clone())
+            .or_else(|| self.closed_segments.last().map(|seg| seg.ended_at.clone()))
+    }
+}
+
+fn is_session_exit(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("custom")
+        && v.get("customType").and_then(Value::as_str) == Some("session_exit")
+}
+
+fn cmp_ts(a: &str, b: &str) -> std::cmp::Ordering {
+    match (
+        chrono::DateTime::parse_from_rfc3339(a),
+        chrono::DateTime::parse_from_rfc3339(b),
+    ) {
+        (Ok(da), Ok(db)) => da.cmp(&db),
+        _ => a.cmp(b),
+    }
+}
+
+fn record_timing(scan: &mut AgentScan, v: &Value) {
+    if is_session_exit(v) {
+        if let Some((s, e)) = scan.current_segment.take() {
+            scan.closed_segments.push(SubagentRunSegment {
+                started_at: s,
+                ended_at: e,
+            });
+        }
+        return;
+    }
+    let Some(ts) = v
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    match &mut scan.current_segment {
+        Some((start, end)) => {
+            if cmp_ts(ts, start) == std::cmp::Ordering::Less {
+                *start = ts.to_string();
+            }
+            if cmp_ts(ts, end) == std::cmp::Ordering::Greater {
+                *end = ts.to_string();
+            }
+        }
+        None => {
+            scan.current_segment = Some((ts.to_string(), ts.to_string()));
+        }
+    }
 }
 
 fn scan_agent(path: &Path, from_byte: u64) -> std::io::Result<AgentScan> {
@@ -212,12 +287,9 @@ fn scan_agent(path: &Path, from_byte: u64) -> std::io::Result<AgentScan> {
     // Only complete lines: stop after the last newline.
     let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
     let mut scan = AgentScan {
-        meta: AgentMeta::default(),
-        items: Vec::new(),
-        started_at: None,
-        ended_at: None,
         next_byte: complete as u64,
         reset,
+        ..Default::default()
     };
     let mut offset = 0usize;
     for line in bytes[..complete].split(|b| *b == b'\n') {
@@ -229,12 +301,7 @@ fn scan_agent(path: &Path, from_byte: u64) -> std::io::Result<AgentScan> {
         let Ok(v) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
-        if let Some(ts) = v.get("timestamp").and_then(Value::as_str) {
-            if scan.started_at.is_none() {
-                scan.started_at = Some(ts.to_string());
-            }
-            scan.ended_at = Some(ts.to_string());
-        }
+        record_timing(&mut scan, &v);
         accumulate(&mut scan.meta, &v);
         if reset || line_start >= start as usize {
             if let Some(item) = cat_transcript::normalize_entry(&v) {
@@ -317,8 +384,9 @@ fn summary_from(
         } else {
             scan.meta.cost
         },
-        started_at: scan.started_at.clone(),
-        ended_at: scan.ended_at.clone(),
+        started_at: scan.started_at(),
+        ended_at: scan.ended_at(),
+        run_segments: scan.all_segments(),
         output_path: output.map(|p| p.to_string_lossy().into_owned()),
         file_path: path.to_string_lossy().into_owned(),
     }
@@ -370,14 +438,7 @@ impl ScanCache {
             let mut bytes = Vec::with_capacity(size as usize);
             f.read_to_end(&mut bytes)?;
             self.bytes_read += bytes.len() as u64;
-            let mut scan = AgentScan {
-                meta: AgentMeta::default(),
-                items: Vec::new(),
-                started_at: None,
-                ended_at: None,
-                next_byte: 0,
-                reset: false,
-            };
+            let mut scan = AgentScan::default();
             fold_lines(&mut scan, &bytes);
             self.map.insert(
                 path.to_path_buf(),
@@ -429,12 +490,7 @@ fn fold_lines(scan: &mut AgentScan, bytes: &[u8]) {
         let Ok(v) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
-        if let Some(ts) = v.get("timestamp").and_then(Value::as_str) {
-            if scan.started_at.is_none() {
-                scan.started_at = Some(ts.to_string());
-            }
-            scan.ended_at = Some(ts.to_string());
-        }
+        record_timing(scan, &v);
         accumulate(&mut scan.meta, &v);
     }
     // The list never shows the system prompt; do not keep it resident.
@@ -982,6 +1038,105 @@ mod tests {
                 "{excluded} should not resolve as a subagent transcript"
             );
         }
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn excludes_trailing_session_exit_from_ended_at_and_run_segments() {
+        let (root, parent, subdir) = setup();
+        let single = format!(
+            "{AGENT}{}\n",
+            r#"{"type":"custom","customType":"session_exit","id":"ex","timestamp":"T99","data":{"kind":"normal"}}"#,
+        );
+        fs::write(subdir.join("Single.jsonl"), single).unwrap();
+        let list = list_in(parent.to_str().unwrap(), &root).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].started_at.as_deref(), Some("T0"));
+        assert_eq!(list[0].ended_at.as_deref(), Some("T7"));
+        assert_eq!(
+            list[0].run_segments,
+            vec![SubagentRunSegment {
+                started_at: "T0".to_string(),
+                ended_at: "T7".to_string(),
+            }]
+        );
+
+        let tr = transcript_in(parent.to_str().unwrap(), "Single", 0, &root).unwrap();
+        assert_eq!(tr.summary.ended_at.as_deref(), Some("T7"));
+        assert_eq!(tr.summary.run_segments, list[0].run_segments);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn splits_multi_segment_resumed_runs_and_clamps_subsecond_skew() {
+        let (root, parent, subdir) = setup();
+        let multi = concat!(
+            r#"{"type":"session","version":3,"id":"M","timestamp":"2026-11-19T12:16:12.000Z","cwd":"/w"}"#,
+            "\n",
+            r#"{"type":"message","id":"u1","timestamp":"2026-11-19T12:16:12.500Z","message":{"role":"user","content":[{"type":"text","text":"part 1"}]}}"#,
+            "\n",
+            r#"{"type":"message","id":"a1","timestamp":"2026-11-19T12:31:32.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done 1"}],"stopReason":"stop"}}"#,
+            "\n",
+            r#"{"type":"custom","customType":"session_exit","id":"e1","timestamp":"2026-11-19T12:33:32.000Z","data":{"kind":"normal"}}"#,
+            "\n",
+            // Segment 2 starts with slight sub-second skew (line 1 .536Z, line 2 .455Z)
+            r#"{"type":"message","id":"u2","timestamp":"2026-11-19T12:34:22.536Z","message":{"role":"user","content":[{"type":"text","text":"resume"}]}}"#,
+            "\n",
+            r#"{"type":"message","id":"s2","timestamp":"2026-11-19T12:34:22.455Z","message":{"role":"assistant","content":[{"type":"text","text":"working"}],"stopReason":"toolUse"}}"#,
+            "\n",
+            r#"{"type":"message","id":"a2","timestamp":"2026-11-19T12:38:38.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done 2"}],"stopReason":"stop"}}"#,
+            "\n",
+            r#"{"type":"custom","customType":"session_exit","id":"e2","timestamp":"2026-11-19T12:40:38.000Z","data":{"kind":"normal"}}"#,
+            "\n",
+        );
+        fs::write(subdir.join("PlanStatechart.jsonl"), multi).unwrap();
+
+        let list = list_in(parent.to_str().unwrap(), &root).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(
+            list[0].started_at.as_deref(),
+            Some("2026-11-19T12:16:12.000Z")
+        );
+        assert_eq!(
+            list[0].ended_at.as_deref(),
+            Some("2026-11-19T12:38:38.000Z")
+        );
+        assert_eq!(
+            list[0].run_segments,
+            vec![
+                SubagentRunSegment {
+                    started_at: "2026-11-19T12:16:12.000Z".to_string(),
+                    ended_at: "2026-11-19T12:31:32.000Z".to_string(),
+                },
+                SubagentRunSegment {
+                    started_at: "2026-11-19T12:34:22.455Z".to_string(),
+                    ended_at: "2026-11-19T12:38:38.000Z".to_string(),
+                },
+            ]
+        );
+
+        // Incremental append through ScanCache yields identical segments.
+        let (split_idx, _) = multi.match_indices("e1").next().unwrap();
+        let line_end = multi[split_idx..].find('\n').unwrap() + split_idx + 1;
+        let (first_half, second_half) = multi.split_at(line_end);
+        let cached_file = subdir.join("Cached.jsonl");
+        fs::write(&cached_file, first_half).unwrap();
+        let mut cache = ScanCache::default();
+        let first_list = list_with(parent.to_str().unwrap(), &root, &mut cache).unwrap();
+        let cached_first = first_list.iter().find(|s| s.id == "Cached").unwrap();
+        assert_eq!(cached_first.run_segments.len(), 1);
+
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .open(&cached_file)
+            .unwrap();
+        std::io::Write::write_all(&mut f, second_half.as_bytes()).unwrap();
+        drop(f);
+        let second_list = list_with(parent.to_str().unwrap(), &root, &mut cache).unwrap();
+        let cached_second = second_list.iter().find(|s| s.id == "Cached").unwrap();
+        assert_eq!(cached_second.run_segments, list[0].run_segments);
+        assert_eq!(cached_second.ended_at, list[0].ended_at);
+
         fs::remove_dir_all(&root).ok();
     }
 }

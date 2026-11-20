@@ -83,10 +83,11 @@ function findCatalogModel(models: ModelOption[] | null, key: string): ModelOptio
 }
 
 const ROW_CLASS =
-	"flex w-full items-center justify-between px-2.5 py-1.5 text-left text-xs transition-colors rounded-[8px]";
+	"flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors";
 const ROW_IDLE =
-	"text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]";
-const ROW_SELECTED = "bg-[var(--bg-active-fill)] text-[var(--text)] font-medium";
+	"text-[var(--text-60)] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]";
+const ROW_SELECTED =
+	"bg-[var(--bg-active-fill)] font-medium text-[var(--text)] ring-1 ring-inset ring-[var(--hairline,var(--border-divider))]";
 
 type GroupId = string;
 const GROUP_COMMON: GroupId = "★";
@@ -243,10 +244,10 @@ export function ModelMenuContent({
         if (searching || !rootRef.current) return;
         const left = Array.from(rootRef.current.querySelectorAll<HTMLElement>("[data-model-group]"))
             .find((el) => el.dataset.modelGroup === effectiveGroup);
-        left?.scrollIntoView({ block: "nearest" });
+        left?.scrollIntoView?.({ block: "nearest" });
         const right = Array.from(rootRef.current.querySelectorAll<HTMLElement>("[data-model-key]"))
             .find((el) => el.dataset.modelKey === selectedKey);
-        right?.scrollIntoView({ block: "nearest" });
+        right?.scrollIntoView?.({ block: "nearest" });
     }, [effectiveGroup, models, searching, selectedKey]);
 	// Resolve only picker availability here; shared role/default semantics stay in resolveRole.
 	const selectionState = (value: string) => {
@@ -359,7 +360,7 @@ export function ModelMenuContent({
 		}
 	};
 
-	const check = <Check size={13} className="shrink-0 text-[var(--text-60,var(--text-muted))]" />;
+	const check = <Check size={13} className="shrink-0 text-[var(--accent)]" />;
 
 	const renderEntry = (e: Entry, idx: number) => {
 		const highlighted = idx === hi;
@@ -377,8 +378,8 @@ export function ModelMenuContent({
 					{...hiProps}
                     data-model-key={key}
 					className={clsx(
-						"group flex w-full items-center rounded-[8px] transition-colors",
-						e.unavailable ? "text-neutral-400" : isSelected ? ROW_SELECTED : highlighted ? ROW_HI : ROW_IDLE,
+						"group flex w-full items-center rounded-lg transition-colors",
+						e.unavailable ? "text-[var(--text-40)] opacity-75" : isSelected ? ROW_SELECTED : highlighted ? ROW_HI : ROW_IDLE,
 					)}
 				>
 					<button
@@ -398,15 +399,15 @@ export function ModelMenuContent({
 					>
 						<div className="min-w-0 pr-2">
 							<div className="flex flex-wrap items-center gap-1.5">
-								<span className="min-w-0 break-words [overflow-wrap:anywhere] font-medium">{e.m.id}</span>
+								<span className={clsx("min-w-0 break-words [overflow-wrap:anywhere] text-[12.5px] font-medium", !e.unavailable && "text-[var(--text)]")}>{e.m.id}</span>
 								{e.unavailable && (
-									<span className="shrink-0 whitespace-nowrap rounded bg-[var(--bg-hover)] px-1.5 text-[10px] font-normal">
+									<span className="shrink-0 whitespace-nowrap rounded bg-[var(--bg-hover)] px-1.5 py-0.5 text-[10px] font-normal text-[var(--text-60)]">
 										{t("models.temporarilyUnavailable")}
 									</span>
 								)}
 								{!e.unavailable && isTooSmall && (
 									<span
-										className="shrink-0 rounded px-1.5 py-0.2 text-[10px] font-normal border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+										className="shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-normal border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
 										title={t("models.contextTooSmallHint", {
 											current: compactTokens(contextTokens),
 											window: compactTokens(e.m.contextWindow!),
@@ -417,7 +418,7 @@ export function ModelMenuContent({
 								)}
 							</div>
 							{e.showProvider && (
-								<div className="break-words [overflow-wrap:anywhere] text-[10px] text-neutral-500">{e.m.provider}</div>
+								<div className="break-words [overflow-wrap:anywhere] text-[11px] text-[var(--text-40)]">{e.m.provider}</div>
 							)}
 						</div>
 						{isSelected && check}
@@ -431,7 +432,7 @@ export function ModelMenuContent({
 								setUndo({ key, prev: recent });
 								removeRecent(key);
 							}}
-							className="mr-1 shrink-0 rounded p-1 text-neutral-500 opacity-0 transition-opacity hover:bg-[var(--bg-hover)] hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100"
+							className="mr-1 shrink-0 rounded p-1 text-[var(--text-40)] opacity-0 transition-opacity hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100"
 						>
 							<X size={12} />
 						</button>
@@ -450,9 +451,9 @@ export function ModelMenuContent({
 				>
 					<span className="min-w-0 break-all">
 						{t("models.usePrefix")}<span className="font-mono text-[var(--text)]">{customQuery}</span>
-						<span className="text-neutral-500">{t("models.asModelIdSuffix")}</span>
+						<span className="text-[var(--text-40)]">{t("models.asModelIdSuffix")}</span>
 					</span>
-					<CornerDownLeft size={12} className="shrink-0 text-neutral-500" />
+					<CornerDownLeft size={12} className="shrink-0 text-[var(--text-40)]" />
 				</button>
 			);
 		}
@@ -464,21 +465,21 @@ export function ModelMenuContent({
 				{...hiProps}
 				disabled={e.unavailable || e.pending}
 				onClick={() => activate(e)}
-				className={clsx(ROW_CLASS, e.unavailable || e.pending ? "text-neutral-400" : isSelected ? ROW_SELECTED : highlighted ? ROW_HI : ROW_IDLE)}
+				className={clsx(ROW_CLASS, e.unavailable || e.pending ? "text-[var(--text-40)] opacity-75" : isSelected ? ROW_SELECTED : highlighted ? ROW_HI : ROW_IDLE)}
 			>
 				<span className="min-w-0">
 					{e.x.label}
 					{e.resolution && (
-						<span className="text-neutral-500"> → {describeResolution(e.resolution)}</span>
+						<span className="text-[var(--text-40)]"> → {describeResolution(e.resolution)}</span>
 					)}
 					{e.unavailable && (
-						<span className="ml-1.5 whitespace-nowrap rounded bg-[var(--bg-hover)] px-1.5 text-[10px] font-normal">
+						<span className="ml-1.5 whitespace-nowrap rounded bg-[var(--bg-hover)] px-1.5 py-0.5 text-[10px] font-normal text-[var(--text-60)]">
 							{t("models.temporarilyUnavailable")}
 						</span>
 					)}
 				</span>
 				{e.x.hint && !e.resolution ? (
-					<span className="ml-1 shrink-0 text-[10px] text-neutral-500">{e.x.hint}</span>
+					<span className="ml-1 shrink-0 text-[11px] text-[var(--text-40)]">{e.x.hint}</span>
 				) : isSelected ? (
 					check
 				) : null}
@@ -495,18 +496,29 @@ export function ModelMenuContent({
                     data-model-group={id}
 				onClick={() => setGroup(id)}
 				className={clsx(
-					"flex w-full items-start justify-between gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors",
+					"relative flex w-full items-start justify-between gap-2 rounded-lg py-1.5 pl-3 pr-2 text-left text-xs transition-colors",
 					active
-						? "bg-[var(--bg-active-fill)] font-medium text-[var(--text)]"
-						: "text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200",
+						? "bg-[var(--bg-active-fill)] font-semibold text-[var(--text)] ring-1 ring-inset ring-[var(--hairline-strong,var(--border-divider))]"
+						: "text-[var(--text-60)] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]",
 				)}
 			>
+				{active && (
+					<span
+						aria-hidden="true"
+						className="absolute bottom-1.5 left-1 top-1.5 w-[2.5px] rounded-full bg-[var(--accent)]"
+					/>
+				)}
 				<span className="min-w-0 whitespace-normal break-normal [overflow-wrap:anywhere]" title={label}>
 					{label}
 				</span>
-				<span className="ml-1 flex shrink-0 items-center gap-0.5 text-[10px] text-neutral-600">
+				<span
+					className={clsx(
+						"ml-1 flex shrink-0 items-center gap-0.5 whitespace-nowrap text-[10.5px] tabular-nums",
+						active ? "text-[var(--text-60)]" : "text-[var(--text-40)]",
+					)}
+				>
 					{count}
-					<ChevronRight size={10} />
+					<ChevronRight size={10} className={active ? "text-[var(--accent)]" : undefined} />
 				</span>
 			</button>
 		);
@@ -530,11 +542,11 @@ export function ModelMenuContent({
 	let offset = 0;
 	const body =
 		modelOptions === null && !catalogError && !hasEntries ? (
-			<div role="status" className="px-3 py-2 text-center text-xs text-neutral-400">
+			<div role="status" className="px-3 py-4 text-center text-xs text-[var(--text-60)]">
 				{t("models.loadingModels")}
 			</div>
 		) : !hasEntries && roleGuides.length === 0 && providerWarnings.length === 0 ? (
-			<div className="flex flex-col items-center gap-2 px-3 py-4 text-center text-xs text-neutral-400">
+			<div className="flex flex-col items-center gap-2 px-3 py-6 text-center text-xs text-[var(--text-60)]">
 				<span>{searching ? t("models.noMatchingModels") : t("models.noOptions")}</span>
 				{!showCatalogNotice && (
 					<>
@@ -546,11 +558,13 @@ export function ModelMenuContent({
 		) : (
 			sections.map((s, si) => {
 				return (
-					<div key={s.title ?? `s${si}`}>
+					<div key={s.title ?? `s${si}`} className={si > 0 ? "mt-2" : undefined}>
 						{s.title && (
-							<div className="px-2.5 pb-0.5 pt-1.5 text-[10px] font-medium text-neutral-500">{s.title}</div>
+							<div className="px-2.5 pb-1 pt-1 text-[11px] font-medium text-[var(--text-40)]">{s.title}</div>
 						)}
-						{s.entries.map((e) => renderEntry(e, isSelectable(e) ? offset++ : -2))}
+						<div className="space-y-0.5">
+							{s.entries.map((e) => renderEntry(e, isSelectable(e) ? offset++ : -2))}
+						</div>
 					</div>
 				);
 			})
@@ -558,16 +572,16 @@ export function ModelMenuContent({
 
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: key handling for the whole picker
-		<div ref={rootRef} className="flex min-h-0 flex-col outline-none" onKeyDown={onKeyDown} tabIndex={-1}>
+		<div ref={rootRef} className="flex min-h-0 flex-1 flex-col outline-none" onKeyDown={onKeyDown} tabIndex={-1}>
 			{caption && (
-				<div className="flex shrink-0 items-center justify-between gap-2 px-2.5 pb-1 pt-2 text-[11px] font-medium text-neutral-400">
+				<div className="flex shrink-0 items-center justify-between gap-2 px-3 pb-0.5 pt-2.5 text-[11px] font-medium text-[var(--text-60)]">
 					<span className="break-all">{caption}</span>
 				</div>
 			)}
-			<div className="shrink-0 border-b border-[var(--border-divider)] px-2 pb-1.5 pt-1">
-				<div className="flex items-stretch gap-2">
-					<div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg hairline bg-[var(--bg)] px-2 text-xs text-[var(--text)]">
-						<Search size={13} className="shrink-0 text-neutral-400" />
+			<div className="shrink-0 border-b border-[var(--border-divider)] px-2.5 py-2">
+				<div className="flex items-center gap-2">
+					<div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-[var(--hairline-strong,var(--border-divider))] bg-[var(--well-bg,var(--bg))] px-2.5 text-xs text-[var(--text)] transition-colors focus-within:border-[var(--accent)] focus-within:ring-1 focus-within:ring-[color-mix(in_srgb,var(--accent)_35%,transparent)]">
+						<Search size={13} className="shrink-0 text-[var(--text-40)]" />
 						<input
 							type="text"
 							autoFocus
@@ -575,7 +589,7 @@ export function ModelMenuContent({
 							onChange={(e) => setQ(e.target.value)}
 							aria-label={t("models.searchModels")}
 							placeholder={allowCustom ? t("models.searchPlaceholderWithCustom") : t("models.searchPlaceholder")}
-							className="w-full min-w-0 bg-transparent py-1 outline-none placeholder:text-neutral-400"
+							className="w-full min-w-0 bg-transparent py-1.5 text-xs outline-none placeholder:text-[var(--text-40)]"
 						/>
 					</div>
 					<button
@@ -584,14 +598,14 @@ export function ModelMenuContent({
 						title={t(refreshing ? "models.refreshingModels" : "models.refreshModels")}
 						disabled={refreshing}
 						onClick={() => void refreshOnline()}
-						className="grid size-7 shrink-0 cursor-pointer place-items-center rounded-md bg-transparent text-neutral-400 hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)] disabled:cursor-default disabled:opacity-60"
+						className="grid size-7 shrink-0 cursor-pointer place-items-center rounded-lg bg-transparent text-[var(--text-60)] transition-colors hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)] disabled:cursor-default disabled:opacity-60"
 					>
 						<RefreshCw size={13} aria-hidden="true" className={refreshing ? "motion-safe:animate-spin" : undefined} />
 					</button>
 				</div>
 				{showCatalogNotice && (
 					<div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[11px]">
-						<div role={catalogError ? "alert" : "status"} className="flex min-w-0 flex-1 basis-40 items-start gap-1.5 text-neutral-400">
+						<div role={catalogError ? "alert" : "status"} className="flex min-w-0 flex-1 basis-40 items-start gap-1.5 text-[var(--text-60)]">
 							<CircleAlert size={13} className="mt-px shrink-0" />
 							<div className="min-w-0 [overflow-wrap:anywhere]">
 								{configWarning ? t("models.invalidProviderConfig")
@@ -613,19 +627,19 @@ export function ModelMenuContent({
 			</div>
 
 			{/* Fixed height so the popover never jumps between groups. */}
-			<div className="flex h-72 min-h-0">
+			<div className="flex h-[300px] min-h-0">
 				{!searching && groupIds.length > 0 && (
-					<div className="w-[40%] min-w-40 max-w-64 shrink-0 overflow-y-auto border-r border-[var(--border-divider)] py-0.5">
+					<div className="w-[40%] min-w-40 max-w-64 shrink-0 space-y-0.5 overflow-y-auto border-r border-[var(--border-divider)] p-1.5">
 						{hasCommon && groupButton(GROUP_COMMON, t("models.commonGroup"), plainExtras.length + recentModels.length)}
 						{hasRoles && groupButton(GROUP_ROLES, t("models.rolesGroup"), roleExtras.length)}
 						{providers.map(([p, list]) => groupButton(providerGroup(p), p, list.length))}
 					</div>
 				)}
-				<div className="min-w-0 flex-1 overflow-y-auto py-0.5">
+				<div className="min-w-0 flex-1 overflow-y-auto p-1.5">
 					{providerWarnings.map((warning) => {
 						if (!("provider" in warning)) return null;
 						return (
-							<div key={`${warning.provider}:${warning.kind}`} role="status" className="flex flex-wrap items-center justify-between gap-1 px-2.5 py-1.5 text-[11px] text-neutral-400">
+							<div key={`${warning.provider}:${warning.kind}`} role="status" className="flex flex-wrap items-center justify-between gap-1 px-2.5 py-1.5 text-[11px] text-[var(--text-60)]">
 								<span className="min-w-0 [overflow-wrap:anywhere]">
 									{t(warning.kind === "authenticationRequired" ? "models.providerNeedsAuth"
 										: warning.kind === "discoveryTimedOut" ? "models.providerTimedOut" : "models.providerDiscoveryFailed",
@@ -641,7 +655,7 @@ export function ModelMenuContent({
 					})}
 					{body}
 					{roleGuides.map(({ x, roleId }) => (
-						<div key={x.value} className={clsx(ROW_CLASS, "gap-1 text-neutral-500")}>
+						<div key={x.value} className={clsx(ROW_CLASS, "gap-1 text-[var(--text-60)]")}>
 							<button
 								type="button"
 								onClick={() => openSettingsTarget("models")}
@@ -654,7 +668,7 @@ export function ModelMenuContent({
 								aria-label={t("models.dismiss")}
 								title={t("models.dismiss")}
 								onClick={() => dismissGuide(roleId)}
-								className="shrink-0 rounded p-0.5 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+								className="shrink-0 rounded p-0.5 hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]"
 							>
 								<X size={11} />
 							</button>
@@ -664,7 +678,7 @@ export function ModelMenuContent({
 			</div>
 
 			{undo && (
-				<div className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--border-divider)] px-2.5 pt-1.5 text-[11px] text-neutral-400">
+				<div className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--border-divider)] bg-[var(--bg-hover)]/60 px-3 py-2 text-[11px] text-[var(--text-60)]">
 					<span className="min-w-0 break-all">{t("models.removedFromRecent", { key: undo.key })}</span>
 					<button
 						type="button"
@@ -672,15 +686,15 @@ export function ModelMenuContent({
 							setRecent(undo.prev);
 							setUndo(null);
 						}}
-						className="shrink-0 rounded-full border border-[var(--border-divider)] px-2 py-0.5 text-[var(--text)] hover:bg-[var(--bg-hover)]"
+						className="shrink-0 whitespace-nowrap rounded-full border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--text)] transition-colors hover:bg-[var(--bg-hover)]"
 					>
 						{t("models.undo")}
 					</button>
 				</div>
 			)}
-			<div className="flex shrink-0 flex-wrap justify-between gap-x-2 border-t border-[var(--border-divider)] px-2.5 pt-1.5 text-[10px] text-neutral-400">
+			<div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-t border-[var(--border-divider)] bg-[var(--well-bg,transparent)] px-3 py-2 text-[11px] leading-normal text-[var(--text-40)]">
 				<span>{t("models.keyboardNavTip")}</span>
-				{catalogStatus === "unverified" && <span title={t("models.catalogUnverified")}>{t("models.availabilityUnverified")}</span>}
+				{catalogStatus === "unverified" && <span className="whitespace-nowrap" title={t("models.catalogUnverified")}>{t("models.availabilityUnverified")}</span>}
 			</div>
 		</div>
 	);
@@ -782,7 +796,7 @@ export function ModelSelect({
 				className={buttonClass}
 			>
 				<span className="truncate">{displayLabel}</span>
-				{icon && <ChevronDown size={11} className="shrink-0 text-neutral-500" />}
+				{icon && <ChevronDown size={11} className="shrink-0 text-[var(--text-40)]" />}
 			</button>
 			<FloatingLayer
 				anchor={isOpen ? buttonRef.current : null}
@@ -795,7 +809,7 @@ export function ModelSelect({
 					buttonRef.current?.focus();
 				}}
 				className={clsx(
-					"flex flex-col py-1.5 rounded-xl border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)]",
+					"flex flex-col overflow-hidden rounded-2xl border border-[var(--border-divider)] !bg-[var(--bg-panel)] shadow-lg",
 					widthClass,
 				)}
 			>

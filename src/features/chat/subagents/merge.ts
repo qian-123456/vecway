@@ -5,7 +5,7 @@
  * of the reducer; kept out of the component for clarity.
  */
 
-import type { SubagentSummary } from "../../../lib/contracts";
+import type { SubagentRunSegment, SubagentSummary } from "../../../lib/contracts";
 import type { SubagentInfo } from "../../../stores/live";
 import type {
 	AgentProgress,
@@ -47,6 +47,7 @@ export interface AgentRow {
 	durationMs?: number;
 	startedAt?: string;
 	endedAt?: string;
+	runSegments?: SubagentRunSegment[];
 	currentTool?: string;
 	currentToolDetail?: string;
 	recentTools?: AgentProgress["recentTools"];
@@ -159,6 +160,41 @@ const firstLine = (t?: string): string | undefined =>
 export const isTerminalStatus = (s: SubagentStatus | undefined): boolean =>
 	s === "completed" || s === "failed" || s === "aborted";
 
+/** Sum active duration across run segments (ignoring invalid/non-positive spans). */
+export function segmentsDurationMs(
+	segments: readonly SubagentRunSegment[] | undefined,
+): number | undefined {
+	if (!segments || segments.length === 0) return undefined;
+	let total = 0;
+	let hasValid = false;
+	for (const seg of segments) {
+		const start = Date.parse(seg.startedAt);
+		const end = Date.parse(seg.endedAt);
+		if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+		hasValid = true;
+		if (end > start) total += end - start;
+	}
+	return hasValid && total > 0 ? total : undefined;
+}
+
+/** Active elapsed ms while running: prior closed segments plus current segment's live span. */
+export function runningElapsedMs(
+	segments: readonly SubagentRunSegment[] | undefined,
+	startedAt: string | undefined,
+	now: number,
+): number | undefined {
+	if (segments && segments.length > 0) {
+		const last = segments[segments.length - 1];
+		const lastStart = Date.parse(last.startedAt);
+		if (Number.isFinite(lastStart)) {
+			const prior = segmentsDurationMs(segments.slice(0, -1)) ?? 0;
+			return prior + Math.max(0, now - lastStart);
+		}
+	}
+	const start = startedAt ? Date.parse(startedAt) : Number.NaN;
+	return Number.isFinite(start) ? Math.max(0, now - start) : undefined;
+}
+
 /** Terminal results are final: a later non-terminal source cannot revive them. */
 function setStatus(row: AgentRow, next: SubagentStatus | undefined) {
 	if (!next) return;
@@ -216,9 +252,13 @@ function applySummary(row: AgentRow, s: SubagentSummary) {
 	if (s.cost != null) row.cost = s.cost;
 	if (s.startedAt) row.startedAt = s.startedAt;
 	if (s.endedAt) row.endedAt = s.endedAt;
+	if (s.runSegments?.length) row.runSegments = s.runSegments;
 	row.outputPath ??= s.outputPath ?? undefined;
 	row.filePath ??= s.filePath;
-	if (s.startedAt && s.endedAt) {
+	const segMs = segmentsDurationMs(s.runSegments);
+	if (segMs !== undefined) {
+		row.durationMs = segMs;
+	} else if (s.startedAt && s.endedAt) {
 		const ms = Date.parse(s.endedAt) - Date.parse(s.startedAt);
 		if (Number.isFinite(ms) && ms > 0) row.durationMs = ms;
 	}
@@ -362,7 +402,11 @@ export function mergeAgents(input: {
 	// start/end spans the whole batch and must not be used as a per-agent time;
 	// unknown stays unknown.
 	for (const r of rows.values()) {
-		if (isTerminalStatus(r.status) && r.startedAt && r.endedAt) {
+		if (!isTerminalStatus(r.status)) continue;
+		const segMs = segmentsDurationMs(r.runSegments);
+		if (segMs !== undefined) {
+			r.durationMs = segMs;
+		} else if (r.startedAt && r.endedAt) {
 			const ms = Date.parse(r.endedAt) - Date.parse(r.startedAt);
 			if (Number.isFinite(ms) && ms > 0) r.durationMs = ms;
 		}

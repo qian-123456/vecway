@@ -28,7 +28,7 @@ import {
 	Wrench,
 	X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Z_LAYER } from "../../../components/FloatingLayer";
 import type { SubagentTranscript, TranscriptItem } from "../../../lib/contracts";
@@ -42,8 +42,8 @@ import { formatTokens } from "../sessionStats";
 import { RequestStatsLine } from "../RequestStatsLine";
 import { requestStatFromItem } from "../requestStats";
 import { formatDurationCompact, formatShortModel } from "../turnGrouping";
-import { type AgentRow, isTerminalStatus, normStatus } from "./merge";
-import { formatClockTime } from "./subagentTree";
+import { type AgentRow, isTerminalStatus, normStatus, runningElapsedMs, segmentsDurationMs } from "./merge";
+import { formatClockTime, formatRunSegmentLines } from "./subagentTree";
 import type { SubagentStatus } from "./types";
 const ICON: Record<
 	SubagentStatus,
@@ -166,10 +166,10 @@ function StatCard({
 }: {
 	icon: typeof Check;
 	label: string;
-	value?: string;
+	value?: ReactNode;
 	wide?: boolean;
 }) {
-	if (!value) return null;
+	if (value === undefined || value === null || value === "") return null;
 	return (
 		<div
 			className={clsx(
@@ -263,26 +263,35 @@ export function SubagentSheet({
 			? items[items.length - 1]?.ts
 			: undefined);
 
+	const effectiveSegments = summary?.runSegments?.length
+		? summary.runSegments
+		: row.runSegments;
 	const startClock = formatClockTime(startedAt);
 	const endClock = formatClockTime(endedAt);
 
 	const durationMs = useMemo(() => {
 		if (effectiveStatus === "pending") return undefined;
 		if (effectiveStatus === "running") {
-			const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
-			if (Number.isFinite(startMs) && startMs > 0) {
-				return Math.max(0, now - startMs);
-			}
-			return row.durationMs && row.durationMs > 0 ? row.durationMs : undefined;
+			return (
+				runningElapsedMs(effectiveSegments, startedAt, now) ??
+				(row.durationMs && row.durationMs > 0 ? row.durationMs : undefined)
+			);
 		}
 		// Finished states
+		const segMs = segmentsDurationMs(effectiveSegments);
+		if (segMs !== undefined) return segMs;
 		if (startedAt && endedAt) {
 			const ms = Date.parse(endedAt) - Date.parse(startedAt);
 			if (Number.isFinite(ms) && ms > 0) return ms;
 		}
 		if (row.durationMs && row.durationMs > 0) return row.durationMs;
 		return undefined;
-	}, [effectiveStatus, startedAt, endedAt, now, row.durationMs]);
+	}, [effectiveStatus, effectiveSegments, startedAt, endedAt, now, row.durationMs]);
+
+	const segmentLines =
+		effectiveStatus !== "running" && effectiveSegments && effectiveSegments.length > 1
+			? formatRunSegmentLines(effectiveSegments, formatDurationCompact)
+			: [];
 
 	const duration = durationMs && Math.round(durationMs / 1000) >= 1 ? formatDurationCompact(durationMs) : undefined;
 	const effectiveContext = context ?? row.sharedContext;
@@ -598,6 +607,22 @@ export function SubagentSheet({
 								<StatCard icon={Clock} label={t("subagents.statStartedAt")} value={startClock} />
 								{isTerminalStatus(effectiveStatus) && (
 									<StatCard icon={Check} label={t("subagents.statCompletedAt")} value={endClock} />
+								)}
+								{segmentLines.length > 0 && (
+									<StatCard
+										icon={Clock}
+										label={t("subagents.statSegments")}
+										wide
+										value={
+											<div className="flex flex-col gap-0.5 tabular-nums">
+												{segmentLines.map((line, i) => (
+													<div key={`${i}-${line}`} className="whitespace-nowrap">
+														{line}
+													</div>
+												))}
+											</div>
+										}
+									/>
 								)}
 							</section>
 							{effectiveStatus === "running" && row.currentTool && (

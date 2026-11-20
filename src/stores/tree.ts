@@ -29,7 +29,8 @@ interface TreeState {
 	/** Session id → active edit-&-resend draft. */
 	resend: Record<string, TreeResend | undefined>;
 	setLeaf(sessionId: string, leafId: string | null): void;
-	/** Fetch a flat entry/leaf snapshot for a live, idle session; silent on failure. */
+	/** Clear a cached leaf synchronously once items include ids outside its confirmed snapshot. */
+	invalidateStaleLeaf(sessionId: string, items: readonly { id: string }[]): void;
 	refreshLeaf(sessionId: string): Promise<void>;
 	startResend(sessionId: string, draft: TreeResend): void;
 	cancelResend(sessionId: string): void;
@@ -57,6 +58,15 @@ export const useTree = create<TreeState>((set, get) => ({
 		leafEntries.delete(sessionId);
 		set((s) => s.leaf[sessionId] === leafId ? s : { leaf: { ...s.leaf, [sessionId]: leafId } });
 	},
+	invalidateStaleLeaf: (sessionId, items) => {
+		if (get().leaf[sessionId] == null) return;
+		const known = leafEntries.get(sessionId);
+		if (!known || items.some((item) => !known.has(item.id))) {
+			// An unconfirmed filter must not hide newly committed messages,
+			// even if the next RPC read is refused or never completes.
+			get().setLeaf(sessionId, null);
+		}
+	},
 	refreshLeaf: async (sessionId) => {
 		// Streaming/offline transitions also invalidate an older idle read.
 		const request = (leafRequests.get(sessionId) ?? 0) + 1;
@@ -66,13 +76,8 @@ export const useTree = create<TreeState>((set, get) => ({
 			get().setLeaf(sessionId, null);
 			return;
 		}
+		get().invalidateStaleLeaf(sessionId, live.items);
 		if (live.streaming) return;
-		const known = leafEntries.get(sessionId);
-		if (!known || live.items.some((item) => !known.has(item.id))) {
-			// An unconfirmed filter must not hide newly committed messages,
-			// even if the next RPC read is refused or never completes.
-			get().setLeaf(sessionId, null);
-		}
 		try {
 			const data = await readEntrySnapshot(sessionId);
 			if (leafRequests.get(sessionId) !== request) return;

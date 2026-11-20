@@ -161,4 +161,42 @@ describe("SubagentSheet", () => {
 		fireEvent.click(screen.getByRole("button", { name: /共享上下文/ }));
 		expect(screen.getByText("PROP-CTX")).toBeTruthy();
 	});
+
+	it("shows active multi-segment total duration and individual run segments in overview", async () => {
+		const s1 = new Date(2026, 10, 19, 20, 16, 12);
+		const e1 = new Date(2026, 10, 19, 20, 31, 32); // 15m20s
+		const s2 = new Date(2026, 10, 19, 20, 34, 22);
+		const e2 = new Date(2026, 10, 19, 20, 38, 37); // 4m15s
+		const segs = [
+			{ startedAt: s1.toISOString(), endedAt: e1.toISOString() },
+			{ startedAt: s2.toISOString(), endedAt: e2.toISOString() },
+		];
+		subagentTranscript.mockResolvedValueOnce({
+			...transcript("DONE"),
+			summary: {
+				id: "multi",
+				status: "completed",
+				startedAt: segs[0].startedAt,
+				endedAt: segs[1].endedAt,
+				runSegments: segs,
+				toolCallCount: 5,
+				requestCount: 2,
+				tokens: 1000,
+				cost: 0.01,
+				filePath: "/s/parent/multi.jsonl",
+			},
+		});
+		render(
+			<SubagentSheet
+				parentFile="/s/parent.jsonl"
+				row={{ ...row("multi"), runSegments: segs, startedAt: segs[0].startedAt, endedAt: segs[1].endedAt }}
+				onClose={() => {}}
+			/>,
+		);
+
+		expect((await screen.findAllByText(/19分35秒/)).length).toBeGreaterThanOrEqual(1);
+		expect(screen.getByText("运行时段")).toBeTruthy();
+		expect(screen.getByText("20:16:12 - 20:31:32 · 15分20秒")).toBeTruthy();
+		expect(screen.getByText("20:34:22 - 20:38:37 · 4分15秒")).toBeTruthy();
+	});
 });

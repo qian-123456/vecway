@@ -9,7 +9,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DirEntry } from "../../lib/contracts";
 import { resolveActiveSessionTarget } from "../../lib/activeSessionTarget";
-import { previewKind } from "../../lib/fileLinks";
+import { canPreviewFile } from "../../lib/fileLinks";
+import { basename } from "../../lib/paths";
 import { usePendingSession } from "../sessions/pendingSession";
 import { fsReadDir, listWorkspaceFiles } from "../../lib/ipc";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -35,8 +36,7 @@ export function FileExplorer() {
 	const centerView = useUi((s) => s.centerView);
 	const drafts = usePendingSession((s) => s.drafts);
 	const selectedDraftId = usePendingSession((s) => s.selectedId);
-	const openDoc = useUi((s) => s.openDoc);
-	const docPath = useUi((s) => s.docPath);
+	const activePreviewPath = useFilePreview((s) => s.activePath);
 
 	const activeTarget = resolveActiveSessionTarget({
 		selectedSessionId,
@@ -66,7 +66,7 @@ export function FileExplorer() {
 	const [childrenMap, setChildrenMap] = useState<Record<string, DirEntry[]>>({});
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
 	const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
-	const [selectedPath, setSelectedPath] = useState<string | null>(docPath);
+	const [selectedPath, setSelectedPath] = useState<string | null>(activePreviewPath);
 	const [isRootLoading, setIsRootLoading] = useState(false);
 	const rootPathRef = useRef(currentWorkspace?.path);
 	rootPathRef.current = currentWorkspace?.path;
@@ -79,12 +79,12 @@ export function FileExplorer() {
 	const [searchLimit, setSearchLimit] = useState(50);
 	const searchInputRef = useRef<HTMLInputElement>(null);
 
-	// Sync selectedPath when docPath changes externally
+	// Sync selectedPath when active right-panel preview tab changes externally
 	useEffect(() => {
-		if (docPath) {
-			setSelectedPath(docPath);
+		if (activePreviewPath) {
+			setSelectedPath(activePreviewPath);
 		}
-	}, [docPath]);
+	}, [activePreviewPath]);
 
 	// Load directory entries for path
 	const loadDir = useCallback(async (path: string) => {
@@ -182,13 +182,13 @@ export function FileExplorer() {
 		setExpandedPaths(new Set());
 	};
 
-	// Images and Mermaid diagrams use the file preview rather than the text-only Docs view.
+	// Previewable files always open in right-panel preview tabs; refuse binary/external files.
 	const handleOpenFile = (path: string) => {
 		setSelectedPath(path);
-		if (previewKind(path) === "image" || /\.mmd$/i.test(path)) {
+		if (canPreviewFile(path)) {
 			useFilePreview.getState().openFile(path, { cwd: currentWorkspace?.path ?? null });
 		} else {
-			openDoc(path);
+			toast.error(t("shell.blockedPreviewNonTextOrImage", { name: basename(path) }));
 		}
 	};
 

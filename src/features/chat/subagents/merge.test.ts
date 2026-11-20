@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SubagentSummary } from "../../../lib/contracts";
-import { mergeAgents } from "./merge";
+import { mergeAgents, segmentsDurationMs } from "./merge";
 
 const summary = (id: string, prompt: string, status: SubagentSummary["status"] = "completed"): SubagentSummary => ({
 	id,
@@ -212,5 +212,34 @@ describe("mergeAgents per-agent timing", () => {
 		expect(by.C.durationMs).toBeUndefined();
 		expect(by.C.endedAt).toBeUndefined();
 		expect(by.C.startedAt).toBeUndefined();
+	});
+
+	it("sums active runSegments instead of wall-clock span or last-segment live progress", () => {
+		const seg1 = { startedAt: "2026-11-19T20:16:12Z", endedAt: "2026-11-19T20:31:32Z" }; // 15m20s = 920_000ms
+		const seg2 = { startedAt: "2026-11-19T20:34:22Z", endedAt: "2026-11-19T20:38:37Z" }; // 4m15s = 255_000ms
+		expect(segmentsDurationMs([seg1, seg2])).toBe(1_175_000);
+
+		const { rows } = mergeAgents({
+			args: { tasks: [{ id: "PlanStatechart", task: "plan" }] },
+			details: null,
+			fileList: [{
+				...summary("PlanStatechart", "plan"),
+				startedAt: seg1.startedAt,
+				endedAt: seg2.endedAt,
+				runSegments: [seg1, seg2],
+			}],
+			liveSubagents: {
+				PlanStatechart: {
+					status: "completed",
+					label: "PlanStatechart",
+					parentToolCallId: "t",
+					progress: { id: "PlanStatechart", durationMs: 255_000 } as never,
+				},
+			},
+			toolCallId: "t",
+			callStatus: "done",
+		});
+		expect(rows[0].runSegments).toEqual([seg1, seg2]);
+		expect(rows[0].durationMs).toBe(1_175_000);
 	});
 });

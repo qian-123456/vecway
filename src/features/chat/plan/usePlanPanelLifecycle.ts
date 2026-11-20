@@ -21,6 +21,22 @@ export function parseSavedPlanStatus(value: unknown): PlanStatus | null {
 	return parsePlanStatus(JSON.stringify({ ...saved, v: 1, content, title }));
 }
 
+/**
+ * Highest plan version already auto-opened (or suppressed on user stop) per
+ * session in this app session. Kept at module scope so switching sessions or
+ * unmounting Composer never loses dismissal memory or misses a plan that
+ * finished while another session was active.
+ */
+const autoOpenedVersion = new Map<string, number>();
+
+export function resetPlanAutoOpenForTest(): void {
+	autoOpenedVersion.clear();
+}
+
+function isReviewablePlan(plan: PlanStatus | undefined): plan is PlanStatus {
+	return Boolean(plan?.enabled && plan.phase === "review" && plan.content?.trim());
+}
+
 export function usePlanPanelLifecycle(
 	sessionId: string,
 	plan: PlanStatus | undefined,
@@ -28,11 +44,19 @@ export function usePlanPanelLifecycle(
 ): void {
 	const selectedId = useUi((s) => s.selectedSessionId);
 	const selected = selectedId === sessionId;
-	const revision = useRef<{ sessionId: string; version: number | undefined; pending?: number } | null>(null);
 	const suppressed = useRef(false);
+
 	useEffect(() => {
-		suppressed.current = false;
+		const initial = useLive.getState().sessions[sessionId];
+		suppressed.current = Boolean(initial?.exitIntent || initial?.interruption);
 		if (!selected) return;
+		if (
+			suppressed.current &&
+			typeof initial?.plan?.version === "number" &&
+			initial.plan.version > 0
+		) {
+			autoOpenedVersion.set(sessionId, initial.plan.version);
+		}
 		return useLive.subscribe((state, previous) => {
 			if (useUi.getState().selectedSessionId !== sessionId) return;
 			const live = state.sessions[sessionId];
@@ -40,33 +64,39 @@ export function usePlanPanelLifecycle(
 				// A user stop can start and finish in one React batch. Observe the
 				// store edge, not just its final rendered streaming=false flag.
 				suppressed.current = true;
-				if (revision.current?.sessionId === sessionId) {
-					revision.current.pending = undefined;
-					revision.current.version = live.plan?.version;
+				if (typeof live.plan?.version === "number" && live.plan.version > 0) {
+					autoOpenedVersion.set(sessionId, live.plan.version);
 				}
 			} else if (live?.streaming && !previous.sessions[sessionId]?.streaming) {
 				suppressed.current = false;
+			} else if (
+				suppressed.current &&
+				typeof live?.plan?.version === "number" &&
+				live.plan.version > 0
+			) {
+				autoOpenedVersion.set(sessionId, live.plan.version);
 			}
 		});
 	}, [sessionId, selected]);
 
 	useEffect(() => {
-		if (!selected) {
-			revision.current = null;
+		if (!selected) return;
+		if (plan && (!plan.enabled || plan.version === 0)) {
+			autoOpenedVersion.delete(sessionId);
 			return;
 		}
-		const version = plan?.version;
-		const previous = revision.current;
-		if (!previous || previous.sessionId !== sessionId || previous.version === undefined || version === undefined) {
-			revision.current = { sessionId, version };
+		if (streaming || !isReviewablePlan(plan)) return;
+		const ver = plan.version;
+		if (typeof ver !== "number" || ver <= 0) return;
+		if (suppressed.current) {
+			autoOpenedVersion.set(sessionId, ver);
 			return;
 		}
-		if (version < previous.version || !plan?.enabled || suppressed.current) previous.pending = undefined;
-		else if (version > previous.version) previous.pending = version;
-		previous.version = version;
-		if (previous.pending !== version || streaming || !plan?.enabled || !hasMeaningfulPlan(plan)) return;
-		// Consume before opening: later status frames must respect a manual dismissal.
-		previous.pending = undefined;
-		if (useUi.getState().selectedSessionId === sessionId) useUi.getState().setRightTab("plan");
+		if (autoOpenedVersion.get(sessionId) === ver) return;
+		// Consume before opening: later status frames or re-selection must respect manual dismissal.
+		autoOpenedVersion.set(sessionId, ver);
+		if (useUi.getState().selectedSessionId === sessionId) {
+			useUi.getState().setRightTab("plan");
+		}
 	}, [sessionId, selected, plan, streaming]);
 }

@@ -1,5 +1,6 @@
 import { getTranscript } from "../lib/ipc";
 import { useLive } from "./live";
+import { useTree } from "./tree";
 
 const requests = new Map<string, symbol>();
 
@@ -36,6 +37,7 @@ async function readTranscriptCache(sessionId: string, incremental: boolean, prep
 		} else {
 			store.appendItems(sessionId, page.items, page.nextOffset, page.tailId);
 		}
+		useTree.getState().invalidateStaleLeaf(sessionId, useLive.getState().sessions[sessionId]?.items ?? page.items);
 		if (prepareFirstPrompt) {
 			// read_page(from=0) returns every complete row, without a row limit.
 			useLive.setState((state) => {

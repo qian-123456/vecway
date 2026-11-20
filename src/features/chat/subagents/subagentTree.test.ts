@@ -174,6 +174,30 @@ describe("row text", () => {
 		expect(elapsedMs(sub("pending"), undefined, "waiting", 9)).toBeUndefined();
 	});
 
+	it("sums prior closed segments with current segment when running and uses segments sum when done", () => {
+		const seg1 = { startedAt: new Date(1_000_000).toISOString(), endedAt: new Date(1_010_000).toISOString() };
+		const seg2 = { startedAt: new Date(1_050_000).toISOString(), endedAt: new Date(1_055_000).toISOString() };
+		const runningRow = {
+			id: "a",
+			index: 0,
+			status: "running",
+			startedAt: seg1.startedAt,
+			runSegments: [seg1, seg2],
+		} as never;
+		expect(elapsedMs(sub("running"), runningRow, "running", 1_062_000)).toBe(22_000);
+
+		const doneRow = {
+			id: "a",
+			index: 0,
+			status: "completed",
+			startedAt: seg1.startedAt,
+			endedAt: seg2.endedAt,
+			runSegments: [seg1, seg2],
+			durationMs: 1,
+		} as never;
+		expect(elapsedMs(sub("completed"), doneRow, "done", 9)).toBe(15_000);
+	});
+
 	it("shows failure reason in the activity column", () => {
 		const info = sub("failed", { progress: { retryFailure: { attempt: 3, errorMessage: "429" } } as never });
 		expect(activityText(info, undefined, "failed")).toEqual({ text: "429", error: true });
@@ -232,7 +256,7 @@ describe("subagentName", () => {
 	});
 });
 
-import { collapseTree, descendantStats, formatClockTime, type TreeNode } from "./subagentTree";
+import { collapseTree, descendantStats, formatClockTime, formatRunSegmentLines, type TreeNode } from "./subagentTree";
 
 describe("collapseTree / descendantStats", () => {
 	const mk = (id: string, state: "running" | "done", children: TreeNode[] = []): TreeNode => ({ id, state, children });
@@ -253,5 +277,21 @@ describe("collapseTree / descendantStats", () => {
 		const d = new Date(2026, 9, 26, 22, 16, 17);
 		expect(formatClockTime(d.getTime())).toBe("22:16:17");
 		expect(formatClockTime(undefined)).toBeUndefined();
+	});
+
+	it("formats run segment lines with local clock range and duration", () => {
+		const s1 = new Date(2026, 10, 19, 20, 16, 12);
+		const e1 = new Date(2026, 10, 19, 20, 31, 32);
+		const s2 = new Date(2026, 10, 19, 20, 34, 22);
+		const e2 = new Date(2026, 10, 19, 20, 38, 37);
+		expect(
+			formatRunSegmentLines([
+				{ startedAt: s1.toISOString(), endedAt: e1.toISOString() },
+				{ startedAt: s2.toISOString(), endedAt: e2.toISOString() },
+			]),
+		).toEqual([
+			"20:16:12 - 20:31:32 · 15分20秒",
+			"20:34:22 - 20:38:37 · 4分15秒",
+		]);
 	});
 });

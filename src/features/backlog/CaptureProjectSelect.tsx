@@ -1,5 +1,5 @@
 import { Check, ChevronDown, Folder } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
 import { useSessions } from "../../stores/sessions";
 import { useT } from "../../stores/language";
@@ -102,15 +102,32 @@ export function CaptureProjectSelect({
 	const pick = useBacklog((s) => s.captureProject);
 	const setPick = useBacklog((s) => s.setCaptureProject);
 	const workspaces = useSessions((s) => s.workspaces);
+	const hasLoaded = useSessions((s) => s.hasLoaded);
 	const options = useMemo(() => captureProjectOptions(workspaces), [workspaces]);
 
-	const resolved = resolveCaptureProject(pick, currentProject);
+	const isStalePick =
+		hasLoaded &&
+		pick !== null &&
+		pick !== CAPTURE_PROJECT_NONE &&
+		!options.some((o) => o.path === pick);
+
+	useEffect(() => {
+		if (isStalePick) setPick(null);
+	}, [isStalePick, setPick]);
+
+	const effectivePick = isStalePick ? null : pick;
+	const resolved = resolveCaptureProject(effectivePick, currentProject);
 	const label = resolved ? projectDisplayName(resolved) : t("backlog.noProject");
-	// A remembered project that is no longer a workspace must stay selectable.
+	// Keep a remembered project selectable only while workspaces are still loading.
 	const extra =
-		pick !== null && pick !== CAPTURE_PROJECT_NONE && !options.some((o) => o.path === pick) ? pick : null;
+		!hasLoaded &&
+		effectivePick !== null &&
+		effectivePick !== CAPTURE_PROJECT_NONE &&
+		!options.some((o) => o.path === effectivePick)
+			? effectivePick
+			: null;
 	const autoName = currentProject ? projectDisplayName(currentProject) : t("backlog.noProject");
-	const value = pick === null ? AUTO : pick;
+	const value = effectivePick === null ? AUTO : effectivePick;
 
 	const rows: PickerRow[] = [
 		{ value: AUTO, label: t("backlog.followCurrentSession", { name: autoName }) },
@@ -118,7 +135,6 @@ export function CaptureProjectSelect({
 		...(extra ? [{ value: extra, label: projectDisplayName(extra) }] : []),
 		{ value: CAPTURE_PROJECT_NONE, label: t("backlog.noProjectAssigned") },
 	];
-
 	return (
 		<ProjectPickerPill
 			label={label}
