@@ -1,5 +1,7 @@
+import clsx from "clsx";
 import { Search, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { SearchShortcutHint } from "../../components/SearchInput";
 import { useT } from "../../stores/language";
 import type { BacklogKind } from "../../lib/contracts";
 import type { IdeaSearch } from "./ideasLogic";
@@ -10,13 +12,17 @@ export function IdeaSearchBar({
 	search,
 	onChange,
 	onClose,
+	inputRef: externalRef,
 }: {
 	search: IdeaSearch;
 	onChange: (next: IdeaSearch) => void;
 	onClose: () => void;
+	inputRef?: RefObject<HTMLInputElement | null>;
 }) {
 	const { t } = useT();
-	const inputRef = useRef<HTMLInputElement>(null);
+	const localRef = useRef<HTMLInputElement>(null);
+	const inputRef = externalRef ?? localRef;
+	const [focused, setFocused] = useState(true);
 	useEffect(() => {
 		inputRef.current?.focus();
 	}, []);
@@ -28,14 +34,22 @@ export function IdeaSearchBar({
 		<div className="flex shrink-0 items-center gap-1.5">
 			<div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-full border border-[var(--border-divider)] bg-[var(--bg)] px-2.5 py-1 focus-within:border-[var(--accent)]">
 				<Search className="h-3.5 w-3.5 shrink-0 text-[var(--text-dim)]" />
-				<input
-					ref={inputRef}
-					value={search.query}
-					onChange={(e) => onChange({ ...search, query: e.target.value })}
-					data-idea-search=""
-					placeholder={t("backlog.searchPlaceholder")}
-					className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
-				/>
+				<div className="relative min-w-0 flex-1">
+					<input
+						ref={inputRef}
+						value={search.query}
+						onChange={(e) => onChange({ ...search, query: e.target.value })}
+						onFocus={() => setFocused(true)}
+						onBlur={() => setFocused(false)}
+						data-idea-search=""
+						placeholder={t("backlog.searchPlaceholder")}
+						className={clsx(
+							"w-full min-w-0 bg-transparent text-xs text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]",
+							!focused && !search.query && "placeholder:text-transparent",
+						)}
+					/>
+					{!focused && !search.query && <SearchShortcutHint className="absolute inset-0" />}
+				</div>
 				<button
 					type="button"
 					onClick={onClose}

@@ -431,6 +431,22 @@ export function ShortcutsSection() {
 					control={<FixedCapsule combo={alternateShortcutHint(sendShortcut)} />}
 				/>
 
+				<GroupLabel>{t("shortcutsSettings.groups.pickersAndSearch")}</GroupLabel>
+				<TableRow
+					label={t("shortcutsSettings.slashSearchLabel")}
+					description={t("shortcutsSettings.slashSearchDesc")}
+					control={<FixedCapsule combo="/" />}
+				/>
+				<TableRow
+					label={t("shortcutsSettings.pickerNavLabel")}
+					description={t("shortcutsSettings.pickerNavDesc")}
+					control={<FixedCapsule combo="↑↓ · ←→" />}
+				/>
+				<TableRow
+					label={t("shortcutsSettings.pickerConfirmLabel")}
+					description={t("shortcutsSettings.pickerConfirmDesc")}
+					control={<FixedCapsule combo="↵ / Esc" />}
+				/>
 				<GroupLabel>{t("shortcutsSettings.groups.global")}</GroupLabel>
 				<TableRow
 					fieldId="quickCaptureShortcut"

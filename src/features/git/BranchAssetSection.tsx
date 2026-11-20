@@ -421,6 +421,7 @@ export function BranchAssetSection({
 				<SearchInput
 					value={query}
 					onChange={setQuery}
+					shortcutHint="/"
 					placeholder={t("git.branches.searchPlaceholder")}
 					className="min-w-[8rem] flex-1"
 				/>

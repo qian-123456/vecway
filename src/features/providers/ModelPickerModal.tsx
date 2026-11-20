@@ -1,5 +1,5 @@
 import { Activity, Loader2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Modal } from "../../components/Modal";
 import { SearchInput } from "../../components/SearchInput";
 import { Segmented } from "../../components/Segmented";
@@ -7,6 +7,7 @@ import type { DiscoveredModel } from "../../lib/contracts";
 import { useT } from "../../stores/language";
 import { useModelCatalog } from "../../stores/modelCatalog";
 import { catalogKeys, classifyModel, isProbeFailed, type ModelCategory } from "./modelClass";
+import { focusAndSelect, useSlashSearch } from "../shortcuts/searchShortcut";
 import { useProviders } from "./store";
 
 interface Props {
@@ -42,6 +43,9 @@ export function ModelPickerModal({
 	const [category, setCategory] = useState<ModelCategory>(initialCategory);
 	const [selected, setSelected] = useState<Set<string>>(new Set());
 	const [probing, setProbing] = useState(false);
+	const bodyRef = useRef<HTMLDivElement>(null);
+	const searchInputRef = useRef<HTMLInputElement>(null);
+	useSlashSearch(() => focusAndSelect(searchInputRef.current), { tier: "modal", scopeRef: bodyRef });
 
 	const testOf = (id: string) => (providerId ? modelTests[`${providerId}::${id}`] : undefined);
 
@@ -137,12 +141,14 @@ export function ModelPickerModal({
 			onClose={onClose}
 			title={t("providers.pickerTitle", { count: models.length })}
 		>
-			<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+			<div ref={bodyRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
 				<div className="space-y-3 border-b border-[var(--border-divider)] p-4">
 					<SearchInput
+						ref={searchInputRef}
 						value={search}
 						onChange={setSearch}
 						autoFocus
+						shortcutHint="/"
 						placeholder={t("providers.pickerSearchPlaceholder")}
 						inputClassName={`${inputCls} pl-8 pr-7`}
 					/>

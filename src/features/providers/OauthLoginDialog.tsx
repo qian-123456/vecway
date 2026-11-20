@@ -26,6 +26,7 @@ import {
 } from "../../lib/ipc";
 import { useProviders } from "./store";
 import { useT } from "../../stores/language";
+import { focusAndSelect, useSlashSearch } from "../shortcuts/searchShortcut";
 import { ProviderBrandLogo } from "../settings/sections/ProviderBrandLogo";
 interface Props {
 	onClose: () => void;
@@ -75,6 +76,13 @@ export function OauthLoginDialog({ onClose, initialProviderId, initialProviderQu
 	const [listError, setListError] = useState<string | null>(null);
 
 	const [flowState, setFlowState] = useState<FlowState | null>(null);
+	const listBodyRef = useRef<HTMLDivElement>(null);
+	const searchInputRef = useRef<HTMLInputElement>(null);
+	useSlashSearch(() => focusAndSelect(searchInputRef.current), {
+		tier: "modal",
+		enabled: phase === "list",
+		scopeRef: listBodyRef,
+	});
 	const [inputValue, setInputValue] = useState("");
 	const [submittingPrompt, setSubmittingPrompt] = useState(false);
 
@@ -461,13 +469,15 @@ export function OauthLoginDialog({ onClose, initialProviderId, initialProviderQu
 
 				{/* Dialog Body */}
 				{phase === "list" ? (
-					<div className="flex-1 space-y-3 overflow-y-auto p-4">
+					<div ref={listBodyRef} className="flex-1 space-y-3 overflow-y-auto p-4">
 						<p className="text-xs text-neutral-400 leading-relaxed">
 							{t("providers.oauthBannerDesc")}
 						</p>
 						<SearchInput
+							ref={searchInputRef}
 							value={providerQuery}
 							onChange={setProviderQuery}
+							shortcutHint="/"
 							placeholder={t("providers.oauthSearchPlaceholder")}
 						/>
 

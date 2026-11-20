@@ -105,6 +105,9 @@ describe("ShortcutsSection", () => {
 		render(<ShortcutsSection />);
 		expect(screen.queryByRole("button", { name: "修改「关闭标签页」的快捷键" })).toBeNull();
 		expect(screen.queryByRole("button", { name: "修改「放大界面」的快捷键" })).toBeNull();
+		expect(screen.getByText("聚焦当前搜索框")).toBeTruthy();
+		expect(screen.getByText("切换模型或分组")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /修改「聚焦当前搜索框」/ })).toBeNull();
 	});
 
 	it("reset all asks first and only when something changed", async () => {

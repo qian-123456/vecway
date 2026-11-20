@@ -713,6 +713,7 @@ export function TimelineSection({
 							<SearchInput
 								value={filterText}
 								onChange={setFilterText}
+								shortcutHint="/"
 								placeholder={t("git.timeline.searchPlaceholder")}
 								className="flex-1"
 							/>

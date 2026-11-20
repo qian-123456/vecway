@@ -19,6 +19,8 @@ import rehypeHighlight from "rehype-highlight";
 import remarkCjkFriendly from "remark-cjk-friendly";
 import remarkGfm from "remark-gfm";
 import { CopyButton } from "../../components/CopyButton";
+import { SearchShortcutHint } from "../../components/SearchInput";
+import { focusAndSelect, useSlashSearch } from "../shortcuts/searchShortcut";
 import { errMsg } from "../../lib/dialogs";
 import { toast } from "../../lib/toast";
 import { useLanguageStore } from "../../stores/language";
@@ -331,6 +333,9 @@ export function GuideReader() {
 
 	const [searchQuery, setSearchQuery] = useState("");
 	const [tocOpenMobile, setTocOpenMobile] = useState(false);
+	const [searchFocused, setSearchFocused] = useState(false);
+	const searchInputRef = useRef<HTMLInputElement>(null);
+	useSlashSearch(() => focusAndSelect(searchInputRef.current), { tier: "page" });
 
 	const searchResults = useMemo(() => {
 		if (!chapters || !searchQuery.trim()) return [];
@@ -377,12 +382,21 @@ export function GuideReader() {
 					<div className="relative w-full sm:max-w-xs">
 						<Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--text-60)]" />
 						<input
+							ref={searchInputRef}
 							type="text"
 							value={searchQuery}
 							onChange={(e) => setSearchQuery(e.target.value)}
+							onFocus={() => setSearchFocused(true)}
+							onBlur={() => setSearchFocused(false)}
 							placeholder={lang === "zh" ? "在教程中全文搜索…" : "Search in guide…"}
-							className="w-full rounded-md border border-[var(--line)] bg-[var(--well-bg)] py-1.5 pl-8 pr-7 text-xs text-[var(--text)] placeholder-[var(--text-60)] focus:border-[var(--border-active)] focus:outline-none"
+							className={clsx(
+								"w-full rounded-md border border-[var(--line)] bg-[var(--well-bg)] py-1.5 pl-8 pr-7 text-xs text-[var(--text)] placeholder-[var(--text-60)] focus:border-[var(--border-active)] focus:outline-none",
+								!searchFocused && !searchQuery && "placeholder:text-transparent",
+							)}
 						/>
+						{!searchFocused && !searchQuery && (
+							<SearchShortcutHint className="absolute inset-y-0 left-8 right-7" />
+						)}
 						{searchQuery && (
 							<button
 								type="button"

@@ -4,6 +4,8 @@ import { absoluteTime, relativeTime } from "../../../lib/format";
 import type { SessionMeta, SpaceMode } from "../../../lib/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "../../../components/Modal";
+import { SearchShortcutHint } from "../../../components/SearchInput";
+import { focusAndSelect, useSlashSearch } from "../../shortcuts/searchShortcut";
 import { isComposing } from "../../../lib/hooks";
 import { isBlankDraft } from "../../../lib/createSession";
 import { useLive } from "../../../stores/live";
@@ -61,6 +63,9 @@ function SearchDialogBody() {
 	const filterBtnRef = useRef<HTMLButtonElement>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const listRef = useRef<HTMLDivElement>(null);
+	const dialogBodyRef = useRef<HTMLDivElement>(null);
+	const [searchFocused, setSearchFocused] = useState(true);
+	useSlashSearch(() => focusAndSelect(inputRef.current), { tier: "modal", scopeRef: dialogBodyRef });
 
 	const q = query.trim();
 	const content = useContentSearch(query);
@@ -157,21 +162,31 @@ function SearchDialogBody() {
 			ariaLabel={t("sessions.searchDialogAria")}
 			className="h-[min(560px,85vh)] w-full max-w-xl overflow-hidden"
 		>
-			<div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-divider)] px-3 py-2.5">
+			<div ref={dialogBodyRef} className="flex shrink-0 items-center gap-2 border-b border-[var(--border-divider)] px-3 py-2.5">
 				<Search size={16} strokeWidth={1.5} className="shrink-0 text-neutral-400" />
-				<input
-					ref={inputRef}
-					value={query}
-					onChange={(e) => setQuery(e.target.value)}
-					onKeyDown={onKeyDown}
-					placeholder={t("sidebar.searchSessions")}
-					aria-label={t("sessions.searchDialogAria")}
-					role="combobox"
-					aria-expanded="true"
-					aria-controls="session-search-list"
-					aria-activedescendant={activeIdx >= 0 ? `session-search-opt-${activeIdx}` : undefined}
-					className="min-w-0 flex-1 bg-transparent text-[14px] text-neutral-100 outline-none placeholder:text-neutral-500"
-				/>
+				<div className="relative min-w-0 flex-1">
+					<input
+						ref={inputRef}
+						value={query}
+						onChange={(e) => setQuery(e.target.value)}
+						onFocus={() => setSearchFocused(true)}
+						onBlur={() => setSearchFocused(false)}
+						onKeyDown={onKeyDown}
+						placeholder={t("sidebar.searchSessions")}
+						aria-label={t("sessions.searchDialogAria")}
+						role="combobox"
+						aria-expanded="true"
+						aria-controls="session-search-list"
+						aria-activedescendant={activeIdx >= 0 ? `session-search-opt-${activeIdx}` : undefined}
+						className={clsx(
+							"w-full min-w-0 bg-transparent text-[14px] text-neutral-100 outline-none placeholder:text-neutral-500",
+							!searchFocused && !query && "placeholder:text-transparent",
+						)}
+					/>
+					{!searchFocused && !query && (
+						<SearchShortcutHint className="absolute inset-0" textClassName="text-[14px]" />
+					)}
+				</div>
 				{content.loading && (
 					<Loader2
 						size={14}

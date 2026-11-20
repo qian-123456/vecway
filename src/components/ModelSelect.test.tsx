@@ -60,6 +60,13 @@ describe("ModelMenuContent groups", () => {
 		expect(screen.getByRole("button", { name: "刷新模型列表" })).toBeTruthy();
 		expect(screen.queryByText("加载模型列表中…")).toBeNull();
 	});
+	it("does not render permanent availability-unverified or keyboard-tip footer bars", () => {
+		useModelCatalog.setState({ status: "unverified", models: MODELS });
+		render(<ModelMenuContent catalogManaged models={MODELS} onSelect={() => {}} />);
+		expect(screen.queryByText(/可用性未验证|Availability unverified/)).toBeNull();
+		expect(screen.queryByText(/切换分组|switch group/)).toBeNull();
+	});
+
 
 	it("puts unavailable rows after selectable rows and blocks click, Enter and custom selection", () => {
 		const onSelect = vi.fn();

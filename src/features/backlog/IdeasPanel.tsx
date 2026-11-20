@@ -1,5 +1,5 @@
 import { Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MODAL_SELECTOR } from "../../components/FloatingLayer";
 import type { BacklogItem, BacklogKind } from "../../lib/contracts";
 import { errMsg } from "../../lib/dialogs";
@@ -16,6 +16,7 @@ import { fillIdeasIntoComposer } from "./fillComposer";
 import { IdeaCaptureBox } from "./IdeaCaptureBox";
 import { IdeaRow } from "./IdeaRow";
 import { IdeaSearchBar } from "./IdeaSearchBar";
+import { focusDeferred, useSlashSearch } from "../shortcuts/searchShortcut";
 import { docToStored, refImagePaths, storedToDoc } from "./ideaTokens";
 import { deleteIdeas, purgeIdeas, restoreIdeas, setIdeasStatus } from "./ideasActions";
 import {
@@ -75,6 +76,15 @@ export function IdeasPanel({
 	const [editingKind, setEditingKind] = useState<BacklogKind>("idea");
 	/** Project picked while editing; null = untouched (keep the item's current project). */
 	const [editingProject, setEditingProject] = useState<string | null>(null);
+	const panelRef = useRef<HTMLDivElement>(null);
+	const searchInputRef = useRef<HTMLInputElement>(null);
+	useSlashSearch(
+		() => {
+			setSearchOpen(true);
+			focusDeferred(searchInputRef);
+		},
+		{ tier: "popover", scopeRef: panelRef },
+	);
 
 	const options = useMemo(() => scopeOptions(items, currentProject), [items, currentProject]);
 	const scope = effectiveScope(selectedScope, options);
@@ -236,7 +246,7 @@ export function IdeasPanel({
 	const trashed = items.filter((i) => i.deletedAt);
 
 	return (
-		<div className="flex max-h-[min(640px,calc(100vh-8rem))] flex-col text-xs">
+		<div ref={panelRef} className="flex max-h-[min(640px,calc(100vh-8rem))] flex-col text-xs">
 			<div className="flex shrink-0 flex-col gap-2 pb-2">
 				<IdeaCaptureBox variant="panel" />
 				<StatusTabs
@@ -250,7 +260,7 @@ export function IdeasPanel({
 					onScopeChange={changeScope}
 					onToggleSearch={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
 				/>
-				{searchOpen && <IdeaSearchBar search={search} onChange={setSearch} onClose={closeSearch} />}
+				{searchOpen && <IdeaSearchBar inputRef={searchInputRef} search={search} onChange={setSearch} onClose={closeSearch} />}
 			</div>
 
 			<div className="min-h-24 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">

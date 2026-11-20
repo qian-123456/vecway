@@ -103,7 +103,7 @@ export function ComposerModelControls({
 						layer="popover"
 						ignoreRefs={[modelMenuRef]}
 						onDismiss={() => onModelOpenChange(false)}
-						className="w-[min(440px,calc(100vw-24px))] rounded-xl border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] py-1"
+						className="flex w-[min(440px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border border-[var(--border-divider)] !bg-[var(--bg-panel)] shadow-apple-modal"
 					>
 						<ModelMenuContent
 							catalogManaged

@@ -45,4 +45,23 @@ describe("SearchInput", () => {
 		expect(ref.current).toBeInstanceOf(HTMLInputElement);
 		expect(document.activeElement).toBe(ref.current);
 	});
+
+	it("shows GitHub-style '/' shortcut hint only when empty and unfocused while keeping placeholder accessible", () => {
+		function HintHost() {
+			const [v, setV] = useState("");
+			return <SearchInput value={v} onChange={setV} placeholder="搜索 Skill…" shortcutHint="/" />;
+		}
+		const { container } = render(<HintHost />);
+		const input = screen.getByPlaceholderText("搜索 Skill…") as HTMLInputElement;
+		expect(container.querySelector("kbd")?.textContent).toBe("/");
+
+		fireEvent.focus(input);
+		expect(container.querySelector("kbd")).toBeNull();
+
+		fireEvent.blur(input);
+		expect(container.querySelector("kbd")?.textContent).toBe("/");
+
+		fireEvent.change(input, { target: { value: "git" } });
+		expect(container.querySelector("kbd")).toBeNull();
+	});
 });

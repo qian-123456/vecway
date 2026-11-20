@@ -27,6 +27,7 @@ import { FileTreeNode } from "./FileTreeNode";
 import { WorkspaceCard } from "./WorkspaceCard";
 import { claimEscape } from "../../lib/escapeClaim";
 import { useT } from "../../stores/language";
+import { focusDeferred, useSlashSearch } from "../shortcuts/searchShortcut";
 
 export function FileExplorer() {
 	const { t } = useT();
@@ -78,6 +79,14 @@ export function FileExplorer() {
 	const [isSearchingFiles, setIsSearchingFiles] = useState(false);
 	const [searchLimit, setSearchLimit] = useState(50);
 	const searchInputRef = useRef<HTMLInputElement>(null);
+	const panelRef = useRef<HTMLDivElement>(null);
+	useSlashSearch(
+		() => {
+			setSearchOpen(true);
+			focusDeferred(searchInputRef);
+		},
+		{ tier: "panel", scopeRef: panelRef },
+	);
 
 	// Sync selectedPath when active right-panel preview tab changes externally
 	useEffect(() => {
@@ -231,7 +240,7 @@ export function FileExplorer() {
 	}, [searchQuery, currentWorkspace?.path]);
 
 	return (
-		<div className="flex h-full flex-col bg-transparent text-neutral-300 text-xs select-none">
+		<div ref={panelRef} tabIndex={-1} data-slash-panel="" className="flex h-full flex-col bg-transparent text-neutral-300 text-xs select-none outline-none">
 			{/* Top Tool Section: Actions Toolbar matching the reference screenshot */}
 			<div className="flex items-center justify-between border-b border-[var(--border-divider)] px-2 py-1 bg-[var(--bg-active-fill)]">
 				<span className="text-[10.5px] font-semibold uppercase tracking-wider text-neutral-400">
@@ -305,6 +314,7 @@ export function FileExplorer() {
 						ref={searchInputRef}
 						value={searchQuery}
 						onChange={setSearchQuery}
+						shortcutHint="/"
 						placeholder={t("explorer.searchFilterPlaceholder")}
 						iconSize={12}
 						inputClassName="w-full rounded hairline bg-[var(--well-bg)] py-0.5 pl-6 pr-5 text-xs text-neutral-200 placeholder:text-neutral-500 focus:ring-1 focus:ring-[#0A84FF]/50 focus:outline-none"
@@ -313,6 +323,7 @@ export function FileExplorer() {
 							if (e.key === "Escape" && !searchQuery) {
 								claimEscape(e);
 								setSearchOpen(false);
+								panelRef.current?.focus();
 							}
 						}}
 					/>

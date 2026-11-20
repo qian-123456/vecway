@@ -49,6 +49,7 @@ import {
 	type SkillSort,
 	type SkillsDrawerTarget,
 } from "./store";
+import { focusAndSelect, useSlashSearch } from "../shortcuts/searchShortcut";
 
 /** Drop a leading YAML frontmatter block; name/description are shown in the header. */
 function stripFrontmatter(text: string): string {
@@ -1011,6 +1012,8 @@ export function SkillsPage() {
 	const usageError = useSkillsStore((s) => s.usageError);
 	const usageLoaded = useSkillsStore((s) => s.usageLoaded);
 
+	const searchInputRef = useRef<HTMLInputElement>(null);
+	useSlashSearch(() => focusAndSelect(searchInputRef.current), { tier: "page" });
 	const loadCatalog = useSkillsStore((s) => s.loadCatalog);
 	const loadUsage = useSkillsStore((s) => s.loadUsage);
 	const refresh = useSkillsStore((s) => s.refresh);
@@ -1163,9 +1166,11 @@ export function SkillsPage() {
 					/>
 					<div className="flex-1" />
 					<SearchInput
+						ref={searchInputRef}
 						value={searchQuery}
 						onChange={setSearchQuery}
 						placeholder={activeTab === "skills" ? t("skills.searchPlaceholderSkill") : t("skills.searchPlaceholderExtension")}
+						shortcutHint="/"
 						iconSize={13}
 						className="w-56 sm:w-64"
 						inputClassName="h-8 w-full rounded-lg hairline bg-[var(--well-bg)] pl-8 pr-7 text-xs text-neutral-100 placeholder-neutral-500 transition-all focus:outline-none focus:ring-1 focus:ring-amber-500/50"

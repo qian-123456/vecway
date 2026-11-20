@@ -11,7 +11,7 @@
  * the row, so the columns above never shift.
  */
 import { AlertTriangle, ArrowRightLeft, ChevronDown, ChevronRight, Loader2, PlayCircle, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NativeSelect } from "../../../components/NativeSelect";
 import { SearchInput } from "../../../components/SearchInput";
 import type { ModelProbeResult, ModelUsageScan } from "../../../lib/contracts";
@@ -19,6 +19,7 @@ import { errMsg } from "../../../lib/dialogs";
 import { modelProbe } from "../../../lib/ipc";
 import { useModelKindCatalog } from "../../../stores/modelKinds";
 import { KIND_GROUP_ORDER, KIND_GROUP_TITLES, probeKindOf } from "./kinds";
+import { focusAndSelect, useSlashSearch } from "../../shortcuts/searchShortcut";
 import { useT } from "../../../stores/language";
 import {
 	buildOverview,
@@ -253,6 +254,9 @@ export function ModelReplaceOverview({
 	const kindBySelector = useModelKindCatalog((s) => s.kindBySelector);
 	const kindLoading = useModelKindCatalog((s) => s.loading);
 	const kindError = useModelKindCatalog((s) => s.error);
+	const rootRef = useRef<HTMLDivElement>(null);
+	const searchInputRef = useRef<HTMLInputElement>(null);
+	useSlashSearch(() => focusAndSelect(searchInputRef.current), { tier: "modal", scopeRef: rootRef });
 	useEffect(() => {
 		void useModelKindCatalog.getState().load();
 	}, []);
@@ -281,7 +285,7 @@ export function ModelReplaceOverview({
 	};
 
 	return (
-		<div className="flex min-h-0 flex-1 flex-col">
+		<div ref={rootRef} className="flex min-h-0 flex-1 flex-col">
 			<div className="flex items-center justify-between gap-4 px-4 pb-3">
 				<p className="text-xs leading-5 text-neutral-400">
 					{t("modelReplace.overviewIntro")}
@@ -300,9 +304,11 @@ export function ModelReplaceOverview({
 
 			<div className="flex flex-wrap items-center gap-2 px-4 pb-3">
 				<SearchInput
+					ref={searchInputRef}
 					className="min-w-48 flex-1"
 					value={query}
 					onChange={onQueryChange}
+					shortcutHint="/"
 					placeholder={t("modelReplace.searchPlaceholder")}
 					ariaLabel={t("modelReplace.searchAria")}
 					iconSize={12}

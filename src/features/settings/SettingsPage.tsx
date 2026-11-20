@@ -3,6 +3,7 @@
  * the active nav id to its section component (see `sections/index.ts`).
  */
 import { Search, X } from "lucide-react";
+import clsx from "clsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isComposing } from "../../lib/hooks";
 import { useUi } from "../../stores/ui";
@@ -24,6 +25,8 @@ import { SECTION_COMPONENTS } from "./sections";
 import { SettingsNavContext, type SettingsNavValue } from "./settingsNav";
 import { useSettings } from "./store";
 import { Notice } from "../../components/Notice";
+import { SearchShortcutHint } from "../../components/SearchInput";
+import { focusAndSelect, useSlashSearch } from "../shortcuts/searchShortcut";
 import { useT } from "../../stores/language";
 
 interface SettingsPageProps {
@@ -61,6 +64,9 @@ export function SettingsPage({ onClose, initialSection }: SettingsPageProps = {}
 	const contentRef = useRef<HTMLDivElement>(null);
 	const navRef = useRef<HTMLElement>(null);
 	const searchRef = useRef<HTMLInputElement>(null);
+	const rootRef = useRef<HTMLDivElement>(null);
+	const [searchFocused, setSearchFocused] = useState(false);
+	useSlashSearch(() => focusAndSelect(searchRef.current), { tier: "modal", scopeRef: rootRef });
 
 	useEffect(() => {
 		void loadSettings();
@@ -276,36 +282,44 @@ export function SettingsPage({ onClose, initialSection }: SettingsPageProps = {}
 	const noMatches = navQueryL !== "" && allMatchedItems.length === 0;
 
 	return (
-		<div className="flex h-full min-h-0 overflow-hidden bg-transparent text-neutral-200">
+		<div ref={rootRef} className="@container flex h-full min-h-0 overflow-hidden bg-transparent text-neutral-200">
 			{/* Left Navigation Bar */}
 			<div className="flex w-56 shrink-0 flex-col overflow-hidden border-r border-[var(--border-divider)] vibrancy-chrome p-2.5">
 				<div className="mb-2 flex items-center gap-1.5 rounded-lg hairline bg-[var(--well-bg)] px-2 py-1.5 focus-within:ring-1 focus-within:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]">
 					<Search className="h-3 w-3 shrink-0 text-neutral-500" />
-					<input
-						ref={searchRef}
-						value={navQuery}
-						aria-label={t("common.search")}
-						onChange={(e) => setNavQuery(e.target.value)}
-						onKeyDown={(e) => {
-							if (isComposing(e)) return;
-							if (e.key === "Escape") {
-								e.stopPropagation();
-								if (navQuery) setNavQuery("");
-								else e.currentTarget.blur();
-							} else if (e.key === "ArrowDown" || e.key === "Enter") {
-								e.preventDefault();
-								const first = allMatchedItems[0];
-								if (first) {
-									setActiveSection(first.id);
-									navRef.current
-										?.querySelector<HTMLButtonElement>(`[data-nav-id="${CSS.escape(first.id)}"]`)
-										?.focus();
+					<div className="relative min-w-0 flex-1">
+						<input
+							ref={searchRef}
+							value={navQuery}
+							aria-label={t("common.search")}
+							onChange={(e) => setNavQuery(e.target.value)}
+							onFocus={() => setSearchFocused(true)}
+							onBlur={() => setSearchFocused(false)}
+							onKeyDown={(e) => {
+								if (isComposing(e)) return;
+								if (e.key === "Escape") {
+									e.stopPropagation();
+									if (navQuery) setNavQuery("");
+									else e.currentTarget.blur();
+								} else if (e.key === "ArrowDown" || e.key === "Enter") {
+									e.preventDefault();
+									const first = allMatchedItems[0];
+									if (first) {
+										setActiveSection(first.id);
+										navRef.current
+											?.querySelector<HTMLButtonElement>(`[data-nav-id="${CSS.escape(first.id)}"]`)
+											?.focus();
+									}
 								}
-							}
-						}}
-						placeholder={t("settings.searchPlaceholder")}
-						className="w-full bg-transparent text-xs text-neutral-200 outline-none placeholder:text-neutral-500"
-					/>
+							}}
+							placeholder={t("settings.searchPlaceholder")}
+							className={clsx(
+								"w-full bg-transparent text-xs text-neutral-200 outline-none placeholder:text-neutral-500",
+								!searchFocused && !navQuery && "placeholder:text-transparent",
+							)}
+						/>
+						{!searchFocused && !navQuery && <SearchShortcutHint className="absolute inset-0" />}
+					</div>
 					{navQuery && (
 						<button
 							type="button"

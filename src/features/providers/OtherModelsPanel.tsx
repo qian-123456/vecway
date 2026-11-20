@@ -1,5 +1,5 @@
 import { ChevronDown, FileText, Loader2, Pencil, Plus, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "../../components/Modal";
 import { SearchInput } from "../../components/SearchInput";
 import type { ModelKindEntry, ProviderRow } from "../../lib/contracts";
@@ -13,6 +13,7 @@ import { serviceCapability } from "./serviceCapabilities";
 import { ServiceConfigDialog } from "./ServiceConfigDialog";
 import { OauthLoginDialog } from "./OauthLoginDialog";
 import { supplierStatus } from "./supplierStatus";
+import { focusAndSelect, useSlashSearch } from "../shortcuts/searchShortcut";
 import { isExplicitServiceModel } from "./presets";
 
 const KIND_LABELS: Record<string, string> = { search: "providers.kindSearch", judge: "providers.kindJudge", image: "providers.kindImage", tts: "providers.kindTts", stt: "providers.kindStt", embedding: "providers.kindEmbedding", rerank: "providers.kindRerank", video: "providers.kindVideo" };
@@ -31,6 +32,13 @@ export function OtherModelsPanel() {
 	const [rawOpen, setRawOpen] = useState(false);
 	const [service, setService] = useState<ModelKindEntry | null>(null);
 	const [login, setLogin] = useState<string | null>(null);
+	const addModalRef = useRef<HTMLDivElement>(null);
+	const addSearchRef = useRef<HTMLInputElement>(null);
+	useSlashSearch(() => focusAndSelect(addSearchRef.current), {
+		tier: "modal",
+		enabled: addOpen,
+		scopeRef: addModalRef,
+	});
 	useEffect(() => { void loadCatalog(); void loadProviders(); }, [loadCatalog, loadProviders]);
 	const groups = useMemo(() => {
 		const result = new Map<string, ModelKindEntry[]>();
@@ -101,13 +109,13 @@ export function OtherModelsPanel() {
 		<div aria-label={t("providers.otherModelsSuppliers")} className="min-w-0 overflow-hidden rounded-xl hairline bg-[var(--well-bg)]/40">{visibleIds.map((id) => renderSupplier(id))}{visibleIds.length === 0 && !loading && !error && entries !== null && <p className="p-6 text-center text-xs text-[var(--text-dim)]">{t(query.trim() ? "providers.otherModelsNoMatch" : "providers.otherModelsEmpty")}</p>}</div>
 		<p className="text-xs leading-5 text-[var(--text-dim)]">{t("providers.otherModelsRegistrationHint")}</p>
 		{addOpen && <Modal title={t("providers.addService")} size="lg" onClose={() => setAddOpen(false)}>
-			<div className="flex max-h-[70vh] flex-col gap-3 p-4">
+			<div ref={addModalRef} className="flex max-h-[70vh] flex-col gap-3 p-4">
 				<div className="flex flex-wrap gap-2">
 					<Button icon={Plus} onClick={() => { setAddOpen(false); setDialog({ mode: "add" }); }}>{t("providers.addProviderBtn")}</Button>
 					<Button icon={FileText} onClick={() => { setAddOpen(false); setRawOpen(true); }}>{t("settingsSections.providers.editRawConfig")}</Button>
 				</div>
 				<p className="text-xs text-[var(--text-dim)]">{t("providers.serviceGlobalHint")}</p>
-				<SearchInput value={addQuery} onChange={setAddQuery} placeholder={t("providers.otherModelsSearch")} ariaLabel={t("providers.otherModelsSearch")} />
+				<SearchInput ref={addSearchRef} value={addQuery} onChange={setAddQuery} shortcutHint="/" placeholder={t("providers.otherModelsSearch")} ariaLabel={t("providers.otherModelsSearch")} />
 				<div className="min-h-0 overflow-y-auto rounded-xl hairline">{ids.filter((id) => !added(id) && matches(id, addQuery)).map(renderSupplier)}</div>
 			</div>
 		</Modal>}

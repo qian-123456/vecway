@@ -23,6 +23,7 @@ import { gitDirOf } from "../chat/sessionWorkspace";
 import { countCrossedEmpty, type GitPaneTab, paneTab, toplevelFor } from "./helpers";
 import { TimelineSection } from "./TimelineSection";
 import { BranchAssetSection } from "./BranchAssetSection";
+import { focusAndSelect, useSlashSearch } from "../shortcuts/searchShortcut";
 import { WorktreeSection } from "./WorktreeSection";
 const POLL_MS = 10_000;
 const DiffModal = lazy(() => import("./DiffModal").then((m) => ({ default: m.DiffModal })));
@@ -92,6 +93,11 @@ function RepoView({ cwd, tick }: { cwd: string; tick: string }) {
 	const [diff, setDiff] = useState<DiffReq | null>(null);
 	/** Loaded change count for `selected`; `n` is null until FocusPane reports one. */
 	const [fileCount, setFileCount] = useState<{ path: string; n: number | null } | null>(null);
+	const panelRef = useRef<HTMLDivElement>(null);
+	useSlashSearch(
+		() => focusAndSelect(panelRef.current?.querySelector<HTMLInputElement>("[data-slash-search]")),
+		{ tier: "panel", scopeRef: panelRef },
+	);
 
 	// Top bar HoverCard state
 	const [topHoverOpen, setTopHoverOpen] = useState(false);
@@ -261,7 +267,7 @@ function RepoView({ cwd, tick }: { cwd: string; tick: string }) {
 	};
 
 	return (
-		<div className="flex h-full min-h-0 flex-col">
+		<div ref={panelRef} tabIndex={-1} data-slash-panel="" className="flex h-full min-h-0 flex-col outline-none">
 			{/* Compact repo header: repo name + view switch + refresh (path lives in the hover card) */}
 			<div className="flex shrink-0 items-center justify-between gap-1.5 border-b border-[var(--border-divider)] bg-[var(--bg-panel)] px-3 py-1.5 text-xs">
 				<div

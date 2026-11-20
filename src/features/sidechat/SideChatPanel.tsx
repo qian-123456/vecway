@@ -744,7 +744,7 @@ function NewSideChat({ parentId, tabId }: { parentId: string; tabId: string }) {
 												layer="popover"
 												ignoreRefs={[modelMenuRef]}
 												onDismiss={() => setModelOpen(false)}
-												className="w-[320px] rounded-xl border border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] py-1 shadow-lg"
+												className="flex w-[320px] flex-col overflow-hidden rounded-2xl border border-[var(--border-divider)] !bg-[var(--bg-panel)] shadow-apple-modal"
 											>
 												<ModelMenuContent
 													catalogManaged

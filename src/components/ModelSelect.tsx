@@ -627,7 +627,7 @@ export function ModelMenuContent({
 			</div>
 
 			{/* Fixed height so the popover never jumps between groups. */}
-			<div className="flex h-[300px] min-h-0">
+			<div className="flex h-[280px] min-h-0 shrink">
 				{!searching && groupIds.length > 0 && (
 					<div className="w-[40%] min-w-40 max-w-64 shrink-0 space-y-0.5 overflow-y-auto border-r border-[var(--border-divider)] p-1.5">
 						{hasCommon && groupButton(GROUP_COMMON, t("models.commonGroup"), plainExtras.length + recentModels.length)}
@@ -692,10 +692,6 @@ export function ModelMenuContent({
 					</button>
 				</div>
 			)}
-			<div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-t border-[var(--border-divider)] bg-[var(--well-bg,transparent)] px-3 py-2 text-[11px] leading-normal text-[var(--text-40)]">
-				<span>{t("models.keyboardNavTip")}</span>
-				{catalogStatus === "unverified" && <span className="whitespace-nowrap" title={t("models.catalogUnverified")}>{t("models.availabilityUnverified")}</span>}
-			</div>
 		</div>
 	);
 }

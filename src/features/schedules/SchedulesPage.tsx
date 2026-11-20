@@ -35,6 +35,7 @@ import { resolveNewSessionTargetWorkspace } from "../sessions/modes";
 import { isLocalDraftId, usePendingSession } from "../sessions/pendingSession";
 import { useSidebarStore } from "../sessions/sidebarStore";
 import { Switch } from "../settings/Switch";
+import { focusDeferred, useSlashSearch } from "../shortcuts/searchShortcut";
 import { useSettings } from "../settings/store";
 import {
 	AutomationConfigTab,
@@ -321,6 +322,16 @@ export function SchedulesPage() {
 		saving: false,
 	});
 	const configRef = useRef<AutomationConfigHandle>(null);
+	const searchInputRef = useRef<HTMLInputElement>(null);
+	const listSearchActive =
+		schedules.length > 0 && !selectedScheduleId && !isCreating && !creatingViaChat;
+	useSlashSearch(
+		() => {
+			setSearchOpen(true);
+			focusDeferred(searchInputRef);
+		},
+		{ tier: "page", enabled: listSearchActive },
+	);
 
 	useEffect(() => {
 		void load();
@@ -850,6 +861,7 @@ export function SchedulesPage() {
 							type="button"
 							aria-expanded={searchOpen}
 							aria-label={t("schedules.searchAriaLabel")}
+							title={t("schedules.searchButtonTitle")}
 							onClick={() => {
 								if (searchOpen) {
 									setSearchOpen(false);
@@ -857,6 +869,7 @@ export function SchedulesPage() {
 									setFilter("all");
 								} else {
 									setSearchOpen(true);
+									focusDeferred(searchInputRef);
 								}
 							}}
 							className={clsx(
@@ -916,10 +929,12 @@ export function SchedulesPage() {
 						/>
 						<div className="flex items-center gap-1.5">
 							<SearchInput
+								ref={searchInputRef}
 								value={query}
 								onChange={setQuery}
 								placeholder={t("schedules.searchPlaceholder")}
 								ariaLabel={t("schedules.searchAriaLabel")}
+								shortcutHint="/"
 								iconSize={13}
 								className="w-48 sm:w-56"
 								inputClassName="h-7 w-full rounded-lg hairline bg-[var(--bg)] pl-8 pr-7 text-xs text-[var(--text)] placeholder-neutral-500 transition-all focus:outline-none focus:ring-1 focus:ring-[var(--hairline-strong)]"
