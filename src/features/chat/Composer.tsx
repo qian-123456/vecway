@@ -69,6 +69,12 @@ const planIntentBySession = new Set<string>();
 /** Sessions with a pending on-demand Automation customization tag that has not been sent yet. */
 const automationIntentBySession = new Set<string>();
 
+/** Clear pending per-session composer intents when a session is removed. */
+export function clearComposerSessionIntent(sessionId: string): void {
+	planIntentBySession.delete(sessionId);
+	automationIntentBySession.delete(sessionId);
+}
+
 import { ensureLive, isResumeCancelled } from "../../lib/ensureLive";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ContextRing } from "./ContextRing";

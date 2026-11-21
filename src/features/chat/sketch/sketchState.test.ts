@@ -2,7 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createSketchEditor,
 	exportToPng,
+	hitTestItem,
+	layoutText,
+	MAX_HISTORY_ENTRIES,
+	measureTextWidth,
+	renderEraserTrail,
+	renderSketchDocument,
+	renderSketchObject,
 	shapeOutlinePoints,
+	smoothStrokePoints,
+	TEXT_FONT_FAMILY,
 } from "./sketchState";
 import type {
 	Bounds,
@@ -701,5 +710,173 @@ describe("export", () => {
 		});
 		expect(result.kind).toBe("success");
 		if (result.kind === "success") expect(result.dataUrl).toBe(PNG_URL);
+	});
+});
+
+describe("bounded undo history", () => {
+	it("caps undo depth at MAX_HISTORY_ENTRIES and preserves the latest steps cleanly", () => {
+		const ed = createSketchEditor();
+		const extra = 25;
+		const total = MAX_HISTORY_ENTRIES + extra;
+		for (let i = 0; i < total; i += 1) {
+			const x = 10 + (i % 600);
+			const y = 20 + Math.floor(i / 600) * 10;
+			drawStroke(ed, [
+				[x, y],
+				[x + 20, y],
+			]);
+		}
+		expect(objects(ed)).toHaveLength(total);
+		expect(ed.getSnapshot().canUndo).toBe(true);
+
+		let undoCount = 0;
+		while (ed.undo()) {
+			undoCount += 1;
+		}
+		expect(undoCount).toBe(MAX_HISTORY_ENTRIES);
+		expect(ed.getSnapshot().canUndo).toBe(false);
+		expect(ed.undo()).toBe(false);
+		expect(objects(ed)).toHaveLength(extra);
+
+		let redoCount = 0;
+		while (ed.redo()) {
+			redoCount += 1;
+		}
+		expect(redoCount).toBe(MAX_HISTORY_ENTRIES);
+		expect(ed.getSnapshot().canRedo).toBe(false);
+		expect(ed.redo()).toBe(false);
+		expect(objects(ed)).toHaveLength(total);
+	});
+
+	it("keeps historyGroup coalescing intact at the cap and resets on replaceDocument", () => {
+		const ed = createSketchEditor();
+		for (let i = 0; i < MAX_HISTORY_ENTRIES; i += 1) {
+			const x = 10 + (i % 600);
+			drawShape(ed, "rectangle", [x, 10], [x + 30, 40]);
+		}
+		const last = objects(ed)[objects(ed).length - 1]!;
+		const initialX = last.kind === "rectangle" ? last.bounds.x : 0;
+		ed.selectObject(last.id);
+		ed.nudgeSelection({ x: 5, y: 0 }, { historyGroup: "arrows" });
+		ed.nudgeSelection({ x: 5, y: 0 }, { historyGroup: "arrows" });
+		ed.nudgeSelection({ x: 5, y: 0 }, { historyGroup: "arrows" });
+		const nudged = objects(ed).find((o) => o.id === last.id)!;
+		expect(nudged.kind === "rectangle" ? nudged.bounds.x : 0).toBe(
+			initialX + 15,
+		);
+
+		// One undo reverts the whole coalesced group.
+		expect(ed.undo()).toBe(true);
+		const reverted = objects(ed).find((o) => o.id === last.id)!;
+		expect(reverted.kind === "rectangle" ? reverted.bounds.x : 0).toBe(
+			initialX,
+		);
+
+		const revBeforeReplace = ed.getSnapshot().committedRev;
+		ed.replaceDocument({ schemaVersion: 1, objects: [] });
+		const afterReplace = ed.getSnapshot();
+		expect(afterReplace.canUndo).toBe(false);
+		expect(afterReplace.canRedo).toBe(false);
+		expect(afterReplace.committedRev).toBe(revBeforeReplace + 1);
+	});
+});
+
+describe("committedRev and replacementRev revision tracking", () => {
+	it("does not bump committedRev on hover or live preview, but bumps on commit/undo/redo", () => {
+		const ed = createSketchEditor();
+		expect(ed.getSnapshot().committedRev).toBe(0);
+		expect(ed.getSnapshot().replacementRev).toBe(0);
+
+		drawShape(ed, "rectangle", [100, 100], [220, 180]);
+		const revAfterRect = ed.getSnapshot().committedRev;
+		const repAfterRect = ed.getSnapshot().replacementRev;
+		expect(revAfterRect).toBe(1);
+
+		// Hovering with select tool updates cursor without bumping committedRev.
+		ed.setTool("select");
+		ed.pointerMove(sample(100, 140));
+		expect(ed.getSnapshot().cursor).toBe("grab");
+		ed.pointerMove(sample(500, 500));
+		expect(ed.getSnapshot().cursor).toBe("default");
+		ed.pointerLeave();
+		expect(ed.getSnapshot().committedRev).toBe(revAfterRect);
+		expect(ed.getSnapshot().replacementRev).toBe(repAfterRect);
+
+		// Live pen preview samples do not bump committedRev.
+		ed.setTool("pen");
+		ed.pointerDown(sample(20, 20, { pointerId: 2 }));
+		ed.pointerMove(sample(80, 40, { pointerId: 2 }));
+		ed.pointerMove(sample(140, 60, { pointerId: 2 }));
+		expect(ed.getSnapshot().preview?.object.kind).toBe("stroke");
+		expect(ed.getSnapshot().committedRev).toBe(revAfterRect);
+		expect(ed.getSnapshot().replacementRev).toBe(repAfterRect);
+
+		// Committing the stroke bumps committedRev once.
+		ed.pointerUp(sample(140, 60, { pointerId: 2 }));
+		const revAfterStroke = ed.getSnapshot().committedRev;
+		expect(revAfterStroke).toBe(revAfterRect + 1);
+
+		// Live eraser preview samples do not bump committedRev; release does.
+		ed.setTool("eraser");
+		ed.pointerDown(sample(80, 10, { pointerId: 3 }));
+		ed.pointerMove(sample(80, 70, { pointerId: 3 }));
+		expect(ed.getSnapshot().preview?.object.kind).toBe("eraser");
+		expect(ed.getSnapshot().committedRev).toBe(revAfterStroke);
+		ed.pointerUp(sample(80, 70, { pointerId: 3 }));
+		const revAfterErase = ed.getSnapshot().committedRev;
+		expect(revAfterErase).toBe(revAfterStroke + 1);
+
+		// Undo and redo each bump committedRev.
+		expect(ed.undo()).toBe(true);
+		expect(ed.getSnapshot().committedRev).toBe(revAfterErase + 1);
+		expect(ed.redo()).toBe(true);
+		expect(ed.getSnapshot().committedRev).toBe(revAfterErase + 2);
+	});
+
+	it("bumps replacementRev for non-text move preview and cancel, not for text drag", () => {
+		const ed = createSketchEditor();
+		drawShape(ed, "rectangle", [100, 100], [200, 160]);
+		const rectId = objects(ed)[0]!.id;
+		ed.insertTextBox({
+			text: "label",
+			bounds: { x: 320, y: 100, width: 120, height: 46 },
+		});
+		ed.setTool("select");
+		ed.selectObject(rectId);
+
+		const committed0 = ed.getSnapshot().committedRev;
+		const rep0 = ed.getSnapshot().replacementRev;
+		ed.pointerDown(sample(150, 130, { pointerId: 4 }));
+		expect(ed.getSnapshot().committedRev).toBe(committed0);
+		expect(ed.getSnapshot().replacementRev).toBe(rep0);
+
+		ed.pointerMove(sample(180, 150, { pointerId: 4 }));
+		expect(ed.getSnapshot().committedRev).toBe(committed0);
+		const repDuring = ed.getSnapshot().replacementRev;
+		expect(repDuring).toBeGreaterThan(rep0);
+
+		ed.pointerCancel(4);
+		expect(ed.getSnapshot().committedRev).toBe(committed0);
+		expect(ed.getSnapshot().replacementRev).toBeGreaterThan(repDuring);
+
+		// Dragging a text object does not bump replacementRev (rendered in DOM layer).
+		const repBeforeText = ed.getSnapshot().replacementRev;
+		ed.pointerDown(sample(350, 120, { pointerId: 5 }));
+		ed.pointerMove(sample(390, 140, { pointerId: 5 }));
+		expect(ed.getSnapshot().preview?.object.kind).toBe("text");
+		expect(ed.getSnapshot().replacementRev).toBe(repBeforeText);
+		ed.pointerCancel(5);
+		expect(ed.getSnapshot().replacementRev).toBe(repBeforeText);
+	});
+
+	it("re-exports geometry and rendering symbols cleanly from sketchState", () => {
+		expect(typeof hitTestItem).toBe("function");
+		expect(typeof smoothStrokePoints).toBe("function");
+		expect(typeof measureTextWidth).toBe("function");
+		expect(typeof layoutText).toBe("function");
+		expect(typeof renderSketchObject).toBe("function");
+		expect(typeof renderSketchDocument).toBe("function");
+		expect(typeof renderEraserTrail).toBe("function");
+		expect(typeof TEXT_FONT_FAMILY).toBe("string");
 	});
 });

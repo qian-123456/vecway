@@ -362,11 +362,11 @@ export class ChatController {
 
 	/* ------------------------------------------------------------ transcript */
 
-	private rebuild(t: TranscriptState): Block[] {
+	private rebuild(t: TranscriptState, leafId: string | null = this.state.leafId): Block[] {
 		// Only the root→leaf path is the live conversation; sibling branches
 		// (created by navigation / edit-&-resend) stay in the buffer but out
 		// of the view. Unknown leaf (offline, never fetched) renders as before.
-		return reuseBlocks(this.state.blocks, buildBlocks(filterToLeafPath(t.items, this.state.leafId), t.stats));
+		return reuseBlocks(this.state.blocks, buildBlocks(filterToLeafPath(t.items, leafId), t.stats));
 	}
 
 	async fetchTranscript(): Promise<void> {
@@ -423,14 +423,24 @@ export class ChatController {
 			this.segRetry++;
 			this.scheduleFetch(600);
 		}
-		const interrupted = prev.interrupted;
-		if (interrupted && contentPersisted(r.state.items, interrupted.text, interrupted.thinking, interrupted.ts)) {
+		const clearInterrupted =
+			!!prev.interrupted &&
+			contentPersisted(r.state.items, prev.interrupted.text, prev.interrupted.thinking, prev.interrupted.ts);
+		if (clearInterrupted) {
 			// A data source now carries the interrupted content: dedup it away.
-			this.set({ interrupted: null });
 			clearLiveStale(this.id);
 		}
 		this.stream = { ...this.stream, live };
-		if (!r.changed && optimistic === prev.optimistic && live === prev.live && segments === prev.segments && prev.loaded) return;
+		if (
+			!r.changed &&
+			optimistic === prev.optimistic &&
+			live === prev.live &&
+			segments === prev.segments &&
+			!clearInterrupted &&
+			prev.loaded
+		) {
+			return;
+		}
 		this.set({
 			loaded: true,
 			transcript: r.state,
@@ -438,6 +448,7 @@ export class ChatController {
 			optimistic,
 			live,
 			segments,
+			...(clearInterrupted ? { interrupted: null } : {}),
 		});
 	}
 
@@ -466,8 +477,7 @@ export class ChatController {
 			if (this.disposed || sequence !== this.treeSequence || activity !== this.activitySequence) return;
 			const leafId = r.leafId ?? null;
 			if (leafId === this.state.leafId) return;
-			this.set({ leafId });
-			this.set({ blocks: this.rebuild(this.state.transcript) });
+			this.set({ leafId, blocks: this.rebuild(this.state.transcript, leafId) });
 		} catch {
 			// Offline / busy: keep the previous leaf and its filtering.
 		}
@@ -615,15 +625,19 @@ export class ChatController {
 			if (this.disposed) return;
 			const { live, working } = this.stream;
 			const s = this.state;
-			if (s.live !== live || s.working !== working) this.set({ live, working });
-			if (live) {
-				// A later data source carrying the interrupted content dedups it away.
-				if (s.interrupted && contentPersisted([live], s.interrupted.text, s.interrupted.thinking, s.interrupted.ts)) {
-					this.set({ interrupted: null });
-					clearLiveStale(this.id);
-				}
-				this.maybeSaveSnapshot(live);
+			const clearInterrupted =
+				!!live &&
+				!!s.interrupted &&
+				contentPersisted([live], s.interrupted.text, s.interrupted.thinking, s.interrupted.ts);
+			if (s.live !== live || s.working !== working || clearInterrupted) {
+				this.set({
+					live,
+					working,
+					...(clearInterrupted ? { interrupted: null } : {}),
+				});
+				if (clearInterrupted) clearLiveStale(this.id);
 			}
+			if (live) this.maybeSaveSnapshot(live);
 		};
 		if (hidden) run();
 		else this.rafId = requestAnimationFrame(run);

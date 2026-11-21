@@ -870,6 +870,22 @@ function requestId(req: unknown): string {
 const turnSettled = (live: SessionLive): boolean =>
 	!live.streaming && live.turnStartedAt != null;
 
+const EMPTY_STREAMING_CONTENT: unknown[] = [];
+const normalizedStreamingContentCache = new WeakMap<AgentMessage, unknown[]>();
+
+/**
+ * Return streaming-normalized content for an in-flight assistant message,
+ * reusing the result already computed by `reduce()` for the same snapshot.
+ */
+export function normalizedStreamingContent(msg: AgentMessage | null): unknown[] {
+	if (!msg || !Array.isArray(msg.content)) return EMPTY_STREAMING_CONTENT;
+	const cached = normalizedStreamingContentCache.get(msg);
+	if (cached !== undefined) return cached;
+	const normalized = normalizeThinkContent(msg.content, { streaming: true });
+	normalizedStreamingContentCache.set(msg, normalized);
+	return normalized;
+}
+
 function reduce(
 	live: SessionLive,
 	frame: Frame,
@@ -902,10 +918,7 @@ function reduce(
 						: Date.now();
 			let thinkingStartedAt = live.thinkingStartedAt ?? null;
 			let thinkingEndedAt = live.thinkingEndedAt ?? null;
-			const content = normalizeThinkContent(
-				Array.isArray(msg.content) ? msg.content : [],
-				{ streaming: true },
-			);
+			const content = normalizedStreamingContent(msg);
 			const hasThinking = content.some((p) => {
 				const o = asFrame(p);
 				return (o.type === "thinking" || o.type === "thought") && o.narration !== true;
@@ -1735,8 +1748,10 @@ export const useLive = create<LiveState>((set) => ({
 		const f = asFrame(frame);
 		let dropped: UserEcho[] = [];
 		set((s) => {
-			const prev = s.sessions[sessionId] ?? { ...emptySessionLive(), alive: true };
+			const existing = s.sessions[sessionId];
+			const prev = existing ?? { ...emptySessionLive(), alive: true };
 			const next = stampTurnStart(prev, reduce(prev, f, sessionId), f);
+			if (next === existing) return s;
 			if (f.type === "agent_end" && next.pendingUserEchoes !== prev.pendingUserEchoes) {
 				const kept = new Set(next.pendingUserEchoes.map((e) => e.id));
 				dropped = prev.pendingUserEchoes.filter((e) => !kept.has(e.id));
@@ -2448,6 +2463,11 @@ export function pruneRemovedSessions(ids: readonly string[]): void {
 		tool.pruneToolCards(ids);
 		list.pruneEditDrafts(itemIds);
 	});
+	void import("../features/chat/Composer")
+		.then((composer) => {
+			for (const id of ids) composer.clearComposerSessionIntent?.(id);
+		})
+		.catch(() => {});
 	useLive.setState((s) => {
 		let sessions = s.sessions;
 		for (const id of gone) {

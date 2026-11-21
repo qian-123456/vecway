@@ -4,6 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionMeta, Workspace } from "./lib/contracts";
 
 const backend = vi.hoisted(() => ({ sessions: [] as SessionMeta[], workspaces: [] as Workspace[] }));
+const overlayMounts = vi.hoisted(() => ({
+	settings: 0,
+	diagnose: 0,
+	shareImage: 0,
+	newSession: 0,
+	resumeCwd: 0,
+	resumeModel: 0,
+}));
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn(async (cmd: string) => {
 		if (cmd === "list_sessions") return backend.sessions;
@@ -43,16 +51,47 @@ vi.mock("./features/chat/Composer", () => ({ Composer: ({ sessionId }: { session
 vi.mock("./features/sessions/ForkDraftView", () => ({ ForkDraftView: () => <div data-testid="fork">fork</div> }));
 vi.mock("./features/home/StartPage", () => ({ StartPage: () => <div data-testid="home">home</div> }));
 vi.mock("./features/inbox/InboxPage", () => ({ InboxPage: () => <div data-testid="inbox">inbox</div> }));
-vi.mock("./features/settings/SettingsOverlay", () => ({ SettingsOverlay: () => null }));
+vi.mock("./features/settings/SettingsOverlay", () => ({
+	SettingsOverlay: () => {
+		overlayMounts.settings += 1;
+		return <div data-testid="settings-overlay" />;
+	},
+}));
 vi.mock("./components/CenterHeader", () => ({ CenterHeader: () => null, CENTER_WITHOUT_RIGHT_PANEL: { has: (view: string) => ["inbox", "schedules", "skills"].includes(view) } }));
 vi.mock("./components/BottomBar", () => ({ BottomBar: () => null }));
 vi.mock("./components/RightAside", () => ({ RightAside: () => null }));
 vi.mock("./features/backlog/QuickCapture", () => ({ QuickCapture: () => null }));
 vi.mock("./features/sidechat/HandbackDialog", () => ({ HandbackDialog: () => null }));
-vi.mock("./features/diagnose/DiagnoseDialog", () => ({ DiagnoseDialog: () => null }));
-vi.mock("./features/chat/share/ShareImageDialog", () => ({ ShareImageDialog: () => null }));
-vi.mock("./features/git/NewSessionDialog", () => ({ NewSessionDialog: () => null }));
-vi.mock("./features/sessions/ResumeMissingCwdDialog", () => ({ ResumeMissingCwdDialog: () => null }));
+vi.mock("./features/diagnose/DiagnoseDialog", () => ({
+	DiagnoseDialog: () => {
+		overlayMounts.diagnose += 1;
+		return <div data-testid="diagnose-dialog" />;
+	},
+}));
+vi.mock("./features/chat/share/ShareImageDialog", () => ({
+	ShareImageDialog: () => {
+		overlayMounts.shareImage += 1;
+		return <div data-testid="share-image-dialog" />;
+	},
+}));
+vi.mock("./features/git/NewSessionDialog", () => ({
+	NewSessionDialog: () => {
+		overlayMounts.newSession += 1;
+		return <div data-testid="new-session-dialog" />;
+	},
+}));
+vi.mock("./features/sessions/ResumeMissingCwdDialog", () => ({
+	ResumeMissingCwdDialog: () => {
+		overlayMounts.resumeCwd += 1;
+		return <div data-testid="resume-cwd-dialog" />;
+	},
+}));
+vi.mock("./features/sessions/ResumeMissingModelDialog", () => ({
+	ResumeMissingModelDialog: () => {
+		overlayMounts.resumeModel += 1;
+		return <div data-testid="resume-model-dialog" />;
+	},
+}));
 
 import App from "./App";
 import { useUi } from "./stores/ui";
@@ -69,6 +108,12 @@ const session = (id: string, mode: SessionMeta["mode"]): SessionMeta => ({
 } as SessionMeta);
 
 beforeEach(() => {
+	overlayMounts.settings = 0;
+	overlayMounts.diagnose = 0;
+	overlayMounts.shareImage = 0;
+	overlayMounts.newSession = 0;
+	overlayMounts.resumeCwd = 0;
+	overlayMounts.resumeModel = 0;
 	localStorage.clear();
 	backend.sessions = [session("a", "code"), session("b", "work")];
 	backend.workspaces = [{ id: "a", path: "/repo/a", name: "A", kind: "project", mode: "code", sort: 0 }];
@@ -154,5 +199,30 @@ describe("shell navigation ownership", () => {
 		const view = render(<App />);
 		act(() => useSessions.setState({ hasLoaded: true }));
 		expect(view.getByTestId("session").textContent).toBe("a");
+	});
+
+	it("gates lazy overlays behind open state so closed overlays never mount on cold start", async () => {
+		const view = render(<App />);
+		expect(overlayMounts).toEqual({
+			settings: 0,
+			diagnose: 0,
+			shareImage: 0,
+			newSession: 0,
+			resumeCwd: 0,
+			resumeModel: 0,
+		});
+
+		act(() => useUi.getState().openModal("new-session", {}));
+		await waitFor(() => expect(view.getByTestId("new-session-dialog")).toBeTruthy());
+		expect(overlayMounts.newSession).toBeGreaterThan(0);
+		expect(overlayMounts.settings).toBe(0);
+		expect(overlayMounts.diagnose).toBe(0);
+
+		act(() => useUi.getState().closeModal());
+		expect(view.queryByTestId("new-session-dialog")).toBeNull();
+
+		act(() => useUi.getState().openSettings());
+		await waitFor(() => expect(view.getByTestId("settings-overlay")).toBeTruthy());
+		expect(overlayMounts.settings).toBeGreaterThan(0);
 	});
 });

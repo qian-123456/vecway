@@ -5,6 +5,7 @@ import {
 	memo,
 	useContext,
 	useMemo,
+	useState,
 	type ComponentProps,
 	type ReactNode,
 } from "react";
@@ -44,13 +45,29 @@ export function safeHref(href?: string): string | null {
 
 const DATA_IMAGE = /^data:image\/(png|jpeg|gif|webp);base64,/i;
 
-/** Allows http(s), raster data: images and same-origin `/api/` paths. */
+/** Allows http(s), raster data: images and same-origin `/api/` or `/static/` paths. */
 export function safeSrc(src?: string): string | null {
 	if (!src) return null;
 	const trimmed = src.trim();
 	if (/^https?:\/\//i.test(trimmed) || DATA_IMAGE.test(trimmed)) return trimmed;
-	if (trimmed.startsWith("/api/")) return trimmed;
+	if (trimmed.startsWith("/api/") || trimmed.startsWith("/static/")) return trimmed;
 	return null;
+}
+
+/**
+ * Returns the remote host if `src` is a cross-origin http(s) URL that must not auto-fetch,
+ * or null for local/same-origin/data images that can render immediately.
+ */
+export function externalImageHost(src: string): string | null {
+	if (!/^https?:\/\//i.test(src)) return null;
+	try {
+		const parsed = new URL(src);
+		const origin = typeof window !== "undefined" ? window.location?.origin : "";
+		if (origin && origin !== "null" && parsed.origin === origin) return null;
+		return parsed.host || src;
+	} catch {
+		return src;
+	}
 }
 
 function hastText(node: ExtraProps["node"]): string {
@@ -162,13 +179,31 @@ function MdLink({ href, children }: ComponentProps<"a">) {
 
 function MdImage({ src, alt }: ComponentProps<"img">) {
 	const open = useContext(OpenImageContext);
+	const [loadedRemote, setLoadedRemote] = useState<string | null>(null);
 	const safe = safeSrc(typeof src === "string" ? src : undefined);
 	if (!safe) return alt ? <span>{alt}</span> : null;
+	const remoteHost = externalImageHost(safe);
+	if (remoteHost && loadedRemote !== safe) {
+		return (
+			<button
+				type="button"
+				onClick={() => setLoadedRemote(safe)}
+				title={`点击加载外部图片：${safe}`}
+				className="my-2 inline-flex min-h-11 max-w-full items-center gap-2 rounded-m-md border border-m-border bg-m-surface px-3 py-2 text-left text-m-xs text-m-text-2 active:bg-m-surface-hover"
+			>
+				<span className="shrink-0 font-medium text-m-accent">点击加载外部图片</span>
+				<span className="min-w-0 truncate text-m-text-3">
+					{alt ? `${alt} (${remoteHost})` : remoteHost}
+				</span>
+			</button>
+		);
+	}
 	return (
 		<img
 			src={safe}
 			alt={alt ?? ""}
 			loading="lazy"
+			referrerPolicy={remoteHost ? "no-referrer" : undefined}
 			className="max-w-full cursor-zoom-in rounded-m-md"
 			onClick={() => (open ? open(safe) : openImage({ src: safe, alt }))}
 		/>

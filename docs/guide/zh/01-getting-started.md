@@ -48,7 +48,7 @@ pnpm build:app      # 完整编译、类型检查并打包出 macOS 应用程序
 ```
 
 > [!TIP]
-> 如果想在不影响当前数据的情况下启动一个干净的调试实例，可以运行 `pnpm dev:preview`：它将使用隔离端口并将数据存入独立目录 `~/.omp-workspace-dev`。详细数据分布见[数据位置与目录结构](./07-shortcuts-and-troubleshooting.md#数据位置与目录结构)。
+> 如果想在不影响当前数据的情况下启动一个干净的调试实例，可以运行 `pnpm dev:preview`：它将使用隔离端口并将数据存入独立目录 `~/.vecway-dev`。详细数据分布见[数据位置与目录结构](./07-shortcuts-and-troubleshooting.md#数据位置与目录结构)。
 
 首次启动时，应用会自动完成初始化：
 1. 在 `~/.omp-workspace/` 初始化本地配置与 SQLite 数据库；

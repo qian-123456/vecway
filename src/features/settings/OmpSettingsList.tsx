@@ -14,7 +14,6 @@ import {
 import { ModelSelect, type ModelExtraOption } from "../../components/ModelSelect";
 import { parseSelection } from "../../components/modelSelectLogic";
 import { PopoverSelect } from "../../components/PopoverSelect";
-import { Segmented } from "../../components/Segmented";
 import type { OmpConfigEntry } from "../../lib/contracts";
 import { confirmDialog } from "../../lib/dialogs";
 import { ompConfigReset, ompConfigSet, ompProjectConfigRead } from "../../lib/ipc";
@@ -145,13 +144,6 @@ function displayValue(value: unknown, unsetLabel = ""): string {
 	if (value === null || value === undefined) return unsetLabel || tNow("settingsCore.ompList.unset");
 	if (typeof value === "string") return value;
 	return JSON.stringify(value);
-}
-
-
-/** Tooltip for one option: the raw value (when the label hides it) plus the schema description. */
-function optionTooltip(label: string, o: { value: string; description?: string }): string | undefined {
-	const parts = [label !== o.value ? o.value : null, o.description].filter(Boolean);
-	return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 const PARENT_CHILD_KEYS: Record<string, { parent: string; reasonKey: string }> = {
@@ -340,10 +332,29 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 	// omp redacts stored credentials; unset ones arrive as plain empty strings, so
 	// credential-looking keys stay write-only too.
 	const secret = entry.redacted || SECRET_KEY.test(entry.key);
-	const strict = (OMP_CONFIG_META[entry.key]?.values?.length ?? 0) > 0 || entry.valueType === "enum";
+	const isEnum = (OMP_CONFIG_META[entry.key]?.values?.length ?? 0) > 0 || entry.valueType === "enum";
 	const options = isStructured || secret ? null : ompConfigOptions(entry.key);
 	const current = isUnset ? "" : typeof entry.value === "string" ? entry.value : JSON.stringify(entry.value);
 	const labeled = options?.map((o) => ({ ...o, text: ompConfigOptionLabel(entry.key, o, locale) }));
+	const selectOptions = labeled
+		? [
+				...labeled.map((o) => ({
+					value: o.value,
+					label: o.text,
+					badge: o.text !== o.value ? o.value : undefined,
+					description: o.description,
+				})),
+				...(isEnum && current !== "" && !labeled.some((o) => o.value === current)
+					? [
+							{
+								value: current,
+								label: current,
+								badge: t("settingsCore.popoverSelect.customBadge"),
+							},
+						]
+					: []),
+			]
+		: null;
 
 	let control: ReactNode = null;
 	if (secret && !isStructured) {
@@ -352,25 +363,14 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 		control = (
 			<Switch checked={entry.value === true} disabled={busy} onChange={(v) => void persist(v ? "true" : "false")} />
 		);
-	} else if (labeled && strict && labeled.length <= 4 && labeled.every((o) => o.text.length <= 10)) {
-		control = (
-			<Segmented
-				size="sm"
-				aria-label={title}
-				disabled={busy}
-				value={current}
-				options={labeled.map((o) => ({ value: o.value, label: o.text, title: optionTooltip(o.text, o) }))}
-				onChange={(v) => void persist(v)}
-			/>
-		);
-	} else if (labeled) {
+	} else if (selectOptions) {
 		control = (
 			<PopoverSelect
 				aria-label={title}
 				disabled={busy}
 				value={current}
 				placeholder={isUnset ? t("settingsCore.ompList.unset") : undefined}
-				allowCustom={!strict}
+				allowCustom
 				customOptionLabel={t("settingsCore.ompList.custom")}
 				customInputType={entry.valueType === "number" ? "number" : "text"}
 				customMono
@@ -380,12 +380,7 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 						? (v) => (!v || !Number.isFinite(Number(v)) ? t("settingsCore.ompList.numberRequired") : null)
 						: undefined
 				}
-				options={labeled.map((o) => ({
-					value: o.value,
-					label: o.text,
-					badge: o.text !== o.value ? o.value : undefined,
-					description: o.description,
-				}))}
+				options={selectOptions}
 				containerClassName="min-w-40 max-w-full sm:max-w-80"
 				onChange={(v) => {
 					void persist(v);

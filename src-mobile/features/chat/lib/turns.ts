@@ -124,14 +124,15 @@ export function buildBlocks(items: readonly Item[], stats: Readonly<Record<strin
 		const t = ms(seed.ts);
 		return { id: `turn-${seed.id}`, user, entries: [], src: [], start: t, end: t };
 	};
-	const activityAfter = (i: number): boolean => {
-		for (let j = i + 1; j < items.length; j++) {
-			const n = items[j];
-			if (n.role === "user") return false;
-			if (n.role === "assistant") return true;
-		}
-		return false;
-	};
+	// Precompute the next user/assistant row after each index in one O(n) reverse pass
+	// to avoid O(k²) lookahead across runs of protocol records.
+	const nextRoleIndex = new Int32Array(items.length);
+	let nextRole = -1;
+	for (let i = items.length - 1; i >= 0; i--) {
+		nextRoleIndex[i] = nextRole;
+		const role = items[i].role;
+		if (role === "user" || role === "assistant") nextRole = i;
+	}
 	for (let i = 0; i < items.length; i++) {
 		const it = items[i];
 		if (it.role === "user") {
@@ -146,7 +147,8 @@ export function buildBlocks(items: readonly Item[], stats: Readonly<Record<strin
 			if (t) d.end = t;
 		} else if (PROTOCOL.has(it.kind)) {
 			const text = noticeText(it);
-			if (d && activityAfter(i)) {
+			const nextIdx = nextRoleIndex[i];
+			if (d && nextIdx !== -1 && items[nextIdx].role === "assistant") {
 				d.entries.push(it);
 				d.src.push(it);
 			} else {

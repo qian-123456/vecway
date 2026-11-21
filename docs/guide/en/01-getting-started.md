@@ -48,7 +48,7 @@ pnpm build:app      # Typecheck, build frontend, and package native app (.app / 
 ```
 
 > [!TIP]
-> To run a completely isolated instance without touching existing data, use `pnpm dev:preview`. It uses a dedicated port and stores data in `~/.omp-workspace-dev`. See [Data locations](./07-shortcuts-and-troubleshooting.md#data-locations).
+> To run a completely isolated instance without touching existing data, use `pnpm dev:preview`. It uses a dedicated port and stores data in `~/.vecway-dev`. See [Data locations](./07-shortcuts-and-troubleshooting.md#data-locations).
 
 On initial launch, the app will:
 1. Initialize local configuration and SQLite storage under `~/.omp-workspace/`.

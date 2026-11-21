@@ -78,7 +78,7 @@ import { toast } from "../../lib/toast";
 import { suppressRelocationToast, useSessions } from "../../stores/sessions";
 import { onPromptSend } from "../../stores/promptSendEvents";
 import { draftMeta, isBlankLocalDraft, isLocalDraftId, selectSessionOrDraft, usePendingSession } from "./pendingSession";
-import { useComposer } from "../../stores/composer";
+import { useComposer, type ComposerState } from "../../stores/composer";
 import { useLive } from "../../stores/live";
 import { tNow, useT } from "../../stores/language";
 import { useIsDark } from "../../lib/theme";
@@ -142,6 +142,138 @@ const RECENT_STEP = 5;
 /** Projects without worktrees show more sessions up front. */
 const NO_WORKTREE_RECENT_LIMIT = 5;
 
+interface ActiveComposerPresence {
+	activeIds: ReadonlySet<string>;
+	localDraftActiveIds: ReadonlySet<string>;
+}
+
+function hasLocalDraftComposerInput(s: ComposerState, id: string): boolean {
+	return Boolean(
+		s.drafts[id]?.trim() ||
+			(s.images[id]?.length ?? 0) > 0 ||
+			(s.files[id]?.length ?? 0) > 0 ||
+			(s.annotations[id]?.length ?? 0) > 0,
+	);
+}
+
+function hasAddedLocalDraftId(
+	map: Record<string, unknown>,
+	existing: ReadonlySet<string>,
+	s: ComposerState,
+): boolean {
+	for (const id in map) {
+		if (isLocalDraftId(id) && !existing.has(id) && hasLocalDraftComposerInput(s, id)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function collectActiveLocalDraftIds(
+	map: Record<string, unknown>,
+	target: Set<string>,
+	s: ComposerState,
+): void {
+	for (const id in map) {
+		if (isLocalDraftId(id) && !target.has(id) && hasLocalDraftComposerInput(s, id)) {
+			target.add(id);
+		}
+	}
+}
+
+/**
+ * Tracks empty <-> non-empty transitions in the composer store without sorting
+ * or allocating key strings on every keystroke. Returns the exact same snapshot
+ * object while membership is unchanged so Zustand skips sidebar re-renders.
+ */
+function createActiveComposerSelector(): (s: ComposerState) => ActiveComposerPresence {
+	let prevDrafts: ComposerState["drafts"] | null = null;
+	let prevImages: ComposerState["images"] | null = null;
+	let prevFiles: ComposerState["files"] | null = null;
+	let prevAnnotations: ComposerState["annotations"] | null = null;
+	let activeIds = new Set<string>();
+	let localDraftActiveIds = new Set<string>();
+	let snapshot: ActiveComposerPresence = { activeIds, localDraftActiveIds };
+
+	return (s: ComposerState): ActiveComposerPresence => {
+		if (
+			s.drafts === prevDrafts &&
+			s.images === prevImages &&
+			s.files === prevFiles &&
+			s.annotations === prevAnnotations
+		) {
+			return snapshot;
+		}
+		prevDrafts = s.drafts;
+		prevImages = s.images;
+		prevFiles = s.files;
+		prevAnnotations = s.annotations;
+
+		let activeChanged = false;
+		for (const id of activeIds) {
+			if (!s.drafts[id]?.trim() && (s.images[id]?.length ?? 0) === 0) {
+				activeChanged = true;
+				break;
+			}
+		}
+		if (!activeChanged) {
+			for (const id in s.drafts) {
+				if (!activeIds.has(id) && s.drafts[id]?.trim()) {
+					activeChanged = true;
+					break;
+				}
+			}
+		}
+		if (!activeChanged) {
+			for (const id in s.images) {
+				if (!activeIds.has(id) && (s.images[id]?.length ?? 0) > 0) {
+					activeChanged = true;
+					break;
+				}
+			}
+		}
+		if (activeChanged) {
+			const next = new Set<string>();
+			for (const id in s.drafts) {
+				if (s.drafts[id]?.trim()) next.add(id);
+			}
+			for (const id in s.images) {
+				if ((s.images[id]?.length ?? 0) > 0) next.add(id);
+			}
+			activeIds = next;
+		}
+
+		let localChanged = false;
+		for (const id of localDraftActiveIds) {
+			if (!hasLocalDraftComposerInput(s, id)) {
+				localChanged = true;
+				break;
+			}
+		}
+		if (
+			!localChanged &&
+			(hasAddedLocalDraftId(s.drafts, localDraftActiveIds, s) ||
+				hasAddedLocalDraftId(s.images, localDraftActiveIds, s) ||
+				hasAddedLocalDraftId(s.files, localDraftActiveIds, s) ||
+				hasAddedLocalDraftId(s.annotations, localDraftActiveIds, s))
+		) {
+			localChanged = true;
+		}
+		if (localChanged) {
+			const next = new Set<string>();
+			collectActiveLocalDraftIds(s.drafts, next, s);
+			collectActiveLocalDraftIds(s.images, next, s);
+			collectActiveLocalDraftIds(s.files, next, s);
+			collectActiveLocalDraftIds(s.annotations, next, s);
+			localDraftActiveIds = next;
+		}
+
+		if (activeChanged || localChanged) {
+			snapshot = { activeIds, localDraftActiveIds };
+		}
+		return snapshot;
+	};
+}
 
 interface PlusMenuState {
 	ws: Workspace;
@@ -495,41 +627,32 @@ export function SessionSidebar() {
 	// Compute grouped sessions with optional frozen order (C2: pass worktrees)
 	// Blank drafts (unnamed, no transcript, nothing typed) are not listed; they
 	// appear once the user types something or sends a message.
-	const composerActiveIds = useComposer((s) =>
-		Object.keys(s.drafts)
-			.filter((id) => s.drafts[id]?.trim() || (s.images[id]?.length ?? 0) > 0)
-			.concat(Object.keys(s.images).filter((id) => (s.images[id]?.length ?? 0) > 0))
-			.sort()
-			.join(","),
+	const composerPresenceSelector = useMemo(() => createActiveComposerSelector(), []);
+	const { activeIds: composerActiveIds, localDraftActiveIds } = useComposer(
+		composerPresenceSelector,
 	);
 	// Local drafts (no process yet) are listed once they hold input; the one
 	// being edited is listed too when filed under a group. A prewarmed stub is hidden behind its draft.
 	const localDrafts = usePendingSession((s) => s.drafts);
 	const shownDraftId = usePendingSession((s) => s.selectedId);
-	const draftInputKey = useComposer((s) => {
-		const ids = new Set<string>();
-		for (const m of [s.drafts, s.images, s.files, s.annotations]) {
-			for (const id of Object.keys(m)) if (isLocalDraftId(id)) ids.add(id);
-		}
-		return Array.from(ids).sort().join(",");
-	});
 	const sessionsList = useMemo(() => {
-		const active = new Set(composerActiveIds ? composerActiveIds.split(",") : []);
 		const lives = useLive.getState().sessions;
 		const draftList = Object.values(localDrafts);
 		const owned = new Set(draftList.map((d) => d.sessionId));
 		const rows = Object.values(sessions).filter(
 			(s) =>
 				!owned.has(s.id) &&
-				(active.has(s.id) ||
+				(composerActiveIds.has(s.id) ||
 					!isBlankDraft(s, lives[s.id]) ||
 					(selectedSessionId === s.id && s.groupId !== null)),
 		);
 		for (const d of draftList) {
-			if ((d.id === shownDraftId && d.groupId !== null) || !isBlankLocalDraft(d)) rows.push(draftMeta(d));
+			if ((d.id === shownDraftId && d.groupId !== null) || !isBlankLocalDraft(d)) {
+				rows.push(draftMeta(d));
+			}
 		}
 		return rows;
-	}, [sessions, composerActiveIds, selectedSessionId, localDrafts, shownDraftId, draftInputKey]);
+	}, [sessions, composerActiveIds, selectedSessionId, localDrafts, shownDraftId, localDraftActiveIds]);
 	// Worktree grouping is a code-mode concept; other modes always get a flat list per project.
 	const groupByWorktreeSetting = useSettings((s) => s.settings?.sessionGroupByWorktree ?? true);
 	const effectiveGroupBy =
@@ -539,40 +662,18 @@ export function SessionSidebar() {
 				? "worktree"
 				: "project";
 	const groupByWorktree = effectiveGroupBy === "worktree";
-	const unfilteredGrouped = useMemo(() => {
-		return groupSessions(sessionsList, workspaces, {
-			showArchived,
-			archivedOnly: false,
-			mode: activeMode,
-			worktrees,
-			groupByWorktree,
-			sessionSort,
-			projectSort,
-		});
-	}, [
-		sessionsList,
-		workspaces,
-		showArchived,
-		activeMode,
-		worktrees,
-		groupByWorktree,
-		sessionSort,
-		projectSort,
-	]);
 	const hasSessionFilterCriteria =
 		filterQuery.trim() !== "" || statusFilter !== "all" || timeFilter !== "all" || archivedOnly;
-	const filteredSessionsList = useMemo(
-		() =>
-			filterSidebarSessions(sessionsList, workspaces, {
-				query: filterQuery,
-				statusFilter,
-				timeFilter,
-			}),
-		[sessionsList, workspaces, filterQuery, statusFilter, timeFilter],
-	);
+	const visibleSessionsList = useMemo(() => {
+		if (!hasSessionFilterCriteria) return sessionsList;
+		return filterSidebarSessions(sessionsList, workspaces, {
+			query: filterQuery,
+			statusFilter,
+			timeFilter,
+		});
+	}, [hasSessionFilterCriteria, sessionsList, workspaces, filterQuery, statusFilter, timeFilter]);
 	const grouped = useMemo(() => {
-		if (!hasSessionFilterCriteria) return unfilteredGrouped;
-		return groupSessions(filteredSessionsList, workspaces, {
+		return groupSessions(visibleSessionsList, workspaces, {
 			showArchived,
 			archivedOnly,
 			mode: activeMode,
@@ -582,9 +683,7 @@ export function SessionSidebar() {
 			projectSort,
 		});
 	}, [
-		hasSessionFilterCriteria,
-		unfilteredGrouped,
-		filteredSessionsList,
+		visibleSessionsList,
 		workspaces,
 		showArchived,
 		archivedOnly,
@@ -613,26 +712,28 @@ export function SessionSidebar() {
 			list.push(...grouped.unassigned);
 		}
 		list.push(...grouped.deletedSessions);
-		const parseTs = (ts: string | null | undefined) => {
+		const parseTs = (ts: string | null | undefined): number => {
 			if (!ts) return 0;
 			const n = Date.parse(ts);
 			return Number.isNaN(n) ? 0 : n;
 		};
-		return list.sort((a, b) => {
-			if (sessionSort === "title") {
-				const cmp = (a.title || a.label || "")
-					.trim()
-					.localeCompare((b.title || b.label || "").trim());
+		const useCreated = sessionSort === "created";
+		const sortByTitle = sessionSort === "title";
+		const keyed = list.map((session) => ({
+			session,
+			ts: parseTs(
+				useCreated ? session.createdAt || session.updatedAt : session.updatedAt || session.createdAt,
+			),
+			title: sortByTitle ? (session.title || session.label || "").trim() : "",
+		}));
+		keyed.sort((a, b) => {
+			if (sortByTitle) {
+				const cmp = a.title.localeCompare(b.title);
 				if (cmp !== 0) return cmp;
 			}
-			const ta = parseTs(
-				sessionSort === "created" ? a.createdAt || a.updatedAt : a.updatedAt || a.createdAt,
-			);
-			const tb = parseTs(
-				sessionSort === "created" ? b.createdAt || b.updatedAt : b.updatedAt || b.createdAt,
-			);
-			return tb - ta;
+			return b.ts - a.ts;
 		});
+		return keyed.map((entry) => entry.session);
 	}, [effectiveGroupBy, grouped, sessionSort, showUnassigned]);
 	const displayedWorkspaceGroups = useMemo(() => {
 		if (!hideEmptyProjects && !hasSessionFilterCriteria) {
@@ -2423,7 +2524,7 @@ export function SessionSidebar() {
 											{t("common.retry")}
 										</button>
 									</div>
-								) : unfilteredGrouped.workspaceGroups.length === 0 ? (
+								) : grouped.workspaceGroups.length === 0 ? (
 									// S20: per-space empty state — the mode owns nothing yet
 									<div className="w-full space-y-1 text-left">
 										<div className="px-2 text-[12px] text-neutral-500">

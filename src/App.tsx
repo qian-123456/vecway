@@ -21,6 +21,7 @@ import { useDoctorAutoScheduler } from "./features/heatmap/doctorStore";
 import { startTodos } from "./features/todos/store";
 
 import { terminalSetCurrentSession } from "./lib/ipc";
+import { RESUME_MISSING_CWD_MODAL, RESUME_MISSING_MODEL_MODAL } from "./lib/ensureLive";
 import { captureDiagnosticError } from "./lib/diagnostics";
 import { installNativeShortcuts } from "./lib/nativeShortcuts";
 import { installShortcutDispatcher } from "./features/shortcuts/dispatcher";
@@ -158,6 +159,46 @@ function MainCenterView({ activeView }: { activeView: CenterView }) {
 			view = <StartPage />;
 	}
 	return <Suspense fallback={null}>{view}</Suspense>;
+}
+
+/** Gate each lazy overlay on its open condition so chunks are fetched only when opened. */
+function LazyOverlays() {
+	const modalName = useUi((s) => s.modal?.name ?? null);
+	const settingsOpen = useUi((s) => s.centerView === "settings");
+	return (
+		<>
+			{modalName === "diagnose" && (
+				<Suspense fallback={null}>
+					<DiagnoseDialog />
+				</Suspense>
+			)}
+			{modalName === "share-image" && (
+				<Suspense fallback={null}>
+					<ShareImageDialog />
+				</Suspense>
+			)}
+			{modalName === "new-session" && (
+				<Suspense fallback={null}>
+					<NewSessionDialog />
+				</Suspense>
+			)}
+			{modalName === RESUME_MISSING_CWD_MODAL && (
+				<Suspense fallback={null}>
+					<ResumeMissingCwdDialog />
+				</Suspense>
+			)}
+			{modalName === RESUME_MISSING_MODEL_MODAL && (
+				<Suspense fallback={null}>
+					<ResumeMissingModelDialog />
+				</Suspense>
+			)}
+			{settingsOpen && (
+				<Suspense fallback={null}>
+					<SettingsOverlay />
+				</Suspense>
+			)}
+		</>
+	);
 }
 
 export default function App() {
@@ -486,14 +527,7 @@ export default function App() {
 			<QuickCapture />
 			<HandbackDialog />
 			<OmpInstallDialog />
-			<Suspense fallback={null}>
-				<DiagnoseDialog />
-				<ShareImageDialog />
-				<NewSessionDialog />
-				<ResumeMissingCwdDialog />
-				<ResumeMissingModelDialog />
-				<SettingsOverlay />
-			</Suspense>
+			<LazyOverlays />
 		</div>
 	);
 }

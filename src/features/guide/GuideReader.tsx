@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import rehypeHighlight from "rehype-highlight";
+import { rehypeHighlightLite } from "../../components/rehypeHighlightLite";
 import remarkCjkFriendly from "remark-cjk-friendly";
 import remarkGfm from "remark-gfm";
 import { CopyButton } from "../../components/CopyButton";
@@ -158,7 +158,7 @@ const REMARK_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMarkdown>["re
 	remarkCallouts,
 ];
 const REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMarkdown>["rehypePlugins"]> = [
-	[rehypeHighlight, { detect: false, languages: HIGHLIGHT_LANGUAGES }],
+	[rehypeHighlightLite, { detect: false, languages: HIGHLIGHT_LANGUAGES }],
 ];
 
 function LangToggle({ lang, onChange }: { lang: GuideLang; onChange: (l: GuideLang) => void }) {

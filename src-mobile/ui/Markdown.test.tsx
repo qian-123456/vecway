@@ -107,3 +107,47 @@ describe("mobile Markdown math", () => {
 		expect(container.querySelector("p")?.firstChild?.textContent).toBe("结果为 ");
 	});
 });
+
+describe("mobile Markdown remote images", () => {
+	it("gates external http(s) images behind click-to-load without auto-fetching", () => {
+		const { container } = render(<Markdown text={"![diagram](https://example.com/pic.png)"} />);
+		expect(container.querySelector("img")).toBeNull();
+		const btn = screen.getByRole("button", { name: /点击加载外部图片/ });
+		expect(btn.textContent).toContain("diagram");
+		expect(btn.textContent).toContain("example.com");
+
+		fireEvent.click(btn);
+		const img = container.querySelector("img");
+		expect(img).not.toBeNull();
+		expect(img?.getAttribute("src")).toBe("https://example.com/pic.png");
+		expect(img?.getAttribute("referrerpolicy")).toBe("no-referrer");
+	});
+
+	it("renders local /api/, /static/, and raster data: images directly", () => {
+		const md = [
+			"![a](/api/sessions/s1/image?path=a.png)",
+			"![b](/static/logo.png)",
+			"![c](data:image/png;base64,AAAA)",
+		].join("\n\n");
+		const { container } = render(<Markdown text={md} />);
+		const srcs = Array.from(container.querySelectorAll("img"), (img) => img.getAttribute("src"));
+		expect(srcs).toEqual([
+			"/api/sessions/s1/image?path=a.png",
+			"/static/logo.png",
+			"data:image/png;base64,AAAA",
+		]);
+		expect(screen.queryByRole("button", { name: /点击加载外部图片/ })).toBeNull();
+	});
+});
+
+describe("mobile Markdown syntax highlighting", () => {
+	it("highlights registered languages with dotted hljs scopes and falls back to plain text for unknown languages", async () => {
+		const md = "```ts\nfunction greet(x: number) { return x + 1; }\n```\n\n```cobol\nDISPLAY 'HI'\n```";
+		const { container } = render(<Markdown text={md} />);
+		await waitFor(() => {
+			expect(container.querySelector(".hljs-keyword")?.textContent).toBe("function");
+			expect(container.querySelector(".hljs-title.function_")?.textContent).toBe("greet");
+		});
+		expect(container.textContent).toContain("DISPLAY 'HI'");
+	});
+});

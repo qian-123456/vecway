@@ -251,4 +251,102 @@ describe("SketchPad", () => {
 		expect(screen.getByLabelText("自定义颜色")).toBeTruthy();
 		expect(screen.getByRole("slider")).toBeTruthy();
 	});
+
+	it("does not redraw the committed canvas on hover or live pen preview, and caches clean bitmap across eraser moves", () => {
+		const { surface, canvas: committedCanvas } = setup();
+		const committedLog: string[] = [];
+		const committedCtx = new Proxy(
+			{},
+			{
+				get(_t, prop) {
+					if (prop === "measureText") return () => ({ width: 8 });
+					if (prop === "canvas") return committedCanvas;
+					return () => {
+						committedLog.push(String(prop));
+					};
+				},
+				set() {
+					return true;
+				},
+			},
+		) as unknown as CanvasRenderingContext2D;
+		vi.spyOn(committedCanvas, "getContext").mockImplementation(
+			(contextId: string) => (contextId === "2d" ? committedCtx : null),
+		);
+
+		drawStroke(surface, { x: 40, y: 40 }, { x: 160, y: 40 });
+		expect(committedLog.length).toBeGreaterThan(0);
+
+		// Hovering with the select tool must not repaint the committed canvas.
+		fireEvent.click(screen.getByTitle("选择"));
+		committedLog.length = 0;
+		fireEvent.pointerMove(surface, {
+			pointerId: 1,
+			pointerType: "mouse",
+			clientX: 100,
+			clientY: 40,
+		});
+		fireEvent.pointerMove(surface, {
+			pointerId: 1,
+			pointerType: "mouse",
+			clientX: 400,
+			clientY: 300,
+		});
+		expect(committedLog).toHaveLength(0);
+
+		// Live pen stroke samples paint on the live canvas, not committed canvas.
+		fireEvent.click(screen.getByTitle("画笔"));
+		committedLog.length = 0;
+		fireEvent.pointerDown(surface, {
+			button: 0,
+			pointerId: 2,
+			pointerType: "mouse",
+			clientX: 60,
+			clientY: 120,
+		});
+		fireEvent.pointerMove(surface, {
+			pointerId: 2,
+			pointerType: "mouse",
+			clientX: 120,
+			clientY: 140,
+		});
+		fireEvent.pointerMove(surface, {
+			pointerId: 2,
+			pointerType: "mouse",
+			clientX: 180,
+			clientY: 160,
+		});
+		expect(committedLog).toHaveLength(0);
+
+		// Committing the stroke repaints the committed canvas.
+		fireEvent.pointerUp(surface, {
+			pointerId: 2,
+			pointerType: "mouse",
+			clientX: 180,
+			clientY: 160,
+		});
+		expect(committedLog.length).toBeGreaterThan(0);
+
+		// Eraser pointer moves read from the cached clean bitmap (drawImage + trail)
+		// without re-running stroke rendering over the committed document.
+		fireEvent.click(screen.getByTitle("橡皮"));
+		committedLog.length = 0;
+		fireEvent.pointerDown(surface, {
+			button: 0,
+			pointerId: 3,
+			pointerType: "mouse",
+			clientX: 100,
+			clientY: 20,
+		});
+		committedLog.length = 0;
+		fireEvent.pointerMove(surface, {
+			pointerId: 3,
+			pointerType: "mouse",
+			clientX: 100,
+			clientY: 60,
+		});
+		expect(committedLog.filter((c) => c === "drawImage")).toHaveLength(1);
+		// Only the eraser polyline stroke runs (no extra fill/arc from committed pen strokes).
+		expect(committedLog.filter((c) => c === "fill")).toHaveLength(0);
+	});
 });

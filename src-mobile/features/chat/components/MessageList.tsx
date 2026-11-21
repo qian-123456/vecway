@@ -1,5 +1,5 @@
 import { ArrowDown, MessageSquare } from "lucide-react";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Button, EmptyState, Markdown, PullToRefresh } from "../../../ui";
 import { useChat, useChatUi } from "../ChatContext";
 import type { Item } from "../../../core/types";
@@ -84,6 +84,57 @@ const InterruptedView = memo(function InterruptedView() {
 	);
 });
 
+/**
+ * Isolated live streaming tail: subscribes directly to high-frequency `live` state so streaming
+ * tokens do not re-render MessageList or re-run its persisted block mapping on every frame.
+ */
+const MobileStreamingRow = memo(function MobileStreamingRow({
+	sessionId,
+	needsSyntheticHost,
+	loaded,
+	stickRef,
+	onUnread,
+}: {
+	sessionId: string;
+	needsSyntheticHost: boolean;
+	loaded: boolean;
+	stickRef: RefObject<boolean>;
+	onUnread: () => void;
+}) {
+	const live = useChat((s) => s.live);
+	const working = useChat((s) => s.working);
+	const segments = useChat((s) => s.segments);
+	const segmentTurns = useMemo(() => segments.map(segmentTurn), [segments]);
+	const showSynthetic = needsSyntheticHost && (working || live !== null || segmentTurns.length > 0);
+	const prevLive = useRef(live);
+	const prevSegments = useRef(segments);
+
+	useEffect(() => {
+		const liveChanged = prevLive.current !== live;
+		const segmentsChanged = prevSegments.current !== segments;
+		prevLive.current = live;
+		prevSegments.current = segments;
+		if ((liveChanged && live !== null) || (segmentsChanged && segments.length > 0)) {
+			if (loaded && !stickRef.current) onUnread();
+		}
+	}, [live, segments, loaded, stickRef, onUnread]);
+
+	return (
+		<>
+			{segmentTurns.map((t) => (
+				<div key={t.id} className="m-turn">
+					<TurnView turn={t} isLast={false} sessionId={sessionId} />
+				</div>
+			))}
+			{showSynthetic && (
+				<div className="m-turn-live">
+					<TurnView turn={SYNTHETIC_TURN} isLast sessionId={sessionId} />
+				</div>
+			)}
+		</>
+	);
+});
+
 export function MessageList({ sessionId }: { sessionId: string }) {
 	const { controller } = useChatUi();
 	const blocks = useChat((s) => s.blocks);
@@ -91,8 +142,8 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 	const localOut = useChat((s) => s.localOut);
 	const loaded = useChat((s) => s.loaded);
 	const working = useChat((s) => s.working);
-	const live = useChat((s) => s.live);
-	const segments = useChat((s) => s.segments);
+	const hasLive = useChat((s) => s.live !== null);
+	const hasSegments = useChat((s) => s.segments.length > 0);
 	const delivery = useChat((s) => s.delivery);
 	const [limit, setLimit] = useState(WINDOW_STEP);
 	const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -180,21 +231,23 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 		scrollToEnd();
 	};
 
+	const markUnread = useCallback(() => setHasUnread(true), []);
 	const lastBlock = blocks[blocks.length - 1];
 	// Retained segments always render as their own rows after the persisted turns: the live row
 	// must not merge into the last turn while they hold content the transcript does not carry yet.
-	const segmentTurns = useMemo(() => segments.map(segmentTurn), [segments]);
-	const syntheticLive =
-		(working || live !== null || segmentTurns.length > 0) &&
-		(optimistic.length > 0 || !lastBlock || lastBlock.type !== "turn" || segmentTurns.length > 0);
+	const needsSyntheticHost = optimistic.length > 0 || !lastBlock || lastBlock.type !== "turn" || hasSegments;
+	const syntheticLive = (working || hasLive || hasSegments) && needsSyntheticHost;
 	const addedWhileReading = stick.current ? 0 : Math.max(0, blocks.length - previousBlockCount.current);
 	const visibleLimit = limit + addedWhileReading;
-	const shown = blocks.length > visibleLimit ? blocks.slice(-visibleLimit) : blocks;
+	const shown = useMemo(
+		() => (blocks.length > visibleLimit ? blocks.slice(-visibleLimit) : blocks),
+		[blocks, visibleLimit],
+	);
 	const hidden = blocks.length - shown.length;
 	const empty = loaded && blocks.length === 0 && optimistic.length === 0 && localOut.length === 0;
 	useEffect(() => {
 		if (loaded && !stick.current) setHasUnread(true);
-	}, [loaded, lastBlock, live, optimistic, localOut]);
+	}, [loaded, lastBlock, optimistic, localOut]);
 
 	return (
 		<div className="relative flex min-h-0 flex-1 flex-col">
@@ -241,16 +294,13 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 					{optimistic.map((o) => (
 						<PendingBubble key={o.id} text={o.text} imageUrls={o.imageUrls} />
 					))}
-					{segmentTurns.map((t) => (
-						<div key={t.id} className="m-turn">
-							<TurnView turn={t} isLast={false} sessionId={sessionId} />
-						</div>
-					))}
-					{syntheticLive && (
-						<div className="m-turn-live">
-							<TurnView turn={SYNTHETIC_TURN} isLast sessionId={sessionId} />
-						</div>
-					)}
+					<MobileStreamingRow
+						sessionId={sessionId}
+						needsSyntheticHost={needsSyntheticHost}
+						loaded={loaded}
+						stickRef={stick}
+						onUnread={markUnread}
+					/>
 					{localOut.map((o) => (
 						<div key={o.id} className="px-5 py-2">
 							<div className="rounded-m-lg bg-m-surface p-4">

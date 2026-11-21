@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isFlowBusy, makeUserEcho, pruneRemovedSessions, queuedEchoIds, useLive } from "./live";
+import { isFlowBusy, makeUserEcho, normalizedStreamingContent, pruneRemovedSessions, queuedEchoIds, useLive } from "./live";
 import { useComposer } from "./composer";
 import { useHeldQueue } from "../features/chat/heldQueue";
 
@@ -1297,5 +1297,49 @@ describe("live reducer — independent message and prompt boundaries", () => {
 		frame({ type: "queue_update", steering: [], followUp: ["repeat"] });
 		expect([...queuedEchoIds(live())]).toEqual([queued]);
 		expect(queuedEchoIds(live()).has(sent!)).toBe(false);
+	});
+});
+
+describe("live reducer — no-op identity preservation and normalized streaming cache", () => {
+	it("returns the exact same sessions map and notifies zero subscribers on no-op frames", () => {
+		frame({ type: "agent_start" });
+		const sessionsBefore = useLive.getState().sessions;
+		const listener = vi.fn();
+		const unsub = useLive.subscribe(listener);
+		try {
+			// Unrecognized frame type
+			frame({ type: "noop_heartbeat" });
+			// Ignored user-role message_update
+			frame({ type: "message_update", message: { role: "user", content: [{ type: "text", text: "ignored" }] } });
+			expect(useLive.getState().sessions).toBe(sessionsBefore);
+			expect(listener).not.toHaveBeenCalled();
+
+			// Settled turn ignores late frames without cloning the sessions map.
+			frame({ type: "agent_end", isTerminal: true });
+			const settledSessions = useLive.getState().sessions;
+			listener.mockClear();
+			frame({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "late" }] } });
+			expect(useLive.getState().sessions).toBe(settledSessions);
+			expect(listener).not.toHaveBeenCalled();
+		} finally {
+			unsub();
+		}
+	});
+
+	it("caches normalized think content per streamingMessage snapshot", () => {
+		frame({ type: "agent_start" });
+		const msg = {
+			role: "assistant",
+			content: [{ type: "text", text: "<think>plan</think>answer" }],
+		};
+		frame({ type: "message_update", message: msg });
+		const stored = live().streamingMessage;
+		const first = normalizedStreamingContent(stored);
+		const second = normalizedStreamingContent(stored);
+		expect(first).toBe(second);
+		expect(first).toEqual([
+			{ type: "thinking", thinking: "plan" },
+			{ type: "text", text: "answer" },
+		]);
 	});
 });

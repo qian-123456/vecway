@@ -39,7 +39,7 @@ import { withModelNotices } from "./modelChangeRows";
 import { useDismissedTurnErrors } from "./dismissedTurnErrors";
 import { isFlowItem, withFlowNotices } from "./flowNotice";
 import { QueuedBubbles } from "./QueuedBubbles";
-import { collectUserImages, queuedEchoIds, useLive, type CommandOutputEntry, type LiveRequest, type LiveTool, type UserEcho } from "../../stores/live";
+import { collectUserImages, normalizedStreamingContent, queuedEchoIds, useLive, type CommandOutputEntry, type LiveRequest, type LiveTool, type UserEcho } from "../../stores/live";
 import { useSessions } from "../../stores/sessions";
 import { useComposer } from "../../stores/composer";
 import { useTurnNav } from "../../stores/turnNav";
@@ -60,7 +60,6 @@ import { useTree } from "../../stores/tree";
 import { isShareableAnswer, isShareableUser } from "./share/shareEntries";
 import { useShareSelection } from "./share/shareStore";
 import { useLineClampOverflow } from "../../lib/useLineClamp";
-import { normalizeThinkContent } from "../../lib/thinkTags";
 import { AttachmentThumb, FileChip } from "./ImageChips";
 import { AutoGrowTextarea } from "./AutoGrowTextarea";
 import { QuoteCards } from "./AnnotationQuote";
@@ -1226,6 +1225,30 @@ function ContextOverflowHint({ modelRef }: { modelRef: string | null | undefined
  * activity rows (thinking / tools / text) via the shared TurnSteps list.
  */
 type LivePseudoStep = StepShape;
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
+
+function makeLiveToolStep(
+	id: string,
+	args: unknown,
+	name: string | undefined,
+	liveTools: Record<string, LiveTool>,
+	toolResultsByCallId: Map<string, ToolResultInfo> | undefined,
+	requestOfCall: Map<string, string>,
+): LivePseudoStep {
+	const live = liveTools[id];
+	return {
+		id: `live-tool-${id}`,
+		kind: "tool",
+		call: {
+			id,
+			name: live?.toolName ?? name ?? "",
+			args: live?.args ?? args ?? {},
+			intent: live?.intent ?? null,
+		},
+		result: toolResultsByCallId?.get(id),
+		requestId: requestOfCall.get(id),
+	};
+}
 
 const StreamingRow = React.memo(function StreamingRow({
 	sessionId,
@@ -1312,46 +1335,32 @@ const StreamingRow = React.memo(function StreamingRow({
 	const liveTurnStartedAt = useLive((s) => s.sessions[sessionId]?.turnStartedAt ?? null);
 	const streamStartedAt = liveTurnStartedAt ?? mountedAt;
 
-	// Build interleaved pseudo-steps from the streaming message content:
-	// thinking parts → thinking steps, tool_use parts → tool steps, text parts
-	// → plain markdown text. Live tools without a matching call are appended.
-	const steps = useMemo<LivePseudoStep[]>(() => {
+	// Reuse the normalized content cached per streamingMessage snapshot so
+	// re-renders triggered by unrelated state do not re-run think-tag parsing.
+	const streamingContent = useMemo(
+		() => normalizedStreamingContent(streamingMessage),
+		[streamingMessage],
+	);
+
+	// Stable prefix: completed requests + retry rows. Memoized separately from
+	// `streamingContent` so streaming text tokens never rebuild completed rows.
+	const completedPrefix = useMemo(() => {
 		const out: LivePseudoStep[] = [];
-		const content = normalizeThinkContent(
-			Array.isArray(streamingMessage?.content)
-				? (streamingMessage.content as unknown[])
-				: [],
-			{ streaming: true },
-		);
-		const seen = new Set<string>();
-		const pushTool = (id: string, args: unknown, name: string | undefined) => {
-			seen.add(id);
-			const live = liveTools[id];
-			out.push({
-				id: `live-tool-${id}`,
-				kind: "tool",
-				call: {
-					id,
-					name: live?.toolName ?? name ?? "",
-					args: live?.args ?? args ?? {},
-					intent: live?.intent ?? null,
-				},
-				result: toolResultsByCallId?.get(id),
-				requestId: requestOfCall.get(id),
-			});
-		};
+		const seenToolIds = new Set<string>();
 		// Retry rows sit where they were raised: after the requests finished
 		// by then, before whatever the retried request produces.
 		const finished = liveRequests.length;
 		const noticeGroups = new Map<number, RetryNotice[]>();
 		for (const n of retryNotices ?? []) {
 			const at = Math.min(n.anchor ?? finished, finished);
-			noticeGroups.set(at, [...(noticeGroups.get(at) ?? []), n]);
+			const existing = noticeGroups.get(at);
+			if (existing) existing.push(n);
+			else noticeGroups.set(at, [n]);
 		}
-		const lastFallbackAt = [...noticeGroups.entries()]
-			.filter(([, g]) => g.some((n) => n.kind === "fallback"))
-			.map(([at]) => at)
-			.pop();
+		let lastFallbackAt: number | undefined;
+		for (const [at, g] of noticeGroups) {
+			if (g.some((n) => n.kind === "fallback")) lastFallbackAt = at;
+		}
 		const pushRetry = (at: number) => {
 			const group = noticeGroups.get(at);
 			if (!group) return;
@@ -1391,24 +1400,51 @@ const StreamingRow = React.memo(function StreamingRow({
 						text: part.text,
 						requestId: req.id,
 					});
-				} else if (!seen.has(part.id)) {
-					pushTool(part.id, undefined, undefined);
+				} else if (!seenToolIds.has(part.id)) {
+					seenToolIds.add(part.id);
+					out.push(
+						makeLiveToolStep(
+							part.id,
+							undefined,
+							undefined,
+							liveTools,
+							toolResultsByCallId,
+							requestOfCall,
+						),
+					);
 				}
 			});
 			pushRetry(reqIdx + 1);
 		});
+		return { steps: out, seenToolIds };
+	}, [
+		liveRequests,
+		retryNotices,
+		retryFallback,
+		liveTools,
+		toolResultsByCallId,
+		requestOfCall,
+	]);
+
+	// Live tail: only the currently streaming assistant message + orphan tools.
+	const tailSteps = useMemo<LivePseudoStep[]>(() => {
+		const out: LivePseudoStep[] = [];
+		const seen = new Set<string>();
+		const finished = liveRequests.length;
 		// The in-flight message comes last; only its newest thinking part can
 		// still be running, and it is the final row of the block.
 		let lastThinkingIdx = -1;
-		content.forEach((part, i) => {
-			const o = asObj(part);
-			if ((o.type === "thinking" || o.type === "thought") && o.narration !== true) lastThinkingIdx = i;
-		});
+		for (let i = 0; i < streamingContent.length; i++) {
+			const o = asObj(streamingContent[i]);
+			if ((o.type === "thinking" || o.type === "thought") && o.narration !== true) {
+				lastThinkingIdx = i;
+			}
+		}
 		// Same ids the finished request will give these rows (`r<finished>-<n>`,
 		// n counting kept parts only) so message_end does not remount them.
 		let keptIdx = -1;
-		for (let ci = 0; ci < content.length; ci++) {
-			const o = asObj(content[ci]);
+		for (let ci = 0; ci < streamingContent.length; ci++) {
+			const o = asObj(streamingContent[ci]);
 			const t = o.type;
 			const partIdx = ci + 1;
 			if (t === "thinking" || t === "thought") {
@@ -1420,7 +1456,7 @@ const StreamingRow = React.memo(function StreamingRow({
 						id: `live-narration-r${finished}-${keptIdx}`,
 						kind: "narration",
 						text: thinking,
-						streaming: partIdx === content.length,
+						streaming: partIdx === streamingContent.length,
 					});
 					continue;
 				}
@@ -1440,8 +1476,18 @@ const StreamingRow = React.memo(function StreamingRow({
 				const id = String(o.id ?? "");
 				if (!id) continue;
 				keptIdx += 1;
-				if (seen.has(id)) continue;
-				pushTool(id, o.input ?? o.arguments, String(o.name ?? ""));
+				if (completedPrefix.seenToolIds.has(id) || seen.has(id)) continue;
+				seen.add(id);
+				out.push(
+					makeLiveToolStep(
+						id,
+						o.input ?? o.arguments,
+						String(o.name ?? ""),
+						liveTools,
+						toolResultsByCallId,
+						requestOfCall,
+					),
+				);
 			} else if (t === "text") {
 				const txt = String(o.text ?? "");
 				if (!txt.trim()) continue;
@@ -1451,13 +1497,15 @@ const StreamingRow = React.memo(function StreamingRow({
 					kind: o.narration === true ? "narration" : "text",
 					text: txt,
 					// Only the part the model is writing right now is unfinished.
-					streaming: partIdx === content.length,
+					streaming: partIdx === streamingContent.length,
 				});
 			}
 		}
 		// Live tools never declared in the streaming message still render.
-		for (const [id, live] of Object.entries(liveTools)) {
-			if (seen.has(id)) continue;
+		for (const id in liveTools) {
+			if (!Object.prototype.hasOwnProperty.call(liveTools, id)) continue;
+			if (completedPrefix.seenToolIds.has(id) || seen.has(id)) continue;
+			const live = liveTools[id];
 			out.push({
 				id: `live-tool-${id}`,
 				kind: "tool",
@@ -1471,13 +1519,33 @@ const StreamingRow = React.memo(function StreamingRow({
 				requestId: requestOfCall.get(id),
 			});
 		}
+		return out;
+	}, [
+		streamingContent,
+		completedPrefix.seenToolIds,
+		liveRequests.length,
+		liveTools,
+		toolResultsByCallId,
+		requestOfCall,
+		thinkingStartedAt,
+		thinkingEndedAt,
+	]);
+
+	const steps = useMemo<LivePseudoStep[]>(() => {
 		const anchors = steerAnchors.current;
 		const queued = ompQueue
 			? queuedEchoIds({ pendingUserEchoes: echoes, ompQueue })
-			: new Set<string>();
+			: EMPTY_STRING_SET;
 		// A queued steer is not part of the running request yet: it shows as a
 		// grey queued bubble below and joins the steps once delivered.
 		const steers = echoes.filter((e) => e.steer && !queued.has(e.id));
+		if (steers.length === 0) {
+			if (anchors.size > 0) anchors.clear();
+			if (tailSteps.length === 0) return completedPrefix.steps;
+			if (completedPrefix.steps.length === 0) return tailSteps;
+			return [...completedPrefix.steps, ...tailSteps];
+		}
+		const out = [...completedPrefix.steps, ...tailSteps];
 		for (const id of anchors.keys()) {
 			if (!steers.some((e) => e.id === id)) anchors.delete(id);
 		}
@@ -1496,19 +1564,7 @@ const StreamingRow = React.memo(function StreamingRow({
 			out.splice(Math.min(at, out.length), 0, step);
 		}
 		return out;
-	}, [
-		streamingMessage,
-		echoes,
-		ompQueue,
-		liveTools,
-		liveRequests,
-		retryNotices,
-		retryFallback,
-		toolResultsByCallId,
-		requestOfCall,
-		thinkingStartedAt,
-		thinkingEndedAt,
-	]);
+	}, [completedPrefix.steps, tailSteps, echoes, ompQueue]);
 
 	// Requests whose tool calls the committed turn already shows: their live
 	// rows (and stats lines) would repeat those steps, so they are dropped.

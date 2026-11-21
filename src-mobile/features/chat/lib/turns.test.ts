@@ -38,6 +38,24 @@ describe("buildBlocks", () => {
 		expect(t.steps.map((s) => s.kind)).toContain("notice");
 		expect(t.answer?.text).toBe("two");
 	});
+	it("handles consecutive protocol runs inside a turn, between turns, and at the tail", () => {
+		const items = normalizeTranscript([
+			{ id: "u1", kind: "user", text: "q1" },
+			{ id: "p1", kind: "model_change", text: "m1" },
+			{ id: "p2", kind: "thinking_level_change", text: "high" },
+			{ id: "a1", kind: "assistant", text: "a1" },
+			{ id: "p3", kind: "compaction" },
+			{ id: "p4", kind: "model_change", text: "m2" },
+			{ id: "u2", kind: "user", text: "q2" },
+			{ id: "p5", kind: "compaction" },
+			{ id: "p6", kind: "thinking_level_change", text: "low" },
+		]);
+		const grouped = buildBlocks(items, {});
+		expect(grouped.map((b) => b.type)).toEqual(["turn", "notice", "notice", "turn", "notice", "notice"]);
+		const firstTurn = grouped[0] as Turn;
+		expect(firstTurn.steps.filter((s) => s.kind === "notice").map((s) => s.key)).toEqual(["nt-p1", "nt-p2"]);
+		expect(firstTurn.answer?.text).toBe("a1");
+	});
 });
 
 describe("reuseBlocks", () => {

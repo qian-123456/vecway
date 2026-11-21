@@ -11,7 +11,7 @@ vi.mock("../features/chat/mermaidRender", () => ({
 	svgViewBoxSize: () => ({ width: 100, height: 40 }),
 }));
 
-import { Markdown } from "./Markdown";
+import { Markdown, splitHeadBlocks } from "./Markdown";
 import { pendingMarkdownAssets } from "../features/chat/markdownAssets";
 import { suppressWebViewContextMenu } from "../lib/webviewContextMenu";
 import { tNow } from "../stores/language";
@@ -246,5 +246,37 @@ describe("Markdown mermaid fences", () => {
 		const out = renderToStaticMarkup(<Markdown text={"```mermaid\ngraph TD\n  A-->B\n```"} exportMode />);
 		expect(out).not.toContain("<img");
 		expect(out).toContain("A--&gt;B");
+	});
+});
+
+describe("splitHeadBlocks and rehypeHighlightLite integration", () => {
+	it("splits stable top-level blocks while preserving fences, math, lists, and prefix invariance", () => {
+		const b1 = "# Title\n\n";
+		const b2 = "First paragraph.\n\n";
+		const b3 = "```ts\nconst a = 1;\n\nconst b = 2;\n```\n\n";
+		const b4 = "$$\nx = 1\n\ny = 2\n$$\n\n";
+		const b5 = "- item 1\n\n- item 2\n\n";
+
+		const step1 = splitHeadBlocks(b1 + b2);
+		expect(step1).toEqual([b1, b2]);
+		expect(step1.join("")).toBe(b1 + b2);
+
+		const step2 = splitHeadBlocks(b1 + b2 + b3 + b4 + b5);
+		expect(step2).toEqual([b1, b2, b3, b4, b5]);
+		expect(step2[0]).toBe(step1[0]);
+		expect(step2[1]).toBe(step1[1]);
+		expect(step2.join("")).toBe(b1 + b2 + b3 + b4 + b5);
+	});
+
+	it("keeps heads containing reference definitions intact as one block", () => {
+		const doc = "See [site][ref].\n\n[ref]: https://example.com\n\n";
+		expect(splitHeadBlocks(doc)).toEqual([doc]);
+	});
+
+	it("highlights fenced code blocks via rehypeHighlightLite without lowlight/common", () => {
+		const out = html("```ts\nexport function demo() { return 1; }\n```");
+		expect(out).toContain("hljs-keyword");
+		expect(out).toContain("hljs-title");
+		expect(out).toContain("function_");
 	});
 });

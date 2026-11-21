@@ -1,10 +1,27 @@
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { defineConfig } from "vitest/config";
+import { defineConfig, type Plugin } from "vitest/config";
+
+const KATEX_CSS_RE = /[/\\]katex(?:\.min)?\.css(?:$|\?)/;
+const LEGACY_KATEX_FONT_SRC =
+	/,\s*url\([^)]*\.(?:woff|ttf)(?:[?#][^)'"]*)?['"]?\)\s*format\(["'](?:woff|truetype)["']\)/gi;
+
+/** Strip legacy .woff/.ttf KaTeX font-face fallbacks; WKWebView 12+ and ES2021 browsers support .woff2. */
+function katexWoff2Only(): Plugin {
+	return {
+		name: "katex-woff2-only",
+		enforce: "pre",
+		transform(code, id) {
+			if (!KATEX_CSS_RE.test(id)) return null;
+			const next = code.replace(LEGACY_KATEX_FONT_SRC, "");
+			return next === code ? null : { code: next, map: null };
+		},
+	};
+}
 
 // https://vite.dev/config/
 export default defineConfig({
-	plugins: [react(), tailwindcss()],
+	plugins: [katexWoff2Only(), react(), tailwindcss()],
 	test: {
 		include: ["src/**/*.test.{ts,tsx}", "src-mobile/**/*.test.{ts,tsx}", "src-tauri/src/mobile/camera-web/*.test.js"],
 		setupFiles: ["src/test/setupLocale.ts"],

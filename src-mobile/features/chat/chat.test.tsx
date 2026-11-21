@@ -541,6 +541,32 @@ describe("MessageList", () => {
 		expect(container.contains(earlier)).toBe(true);
 	});
 
+	it("streams into synthetic live row and marks unread on live-only updates while reading history", async () => {
+		const c = new ChatController("s1");
+		seed(c);
+		render(wrap(c, <MessageList sessionId="s1" />));
+		const earlier = screen.getByText("answer 120");
+		fireEvent.click(screen.getByRole("button", { name: /加载更早的/ }));
+		expect(screen.queryByLabelText("有新消息，回到底部")).toBeNull();
+		await act(async () =>
+			c.store.setState({
+				working: true,
+				live: { id: "__live", role: "assistant", kind: "assistant", text: "live unread chunk", thinking: "", tools: [], images: [], ts: null, streaming: true },
+			}),
+		);
+		expect(screen.getByText("live unread chunk")).toBeTruthy();
+		expect(screen.getByLabelText("有新消息，回到底部")).toBeTruthy();
+		await act(async () =>
+			c.store.setState({
+				optimistic: [{ id: "opt-1", text: "pending question", imageUrls: [] }],
+				live: { id: "__live", role: "assistant", kind: "assistant", text: "synthetic chunk", thinking: "", tools: [], images: [], ts: null, streaming: true },
+			}),
+		);
+		expect(screen.getByText("pending question")).toBeTruthy();
+		expect(screen.getByText("synthetic chunk")).toBeTruthy();
+		expect(screen.getByText("answer 120")).toBe(earlier);
+	});
+
 	it("shows an explicit unknown-delivery notice with original text, files and recovery actions", () => {
 		const c = new ChatController("s1");
 		c.store.setState({ loaded: true, delivery: { text: "original message", prompt: "original message", phase: "unknown", atts: [{ id: 1, name: "notes.txt", path: "/uploads/notes.txt", isImage: false, status: "ok", url: "" }] } });

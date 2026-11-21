@@ -25,7 +25,7 @@ import yaml from "highlight.js/lib/languages/yaml";
 
 type LanguageFn = (hljs: HLJSApi) => Language;
 
-/** Registered grammars; mutated as lazy ones load (read by rehype-highlight on every render). */
+/** Registered grammars; mutated as lazy ones load (synced by rehypeHighlightLite on demand). */
 export const HIGHLIGHT_LANGUAGES: Record<string, LanguageFn> = {
 	bash,
 	css,

@@ -7,9 +7,9 @@
  *   OverlayCanvas / BrushCursor, plus floating top bar, size slider and
  *   color bar inside the dialog.
  *
- * All document state and object rendering live in sketchState.ts
- * (`createSketchEditor` + `renderSketch*`); this file wires pointer/keyboard
- * input, the canvas layer stack and the modal chrome.
+ * Document state lives in sketchState.ts (`createSketchEditor`), geometry in
+ * sketchGeometry.ts, and canvas rendering / text layout in sketchRender.ts;
+ * this file wires pointer/keyboard input, the canvas layer stack and the modal chrome.
  */
 import {
 	useCallback,
@@ -31,14 +31,13 @@ import type {
 import { createPortal } from "react-dom";
 import { useIsDark } from "../../../lib/theme";
 import { useT } from "../../../stores/language";
+import { createSketchEditor, TEXT_FONT_FAMILY } from "./sketchState";
 import {
-	createSketchEditor,
 	layoutText,
 	renderEraserTrail,
 	renderSketchDocument,
 	renderSketchObject,
-	TEXT_FONT_FAMILY,
-} from "./sketchState";
+} from "./sketchRender";
 import type {
 	Bounds,
 	PointerSample,
@@ -772,6 +771,7 @@ export function SketchPad(props: SketchPadProps): ReactElement {
 	const sessionKeyRef = useRef(0);
 	const erasureCacheRef = useRef<HTMLCanvasElement | null>(null);
 	const erasureIdRef = useRef<string | null>(null);
+	const committedCleanRef = useRef(false);
 	const drawingPointerRef = useRef<number | null>(null);
 	const snapRef = useRef(snap);
 	snapRef.current = snap;
@@ -882,68 +882,157 @@ export function SketchPad(props: SketchPadProps): ReactElement {
 	useLayoutEffect(updateBrush, [updateBrush, brushSize, brushColor]);
 
 	/* ---------------- canvas painting ---------------- */
+	const committedRev = snap.committedRev;
+	const replacementRev = snap.replacementRev;
+	const livePreviewObject =
+		snap.preview != null &&
+		snap.preview.replaceObjectId == null &&
+		snap.preview.object.kind !== "text" &&
+		snap.preview.object.kind !== "eraser"
+			? snap.preview.object
+			: null;
+
+	const paintCommittedBase = useCallback(
+		(
+			canvas: HTMLCanvasElement,
+			size: { width: number; height: number },
+			currentSnap: SketchSnapshot,
+		): boolean => {
+			const ctx = prepareCanvas(canvas, size);
+			if (ctx == null) return false;
+			try {
+				const preview = currentSnap.preview;
+				// Text objects render in the DOM text layer, so they are excluded
+				// here; a move/resize preview substitutes its object in.
+				let excludeIds: Set<string> | undefined;
+				for (const obj of currentSnap.document.objects) {
+					if (obj.kind === "text") {
+						if (excludeIds == null) excludeIds = new Set<string>();
+						excludeIds.add(obj.id);
+					}
+				}
+				const replacement =
+					preview != null &&
+					preview.replaceObjectId != null &&
+					preview.object.kind !== "text" &&
+					preview.object.kind !== "eraser"
+						? { objectId: preview.replaceObjectId, object: preview.object }
+						: undefined;
+				renderSketchDocument(ctx, currentSnap.document, {
+					excludeIds,
+					replacement,
+				});
+				committedCleanRef.current = true;
+				return true;
+			} finally {
+				ctx.restore();
+			}
+		},
+		[],
+	);
+
 	useLayoutEffect(() => {
 		const canvas = committedRef.current;
 		if (canvas == null || surfaceSize == null) return;
-		const ctx = prepareCanvas(canvas, surfaceSize);
-		if (ctx == null) return;
-		try {
-			const preview = snap.preview;
-			// Text objects render in the DOM text layer, so they are excluded
-			// here; a move/resize preview substitutes its object in.
-			const excludeIds = new Set(
-				snap.document.objects
-					.filter((o) => o.kind === "text")
-					.map((o) => o.id),
-			);
-			const replacement =
-				preview != null &&
-				preview.replaceObjectId != null &&
-				preview.object.kind !== "text" &&
-				preview.object.kind !== "eraser"
-					? { objectId: preview.replaceObjectId, object: preview.object }
-					: undefined;
-			renderSketchDocument(ctx, snap.document, { excludeIds, replacement });
-			const trail = preview?.object.kind === "eraser" ? preview.object : null;
-			if (trail != null) {
-				// Cache the clean bitmap once per gesture, then punch the trail
-				// out with destination-out (real `Bn` semantics).
-				if (
-					erasureCacheRef.current == null ||
-					erasureIdRef.current !== trail.id
-				) {
-					const cache =
-						erasureCacheRef.current ??
-						canvas.ownerDocument.createElement("canvas");
-					cache.width = canvas.width;
-					cache.height = canvas.height;
-					const cctx = cache.getContext("2d");
-					if (cctx != null) {
-						cctx.setTransform(1, 0, 0, 1, 0, 0);
-						cctx.clearRect(0, 0, cache.width, cache.height);
-						cctx.drawImage(canvas, 0, 0);
-					}
-					erasureCacheRef.current = cache;
-					erasureIdRef.current = trail.id;
-				}
+		const currentSnap = snapRef.current;
+		if (!paintCommittedBase(canvas, surfaceSize, currentSnap)) return;
+		// Any cached pre-erase bitmap is now stale after a base redraw.
+		erasureIdRef.current = null;
+		if (currentSnap.preview?.object.kind !== "eraser") {
+			erasureCacheRef.current = null;
+		}
+	}, [committedRev, replacementRev, surfaceSize, paintCommittedBase]);
+
+	useLayoutEffect(() => {
+		const canvas = committedRef.current;
+		if (canvas == null || surfaceSize == null) return;
+		const dpr = canvas.ownerDocument.defaultView?.devicePixelRatio ?? 1;
+		const expectedW = Math.max(1, Math.round(surfaceSize.width * dpr));
+		const expectedH = Math.max(1, Math.round(surfaceSize.height * dpr));
+		if (previewEraser == null) {
+			if (!committedCleanRef.current) {
 				const cache = erasureCacheRef.current;
-				if (cache != null) {
-					const dpr =
-						canvas.ownerDocument.defaultView?.devicePixelRatio ?? 1;
-					ctx.setTransform(1, 0, 0, 1, 0, 0);
-					ctx.clearRect(0, 0, canvas.width, canvas.height);
-					ctx.drawImage(cache, 0, 0);
-					ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-					renderEraserTrail(ctx, trail.points, trail.width);
+				if (
+					cache != null &&
+					cache.width === expectedW &&
+					cache.height === expectedH &&
+					canvas.width === expectedW &&
+					canvas.height === expectedH
+				) {
+					const ctx = canvas.getContext("2d");
+					if (ctx != null) {
+						ctx.save();
+						try {
+							ctx.setTransform(1, 0, 0, 1, 0, 0);
+							ctx.clearRect(0, 0, canvas.width, canvas.height);
+							ctx.drawImage(cache, 0, 0);
+							committedCleanRef.current = true;
+						} finally {
+							ctx.restore();
+						}
+					}
+				} else {
+					paintCommittedBase(canvas, surfaceSize, snapRef.current);
 				}
-			} else {
-				erasureCacheRef.current = null;
-				erasureIdRef.current = null;
 			}
+			erasureCacheRef.current = null;
+			erasureIdRef.current = null;
+			return;
+		}
+		// Cache the clean committed bitmap once per eraser gesture, then blit
+		// from cache and punch out the trail with destination-out (real `Bn`).
+		const dimsMatch =
+			canvas.width === expectedW && canvas.height === expectedH;
+		const cacheMatchesDims =
+			erasureCacheRef.current != null &&
+			erasureCacheRef.current.width === expectedW &&
+			erasureCacheRef.current.height === expectedH;
+		if (
+			erasureCacheRef.current == null ||
+			erasureIdRef.current !== previewEraser.id ||
+			!cacheMatchesDims
+		) {
+			if (!committedCleanRef.current && cacheMatchesDims && dimsMatch) {
+				// Clean bitmap is already in cache (e.g. back-to-back eraser gesture).
+				erasureIdRef.current = previewEraser.id;
+			} else {
+				if (!committedCleanRef.current || !dimsMatch) {
+					if (!paintCommittedBase(canvas, surfaceSize, snapRef.current)) return;
+				}
+				const cache =
+					erasureCacheRef.current ??
+					canvas.ownerDocument.createElement("canvas");
+				cache.width = canvas.width;
+				cache.height = canvas.height;
+				const cctx = cache.getContext("2d");
+				if (cctx != null) {
+					cctx.setTransform(1, 0, 0, 1, 0, 0);
+					cctx.clearRect(0, 0, cache.width, cache.height);
+					cctx.drawImage(canvas, 0, 0);
+				}
+				erasureCacheRef.current = cache;
+				erasureIdRef.current = previewEraser.id;
+			}
+		}
+		const cache = erasureCacheRef.current;
+		if (cache == null) return;
+		const ctx = canvas.getContext("2d");
+		if (ctx == null) return;
+		ctx.save();
+		try {
+			ctx.setTransform(1, 0, 0, 1, 0, 0);
+			ctx.clearRect(0, 0, canvas.width, canvas.height);
+			ctx.drawImage(cache, 0, 0);
+			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+			ctx.beginPath();
+			ctx.rect(0, 0, surfaceSize.width, surfaceSize.height);
+			ctx.clip();
+			renderEraserTrail(ctx, previewEraser.points, previewEraser.width);
+			committedCleanRef.current = false;
 		} finally {
 			ctx.restore();
 		}
-	}, [snap, surfaceSize]);
+	}, [previewEraser, surfaceSize, paintCommittedBase]);
 
 	useLayoutEffect(() => {
 		const canvas = liveRef.current;
@@ -951,19 +1040,13 @@ export function SketchPad(props: SketchPadProps): ReactElement {
 		const ctx = prepareCanvas(canvas, surfaceSize);
 		if (ctx == null) return;
 		try {
-			const preview = snap.preview;
-			if (
-				preview != null &&
-				preview.replaceObjectId == null &&
-				preview.object.kind !== "text" &&
-				preview.object.kind !== "eraser"
-			) {
-				renderSketchObject(ctx, preview.object);
+			if (livePreviewObject != null) {
+				renderSketchObject(ctx, livePreviewObject);
 			}
 		} finally {
 			ctx.restore();
 		}
-	}, [snap, surfaceSize]);
+	}, [livePreviewObject, surfaceSize]);
 
 	/* Selected object (preview-substituted, erasure-preview aware). */
 	const selectedItem: SketchItem | null = (() => {
@@ -1007,7 +1090,7 @@ export function SketchPad(props: SketchPadProps): ReactElement {
 		} finally {
 			ctx.restore();
 		}
-	}, [snap, surfaceSize, session, selectedItem]);
+	}, [snap.snapGuides, surfaceSize, session, selectedItem]);
 
 	/* ---------------- text editing ---------------- */
 	const pushPendingText = useCallback(

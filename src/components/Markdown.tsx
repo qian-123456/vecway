@@ -9,7 +9,7 @@ import clsx from "clsx";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import React, { Suspense, use, useMemo, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
-import rehypeHighlight from "rehype-highlight";
+import { rehypeHighlightLite } from "./rehypeHighlightLite";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema, type Options as Schema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -35,7 +35,7 @@ import { VisualizeBlock } from "../features/chat/visualize/VisualizeBlock";
 import { VisualizeSnapshot } from "../features/chat/visualize/VisualizeSnapshot";
 import { findVisualizeFence, isFenceClosed, parseVisualizeInfo } from "../features/chat/visualize/frame";
 import { MermaidBlock } from "../features/chat/MermaidBlock";
-import { healStreamingMarkdown, splitStableBlocks } from "../features/chat/streamingMarkdown";
+import { healStreamingMarkdown, maskMathAmbiguousSpans, splitStableBlocks } from "../features/chat/streamingMarkdown";
 import { useRevealText } from "../features/chat/useRevealText";
 import { tNow, useT } from "../stores/language";
 
@@ -451,7 +451,7 @@ const REHYPE_PLUGINS_BASE: RehypePlugins = [
 	rehypeRaw,
 	[rehypeSanitize, SANITIZE_SCHEMA],
 	rehypeMathBlocks,
-	[rehypeHighlight, HIGHLIGHT_OPTIONS],
+	[rehypeHighlightLite, HIGHLIGHT_OPTIONS],
 	rehypeSecretChips,
 	rehypeCitationChips,
 	rehypeFilePathLinks,
@@ -657,6 +657,75 @@ function MarkdownBody({ text }: { text: string }) {
 	);
 }
 
+const HEAD_FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
+const HEAD_CONTINUABLE_BLOCK_RE = /^(?:\s|[-+*>|<]|\d+[.)]|\[|:)/;
+const HEAD_REF_DEF_RE = /^ {0,3}\[[^\]]+\]:/m;
+const EMPTY_HEAD_BLOCKS: readonly string[] = [];
+
+/**
+ * Split a stable streaming `head` into discrete top-level markdown blocks so
+ * each stabilized block memoizes independently instead of re-parsing the whole
+ * head as new paragraphs arrive. Mirrors `splitStableBlocks`'s boundary rules so
+ * earlier chunks remain byte-for-byte invariant as `head` grows.
+ */
+export function splitHeadBlocks(head: string): string[] {
+	if (!head || !head.trim()) return [];
+	// Reference link / footnote definitions can target earlier blocks; keep intact.
+	if (HEAD_REF_DEF_RE.test(head)) return [head];
+	const blocks: string[] = [];
+	let chunkStart = 0;
+	let fence = "";
+	let math = false;
+	let blockFirstLine = "";
+	let inBlank = false;
+	let pos = 0;
+	for (const raw of head.split("\n")) {
+		const lineStart = pos;
+		pos += raw.length + 1;
+		const line = raw.replace(/\r$/, "");
+		const fenceMatch = HEAD_FENCE_RE.exec(line);
+		if (fence) {
+			if (
+				fenceMatch &&
+				fenceMatch[1][0] === fence[0] &&
+				fenceMatch[1].length >= fence.length &&
+				line.slice(fenceMatch[0].length).trim() === ""
+			) {
+				fence = "";
+			}
+			continue;
+		}
+		const masked = maskMathAmbiguousSpans(line);
+		if (math) {
+			if (masked.includes("$$")) math = false;
+			continue;
+		}
+		if (line.trim() === "") {
+			inBlank = true;
+			continue;
+		}
+		if (inBlank || blockFirstLine === "") {
+			if (
+				inBlank &&
+				blockFirstLine !== "" &&
+				!HEAD_CONTINUABLE_BLOCK_RE.test(blockFirstLine) &&
+				!/^\s/.test(line)
+			) {
+				blocks.push(head.slice(chunkStart, lineStart));
+				chunkStart = lineStart;
+			}
+			blockFirstLine = line;
+			inBlank = false;
+		}
+		if (fenceMatch) fence = fenceMatch[1];
+		else if ((masked.match(/\$\$/g)?.length ?? 0) % 2 === 1) math = true;
+	}
+	if (chunkStart < head.length) {
+		blocks.push(head.slice(chunkStart));
+	}
+	return blocks;
+}
+
 export const Markdown = React.memo(function Markdown({
 	text: rawText,
 	sessionId,
@@ -677,7 +746,7 @@ export const Markdown = React.memo(function Markdown({
 	exportMode?: boolean;
 }) {
 	const revealed = useRevealText(rawText, streaming);
-	const { head, tail } = useMemo(() => {
+	const { headBlocks, tail } = useMemo(() => {
 		// A visualize block must never move between segments (that would remount
 		// its iframe), so everything before the first one is the head and the
 		// block plus whatever follows stays in one tree, streaming or not.
@@ -685,13 +754,16 @@ export const Markdown = React.memo(function Markdown({
 		if (vizAt >= 0) {
 			const rest = revealed.slice(vizAt);
 			return {
-				head: revealed.slice(0, vizAt),
+				headBlocks: splitHeadBlocks(revealed.slice(0, vizAt)),
 				tail: streaming ? healStreamingMarkdown(rest) : rest,
 			};
 		}
-		if (!streaming) return { head: "", tail: revealed };
+		if (!streaming) return { headBlocks: EMPTY_HEAD_BLOCKS, tail: revealed };
 		const split = splitStableBlocks(revealed);
-		return { head: split.head, tail: healStreamingMarkdown(split.tail) };
+		return {
+			headBlocks: splitHeadBlocks(split.head),
+			tail: healStreamingMarkdown(split.tail),
+		};
 	}, [streaming, revealed]);
 	// Slice B adds Settings.visualizeEnabled; default ON when absent/not loaded.
 	const visualizeEnabled = useSettings(
@@ -743,17 +815,17 @@ export const Markdown = React.memo(function Markdown({
 				"[&_.katex-display]:max-w-full [&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden",
 			)}
 		>
-			{head && (
+			{headBlocks.map((block, index) => (
 				<MarkdownSegment
-					key="head"
-					text={head}
+					key={`head-${index}`}
+					text={block}
 					sessionId={sessionId}
 					cwd={cwd}
 					visualizeEnabled={visualizeEnabled}
 					streaming={false}
 					exportMode={exportMode}
 				/>
-			)}
+			))}
 			<MarkdownSegment
 				key="tail"
 				text={tail}

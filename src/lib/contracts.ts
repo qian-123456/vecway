@@ -54,7 +54,7 @@ export interface SessionMeta {
 	/** "#115" or fork label "#115.2.1". */
 	label: string;
 	createdAt: string;
-	/** File mtime. */
+	/** Last conversation message time (falls back to file mtime when the transcript has none). */
 	updatedAt: string;
 	/** Fork parent session id (side chats). */
 	parentId: string | null;
@@ -82,7 +82,12 @@ export interface SessionMeta {
 	mode: SpaceMode;
 	/** SessionGroup id inside the mode's 无项目 area; only global-workspace sessions. */
 	groupId: string | null;
-	/** True when this app created or opened/continued the session; false = plain-CLI session (excluded from inbox + badge). Absent = app-owned. */
+	/**
+	 * True when this app created or has opened/continued the session (it spawned an RPC process
+	 * for it); false = plain-CLI session (excluded from inbox + badge).
+	 * Always serialized as a bool by Rust (`#[serde(default)]` defaults to `false` on deserialize);
+	 * kept optional in TS for test fixtures and partial payloads.
+	 */
 	createdByApp?: boolean;
 }
 
