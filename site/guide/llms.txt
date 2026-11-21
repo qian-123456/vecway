@@ -8,7 +8,7 @@
 - **Underlying CLI Engine**: [oh-my-pi (`omp`)](https://github.com/can1357/oh-my-pi)
 - **Repository**: https://github.com/qian-123456/vecway
 - **Releases & Installers**: https://github.com/qian-123456/vecway/releases/latest
-- **Compatibility**: Reads and writes `~/.omp/agent/sessions/` bidirectionally alongside the `omp` CLI; preserves local workspace state under `~/.omp-workspace/`.
+- **Compatibility**: Reads and writes `~/.omp/agent/sessions/` bidirectionally alongside the `omp` CLI; stores local workspace state under `~/.vecway/` (migrating legacy `~/.omp-workspace/` data automatically).
 
 ## Core Philosophy: Case-by-Case Routing
 Vecway treats AI engineering as a routing problem rather than a single linear chat:
@@ -32,6 +32,5 @@ Vecway treats AI engineering as a routing problem rather than a single linear ch
 
 ## Installation (macOS)
 1. Download `Vecway_<version>_aarch64.dmg` (Apple Silicon) or `Vecway_<version>_x64.dmg` (Intel) from GitHub Releases.
-2. Because open-source community builds are unsigned, clear macOS Gatekeeper quarantine once after moving to `/Applications`:
-   `xattr -cr /Applications/Vecway.app`
+2. Drag `Vecway.app` into `/Applications` and open it directly (builds are signed with an Apple Developer ID certificate and notarized by Apple).
 3. If `omp` CLI is not installed yet, Vecway installs it automatically on first launch, or run `curl -fsSL https://omp.sh/install | sh`.

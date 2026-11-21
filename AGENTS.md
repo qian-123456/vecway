@@ -13,11 +13,9 @@ Do not change a contract silently — report any needed diff under "Contract cha
 OMP upstream repository (`https://github.com/can1357/oh-my-pi`) is the canonical truth.
 Always inspect GitHub source directly (via `gh api`, web fetch, or repo search); never reverse-engineer local binaries.
 
-## Ownership (§2)
+## Module boundaries
 
-Each module only edits files it owns (`[A]`/`[B]`/`[C]`/`[D]`/`[E]`/`[LEAD]` tags in §2 layout).
-`[LEAD]` files are frozen after scaffold, except appending deps or fixing command wrappers in `src/lib/ipc.ts`.
-Cross-module Rust calls go only through §9 `pub` functions; frontend cross-feature interaction goes only through `src/stores/*` and `src/lib/ipc.ts`.
+Cross-module Rust calls go through each module's `pub` API (§9 in `docs/ARCHITECTURE.md`); frontend cross-feature interaction goes through `src/stores/*` and `src/lib/ipc.ts`. Keep shared contracts in `docs/ARCHITECTURE.md` synchronized when changing types, commands, events, or DB schema. Closed historical audits, repair logs, and handoffs live in `docs/archive/` and are not active contracts.
 
 ## Build / verify
 
@@ -37,15 +35,15 @@ cargo fmt                    # format (CI expects fmt-clean)
 
 Use official Cargo from `~/.cargo/bin` with Kache selected by the user's Cargo configuration (`~/.cargo/config.toml`, `[build].rustc-wrapper` pointing to the installed Kache executable). This Mac uses pinned Kache 2.0.0 and a shared local-only cache across worktrees. Do not export compiler-wrapper overrides; for direct `cargo` commands, first run `unset RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER CARGO_BUILD_RUSTC_WRAPPER CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER`. The project Tauri launcher clears those inherited overrides and puts the official rustup proxy first on `PATH`; `pnpm tauri`, `pnpm dev:preview`, `pnpm build:app`, and `open-worktree.mjs` all use it. No alternate Cargo installation or opt-in wrapper is needed.
 
-**Live dev app check.** Tier UI verification by scope: for small copy, spacing, or visual tweaks, targeted tests + `pnpm tsc --noEmit` (plus a quick visual check in an already-open preview/window when convenient) suffice without spawning a new heavy desktop subagent each round; for multi-step interactions, floating layers, native shell changes, or final delivery sign-off, visually verify the live window (no white screen; if blank, run `touch index.html` to force Vite full-reload or use skill `omp-workspace-native-ui-acceptance`). Reuse an existing idle subagent for follow-up checks on the same window, and stop immediately to report the blocker if the accessibility tree is unavailable rather than scripting pixel scans or guessing coordinates. Avoid concurrent edits to mutually-imported files while live app is watching.
+**Live dev app check.** Tier UI verification by scope: for small copy, spacing, or visual tweaks, targeted tests + `pnpm tsc --noEmit` (plus a quick visual check in an already-open preview/window when convenient) suffice without spawning a new heavy desktop subagent each round; for multi-step interactions, floating layers, native shell changes, or final delivery sign-off, visually verify the live window (no white screen; for blank-window recovery or full native acceptance use skill `vecway-native-ui-acceptance`). Reuse an existing idle subagent for follow-up checks on the same window, and stop immediately to report the blocker if the accessibility tree is unavailable rather than scripting pixel scans or guessing coordinates. Avoid concurrent edits to mutually-imported files while live app is watching.
 
 ## Git worktrees
 
 - **「打开 X 工作树」/「打开 Main」/「打开 XX 分支」= 启动该工作树的开发版窗口**（不是应用内会话/面板，也不是 Finder/VS Code）：
   `node scripts/open-worktree.mjs <main|分支名|目录名|绝对路径>`。同一个工作树只保留一个实例，
   再次调用只报告已有端口/窗口；`--close` 停止，`--dry-run` 只看解析结果。
-  端口从 1425 起（main 固定 1425，工作树按目录名散列），数据目录隔离（main → `~/.omp-workspace-dev`，
-  工作树 → `~/.omp-workspace-dev-<目录名>`）；脚本会等到窗口真的出现再回报窗口标题。
+  端口从 1425 起（main 固定 1425，工作树按目录名散列），数据目录隔离（main → `~/.vecway-dev`，
+  工作树 → `~/.vecway-dev-<目录名>`）；脚本会等到窗口真的出现再回报窗口标题。
 - **Naming**: Use clear, task-specific path and branch names (e.g. `.worktrees/<slug>` on `omp/<slug>`), never generic names.
 - **Port & window isolation**: Run dev instances on distinct ports (e.g. `pnpm dev:preview`), and confirm the inspected window matches target worktree.
 - **Stage isolation & cleanup**: Stage only modified files for current task (`git add <paths>`, never `git add -A`). Remove finished worktrees promptly.
@@ -53,7 +51,6 @@ Use official Cargo from `~/.cargo/bin` with Kache selected by the user's Cargo c
 ## Style
 
 - No floating `latest`/`*` dependency versions.
-- Module stubs return `Err("not implemented")` / empty values until filled.
 - `src-tauri/prompts/*.md` are LLM prompt templates loaded via `include_str!`.
 
 ## UI rules (check every UI change against these)
