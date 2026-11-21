@@ -4,6 +4,7 @@
  */
 
 import { create } from "zustand";
+import { remapLegacyImagePath } from "../lib/paths";
 import type { ImageAttachment } from "../lib/contracts";
 
 export interface Annotation {
@@ -195,10 +196,12 @@ function loadImages(): Record<string, ComposerImage[]> {
 		const out: Record<string, ComposerImage[]> = {};
 		for (const [sid, list] of Object.entries(parsed as Record<string, unknown>)) {
 			if (!Array.isArray(list)) continue;
-			const imgs = list.filter(
-				(i): i is ComposerImage =>
-					!!i && typeof i.id === "string" && typeof i.path === "string",
-			);
+			const imgs = list
+				.filter(
+					(i): i is ComposerImage =>
+						!!i && typeof i.id === "string" && typeof i.path === "string",
+				)
+				.map((i) => ({ ...i, path: remapLegacyImagePath(i.path) }));
 			if (imgs.length > 0) out[sid] = imgs;
 		}
 		return out;

@@ -450,19 +450,17 @@ export default function ompWorkspaceAutomation(pi: Pi): void {
 				}
 				if (parts[0] !== "resolve" || parts.length < 3) return;
 				const draftId = parts[1];
-				const nextStatus = parts[2] === "saved" ? "saved" : "dismissed";
-				const nextDrafts = state.drafts.map((item) =>
+				const nextStatus: StoredDraftItem["status"] = parts[2] === "saved" ? "saved" : "dismissed";
+				const nextDrafts: StoredDraftItem[] = state.drafts.map((item) =>
 					item.draftId === draftId ? { ...item, status: nextStatus } : item,
 				);
-				const hasPending = nextDrafts.some((d) => d.status === "pending");
+				// Keep automation customization mode active until the user explicitly turns it off
+				// (confirming or dismissing drafts must not strip vecway_automation mid-conversation).
 				state = {
 					v: 2,
-					mode: hasPending ? state.mode : "idle",
+					mode: state.mode,
 					drafts: nextDrafts,
 				};
-				if (!hasPending) {
-					await syncToolVisibility(pi, false);
-				}
 				persistAndPublish(ctx);
 			},
 		});

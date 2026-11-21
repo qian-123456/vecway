@@ -64,4 +64,23 @@ describe("SearchInput", () => {
 		fireEvent.change(input, { target: { value: "git" } });
 		expect(container.querySelector("kbd")).toBeNull();
 	});
+
+	it("uses compact right padding when clear button is hidden and expands to pr-7 when shown", () => {
+		render(<Host />);
+		const input = screen.getByPlaceholderText("搜索") as HTMLInputElement;
+		expect(input.className).toContain("pr-2.5");
+		expect(input.className).not.toContain("pr-7");
+		expect(input.className).toContain("text-ellipsis");
+
+		fireEvent.change(input, { target: { value: "abc" } });
+		expect(input.className).toContain("pr-7");
+		expect(input.className).not.toContain("pr-2.5");
+	});
+
+	it("reserves pr-7 when showClearWhenEmpty is set and forwards title", () => {
+		render(<SearchInput value="" onChange={() => {}} placeholder="搜索" title="搜索名称、URL 或模型" showClearWhenEmpty />);
+		const input = screen.getByPlaceholderText("搜索") as HTMLInputElement;
+		expect(input.className).toContain("pr-7");
+		expect(input.title).toBe("搜索名称、URL 或模型");
+	});
 });

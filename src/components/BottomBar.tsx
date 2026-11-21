@@ -5,7 +5,7 @@ import {
 	Gauge,
 	GitBranch,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useChatUi } from "../features/chat/chatUi";
 import { PerfPopover } from "../features/chat/PerfPopover";
 import { SessionStatsPopover } from "../features/chat/SessionStatsPopover";
@@ -19,11 +19,38 @@ import { useT } from "../stores/language";
 import { useLive } from "../stores/live";
 import { useSessions } from "../stores/sessions";
 import { useUi } from "../stores/ui";
+import { useBottomBarFit } from "./useBottomBarFit";
+
+function BarPart({
+	id, priority, collapsed, children,
+}: {
+	id: string;
+	priority: number;
+	collapsed: ReadonlySet<string>;
+	children: ReactNode;
+}) {
+	const hidden = collapsed.has(id);
+	return (
+		<span
+			data-bottom-bar-part={id}
+			data-priority={priority}
+			data-collapsed={hidden}
+			aria-hidden={hidden || undefined}
+			className={clsx(
+				"inline-flex w-max shrink-0 items-center gap-1.5 whitespace-nowrap",
+				hidden && "pointer-events-none absolute invisible",
+			)}
+		>
+			{children}
+		</span>
+	);
+}
 
 export function BottomBar() {
 	const { t } = useT();
 	const selectedSessionId = useUi((s) => s.selectedSessionId);
 	const bottomBarVisible = useDisplayPrefs((s) => s.bottomBar);
+	const { ref: barRef, collapsed } = useBottomBarFit(bottomBarVisible);
 
 	const rightTab = useUi((s) => s.rightTab);
 	const setRightTab = useUi((s) => s.setRightTab);
@@ -103,6 +130,12 @@ export function BottomBar() {
 	const perfBtnRef = useRef<HTMLButtonElement>(null);
 
 	useEffect(() => {
+		if (bottomBarVisible) return;
+		setStatsOpen(false);
+		setPerfOpen(false);
+	}, [bottomBarVisible, setStatsOpen]);
+
+	useEffect(() => {
 		let cancelled = false;
 		let timer: number | null = null;
 		let inFlight = false;
@@ -173,24 +206,38 @@ export function BottomBar() {
 	const branch = gitInfo?.branch;
 	const dirty = gitInfo?.dirty ?? 0;
 	const showSessionTelemetry = Boolean(selectedSessionId) && (stats.hasData || streaming);
+	const telemetryLabel = [
+		t("bottomBar.statsTip"),
+		contextPct !== null ? t("bottomBar.contextPercent", { pct: contextPct }) : null,
+		t("bottomBar.roundsAndSteps", { rounds: stats.rounds, steps: stats.steps }),
+		stats.tps != null ? `${stats.tps.toFixed(1)} tok/s` : null,
+		stats.totalTokens == null ? "—" : formatTokens(stats.totalTokens),
+		stats.cacheHitRate != null && stats.cacheHitRate > 0
+			? t("bottomBar.cacheHitRate", { rate: stats.cacheHitRate.toFixed(1) })
+			: null,
+	].filter((value) => value !== null).join(" · ");
 
 	return (
 		<footer
+			ref={barRef}
 			data-app-bottombar
 			className={clsx(
-				"relative h-6 shrink-0 items-center justify-between border-t border-[var(--border-divider)] bg-[var(--bg)] px-3.5 text-[11px] text-[var(--text-muted)] select-none tabular-nums",
+				"relative z-10 h-6 min-w-0 shrink-0 items-center justify-between gap-2 overflow-hidden border-t border-[var(--border-divider)] bg-[var(--bg)] px-3.5 text-[11px] text-[var(--text-muted)] select-none tabular-nums",
 				bottomBarVisible ? "flex" : "hidden",
 			)}
 		>
 			{/* Left: DSH-style live session telemetry — only shown after a session starts */}
-			<div className="flex min-w-0 items-center gap-2">
+			<div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
 				{showSessionTelemetry ? (
 					<button
 						ref={statsBtnRef}
+						data-bottom-bar-stats
 						type="button"
 						onClick={() => setStatsOpen(!statsOpen)}
-						title={t("bottomBar.statsTip")}
-						className="group flex min-w-0 items-center gap-1.5 rounded-[6px] px-1.5 py-0.5 -ml-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer"
+						title={telemetryLabel}
+						aria-label={telemetryLabel}
+						aria-expanded={statsOpen}
+						className="group flex w-max shrink-0 items-center gap-1.5 rounded-[6px] px-1.5 py-0.5 -ml-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer"
 					>
 						<Gauge
 							size={11.5}
@@ -202,93 +249,99 @@ export function BottomBar() {
 							)}
 						/>
 						{contextPct !== null && (
-							<>
+							<BarPart id="context" priority={2} collapsed={collapsed}>
 								<span className="whitespace-nowrap font-mono tabular-nums">
 									{t("bottomBar.contextPercent", { pct: contextPct })}
 								</span>
 								<span className="text-[var(--text-dim)]">·</span>
-							</>
+							</BarPart>
 						)}
-						<span className="whitespace-nowrap font-mono tabular-nums">
-							{t("bottomBar.roundsAndSteps", { rounds: stats.rounds, steps: stats.steps })}
-						</span>
+						<BarPart id="rounds" priority={1} collapsed={collapsed}>
+							<span className="font-mono tabular-nums">
+								{t("bottomBar.roundsAndSteps", { rounds: stats.rounds, steps: stats.steps })}
+							</span>
+						</BarPart>
 						{stats.tps != null && (
-							<>
+							<BarPart id="tps" priority={5} collapsed={collapsed}>
 								<span className="text-[var(--text-dim)]">·</span>
-								<span className="whitespace-nowrap font-mono tabular-nums">
-									{stats.tps.toFixed(1)} tok/s
-								</span>
-							</>
+								<span className="font-mono tabular-nums">{stats.tps.toFixed(1)} tok/s</span>
+							</BarPart>
 						)}
-						<span className="text-[var(--text-dim)]">·</span>
-						<Coins
-							size={11}
-							className="shrink-0 text-[var(--text-dim)] transition-colors group-hover:text-amber-400"
-						/>
-						<span className="whitespace-nowrap font-mono tabular-nums">
-							{stats.totalTokens == null ? "—" : formatTokens(stats.totalTokens)}
-						</span>
+						<BarPart id="tokens" priority={4} collapsed={collapsed}>
+							<span className="text-[var(--text-dim)]">·</span>
+							<Coins
+								size={11}
+								className="shrink-0 text-[var(--text-dim)] transition-colors group-hover:text-amber-400"
+							/>
+							<span className="font-mono tabular-nums">
+								{stats.totalTokens == null ? "—" : formatTokens(stats.totalTokens)}
+							</span>
+						</BarPart>
 						{stats.cacheHitRate != null && stats.cacheHitRate > 0 && (
-							<>
+							<BarPart id="cache" priority={6} collapsed={collapsed}>
 								<span className="text-[var(--text-dim)]">·</span>
-								<span className="whitespace-nowrap font-mono tabular-nums">
+								<span className="font-mono tabular-nums">
 									{t("bottomBar.cacheHitRate", { rate: stats.cacheHitRate.toFixed(1) })}
 								</span>
-							</>
+							</BarPart>
 						)}
 					</button>
 				) : null}
 
 				<SessionStatsPopover
-					anchor={statsOpen ? statsBtnRef.current : null}
+					anchor={bottomBarVisible && showSessionTelemetry && statsOpen ? statsBtnRef.current : null}
 					stats={stats}
-					open={statsOpen}
+					open={bottomBarVisible && showSessionTelemetry && statsOpen}
 					onClose={() => setStatsOpen(false)}
 					ignoreRefs={[statsBtnRef]}
 				/>
 			</div>
 
 			{/* Right: Essential runtime footprint & Git branch */}
-			<div className="flex shrink-0 items-center gap-2 text-[var(--text-muted)]">
+			<div data-bottom-bar-right className="flex min-w-0 shrink-0 items-center justify-end gap-2 text-[var(--text-muted)]">
 				<button
 					ref={perfBtnRef}
 					type="button"
 					onClick={() => setPerfOpen((v) => !v)}
+					aria-label={t("bottomBar.performance", { memory: realMemoryStr ?? memEstimate })}
+					aria-expanded={perfOpen}
 					title={t("bottomBar.memoryTooltip", {
 						processes: memoryInfo?.processes
 							? t("bottomBar.processesCount", { count: memoryInfo.processes })
 							: "",
 					})}
 					className={clsx(
-						"flex items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer",
+						"flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer",
 						perfOpen && "bg-[var(--bg-hover)] text-[var(--text)]",
 					)}
 				>
 					<Activity size={11} className="shrink-0 text-emerald-500" />
-					<span className="font-mono text-[10.5px] tabular-nums">
-						{t("bottomBar.performance", { memory: realMemoryStr ?? memEstimate })}
-					</span>
+					<BarPart id="memory" priority={3} collapsed={collapsed}>
+						<span className="font-mono text-[10.5px] tabular-nums">
+							{t("bottomBar.performance", { memory: realMemoryStr ?? memEstimate })}
+						</span>
+					</BarPart>
 				</button>
 				<PerfPopover
-					anchor={perfOpen ? perfBtnRef.current : null}
+					anchor={bottomBarVisible && perfOpen ? perfBtnRef.current : null}
 					appMemory={realMemoryStr}
 					processes={memoryInfo?.processes}
 					breakdown={perfData}
-					open={perfOpen}
+					open={bottomBarVisible && perfOpen}
 					onClose={() => setPerfOpen(false)}
 					ignoreRefs={[perfBtnRef]}
 				/>
 
 				{branch && (
 					<>
-						<span className="text-[var(--text-dim)]">·</span>
+						<span className="shrink-0 text-[var(--text-dim)]">·</span>
 						<button
 							type="button"
 							onClick={handleToggleGit}
-							aria-label={t("bottomBar.viewGitPanel")}
-							title={t("bottomBar.viewGitPanel")}
+							aria-label={`${t("bottomBar.viewGitPanel")}: ${branch}${dirty > 0 ? ` +${dirty}` : ""}`}
+							title={`${t("bottomBar.viewGitPanel")}: ${branch}${dirty > 0 ? ` +${dirty}` : ""}`}
 							className={clsx(
-								"flex items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 -mr-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer",
+								"flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 -mr-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer",
 								rightTab === "git" && rightOpen && "bg-[var(--bg-active-fill)] text-[var(--text)]",
 							)}
 						>
@@ -299,14 +352,16 @@ export function BottomBar() {
 									rightTab === "git" && rightOpen ? "text-indigo-400" : "text-[var(--text-dim)]",
 								)}
 							/>
-							<span className="max-w-[140px] truncate font-mono text-[10.5px]">
-								{branch}
-							</span>
-							{dirty > 0 && (
-								<span className="font-mono text-[10px] tabular-nums text-amber-500">
-									+{dirty}
+							<BarPart id="branch" priority={0} collapsed={collapsed}>
+								<span className="min-w-0 max-w-[140px] truncate font-mono text-[10.5px]">
+									{branch}
 								</span>
-							)}
+								{dirty > 0 && (
+									<span className="shrink-0 font-mono text-[10px] tabular-nums text-amber-500">
+										+{dirty}
+									</span>
+								)}
+							</BarPart>
 						</button>
 					</>
 				)}

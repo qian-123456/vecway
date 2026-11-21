@@ -269,11 +269,11 @@ function RepoView({ cwd, tick }: { cwd: string; tick: string }) {
 	return (
 		<div ref={panelRef} tabIndex={-1} data-slash-panel="" className="flex h-full min-h-0 flex-col outline-none">
 			{/* Compact repo header: repo name + view switch + refresh (path lives in the hover card) */}
-			<div className="flex shrink-0 items-center justify-between gap-1.5 border-b border-[var(--border-divider)] bg-[var(--bg-panel)] px-3 py-1.5 text-xs">
+			<div className="flex shrink-0 flex-wrap items-center justify-between gap-x-1.5 gap-y-1 border-b border-[var(--border-divider)] bg-[var(--bg-panel)] px-3 py-1.5 text-xs">
 				<div
 					onMouseEnter={handleTopMouseEnter}
 					onMouseLeave={handleTopMouseLeave}
-					className="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer"
+					className="flex min-w-[80px] flex-1 items-center gap-1.5 cursor-pointer"
 				>
 					<FolderTree size={13} className="text-emerald-400 shrink-0" />
 					<HoverScrollText
@@ -282,7 +282,7 @@ function RepoView({ cwd, tick }: { cwd: string; tick: string }) {
 						className="font-semibold text-[var(--text)] text-xs truncate max-w-[140px]"
 					/>
 				</div>
-				<div className="flex items-center gap-1 shrink-0">
+				<div className="ml-auto flex shrink-0 items-center gap-1">
 					{isRepo && mode && (
 						<Segmented
 							size="sm"
@@ -385,33 +385,35 @@ function RepoView({ cwd, tick }: { cwd: string; tick: string }) {
 
 					<div className="flex min-h-0 flex-1 flex-col">
 						{/* Detail pane header: which worktree, back-to-current, tab switch, diff */}
-						<div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--border-divider)] bg-[var(--bg-panel)] px-2 py-1 text-xs">
+						<div className="flex shrink-0 flex-wrap items-center justify-between gap-x-1.5 gap-y-1 border-b border-[var(--border-divider)] bg-[var(--bg-panel)] px-2 py-1 text-xs">
 							<span
-								className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--text)]"
+								className="min-w-[72px] flex-1 truncate font-mono text-[11px] text-[var(--text)]"
 								title={selectedName ?? selected}
 							>
 								{selectedName ?? basename(selected)}
 							</span>
-							{tab === "changes" && (count ?? 0) > 0 && (
-								<button
-									type="button"
-									onClick={() =>
-										setDiff({ title: t("git.panel.allUncommittedChanges"), load: () => gitDiff(selected) })
-									}
-									className="shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-colors"
-								>
-									{t("git.panel.allDiff")}
-								</button>
-							)}
-							<Segmented
-								size="sm"
-								value={tab}
-								onChange={(t) => setManualTab({ path: selected, tab: t })}
-								options={[
-									{ value: "changes", label: t("git.panel.changesCount", { count: count ?? 0 }) },
-									{ value: "history", label: t("git.panel.history") },
-								]}
-							/>
+							<div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center gap-1">
+								{tab === "changes" && (count ?? 0) > 0 && (
+									<button
+										type="button"
+										onClick={() =>
+											setDiff({ title: t("git.panel.allUncommittedChanges"), load: () => gitDiff(selected) })
+										}
+										className="shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-colors"
+									>
+										{t("git.panel.allDiff")}
+									</button>
+								)}
+								<Segmented
+									size="sm"
+									value={tab}
+									onChange={(t) => setManualTab({ path: selected, tab: t })}
+									options={[
+										{ value: "changes", label: t("git.panel.changesCount", { count: count ?? 0 }) },
+										{ value: "history", label: t("git.panel.history") },
+									]}
+								/>
+							</div>
 						</div>
 						<div className="min-h-0 flex-1 overflow-auto">
 							{/* First-use turn-checkpoints consent, top of the selected worktree pane. */}

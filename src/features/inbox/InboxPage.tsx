@@ -141,15 +141,15 @@ export function InboxPage() {
 
 	return (
 		<div className="flex h-full flex-col overflow-hidden bg-[var(--bg)] text-[var(--text)]">
-			<div className="shrink-0 border-b border-[var(--border-divider)] px-6 pt-3.5">
-				<div className="flex items-center justify-between">
-					<div className="flex items-center gap-3">
-						<h2 className="text-sm font-semibold">{t("inbox.title")}</h2>
-						<span className="hidden text-[11px] text-[var(--text-dim)] sm:inline">
+			<div className="@container shrink-0 border-b border-[var(--border-divider)] px-6 pt-3.5">
+				<div className="flex flex-wrap items-center justify-between gap-2">
+					<div className="flex min-w-0 items-center gap-3">
+						<h2 className="whitespace-nowrap text-sm font-semibold">{t("inbox.title")}</h2>
+						<span className="hidden truncate text-[11px] text-[var(--text-dim)] @[520px]:inline">
 							{t("inbox.shortcutHint")}
 						</span>
 					</div>
-					<div className="flex items-center gap-2">
+					<div className="flex max-w-full flex-wrap items-center gap-2">
 						<button
 							type="button"
 							onClick={markAllRead}
@@ -182,7 +182,7 @@ export function InboxPage() {
 						</button>
 					</div>
 				</div>
-				<div className="mt-2 flex gap-1" role="tablist">
+				<div className="mt-2 flex gap-1 overflow-x-auto" role="tablist">
 					{TABS.map((tabItem) => (
 						<button
 							key={tabItem.id}
@@ -382,8 +382,8 @@ function ScheduleRow({
 			}}
 			className={rowClass(focused)}
 		>
-			<div className="flex w-full min-w-0 items-center gap-2">
-				<button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+			<div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+				<button type="button" onClick={onOpen} className="flex min-w-[160px] flex-1 items-center gap-2 text-left">
 					<span
 						className={
 							payload?.awaiting
@@ -404,23 +404,25 @@ function ScheduleRow({
 						{relativeTime(todo.createdAt)}
 					</span>
 				</button>
-				{payload?.probeError && (
-					<button
-						type="button"
-						className="inline-flex shrink-0 whitespace-nowrap items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-0.5 text-[11px] font-medium text-rose-300 hover:bg-rose-500/20"
-						onClick={() => void handleInspectInAutomations()}
-					>
-						{t("inbox.fixWithAi")}
+				<div className="ml-auto flex shrink-0 flex-wrap items-center gap-1.5">
+					{payload?.probeError && (
+						<button
+							type="button"
+							className="inline-flex shrink-0 whitespace-nowrap items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-0.5 text-[11px] font-medium text-rose-300 hover:bg-rose-500/20"
+							onClick={() => void handleInspectInAutomations()}
+						>
+							{t("inbox.fixWithAi")}
+						</button>
+					)}
+					<button type="button" className={actBtn} onClick={() => onAct("done")} title={t("inbox.markDoneTitle")}>
+						<Check className="h-3 w-3 shrink-0" />
+						{t("inbox.markDone")}
 					</button>
-				)}
-				<button type="button" className={actBtn} onClick={() => onAct("done")} title={t("inbox.markDoneTitle")}>
-					<Check className="h-3 w-3 shrink-0" />
-					{t("inbox.markDone")}
-				</button>
-				<button type="button" className={actBtn} onClick={() => onAct("ignore")} title={t("inbox.ignoreTitle")}>
-					<X className="h-3 w-3 shrink-0" />
-					{t("inbox.ignore")}
-				</button>
+					<button type="button" className={actBtn} onClick={() => onAct("ignore")} title={t("inbox.ignoreTitle")}>
+						<X className="h-3 w-3 shrink-0" />
+						{t("inbox.ignore")}
+					</button>
+				</div>
 			</div>
 			<div className="w-full truncate pl-[15px] text-xs text-[var(--text-dim)]">
 				{todo.detail || "\u00a0"}

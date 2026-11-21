@@ -725,11 +725,18 @@ pub fn sse_event(ev: &AppEvent) -> Option<Event> {
             if !rpc_frame_allowed(ty) {
                 return None;
             }
-            Some(
-                Event::default()
-                    .event("rpc")
-                    .data(json!({ "sessionId": session_id, "frame": frame }).to_string()),
-            )
+            #[derive(serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct SseRpcFrame<'a> {
+                session_id: &'a str,
+                frame: &'a Value,
+            }
+            let payload = serde_json::to_string(&SseRpcFrame {
+                session_id,
+                frame: frame.as_ref(),
+            })
+            .ok()?;
+            Some(Event::default().event("rpc").data(payload))
         }
         AppEvent::PromptSent { session_id } | AppEvent::UiResponded { session_id, .. } => Some(
             Event::default()

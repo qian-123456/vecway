@@ -150,7 +150,7 @@ function RuleFormView({
 					placeholder={t("modelTemplates.ruleNamePlaceholder")}
 					aria-label={t("modelTemplates.ruleNameLabel")}
 					spellCheck={false}
-					className={`${INPUT_CLASS} w-64`}
+					className={`${INPUT_CLASS} w-64 max-w-full`}
 				/>
 				<div className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
 					{t("modelTemplates.providerLabel")}

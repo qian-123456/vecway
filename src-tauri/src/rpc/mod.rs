@@ -8,6 +8,7 @@ pub mod commands;
 pub(crate) mod fork;
 mod forkcut;
 pub(crate) mod frame;
+pub(crate) mod frame_batch;
 mod lifecycle;
 #[cfg(test)]
 mod live_test;
@@ -39,6 +40,8 @@ static RESUME_LOCKS: OnceLock<ResumeLocks> = OnceLock::new();
 static IDLE_TIMERS: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, u64>>> =
     std::sync::LazyLock::new(Default::default);
 static ACTIVITY_GUARDS: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, HashSet<String>>>> =
+    std::sync::LazyLock::new(Default::default);
+static IDLE_EVICTION_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(Default::default);
 // Process-scoped reservation installed under dispatch_lock before a correlated
 // automation continuation is submitted. Ordinary mutating commands cannot race it.
@@ -165,6 +168,10 @@ pub fn init(state: AppState) {
                         Some("session_settled" | "agent_end" | "subagent_lifecycle")
                     ) {
                         schedule_idle_suspend(event_state.clone(), session_id, None).await;
+                        let evict_state = event_state.clone();
+                        tauri::async_runtime::spawn(async move {
+                            evict_excess_idle_sessions(&evict_state).await;
+                        });
                     }
                 }
                 Ok(AppEvent::RpcProcess { running: false, .. }) => {}
@@ -189,6 +196,7 @@ async fn sweep_idle(state: &AppState) {
     for id in ids {
         schedule_idle_suspend(state.clone(), id, Some(Duration::ZERO)).await;
     }
+    evict_excess_idle_sessions(state).await;
 }
 
 fn session_retained(id: &str) -> bool {
@@ -316,6 +324,60 @@ async fn suspend_if_idle(handle: &Arc<SessionHandle>, version: u64) -> bool {
         return false;
     }
     maintenance_shutdown(handle, version, true, "idle_suspension").await
+}
+
+const MAX_IDLE_LIVE_SESSIONS: usize = 2;
+
+fn select_idle_evictions(mut candidates: Vec<(String, Duration)>, max_idle: usize) -> Vec<String> {
+    let excess = candidates.len().saturating_sub(max_idle);
+    if excess == 0 {
+        return Vec::new();
+    }
+    candidates.sort_by(|(id_a, elapsed_a), (id_b, elapsed_b)| {
+        elapsed_b.cmp(elapsed_a).then_with(|| id_a.cmp(id_b))
+    });
+    candidates.into_iter().take(excess).map(|(id, _)| id).collect()
+}
+
+async fn evict_excess_idle_sessions(state: &AppState) {
+    if state.settings.read().idle_suspend_minutes == 0 {
+        return;
+    }
+    let _evict_guard = IDLE_EVICTION_LOCK.lock().await;
+    if state.settings.read().idle_suspend_minutes == 0 {
+        return;
+    }
+    let handles: Vec<(String, Arc<SessionHandle>)> = registry()
+        .read()
+        .iter()
+        .map(|(id, handle)| (id.clone(), handle.clone()))
+        .collect();
+    let candidates: Vec<(String, Duration)> = handles
+        .into_iter()
+        .filter_map(|(session_id, handle)| {
+            if !*handle.shutdown.borrow() && idle_suspendable(&handle, Duration::ZERO) {
+                let elapsed = handle.last_activity.lock().elapsed();
+                Some((session_id, elapsed))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let evictions = select_idle_evictions(candidates, MAX_IDLE_LIVE_SESSIONS);
+    for session_id in evictions {
+        let resume = session_resume_lock(&session_id);
+        let _guard = resume.lock().await;
+        let Some(handle) = get_handle(&session_id) else {
+            continue;
+        };
+        if *handle.shutdown.borrow() || !idle_suspendable(&handle, Duration::ZERO) {
+            continue;
+        }
+        let version = handle.activity_version.load(Ordering::SeqCst);
+        if suspend_if_idle(&handle, version).await {
+            set_suspended(state, &session_id, true);
+        }
+    }
 }
 
 async fn maintenance_shutdown(
@@ -476,6 +538,10 @@ pub async fn start(state: &AppState, opts: &StartOpts) -> Result<LiveSessionInfo
             exit_code: None,
         });
     })?;
+    let evict_state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        evict_excess_idle_sessions(&evict_state).await;
+    });
     Ok(info)
 }
 
@@ -669,8 +735,12 @@ pub(crate) fn prompt_command(text: &str, images: Vec<Value>, behavior: Option<&s
 pub fn image_blocks_from_paths(paths: &[String]) -> Result<Vec<Value>, String> {
     use base64::Engine as _;
     let mut images = Vec::with_capacity(paths.len());
+    let images_dir = crate::paths::images_dir();
     for path in paths {
-        let bytes = std::fs::read(path).map_err(|e| format!("无法读取图片 {path}：{e}"))?;
+        let resolved = crate::paths::resolve_image_path_in(path, &images_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from(path));
+        let bytes =
+            std::fs::read(&resolved).map_err(|e| format!("无法读取图片 {path}：{e}"))?;
         let mime = crate::mobile::api::media::sniff(&bytes)
             .ok_or_else(|| format!("不支持的图片格式（仅 png/jpeg/gif/webp）：{path}"))?;
         images.push(crate::mobile::api::chat::ImageIn {
@@ -1387,5 +1457,65 @@ mod tests {
             }
         }
         assert!(registry().read().get(&session_id).is_none());
+    }
+
+    #[test]
+    fn select_idle_evictions_caps_and_orders_oldest_first() {
+        assert!(select_idle_evictions(vec![], MAX_IDLE_LIVE_SESSIONS).is_empty());
+        assert!(select_idle_evictions(
+            vec![("s1".into(), Duration::from_secs(10))],
+            MAX_IDLE_LIVE_SESSIONS,
+        )
+        .is_empty());
+        assert!(select_idle_evictions(
+            vec![
+                ("s1".into(), Duration::from_secs(10)),
+                ("s2".into(), Duration::from_secs(20)),
+            ],
+            MAX_IDLE_LIVE_SESSIONS,
+        )
+        .is_empty());
+
+        // 3 idle -> returns oldest 1.
+        assert_eq!(
+            select_idle_evictions(
+                vec![
+                    ("s1".into(), Duration::from_secs(30)),
+                    ("s2".into(), Duration::from_secs(120)),
+                    ("s3".into(), Duration::from_secs(60)),
+                ],
+                MAX_IDLE_LIVE_SESSIONS,
+            ),
+            vec!["s2"]
+        );
+
+        // 5 idle -> returns oldest 3 in oldest-first order.
+        assert_eq!(
+            select_idle_evictions(
+                vec![
+                    ("s1".into(), Duration::from_secs(10)),
+                    ("s2".into(), Duration::from_secs(50)),
+                    ("s3".into(), Duration::from_secs(30)),
+                    ("s4".into(), Duration::from_secs(40)),
+                    ("s5".into(), Duration::from_secs(20)),
+                ],
+                MAX_IDLE_LIVE_SESSIONS,
+            ),
+            vec!["s2", "s4", "s3"]
+        );
+
+        // Equal elapsed times tie-break deterministically by session_id.
+        assert_eq!(
+            select_idle_evictions(
+                vec![
+                    ("s-c".into(), Duration::from_secs(60)),
+                    ("s-a".into(), Duration::from_secs(60)),
+                    ("s-b".into(), Duration::from_secs(60)),
+                    ("s-d".into(), Duration::from_secs(10)),
+                ],
+                MAX_IDLE_LIVE_SESSIONS,
+            ),
+            vec!["s-a", "s-b"]
+        );
     }
 }

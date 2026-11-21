@@ -151,7 +151,7 @@ export function RoleScopeBar({
 								value={pick}
 								onChange={(e) => setPicked(e.target.value === "" ? null : e.target.value)}
 								className="text-[11px]"
-								containerClassName="w-[220px]"
+								containerClassName="w-full min-w-[160px] max-w-[220px]"
 							>
 								{sessionCwd !== null && (
 									<option value={sessionCwd}>{t("settingsModels.currentSessionProjectOption", { name: projectBasename(sessionCwd) })}</option>

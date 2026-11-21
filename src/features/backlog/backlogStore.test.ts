@@ -152,4 +152,28 @@ describe("useBacklog store", () => {
 		vi.resetModules();
 		expect((await import("./backlogStore")).useBacklog.getState().editBuffer).toBeNull();
 	});
+
+	it("remaps legacy ~/.omp-workspace/images paths in draft and editBuffer", async () => {
+		mem.clear();
+		mem.set(
+			"ompws:backlog-draft",
+			JSON.stringify({
+				text: "🖼️ #1",
+				kind: "idea",
+				images: ["/Users/me/.omp-workspace/images/a.png"],
+			}),
+		);
+		mem.set(
+			"ompws:backlog-edit-buffer",
+			JSON.stringify({
+				id: "i1",
+				text: "🖼️ #1",
+				images: ["/Users/me/.omp-workspace/images/b.png"],
+			}),
+		);
+		vi.resetModules();
+		const fresh = (await import("./backlogStore")).useBacklog.getState();
+		expect(fresh.draft.images).toEqual(["/Users/me/.vecway/images/a.png"]);
+		expect(fresh.editBuffer?.images).toEqual(["/Users/me/.vecway/images/b.png"]);
+	});
 });

@@ -508,11 +508,11 @@ export function SchedulesPage() {
 
 		return (
 			<div className="flex h-full flex-1 flex-col overflow-hidden bg-[var(--bg)] text-[var(--text)]">
-				{/* Single-Row Sticky Workspace Header — creation mode switcher stays dead-center pinned */}
-				<header className="shrink-0 border-b border-[var(--border-divider)] px-6 py-2.5">
+				{/* Single-Row Sticky Workspace Header — creation mode switcher stays dead-center pinned when wide */}
+				<header className="@container shrink-0 border-b border-[var(--border-divider)] px-6 py-2.5">
 					{isNewCreation ? (
-						<div className="mx-auto grid w-full max-w-[780px] grid-cols-[1fr_auto_1fr] items-center gap-2.5">
-							<h1 className="truncate text-[16px] font-semibold tracking-tight text-[var(--text)]">
+						<div className="mx-auto flex w-full max-w-[780px] flex-wrap items-center justify-between gap-2 @[540px]:grid @[540px]:grid-cols-[1fr_auto_1fr] @[540px]:gap-2.5">
+							<h1 className="min-w-0 truncate text-[16px] font-semibold tracking-tight text-[var(--text)]">
 								{t("schedules.createTitle")}
 							</h1>
 
@@ -556,14 +556,14 @@ export function SchedulesPage() {
 								</h1>
 
 								{activeSchedule && (
-									<span className="hidden truncate whitespace-nowrap text-[11.5px] text-[var(--text-40)] sm:inline">
+									<span className="hidden truncate whitespace-nowrap text-[11.5px] text-[var(--text-40)] @[520px]:inline">
 										{basename(activeSchedule.cwd) || activeSchedule.cwd} ·{" "}
 										{formatCadence(activeSchedule.cadence, locale)}
 									</span>
 								)}
 							</div>
 
-							<div className="flex shrink-0 items-center gap-2">
+							<div className="flex max-w-full flex-wrap shrink-0 items-center gap-2">
 								{effectiveTab === "config" || isCreating ? (
 									<button
 										type="button"
@@ -709,7 +709,7 @@ export function SchedulesPage() {
 	if (schedules.length === 0) {
 		const bgEnabled = settings?.automationBackgroundEnabled ?? true;
 		return (
-			<div className="flex flex-1 items-center justify-center bg-[var(--bg)] p-8 text-[var(--text)]">
+			<div className="@container flex flex-1 items-center justify-center overflow-y-auto bg-[var(--bg)] p-4 @[480px]:p-8 text-[var(--text)]">
 				<div className="w-full max-w-[600px] space-y-5">
 					<div className="space-y-1 px-0.5">
 						<h1 className="text-[19px] font-semibold tracking-tight text-[var(--text)]">
@@ -720,7 +720,7 @@ export function SchedulesPage() {
 						</p>
 					</div>
 
-					<div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+					<div className="grid grid-cols-1 gap-3.5 @[480px]:grid-cols-2">
 						<button
 							type="button"
 							onClick={() => setCreatingViaChat(true)}
@@ -842,7 +842,7 @@ export function SchedulesPage() {
 						</span>
 					</div>
 
-					<div className="flex shrink-0 items-center gap-2">
+					<div className="flex max-w-full flex-wrap items-center gap-2">
 						<div className="flex items-center gap-1.5 rounded-lg border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2.5 py-1">
 							<span className="whitespace-nowrap text-[11.5px] text-[var(--text-60)]">
 								{t("schedules.bgRunLabel")}
@@ -927,7 +927,7 @@ export function SchedulesPage() {
 								{ value: "completed", label: t("schedules.filterCompleted") },
 							]}
 						/>
-						<div className="flex items-center gap-1.5">
+						<div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
 							<SearchInput
 								ref={searchInputRef}
 								value={query}
@@ -936,7 +936,7 @@ export function SchedulesPage() {
 								ariaLabel={t("schedules.searchAriaLabel")}
 								shortcutHint="/"
 								iconSize={13}
-								className="w-48 sm:w-56"
+								className="min-w-[140px] max-w-56 flex-1"
 								inputClassName="h-7 w-full rounded-lg hairline bg-[var(--bg)] pl-8 pr-7 text-xs text-[var(--text)] placeholder-neutral-500 transition-all focus:outline-none focus:ring-1 focus:ring-[var(--hairline-strong)]"
 							/>
 							<button

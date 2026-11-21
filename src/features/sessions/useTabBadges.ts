@@ -138,6 +138,23 @@ export function useHeatmapBadge(sessionId: string | null): number {
 	);
 }
 
+export function useAutomationDraftsBadge(sessionId: string | null): number {
+	return useLive(
+		useCallback(
+			(s) => {
+				if (!sessionId) return 0;
+				const drafts = s.sessions[sessionId]?.automationState?.drafts ?? [];
+				let count = 0;
+				for (const d of drafts) {
+					if (d.status === "pending") count++;
+				}
+				return count;
+			},
+			[sessionId],
+		),
+	);
+}
+
 export function useTabBadges(
 	selectedSessionId: string | null,
 ): Record<RightTab, number> {
@@ -145,6 +162,7 @@ export function useTabBadges(
 	const servicesCount = useServicesBadge();
 	const sidechatCount = useSidechatBadge(selectedSessionId);
 	const heatmapCount = useHeatmapBadge(selectedSessionId);
+	const automationCount = useAutomationDraftsBadge(selectedSessionId);
 	const { scope: terminalScope } = useTerminalScope();
 	const terminalCount = useDrawerStore((s) => countLiveCommandTabs(s.tabs.filter((tab) => tab.scope === terminalScope)));
 
@@ -157,8 +175,9 @@ export function useTabBadges(
 			services: servicesCount,
 			terminal: terminalCount,
 			plan: 0,
+			automation: automationCount,
 			files: 0,
 		}),
-		[gitDirtyCount, servicesCount, sidechatCount, heatmapCount, terminalCount],
+		[gitDirtyCount, servicesCount, sidechatCount, heatmapCount, automationCount, terminalCount],
 	);
 }

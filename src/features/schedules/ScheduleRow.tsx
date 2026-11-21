@@ -164,10 +164,10 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 					: "bg-neutral-500";
 
 	return (
-		<div className="group flex items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-[var(--bg-hover)]/45">
+		<div className="group flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3 transition-colors hover:bg-[var(--bg-hover)]/45">
 			{/* Left: Semantic clickable inspection region (strictly status + factual context) */}
 			{renaming ? (
-				<div className="flex min-w-0 flex-1 items-center gap-2.5">
+				<div className="flex min-w-[160px] flex-1 items-center gap-2.5">
 					<span className={clsx("h-2 w-2 shrink-0 rounded-full", dotClass)} />
 					<input
 						ref={nameInputRef}
@@ -194,7 +194,7 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 				<button
 					type="button"
 					onClick={handleInspect}
-					className="min-w-0 flex-1 cursor-pointer space-y-0.5 text-left focus:outline-none focus-visible:underline"
+					className="min-w-[160px] flex-1 cursor-pointer space-y-0.5 text-left focus:outline-none focus-visible:underline"
 				>
 					<div className="flex min-w-0 flex-wrap items-center gap-2">
 						<span className={clsx("h-2 w-2 shrink-0 rounded-full", dotClass)} />
@@ -250,7 +250,7 @@ export const ScheduleRow = React.memo(function ScheduleRow({
 			)}
 
 			{/* Right: Explicit Action Button (Verb + ->) + Switch + Overflow */}
-			<div className="flex shrink-0 items-center gap-2">
+			<div className="ml-auto flex shrink-0 items-center gap-2">
 				{isError ? (
 					<button
 						type="button"

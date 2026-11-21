@@ -207,7 +207,7 @@ interface ContextRingProps {
 	percent?: number;
 	/** Raw context usage object from OMP state. */
 	usageObj?: Record<string, unknown> | null;
-	/** Optional formatted usage string (e.g. "44.8k token"). */
+	/** Optional formatted usage string (e.g. "44.8k tok"). */
 	totalTokensStr?: string | null;
 	onCompact?: () => Promise<void>;
 	/** Disables the compact button (e.g. while a turn is streaming). */

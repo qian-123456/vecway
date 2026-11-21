@@ -88,32 +88,54 @@ fn load_from_with_signatures(
     let mut db = Connection::open(cache)?;
     db.busy_timeout(Duration::from_secs(5))?;
     let version: u32 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version != 1 {
+    if version != 2 {
         db.execute_batch(
-            "DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS files; PRAGMA user_version=1;",
+            "DROP TABLE IF EXISTS events;
+             DROP TABLE IF EXISTS files;
+             DROP TABLE IF EXISTS models;
+             PRAGMA auto_vacuum = INCREMENTAL;
+             VACUUM;
+             PRAGMA user_version = 2;",
         )?;
     }
     db.execute_batch(
         "PRAGMA journal_mode=WAL;
          CREATE TABLE IF NOT EXISTS files (
-           path TEXT PRIMARY KEY, size INTEGER NOT NULL, modified TEXT NOT NULL
+           id INTEGER PRIMARY KEY,
+           path TEXT NOT NULL UNIQUE,
+           size INTEGER NOT NULL,
+           modified TEXT NOT NULL,
+           session TEXT NOT NULL,
+           session_created TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS models (
+           id INTEGER PRIMARY KEY,
+           name TEXT NOT NULL UNIQUE
          );
          CREATE TABLE IF NOT EXISTS events (
-           file TEXT NOT NULL, event_key TEXT NOT NULL, session TEXT NOT NULL,
-           session_created TEXT NOT NULL, timestamp INTEGER NOT NULL,
-           model TEXT, tokens INTEGER, is_turn INTEGER NOT NULL,
-           PRIMARY KEY(file, event_key)
-         );
-         CREATE INDEX IF NOT EXISTS idx_events_order ON events(session_created, file, timestamp);
-         CREATE INDEX IF NOT EXISTS idx_events_dedup ON events(event_key, session_created, file, timestamp);",
+           file_id INTEGER NOT NULL,
+           event_key TEXT NOT NULL,
+           timestamp INTEGER NOT NULL,
+           model_id INTEGER,
+           tokens INTEGER,
+           is_turn INTEGER NOT NULL,
+           PRIMARY KEY(file_id, event_key)
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS idx_events_key ON events(event_key, file_id);",
     )?;
-    let previous: HashMap<String, (u64, String)> = {
-        let mut stmt = db.prepare("SELECT path, size, modified FROM files")?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?;
+    let previous: HashMap<String, (i64, u64, String)> = {
+        let mut stmt = db.prepare("SELECT id, path, size, modified FROM files")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(1)?, (r.get(0)?, r.get(2)?, r.get(3)?))))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut models: HashMap<String, i64> = {
+        let mut stmt = db.prepare("SELECT id, name FROM models")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(1)?, r.get(0)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
     let mut signatures: HashMap<String, (u64, String)> = HashMap::new();
     let mut present = HashSet::new();
+    let mut changed = false;
     let tx = db.transaction()?;
     for path in session_files(root)? {
         let metadata = std::fs::metadata(&path)?;
@@ -126,43 +148,73 @@ fn load_from_with_signatures(
         let name = path.to_string_lossy().into_owned();
         present.insert(name.clone());
         signatures.insert(name.clone(), (size, modified.clone()));
-        if previous
-            .get(&name)
-            .is_some_and(|(s, m)| *s == size && *m == modified)
-        {
-            continue;
-        }
-        tx.execute("DELETE FROM events WHERE file = ?1", [&name])?;
+        let existing_id = match previous.get(&name) {
+            Some(&(_id, s, ref m)) if s == size && *m == modified => continue,
+            Some(&(id, _, _)) => Some(id),
+            None => None,
+        };
+        changed = true;
+        let (session, session_created, nested) = read_owner_header(&path, root)?;
+        let file_id = if let Some(file_id) = existing_id {
+            tx.execute("DELETE FROM events WHERE file_id = ?1", [file_id])?;
+            tx.execute(
+                "UPDATE files SET size = ?2, modified = ?3, session = ?4, session_created = ?5 WHERE id = ?1",
+                params![file_id, size, &modified, &session, &session_created],
+            )?;
+            file_id
+        } else {
+            tx.execute(
+                "INSERT INTO files (path, size, modified, session, session_created) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![&name, size, &modified, &session, &session_created],
+            )?;
+            tx.last_insert_rowid()
+        };
         {
             let mut insert = tx.prepare_cached(
                 "INSERT OR REPLACE INTO events
-                 (file,event_key,session,session_created,timestamp,model,tokens,is_turn)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                 (file_id, event_key, timestamp, model_id, tokens, is_turn)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
-            scan_file(&path, root, size, |event| {
+            let mut insert_model =
+                tx.prepare_cached("INSERT OR IGNORE INTO models (name) VALUES (?1)")?;
+            let mut select_model = tx.prepare_cached("SELECT id FROM models WHERE name = ?1")?;
+            scan_file(&path, size, nested, |event| {
+                let model_id = match event.model {
+                    Some(model_name) => {
+                        if let Some(&id) = models.get(&model_name) {
+                            Some(id)
+                        } else {
+                            insert_model.execute([&model_name])?;
+                            let id: i64 = select_model.query_row([&model_name], |r| r.get(0))?;
+                            models.insert(model_name, id);
+                            Some(id)
+                        }
+                    }
+                    None => None,
+                };
                 insert.execute(params![
-                    &name,
+                    file_id,
                     event.key,
-                    event.session,
-                    event.session_created,
                     event.timestamp,
-                    event.model,
+                    model_id,
                     event.tokens,
                     event.is_turn
                 ])?;
                 Ok(())
             })?;
         }
-        tx.execute(
-            "INSERT OR REPLACE INTO files(path,size,modified) VALUES (?1,?2,?3)",
-            params![&name, size, modified],
-        )?;
     }
-    for path in previous.keys().filter(|p| !present.contains(*p)) {
-        tx.execute("DELETE FROM events WHERE file = ?1", [path])?;
-        tx.execute("DELETE FROM files WHERE path = ?1", [path])?;
+    for (path, &(file_id, _, _)) in &previous {
+        if !present.contains(path) {
+            changed = true;
+            tx.execute("DELETE FROM events WHERE file_id = ?1", [file_id])?;
+            tx.execute("DELETE FROM files WHERE id = ?1", [file_id])?;
+        }
     }
     tx.commit()?;
+    if changed {
+        let _ = db.execute_batch("PRAGMA incremental_vacuum(256);");
+    }
 
     // A fork carries its parent's entries with the original ids and timestamps.
     // Deduplicate in SQLite (picking the earliest session_created/file/timestamp
@@ -171,12 +223,14 @@ fn load_from_with_signatures(
     let mut stmt = db.prepare(
         "SELECT session, timestamp, model, tokens, is_turn
          FROM (
-           SELECT session, timestamp, model, tokens, is_turn,
+           SELECT f.session, e.timestamp, m.name AS model, e.tokens, e.is_turn,
                   ROW_NUMBER() OVER (
-                    PARTITION BY event_key
-                    ORDER BY session_created, file, timestamp
+                    PARTITION BY e.event_key
+                    ORDER BY f.session_created, f.path, e.timestamp
                   ) AS rn
-           FROM events
+           FROM events e
+           JOIN files f ON f.id = e.file_id
+           LEFT JOIN models m ON m.id = e.model_id
          )
          WHERE rn = 1",
     )?;
@@ -315,26 +369,15 @@ struct Message {
     #[serde(rename = "toolName")]
     tool_name: Option<String>,
 }
-struct Event<'a> {
+struct Event {
     key: String,
-    session: &'a str,
-    session_created: &'a str,
     timestamp: i64,
     model: Option<String>,
     tokens: Option<u64>,
     is_turn: bool,
 }
 
-fn scan_file(
-    path: &Path,
-    root: &Path,
-    size: u64,
-    mut emit: impl FnMut(Event<'_>) -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
-    // Bound to the signature's snapshot; an appended partial record is retried
-    // after its size/mtime changes. Reuse the line buffer, including for images.
-    let mut reader = BufReader::with_capacity(256 * 1024, File::open(path)?.take(size));
-    let mut line = Vec::new();
+fn read_owner_header(path: &Path, root: &Path) -> anyhow::Result<(String, String, bool)> {
     let mut owner = path.to_path_buf();
     while owner.parent().and_then(Path::parent) != Some(root) {
         let Some(parent) = owner.parent() else {
@@ -351,6 +394,19 @@ fn scan_file(
         .map(|h| h.id.clone())
         .unwrap_or_else(|| owner.to_string_lossy().into_owned());
     let created = header.map(|h| h.created_at).unwrap_or_default();
+    Ok((session, created, nested))
+}
+
+fn scan_file(
+    path: &Path,
+    size: u64,
+    nested: bool,
+    mut emit: impl FnMut(Event) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    // Bound to the signature's snapshot; an appended partial record is retried
+    // after its size/mtime changes. Reuse the line buffer, including for images.
+    let mut reader = BufReader::with_capacity(256 * 1024, File::open(path)?.take(size));
+    let mut line = Vec::new();
     let mut line_number = 0;
     loop {
         line.clear();
@@ -426,8 +482,6 @@ fn scan_file(
         });
         emit(Event {
             key,
-            session: &session,
-            session_created: &created,
             timestamp,
             model,
             tokens,
@@ -681,6 +735,65 @@ mod tests {
             .to_string();
         assert_eq!(usage.days[0].date, expected);
         assert_eq!(usage.days[0].tokens, Some(42));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn migrates_v1_schema_to_v2_with_incremental_vacuum() {
+        let (dir, root, cache) = fixture();
+        let file = root.join("repo/a.jsonl");
+        let ts = "2026-10-01T12:00:00Z";
+        let local_day = DateTime::parse_from_rfc3339(ts)
+            .unwrap()
+            .with_timezone(&Local)
+            .format("%Y-%m-%d")
+            .to_string();
+        write(
+            &file,
+            "main",
+            "2026-10-01T00:00:00Z",
+            &[
+                json!({"type":"message","id":"u1","timestamp":ts,"message":{"role":"user"}}),
+                request("a1", ts, json!({"totalTokens":123})),
+            ],
+        );
+        {
+            let legacy = Connection::open(&cache).unwrap();
+            legacy
+                .execute_batch(
+                    "PRAGMA journal_mode=WAL;
+                     CREATE TABLE files (
+                       path TEXT PRIMARY KEY, size INTEGER NOT NULL, modified TEXT NOT NULL
+                     );
+                     CREATE TABLE events (
+                       file TEXT NOT NULL, event_key TEXT NOT NULL, session TEXT NOT NULL,
+                       session_created TEXT NOT NULL, timestamp INTEGER NOT NULL,
+                       model TEXT, tokens INTEGER, is_turn INTEGER NOT NULL,
+                       PRIMARY KEY(file, event_key)
+                     );
+                     INSERT INTO files (path, size, modified) VALUES ('stale.jsonl', 1, '0');
+                     INSERT INTO events (file, event_key, session, session_created, timestamp, model, tokens, is_turn)
+                       VALUES ('stale.jsonl', 'k1', 'stale', '2026-01-01T00:00:00Z', 1767225600000, 'old/model', 999, 0);
+                     PRAGMA user_version=1;",
+                )
+                .unwrap();
+        }
+        let usage = load_from(&root, &cache).unwrap();
+        assert_eq!(usage.days.len(), 1);
+        let day = &usage.days[0];
+        assert_eq!(day.date, local_day);
+        assert_eq!((day.tokens, day.sessions, day.turns), (Some(123), 1, 1));
+        assert_eq!(day.top_model.as_deref(), Some("test/model"));
+
+        let migrated = Connection::open(&cache).unwrap();
+        let version: u32 = migrated
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        let auto_vacuum: u32 = migrated
+            .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(auto_vacuum, 2);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

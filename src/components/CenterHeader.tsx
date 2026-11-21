@@ -427,7 +427,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 										title={t("shell.backToParent", { name: parentSession ? sessionDisplayName(parentSession) : parentId })}
 									>
 										<span>←</span>
-										<span className="max-w-[120px] md:max-w-[160px] truncate text-neutral-300">
+										<span className="max-w-[100px] @[460px]:max-w-[160px] truncate text-neutral-300">
 											{parentSession ? sessionDisplayName(parentSession) : t("shell.parentSession")}
 										</span>
 									</button>
@@ -465,7 +465,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 							) : (
 								<span
 									onDoubleClick={startEditTitle}
-									className="min-w-0 max-w-[200px] md:max-w-[320px] lg:max-w-[450px] cursor-pointer select-none truncate text-[13px] font-semibold tracking-[-0.015em] text-neutral-100 underline-offset-4 hover:text-[var(--text)] hover:underline decoration-neutral-600 transition-colors"
+									className="min-w-0 max-w-[200px] @[460px]:max-w-[320px] @[640px]:max-w-[450px] cursor-pointer select-none truncate text-[13px] font-semibold tracking-[-0.015em] text-neutral-100 underline-offset-4 hover:text-[var(--text)] hover:underline decoration-neutral-600 transition-colors"
 									title={t("shell.renameSessionTip", {
 										name: sessionDisplayName(activeSession),
 										cwd: activeSession.cwd ? t("shell.sessionPath", { path: activeSession.cwd }) : "",

@@ -18,6 +18,7 @@ use tracing::Instrument;
 use crate::contracts::{LiveSessionInfo, PendingUiRequest, Settings, StartOpts};
 use crate::diagnostics::{self, DiagnosticEvent};
 use crate::rpc::frame::ChunkReassembler;
+use crate::rpc::frame_batch::{FrameBatcher, DEFAULT_BATCH_WINDOW};
 use crate::state::{AppEvent, AppState};
 use crate::{paths, rpc};
 
@@ -358,11 +359,21 @@ pub(crate) type OutSink = Arc<dyn Fn(OutEvent) + Send + Sync + 'static>;
 /// Production sink: `rpc:frame`/`rpc:process` to the webview + AppEvent on the bus.
 pub(crate) fn sink_from_state(state: &AppState) -> OutSink {
     let state = state.clone();
-    Arc::new(move |ev| match ev {
+    let raw_sink: OutSink = Arc::new(move |ev| match ev {
         OutEvent::Frame { session_id, frame } => {
+            #[derive(Clone, serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct RpcFrameOut<'a> {
+                session_id: &'a str,
+                frame: &'a Value,
+            }
+            let frame = Arc::new(frame);
             let _ = state.app.emit(
                 "rpc:frame",
-                json!({ "sessionId": session_id, "frame": frame }),
+                RpcFrameOut {
+                    session_id: &session_id,
+                    frame: &frame,
+                },
             );
             state.emit(AppEvent::RpcFrame { session_id, frame });
         }
@@ -381,7 +392,9 @@ pub(crate) fn sink_from_state(state: &AppState) -> OutSink {
                 exit_code,
             });
         }
-    })
+    });
+    let batcher = Arc::new(FrameBatcher::new(DEFAULT_BATCH_WINDOW, raw_sink));
+    Arc::new(move |ev| batcher.push(ev))
 }
 
 /// Emit a frame to the frontend (`rpc:frame`) and the bus (`AppEvent::RpcFrame`).

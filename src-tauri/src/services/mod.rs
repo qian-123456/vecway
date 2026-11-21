@@ -19,8 +19,9 @@ use crate::contracts::ServiceInfo;
 use crate::state::{AppEvent, AppState};
 
 const BASE_POLL: Duration = Duration::from_secs(10);
-const MAX_POLL: Duration = Duration::from_secs(45);
+const MAX_POLL: Duration = Duration::from_secs(60);
 const STEP_POLL: Duration = Duration::from_secs(10);
+const UI_ACTIVE_WINDOW: Duration = Duration::from_secs(60);
 
 static SERVICES_NOTIFY: OnceLock<tokio::sync::Notify> = OnceLock::new();
 
@@ -41,8 +42,28 @@ fn cache() -> &'static ScanCache {
     C.get_or_init(Default::default)
 }
 
-/// Poll listening ports with adaptive backoff: 10s when dev services are active,
-/// backing off up to 45s when no dev services exist. Emits `services:changed` on diff.
+static ACTIVE_UNTIL: std::sync::LazyLock<Mutex<Option<Instant>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn mark_ui_active(now: Instant) {
+    *ACTIVE_UNTIL.lock() = Some(now + UI_ACTIVE_WINDOW);
+}
+
+fn is_ui_active(now: Instant) -> bool {
+    ACTIVE_UNTIL.lock().is_some_and(|until| now < until)
+}
+
+fn next_poll_delay(current: Duration, changed: bool, ui_active: bool) -> Duration {
+    if changed || ui_active {
+        BASE_POLL
+    } else {
+        (current + STEP_POLL).min(MAX_POLL)
+    }
+}
+
+/// Poll listening ports with adaptive backoff: 10s when snapshots change or
+/// the UI recently polled `list`, backing off up to 60s when unchanged.
+/// Emits `services:changed` on diff.
 pub fn init(state: AppState) {
     let _ = STATE.set(state.clone());
     let notify = SERVICES_NOTIFY.get_or_init(tokio::sync::Notify::new);
@@ -58,14 +79,8 @@ pub fn init(state: AppState) {
                 let _ = state.app.emit("services:changed", &now);
                 state.emit(AppEvent::ServicesChanged);
                 last = Some(key);
-                delay = BASE_POLL;
-            } else if now.is_empty() {
-                // No listening dev services found: back off progressively up to 45s
-                delay = (delay + STEP_POLL).min(MAX_POLL);
-            } else {
-                // Dev services running: stay at BASE_POLL (10s) to detect shutdown promptly
-                delay = BASE_POLL;
             }
+            delay = next_poll_delay(delay, changed, is_ui_active(Instant::now()));
 
             tokio::select! {
                 _ = tokio::time::sleep(delay) => {},
@@ -98,6 +113,7 @@ async fn fresh_list(all: bool) -> Vec<ServiceInfo> {
 
 /// Listening services; `all=false` keeps only dev-like processes.
 pub async fn list(all: bool) -> Vec<ServiceInfo> {
+    mark_ui_active(Instant::now());
     if let Some((at, cached_all, rows)) = cache().lock().as_ref() {
         if at.elapsed() < CACHE_TTL && *cached_all == all {
             return rows.clone();
@@ -165,4 +181,30 @@ fn kill_pid(pid: u32) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_poll_delay_handles_active_ui_changes_and_idle_backoff() {
+        assert_eq!(next_poll_delay(MAX_POLL, false, true), BASE_POLL);
+        assert_eq!(
+            next_poll_delay(Duration::from_secs(30), false, true),
+            BASE_POLL
+        );
+
+        assert_eq!(next_poll_delay(MAX_POLL, true, false), BASE_POLL);
+        assert_eq!(
+            next_poll_delay(Duration::from_secs(40), true, false),
+            BASE_POLL
+        );
+
+        let mut d = BASE_POLL;
+        for expected in [20, 30, 40, 50, 60, 60] {
+            d = next_poll_delay(d, false, false);
+            assert_eq!(d, Duration::from_secs(expected));
+        }
+    }
 }

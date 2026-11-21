@@ -386,7 +386,7 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 					badge: o.text !== o.value ? o.value : undefined,
 					description: o.description,
 				}))}
-				containerClassName="min-w-48 max-w-80"
+				containerClassName="min-w-40 max-w-full sm:max-w-80"
 				onChange={(v) => {
 					void persist(v);
 				}}
@@ -415,7 +415,7 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 	} else if (!isStructured) {
 		control = (
 			<CommitInput
-				className="w-64"
+				className="w-56 max-w-full"
 				mono
 				value={current}
 				placeholder={defText && defText !== t("settingsCore.ompList.unset") ? t("settingsCore.ompList.defaultLabel", { value: defText }) : t("settingsCore.ompList.unset")}
@@ -449,8 +449,8 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 					: "focus-visible:bg-[var(--bg-hover)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]",
 			)}
 		>
-			<div className="flex items-start justify-between gap-4">
-				<div className="min-w-0 flex-1">
+			<div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+				<div className="min-w-[160px] flex-1">
 					<div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
 						{modified && (
 							<span
@@ -503,7 +503,7 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 					)}
 				</div>
 				{(control || canReset) && (
-					<div className="flex shrink-0 items-center gap-1.5 pt-0.5">
+					<div className="flex max-w-full flex-wrap shrink-0 items-center justify-end gap-1.5 pt-0.5">
 						{control}
 						{canReset && (
 							<IconButton

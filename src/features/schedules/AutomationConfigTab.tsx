@@ -834,7 +834,7 @@ export const AutomationConfigTab = forwardRef<
 			</section>
 
 			{/* Section 2: Zero-Jargon Working Mode Selector */}
-			<section className="space-y-2.5 rounded-xl border border-[var(--border-divider)] bg-[var(--bg-panel)] p-3.5">
+			<section className="@container space-y-2.5 rounded-xl border border-[var(--border-divider)] bg-[var(--bg-panel)] p-3.5">
 				<div className="flex flex-wrap items-center justify-between gap-2">
 					<span className="text-[12.5px] font-medium text-[var(--text)]">
 						{t("schedules.configTriggerSectionTitle")}
@@ -847,7 +847,7 @@ export const AutomationConfigTab = forwardRef<
 				<div
 					role="radiogroup"
 					aria-label={t("schedules.configTriggerSectionTitle")}
-					className="grid grid-cols-1 gap-2 md:grid-cols-3"
+					className="grid grid-cols-1 gap-2 @[520px]:grid-cols-3"
 				>
 					{(
 						[
@@ -935,7 +935,7 @@ export const AutomationConfigTab = forwardRef<
 							<InfoTip text={t("schedules.probeRuleTooltip")} />
 						</div>
 
-						<div className="mb-1 flex items-center gap-1.5">
+						<div className="mb-1 flex flex-wrap items-center gap-1.5">
 							<button
 								type="button"
 								onClick={() => openChatWithContext("script")}
@@ -1120,7 +1120,7 @@ export const AutomationConfigTab = forwardRef<
 						promptValue={form.prompt}
 						onChangePrompt={(prompt) => set("prompt", prompt)}
 						earRightAction={
-							<div className="mb-1 flex items-center gap-1.5">
+							<div className="mb-1 flex flex-wrap items-center gap-1.5">
 								{form.agentTrigger === "on_signal" && (
 									<span className="inline-flex shrink-0 whitespace-nowrap rounded bg-sky-500/15 px-1.5 py-0.5 text-[10.5px] font-semibold text-sky-700 dark:text-sky-300">
 										{t("schedules.configStep2BadgeOnSignal")}

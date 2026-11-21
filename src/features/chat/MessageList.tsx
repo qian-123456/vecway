@@ -51,6 +51,7 @@ import { openContextWindowForModel } from "../settings/settingsTargets";
 import { AnswerFooter } from "./AnswerFooter";
 import { ClampedProse } from "./ClampedProse";
 import { TurnDiffCard } from "./TurnDiffCard";
+import { AutomationTurnCard } from "./automation/AutomationTurnCard";
 import { collectTurnDiffSummary } from "./turnDiffs";
 import { isForkDraftId } from "../sessions/forkDraft";
 import { filterToLeafPath, versionsByItem, type TreeVersions } from "./treePath";
@@ -974,6 +975,13 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 								isLatestTurn={isLatestTurn}
 							/>
 						)}
+						{block.isLastTurnPart && (
+							<AutomationTurnCard
+								sessionId={sessionId}
+								steps={block.turn.intermediateSteps}
+								toolResultsByCallId={toolResultsByCallId}
+							/>
+						)}
 						{/* Stopped turns still need undo / changed files / fork. */}
 						{!selecting && !isForkDraftId(sessionId) && (
 							<AnswerFooter
@@ -1036,6 +1044,13 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 							turnCheckpoint={turnCheckpoint}
 							sessionCwd={sessionCwd}
 							isLatestTurn={isLatestTurn}
+						/>
+					)}
+					{block.isLastTurnPart && (
+						<AutomationTurnCard
+							sessionId={sessionId}
+							steps={block.turn.intermediateSteps}
+							toolResultsByCallId={toolResultsByCallId}
 						/>
 					)}
 
@@ -1107,6 +1122,13 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 					turnCheckpoint={turnCheckpoint}
 					sessionCwd={sessionCwd}
 					isLatestTurn={isLatestTurn}
+				/>
+			)}
+			{!block.answerItem && block.isLastTurnPart && (
+				<AutomationTurnCard
+					sessionId={sessionId}
+					steps={block.turn.intermediateSteps}
+					toolResultsByCallId={toolResultsByCallId}
 				/>
 			)}
 		</div>

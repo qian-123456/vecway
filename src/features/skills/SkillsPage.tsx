@@ -629,13 +629,13 @@ function DetailDrawer({
 					{skill ? (
 						<>
 						<dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl hairline bg-[var(--well-bg)]/40 p-3.5 text-xs">
-							<div>
+							<div className="min-w-0">
 								<dt className="text-neutral-500">{t("skills.dirName")}</dt>
-								<dd className="mt-0.5 font-mono text-neutral-200">{dirName}</dd>
+								<dd className="mt-0.5 break-all font-mono text-neutral-200">{dirName}</dd>
 							</div>
-							<div>
+							<div className="min-w-0">
 								<dt className="text-neutral-500">{t("skills.sourceLabel")}</dt>
-								<dd className="mt-0.5 text-neutral-200">
+								<dd className="mt-0.5 break-words text-neutral-200">
 									{sourceLabel(displaySkill?.source ?? "")}
 								</dd>
 							</div>
@@ -776,15 +776,15 @@ function DetailDrawer({
 					) : (
 						extension && (
 							<dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl hairline bg-[var(--well-bg)]/40 p-3.5 text-xs">
-								<div>
+								<div className="min-w-0">
 									<dt className="text-neutral-500">{t("skills.extensionId")}</dt>
-									<dd className="mt-0.5 font-mono text-neutral-200">
+									<dd className="mt-0.5 break-all font-mono text-neutral-200">
 										{extension.name}
 									</dd>
 								</div>
-								<div>
+								<div className="min-w-0">
 									<dt className="text-neutral-500">{t("skills.sourceLabel")}</dt>
-									<dd className="mt-0.5 text-neutral-200">
+									<dd className="mt-0.5 break-words text-neutral-200">
 										{sourceLabel(extension.source)}
 									</dd>
 								</div>
@@ -1172,7 +1172,7 @@ export function SkillsPage() {
 						placeholder={activeTab === "skills" ? t("skills.searchPlaceholderSkill") : t("skills.searchPlaceholderExtension")}
 						shortcutHint="/"
 						iconSize={13}
-						className="w-56 sm:w-64"
+						className="min-w-[160px] max-w-64 flex-1 basis-48"
 						inputClassName="h-8 w-full rounded-lg hairline bg-[var(--well-bg)] pl-8 pr-7 text-xs text-neutral-100 placeholder-neutral-500 transition-all focus:outline-none focus:ring-1 focus:ring-amber-500/50"
 					/>
 					<button

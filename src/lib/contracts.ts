@@ -683,6 +683,8 @@ export interface SessionSnapshot {
 	contextTokens: number | null;
 	/** Raw data from the latest complete `ompws-plan-state` custom record. */
 	planState?: unknown;
+	/** Raw data from the latest complete `ompws-automation-state` custom record. */
+	automationState?: unknown;
 }
 
 export interface Settings {

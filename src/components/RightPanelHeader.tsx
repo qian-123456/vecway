@@ -10,6 +10,7 @@ import clsx from "clsx";
 import {
 	Check,
 	ChevronDown,
+	Clock,
 	Coins,
 	FileText,
 	Cpu,
@@ -74,6 +75,7 @@ const PRIMARY_TABS: { id: RightTab; icon: IconType; iconColor: string }[] = [
 	{ id: "heatmap", icon: Coins, iconColor: "text-amber-400" },
 	{ id: "terminal", icon: SquareTerminal, iconColor: "text-emerald-400" },
 	{ id: "plan", icon: NotebookPen, iconColor: "text-amber-400" },
+	{ id: "automation", icon: Clock, iconColor: "text-amber-400" },
 	{ id: "files", icon: FileText, iconColor: "text-sky-400" },
 ];
 
@@ -139,6 +141,21 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 		if (planOpen && (!selectedId || (plan !== undefined && !planHasDocument)) &&
 			useUi.getState().selectedSessionId === selectedId) closeRightTab("plan");
 	}, [selectedId, plan, planHasDocument, planOpen, closeRightTab]);
+	const automationState = useLive((s) => (selectedId ? s.sessions[selectedId]?.automationState : undefined));
+	const hasAutomationDrafts = Boolean(
+		selectedId &&
+			(automationState?.drafts ?? []).some((d) => d.status === "pending" || d.status === "saved"),
+	);
+	const automationOpen = openRightTabs.includes("automation");
+	useEffect(() => {
+		if (
+			automationOpen &&
+			(!selectedId || (automationState !== undefined && !hasAutomationDrafts)) &&
+			useUi.getState().selectedSessionId === selectedId
+		) {
+			closeRightTab("automation");
+		}
+	}, [selectedId, automationState, hasAutomationDrafts, automationOpen, closeRightTab]);
 	const parentTabs = useSideChatView((s) => (selectedId ? s.openTabs[selectedId] : undefined));
 	const storedSideTab = useSideChatView((s) => (selectedId ? s.openChild[selectedId] : undefined));
 	const activeSideTab = resolveActiveTab(parentTabs, storedSideTab);
@@ -518,7 +535,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 						<span>{t("rightPanel.newTerminal")}</span>
 					</button>
 					<div className="my-1 border-t border-[var(--border-divider)]" />
-					{PRIMARY_TABS.filter((tab) => tab.id !== "files" && (tab.id !== "plan" || planAvailable)).map((tab) => {
+					{PRIMARY_TABS.filter((tab) => tab.id !== "files" && (tab.id !== "plan" || planAvailable) && (tab.id !== "automation" || hasAutomationDrafts)).map((tab) => {
 						const Icon = tab.icon;
 						const badge = tabBadges[tab.id] ?? 0;
 						const isOpen = openRightTabs.includes(tab.id) && tab.id !== "sidechat";

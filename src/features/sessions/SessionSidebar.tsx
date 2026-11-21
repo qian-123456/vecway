@@ -254,8 +254,24 @@ export function SessionSidebar() {
 	const inboxBadge = useInboxBadge();
 	const automationAttention = useAutomationAttention();
 	// Windowed macOS (overlay traffic lights visible) splits the topbar into
-	// two rows; fullscreen / non-mac keeps one row.
+	// two rows; fullscreen / non-mac keeps one row. When the sidebar is narrow,
+	// move inbox & search up to the first row so the mode label ("Research") never squeezes.
 	const trafficLightsVisible = useTrafficLightsVisible();
+	const asideRef = useRef<HTMLElement>(null);
+	const [sidebarWidthPx, setSidebarWidthPx] = useState<number>(() => useUi.getState().sidebarWidth);
+	useEffect(() => {
+		const el = asideRef.current;
+		if (!el) return;
+		const measure = () => {
+			if (el.clientWidth > 0) setSidebarWidthPx(el.clientWidth);
+		};
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		return () => ro.disconnect();
+	}, []);
+	const compactTopbar = sidebarWidthPx < (trafficLightsVisible ? 236 : 256);
 	// Persistent sidebar store state (survives Cmd+B)
 	const activeMode = useSidebarStore((s) => s.activeMode);
 	const modeActivity = useModeActivity();
@@ -1230,7 +1246,7 @@ export function SessionSidebar() {
 			aria-label={t("sidebar.inbox")}
 			title={t("sidebar.inbox")}
 			className={clsx(
-				"relative flex h-7 w-7 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
+				"relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
 				centerView === "inbox"
 					? "bg-[var(--bg-active-fill)] text-indigo-400"
 					: "text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200",
@@ -1250,7 +1266,7 @@ export function SessionSidebar() {
 			onClick={() => useSearchDialog.getState().openDialog()}
 			aria-label={t("common.search")}
 			title={`${t("sidebar.searchSessions")} (⌘F)`}
-			className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+			className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 		>
 			<Search size={16} strokeWidth={1.5} />
 		</button>
@@ -1267,20 +1283,26 @@ export function SessionSidebar() {
 	);
 
 	return (
-		<aside className="@container flex h-full flex-col bg-transparent text-neutral-300 text-xs select-none">
+		<aside ref={asideRef} className="@container flex h-full flex-col bg-transparent text-neutral-300 text-xs select-none">
 			{/* Topbar: mode title + inbox/search/collapse in the draggable title-bar strip.
 			    Windowed macOS splits it into two rows — row one keeps the h-10 window-chrome
-			    line aligned with the center header and carries traffic lights + collapse;
-			    row two carries the mode switcher + inbox/search. */}
-			{trafficLightsVisible ? (
+			    line aligned with the center header and carries traffic lights + collapse
+			    (plus inbox/search when the sidebar is narrow so the mode title never crowds). */}
+			{trafficLightsVisible || compactTopbar ? (
 				<>
 					<div
 						data-tauri-drag-region
 						className="flex h-10 shrink-0 items-center border-b border-[var(--border-divider)] px-2.5 select-none"
 					>
 						{/* Reserves room for the overlay traffic lights on the left. */}
-						<div data-tauri-drag-region className="w-[64px] shrink-0" />
-						<div className="ml-auto flex shrink-0 items-center" data-tauri-drag-region>
+						{trafficLightsVisible && <div data-tauri-drag-region className="w-[64px] shrink-0" />}
+						<div className="ml-auto flex shrink-0 items-center gap-0.5" data-tauri-drag-region>
+							{compactTopbar && (
+								<>
+									{inboxButton}
+									{searchButton}
+								</>
+							)}
 							{collapseButton}
 						</div>
 					</div>
@@ -1290,10 +1312,12 @@ export function SessionSidebar() {
 					>
 						<div className="flex min-w-0 flex-1 items-center gap-1" data-tauri-drag-region>
 							{modeSwitcherButton}
-							<div className="ml-auto flex shrink-0 items-center gap-1">
-								{inboxButton}
-								{searchButton}
-							</div>
+							{!compactTopbar && (
+								<div className="ml-auto flex shrink-0 items-center gap-1">
+									{inboxButton}
+									{searchButton}
+								</div>
+							)}
 						</div>
 					</div>
 				</>

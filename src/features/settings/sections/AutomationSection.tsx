@@ -205,11 +205,11 @@ export function AutomationSection() {
 					status={modelSave.status}
 					statusError={modelSave.error}
 					control={
-						<div className="flex items-center gap-2">
+						<div className="flex max-w-full flex-wrap items-center gap-2">
 							<ModelSelect
 								catalogManaged
 								direction="up"
-								widthClass="w-[360px]"
+								widthClass="w-[360px] max-w-[calc(100vw-2rem)]"
 								label={
 									currentModel
 										? currentThinking

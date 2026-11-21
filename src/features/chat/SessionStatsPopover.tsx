@@ -37,7 +37,7 @@ export function SessionStatsPopover({
 			: "—";
 
 	// 「—」when no request of the session recorded a duration.
-	const tpsStr = stats.tps != null ? `${stats.tps.toFixed(1)} token/s` : "—";
+	const tpsStr = stats.tps != null ? `${stats.tps.toFixed(1)} tok/s` : "—";
 
 	return (
 		<FloatingLayer

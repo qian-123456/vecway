@@ -128,12 +128,12 @@ function EntryRow({
 
 	return (
 		<div className="space-y-1">
-			<div className="flex items-center gap-1.5">
+			<div className="flex flex-wrap items-center gap-1.5">
 				<span className="w-4 shrink-0 text-center font-mono text-[10px] text-[var(--text-dim)]">{index + 1}</span>
 				{value.trim() !== "" && (
 					<Chip tone={chip.tone}>{chip.label}</Chip>
 				)}
-				<div className="min-w-0 flex-1">
+				<div className="min-w-[160px] flex-1">
 					<ModelSelect
 						catalogManaged
 						disabled={busy}
@@ -141,7 +141,7 @@ function EntryRow({
 						allowCustom
 						direction="down"
 						align="start"
-						widthClass="w-[380px]"
+						widthClass="w-[380px] max-w-[calc(100vw-2rem)]"
 						label={selector || t("settingsModels.chainInputPlaceholder")}
 						buttonClass={`${PICKER_BUTTON_CLASS} ${selector ? "font-mono" : "italic text-[var(--text-muted)]"}`}
 						models={models}
@@ -152,34 +152,36 @@ function EntryRow({
 						}}
 					/>
 				</div>
-				{!error && levels.length > 0 && (
-					<label className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--text-dim)]">
-						<span className="whitespace-nowrap">{t("settingsModels.thinkingIntensityLabel")}</span>
-						<NativeSelect
-							value={level ?? ""}
-							disabled={busy}
-							containerClassName="w-28"
-							className="!py-1 !text-[11px]"
-							onChange={(e) => onChange(formatChainEntry(selector, e.target.value || null))}
-						>
-							<option value="">{t("settingsModels.inheritErrorTurn")}</option>
-							{levels.map((l) => (
-								<option key={l} value={l}>
-									{l}
-								</option>
-							))}
-						</NativeSelect>
-					</label>
-				)}
-				<IconButton icon={ChevronUp} size="sm" label={t("settingsModels.moveUpAria")} disabled={busy || index === 0} onClick={() => onMove(-1)} />
-				<IconButton
-					icon={ChevronDown}
-					size="sm"
-					label={t("settingsModels.moveDownAria")}
-					disabled={busy || index === count - 1}
-					onClick={() => onMove(1)}
-				/>
-				<IconButton icon={Trash2} size="sm" label={t("settingsModels.removeAria")} disabled={busy} onClick={onRemove} />
+				<div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center gap-1">
+					{!error && levels.length > 0 && (
+						<label className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--text-dim)]">
+							<span className="whitespace-nowrap">{t("settingsModels.thinkingIntensityLabel")}</span>
+							<NativeSelect
+								value={level ?? ""}
+								disabled={busy}
+								containerClassName="w-28"
+								className="!py-1 !text-[11px]"
+								onChange={(e) => onChange(formatChainEntry(selector, e.target.value || null))}
+							>
+								<option value="">{t("settingsModels.inheritErrorTurn")}</option>
+								{levels.map((l) => (
+									<option key={l} value={l}>
+										{l}
+									</option>
+								))}
+							</NativeSelect>
+						</label>
+					)}
+					<IconButton icon={ChevronUp} size="sm" label={t("settingsModels.moveUpAria")} disabled={busy || index === 0} onClick={() => onMove(-1)} />
+					<IconButton
+						icon={ChevronDown}
+						size="sm"
+						label={t("settingsModels.moveDownAria")}
+						disabled={busy || index === count - 1}
+						onClick={() => onMove(1)}
+					/>
+					<IconButton icon={Trash2} size="sm" label={t("settingsModels.removeAria")} disabled={busy} onClick={onRemove} />
+				</div>
 			</div>
 			{(error || kind === "wildcard") && (
 				<div className="flex flex-wrap items-center gap-2 pl-5 text-[11px]">
@@ -309,7 +311,7 @@ export function FallbackChainEditor({
 							allowCustom
 							direction="down"
 							align="start"
-							widthClass="w-[380px]"
+							widthClass="w-[380px] max-w-[calc(100vw-2rem)]"
 							label={t("settingsModels.addFallbackModelBtn")}
 							buttonClass={PICKER_BUTTON_CLASS}
 							models={models}

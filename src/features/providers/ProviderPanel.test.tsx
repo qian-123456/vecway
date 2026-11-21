@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelKindEntry, ProviderKeyKind, ProviderRow } from "../../lib/contracts";
 import { tNow } from "../../stores/language";
@@ -71,13 +71,39 @@ function row(id: string, kind: ProviderKeyKind, over: Partial<ProviderRow> = {})
 
 let data: ProviderRow[] = [];
 let kindData: ModelKindEntry[] = [];
+const resizeObservers = new Set<{ cb: ResizeObserverCallback; targets: Set<Element> }>();
+
+function emitResize(width: number) {
+	act(() => {
+		for (const observer of resizeObservers) {
+			for (const target of observer.targets) {
+				observer.cb(
+					[{ target, contentRect: { width } as DOMRectReadOnly } as ResizeObserverEntry],
+					{} as ResizeObserver,
+				);
+			}
+		}
+	});
+}
 
 vi.stubGlobal(
 	"ResizeObserver",
 	class {
-		observe() {}
-		unobserve() {}
-		disconnect() {}
+		private entry: { cb: ResizeObserverCallback; targets: Set<Element> };
+		constructor(cb: ResizeObserverCallback) {
+			this.entry = { cb, targets: new Set() };
+			resizeObservers.add(this.entry);
+		}
+		observe(target: Element) {
+			this.entry.targets.add(target);
+		}
+		unobserve(target: Element) {
+			this.entry.targets.delete(target);
+		}
+		disconnect() {
+			this.entry.targets.clear();
+			resizeObservers.delete(this.entry);
+		}
 	},
 );
 
@@ -243,6 +269,59 @@ describe("search", () => {
 		fireEvent.change(input, { target: { value: "anthropic-messages" } });
 		expect(screen.getByText("beta")).toBeTruthy();
 		expect(screen.queryByText("alpha")).toBeNull();
+	});
+
+	it("keeps compact single-row input at 512px and collapses to a circular button below 450px", async () => {
+		await renderPanel([row("alpha", "plaintext"), row("beta", "plaintext")]);
+
+		// Default (clientWidth === 0 in jsdom) stays expanded as a textbox.
+		const initialInput = screen.getByRole("textbox", { name: "筛选供应商" });
+		expect(initialInput).toBeTruthy();
+
+		// Compact width (512px >= 450px) keeps the search input expanded on the same row.
+		emitResize(512);
+		const compactInput = screen.getByRole("textbox", { name: "筛选供应商" });
+		expect(compactInput).toBeTruthy();
+		const toolbar = compactInput.parentElement?.parentElement;
+		expect(toolbar?.className).toContain("justify-between");
+
+		// Narrow toolbar (< 450px) collapses empty search into a circular icon button without stretching a gap.
+		emitResize(420);
+		expect(screen.queryByRole("textbox", { name: "筛选供应商" })).toBeNull();
+		const trigger = screen.getByRole("button", { name: "筛选供应商" });
+		expect(trigger.className).toContain("rounded-full");
+		expect(trigger.parentElement?.className).not.toContain("justify-between");
+
+		// Clicking the circle expands and focuses the search input.
+		fireEvent.click(trigger);
+		const input = screen.getByRole("textbox", { name: "筛选供应商" });
+		expect(document.activeElement).toBe(input);
+
+		// Blurring while non-empty keeps the search input open.
+		fireEvent.change(input, { target: { value: "alpha" } });
+		fireEvent.blur(input);
+		expect(screen.getByRole("textbox", { name: "筛选供应商" })).toBeTruthy();
+		expect(screen.queryByText("beta")).toBeNull();
+
+		// Escape clears non-empty text first, then a second Escape collapses back to the circle.
+		fireEvent.focus(input);
+		fireEvent.keyDown(input, { key: "Escape" });
+		expect((screen.getByRole("textbox", { name: "筛选供应商" }) as HTMLInputElement).value).toBe("");
+		fireEvent.keyDown(input, { key: "Escape" });
+		expect(screen.queryByRole("textbox", { name: "筛选供应商" })).toBeNull();
+		expect(screen.getByRole("button", { name: "筛选供应商" })).toBeTruthy();
+
+		// Re-expanding and blurring while empty collapses back to the circle.
+		fireEvent.click(screen.getByRole("button", { name: "筛选供应商" }));
+		fireEvent.blur(screen.getByRole("textbox", { name: "筛选供应商" }));
+		expect(screen.queryByRole("textbox", { name: "筛选供应商" })).toBeNull();
+		expect(screen.getByRole("button", { name: "筛选供应商" })).toBeTruthy();
+
+		// Widening back to >= 450px restores the normal expanded input and justify-between layout.
+		emitResize(512);
+		const restoredInput = screen.getByRole("textbox", { name: "筛选供应商" });
+		expect(restoredInput).toBeTruthy();
+		expect(restoredInput.parentElement?.parentElement?.className).toContain("justify-between");
 	});
 });
 
@@ -739,5 +818,31 @@ describe("provider dialog key input mode", () => {
 		expect(screen.getByDisplayValue("override-only")).toBeTruthy();
 		expect(screen.queryByDisplayValue("cached-model")).toBeNull();
 		expect(screen.getByRole("switch", { name: "自动同步上游模型" }).getAttribute("aria-checked")).toBe("true");
+	});
+});
+
+describe("narrow-window toolbar wrapping", () => {
+	it("wraps toolbar controls without sm:flex-nowrap clipping so Add Provider remains visible", async () => {
+		await renderPanel([row("p1", "plaintext")]);
+
+		const searchInput = screen.getByLabelText(tNow("providers.searchAria"));
+		const addBtn = screen.getByRole("button", { name: tNow("providers.addProviderBtn") });
+		const actionsGroup = addBtn.parentElement!;
+		const toolbar = actionsGroup.parentElement!;
+		const panelRoot = toolbar.parentElement!;
+
+		expect(panelRoot.className.split(/\s+/)).toContain("@container");
+		expect(toolbar.className).toContain("flex-wrap");
+		expect(toolbar.className).not.toContain("sm:flex-nowrap");
+
+		expect(actionsGroup.className).toContain("flex-wrap");
+		expect(actionsGroup.className).not.toContain("sm:flex-nowrap");
+		expect(actionsGroup.className).not.toContain("shrink-0");
+
+		const searchWrapper = searchInput.parentElement!;
+		expect(searchWrapper.className).toContain("min-w-[88px]");
+		expect(searchWrapper.className).toContain("flex-1");
+		expect(searchWrapper.className).toContain("basis-[90px]");
+		expect(addBtn.className).toContain("whitespace-nowrap");
 	});
 });

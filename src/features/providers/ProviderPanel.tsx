@@ -1,7 +1,7 @@
 import { ChevronDown, ClipboardCopy, FileInput, Loader2, LogIn, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
-import { SearchInput } from "../../components/SearchInput";
+import { CollapsibleSearchInput, useNarrowContainer } from "../../components/SearchInput";
 import type { ProviderRow } from "../../lib/contracts";
 import { copyText, errMsg } from "../../lib/dialogs";
 import { toast } from "../../lib/toast";
@@ -58,6 +58,9 @@ function ChatProviderPanel() {
 	const [groupLimit, setGroupLimit] = useState<Partial<Record<ProviderGroupId, number>>>({});
 	const [menuOpen, setMenuOpen] = useState(false);
 	const menuBtnRef = useRef<HTMLButtonElement>(null);
+	const toolbarRef = useRef<HTMLDivElement>(null);
+	const narrowToolbar = useNarrowContainer(toolbarRef, 450);
+	const compactSearch = useNarrowContainer(toolbarRef, 580);
 
 	useEffect(() => {
 		void load();
@@ -118,16 +121,21 @@ function ChatProviderPanel() {
 		"flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-neutral-200 hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:hover:bg-transparent";
 
 	return (
-		<div className="space-y-3">
-			<div className="flex flex-col items-stretch justify-between gap-2 sm:flex-row sm:items-center">
-				<SearchInput
-					className="min-w-[200px] max-w-sm flex-1"
+		<div className="@container space-y-3">
+			<div
+				ref={toolbarRef}
+				className={narrowToolbar ? "flex flex-wrap items-center gap-1.5" : "flex flex-wrap items-center justify-between gap-2"}
+			>
+				<CollapsibleSearchInput
+					collapsed={narrowToolbar}
+					className="min-w-[88px] flex-1 basis-[90px]"
 					value={query}
 					onChange={setQuery}
-					placeholder={t("providers.searchPlaceholder")}
+					placeholder={compactSearch && !narrowToolbar ? t("common.search") : t("providers.searchPlaceholder")}
+					title={t("providers.searchPlaceholder")}
 					ariaLabel={t("providers.searchAria")}
 				/>
-				<div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:flex-nowrap">
+				<div className="flex flex-wrap items-center justify-end gap-1.5">
 						<button
 							ref={menuBtnRef}
 							type="button"

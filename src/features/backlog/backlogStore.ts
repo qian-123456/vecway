@@ -3,6 +3,7 @@ import { create } from "zustand";
 import type { BacklogItem, BacklogKind } from "../../lib/contracts";
 import { onBacklogChanged } from "../../lib/events";
 import { backlogList } from "../../lib/ipc";
+import { remapLegacyImagePath } from "../../lib/paths";
 
 export interface BacklogDraft {
 	text: string;
@@ -44,7 +45,9 @@ function readDraft(key: string, fallbackKind: BacklogKind): BacklogDraft {
 		return {
 			text: typeof v.text === "string" ? v.text : "",
 			kind: isKind(v.kind) ? v.kind : fallbackKind,
-			images: Array.isArray(v.images) ? v.images.filter((p): p is string => typeof p === "string") : [],
+			images: Array.isArray(v.images)
+				? v.images.filter((p): p is string => typeof p === "string").map(remapLegacyImagePath)
+				: [],
 		};
 	} catch {
 		return empty;
@@ -58,7 +61,11 @@ function readEditBuffer(): BacklogEditBuffer | null {
 		const v = JSON.parse(raw) as Partial<BacklogEditBuffer>;
 		if (typeof v.id !== "string" || typeof v.text !== "string") return null;
 		return Array.isArray(v.images)
-			? { id: v.id, text: v.text, images: v.images.filter((p): p is string => typeof p === "string") }
+			? {
+					id: v.id,
+					text: v.text,
+					images: v.images.filter((p): p is string => typeof p === "string").map(remapLegacyImagePath),
+				}
 			: { id: v.id, text: v.text };
 	} catch {
 		return null;

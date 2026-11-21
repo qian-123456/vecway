@@ -668,7 +668,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 		>
 			<div
 				ref={dialogRef}
-				className="flex min-h-0 flex-1 flex-col"
+				className="@container flex min-h-0 flex-1 flex-col"
 				onKeyDown={(e) => {
 					if (e.key !== "Tab") return;
 					const controls = Array.from(
@@ -687,7 +687,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 					}
 				}}
 			>
-				<div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--border-divider)] px-4 py-2.5">
+				<div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-[var(--border-divider)] px-4 py-2.5">
 					<div className="min-w-0">
 						<div className="text-xs font-semibold tracking-[-0.018em] text-neutral-100">
 							{editing ? t("providers.titleEdit") : isImport ? t("providers.titleImport") : t("providers.titleAdd")}
@@ -875,7 +875,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 					<div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3.5">
 						{/* 1. Core connection & credentials */}
 						<section className="shrink-0 space-y-2.5 rounded-xl border border-[var(--border-divider)] bg-[var(--well-bg)]/45 p-2.5">
-							<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+							<div className="grid grid-cols-1 gap-3 @[540px]:grid-cols-2">
 								<div className="min-w-0">
 									<div className="flex min-h-[22px] items-center gap-1">
 										<label htmlFor="provider-name" className={labelCls}>
@@ -945,7 +945,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 							)}
 
 							{serviceMode && (
-								<div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:items-center">
+								<div className="grid grid-cols-1 gap-3 @[540px]:grid-cols-2 @[540px]:items-center">
 									<div>
 										<label htmlFor="provider-purpose" className={labelCls}>{t("providers.servicePurpose")}</label>
 										<NativeSelect
@@ -965,13 +965,13 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 											))}
 										</NativeSelect>
 									</div>
-									<p className="text-[11px] leading-relaxed text-neutral-400 sm:pt-5">
+									<p className="text-[11px] leading-relaxed text-neutral-400 @[540px]:pt-5">
 										{t("providers.servicePurposeHint")}
 									</p>
 								</div>
 							)}
 
-							<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+							<div className="grid grid-cols-1 gap-3 @[540px]:grid-cols-2">
 								<div className="min-w-0">
 									<div className="flex min-h-[22px] items-center gap-0.5">
 										<label htmlFor="provider-url" className={labelCls}>

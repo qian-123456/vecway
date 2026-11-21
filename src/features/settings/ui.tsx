@@ -36,17 +36,17 @@ export function SectionHeader({
 	aside?: ReactNode;
 }) {
 	return (
-		<div className="flex items-start justify-between gap-4">
-			<div className="min-w-0">
-				<div className="flex items-baseline gap-2">
+		<div>
+			<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+				<div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
 					<h2 className="text-[18px] font-semibold leading-7 tracking-[-0.02em] text-[var(--text)]">{title}</h2>
-					{aside && <span className="text-xs text-[var(--text-dim)]">{aside}</span>}
+					{aside && <span className="whitespace-nowrap text-xs text-[var(--text-dim)]">{aside}</span>}
 				</div>
-				{description && (
-					<p className="mt-0.5 text-[13px] leading-5 text-[var(--text-muted)]">{description}</p>
-				)}
+				{actions && <div className="flex max-w-full shrink-0 flex-wrap items-center gap-2">{actions}</div>}
 			</div>
-			{actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+			{description && (
+				<p className="mt-1 text-[13px] leading-5 text-[var(--text-muted)]">{description}</p>
+			)}
 		</div>
 	);
 }
@@ -165,9 +165,9 @@ export function SettingRow({
 					"group cursor-pointer hover:bg-[var(--bg-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color-mix(in_srgb,var(--accent)_35%,transparent)]",
 			)}
 		>
-			<div className={clsx("flex gap-4", stacked ? "flex-col gap-2" : "items-center justify-between")}>
-				<div className="min-w-0">
-					<div className="flex items-center gap-2">
+			<div className={clsx("flex", stacked ? "flex-col gap-2" : "flex-wrap items-center justify-between gap-x-4 gap-y-2")}>
+				<div className={clsx("min-w-0", !stacked && "min-w-[160px] flex-1")}>
+					<div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
 						{Icon && <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />}
 						<span
 							className={clsx(
@@ -185,7 +185,7 @@ export function SettingRow({
 					{hint && <div className="mt-0.5 text-[11px] leading-4 text-[var(--text-dim)]">{hint}</div>}
 				</div>
 				{control && (
-					<div className={clsx("flex items-center gap-2", !stacked && "shrink-0")}>{control}</div>
+					<div className={clsx("flex max-w-full flex-wrap items-center gap-2", !stacked && "shrink-0 justify-end")}>{control}</div>
 				)}
 			</div>
 			{children && <div className="mt-2">{children}</div>}
@@ -601,4 +601,4 @@ export function Chip({
 
 /** Trigger button for ModelSelect pickers in settings rows. */
 export const MODEL_PICKER_BUTTON_CLASS =
-	"flex h-8 min-w-[160px] max-w-[260px] items-center justify-between gap-2 rounded-lg hairline bg-[var(--bg-active-fill)] px-3 text-left text-xs text-[var(--text)] transition-all hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] active:scale-[0.98] disabled:opacity-50";
+	"flex h-8 min-w-[140px] max-w-full sm:max-w-[260px] items-center justify-between gap-2 rounded-lg hairline bg-[var(--bg-active-fill)] px-3 text-left text-xs text-[var(--text)] transition-all hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] active:scale-[0.98] disabled:opacity-50";

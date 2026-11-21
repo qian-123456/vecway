@@ -57,8 +57,12 @@ pub(crate) fn sniff(bytes: &[u8]) -> Option<&'static str> {
 /// Read `requested` when it canonicalises into one of `roots`. Blob files may
 /// have no extension, so the magic bytes decide the type.
 fn read_image(requested: &str, roots: &[PathBuf]) -> Result<Response, ApiError> {
+    let resolved = roots
+        .iter()
+        .find_map(|r| crate::paths::resolve_migrated_image_in(requested, r))
+        .unwrap_or_else(|| PathBuf::from(requested));
     let canon =
-        std::fs::canonicalize(requested).map_err(|_| err(StatusCode::NOT_FOUND, "图片不存在"))?;
+        std::fs::canonicalize(&resolved).map_err(|_| err(StatusCode::NOT_FOUND, "图片不存在"))?;
     let allowed = roots
         .iter()
         .filter_map(|r| std::fs::canonicalize(r).ok())
@@ -186,6 +190,19 @@ mod tests {
                 &roots
             )),
             StatusCode::NOT_FOUND
+        );
+        // Legacy ~/.omp-workspace/images/ path remaps into an allowed root when present.
+        let legacy_moved = root
+            .parent()
+            .unwrap()
+            .join(".omp-workspace")
+            .join("images")
+            .join("a.png");
+        assert_eq!(
+            read_image(legacy_moved.to_str().unwrap(), &roots)
+                .unwrap()
+                .headers()[header::CONTENT_TYPE],
+            "image/png"
         );
         // `..` traversal and symlinks out of the root are canonicalised away.
         let sneaky = format!(

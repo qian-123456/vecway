@@ -10,7 +10,7 @@ export const DEFAULT_SETTINGS: Settings = {
 	diagnosticsEnabled: true,
 	systemDetection: true,
 	smartContextRouting: false,
-	idleSuspendMinutes: 15,
+	idleSuspendMinutes: 10,
 	defaultApprovalMode: "yolo",
 	ompBinary: "omp",
 	notifyTurnEnd: true,

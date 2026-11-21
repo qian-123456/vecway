@@ -198,7 +198,7 @@ function NewSideChat({ parentId, tabId }: { parentId: string; tabId: string }) {
 		const fit = () => {
 			const savedScrollTop = ta.scrollTop;
 			ta.style.height = "auto";
-			const minH = 22;
+			const minH = 26;
 			const maxH = 140;
 			const nextH = Math.min(Math.max(ta.scrollHeight, minH), maxH);
 			ta.style.height = `${nextH}px`;
@@ -693,14 +693,14 @@ function NewSideChat({ parentId, tabId }: { parentId: string; tabId: string }) {
 								rows={1}
 								className={clsx(
 									COMPOSER_TEXT_METRICS_CLASS,
-									"relative w-full resize-none overflow-hidden bg-transparent px-4 pt-3 pb-1.5 outline-none max-h-36 min-h-[40px] placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap placeholder:text-[var(--text-30,var(--text-dim))]",
+									"relative block w-full resize-none overflow-hidden bg-transparent px-4 pt-3 pb-1.5 outline-none max-h-36 placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap placeholder:text-[var(--text-30,var(--text-dim))]",
 									images.length ? "text-transparent caret-[var(--text)]" : "text-[var(--text)]",
 								)}
 								style={COMPOSER_TEXT_METRICS_STYLE}
 							/>
 							</div>
 
-							<div className="flex min-w-0 items-end justify-between gap-2 px-2.5 pb-2 text-[12px]">
+							<div className="flex min-w-0 items-center justify-between gap-2 px-2.5 pb-2 text-[12px]">
 								<button
 									ref={addBtnRef}
 									type="button"
@@ -723,16 +723,16 @@ function NewSideChat({ parentId, tabId }: { parentId: string; tabId: string }) {
 										onSketch={() => setSketchOpen(true)}
 									/>
 								)}
-								<div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1 gap-y-0.5 select-none">
+								<div className="flex min-w-0 flex-1 flex-nowrap items-center gap-0.5 select-none">
 									{/* Model Picker */}
-									<div className="relative max-w-full shrink-0" ref={modelMenuRef}>
+									<div className="relative min-w-0" ref={modelMenuRef}>
 										<button
 											type="button"
 											onClick={() => setModelOpen((v) => !v)}
 											title={t("sidechat.modelTooltip", { model: displayModelName, source: effective.source === "picker" ? "" : effective.source === "setting" ? t("sidechat.sourceDedicated") : t("sidechat.sourceFollowParent") })}
 											className="flex min-w-0 max-w-full items-center gap-1 rounded-md px-2 py-1 text-[12px] text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors select-none"
 										>
-											<span className="min-w-0 break-all text-left">{displayModelName}</span>
+											<span className="min-w-0 truncate text-left">{displayModelName}</span>
 											<ChevronDown size={10} className="shrink-0 text-[var(--text-30,var(--text-dim))]" />
 										</button>
 

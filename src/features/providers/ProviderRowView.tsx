@@ -44,7 +44,7 @@ const badgeToneClass: Record<KeyTone, string> = {
 };
 
 /** Grid shared by the list header and every row: name | key | enabled. */
-export const ROW_GRID = "grid grid-cols-[minmax(0,1fr)_minmax(140px,max-content)_44px] items-center gap-x-3";
+export const ROW_GRID = "grid grid-cols-[minmax(0,1fr)_minmax(92px,max-content)_44px] @[520px]:grid-cols-[minmax(0,1fr)_minmax(132px,max-content)_44px] items-center gap-x-2.5 @[520px]:gap-x-3";
 
 interface Props {
 	row: ProviderRow;
@@ -354,7 +354,7 @@ export function ProviderRowView({ row, expanded, onToggleExpand, onEdit, onSetKe
 						{sourceModels.length === 0 ? (
 							<div className="rounded-lg bg-neutral-900/40 p-2.5 text-center text-xs text-neutral-500">{t("providers.noModelsConfigured")}</div>
 						) : (
-							<div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+							<div className="grid grid-cols-1 gap-2 @[460px]:grid-cols-2 @[680px]:grid-cols-3">
 								{visibleModels.map((entry) => {
 									const mid = modelEntryId(entry);
 									const spec = modelEntrySpec(entry);

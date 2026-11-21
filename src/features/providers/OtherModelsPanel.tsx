@@ -1,7 +1,7 @@
 import { ChevronDown, FileText, Loader2, Pencil, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "../../components/Modal";
-import { SearchInput } from "../../components/SearchInput";
+import { CollapsibleSearchInput, SearchInput, useNarrowContainer } from "../../components/SearchInput";
 import type { ModelKindEntry, ProviderRow } from "../../lib/contracts";
 import { useT } from "../../stores/language";
 import { isNonLLMModelKind, useModelKindCatalog } from "../../stores/modelKinds";
@@ -32,6 +32,9 @@ export function OtherModelsPanel() {
 	const [rawOpen, setRawOpen] = useState(false);
 	const [service, setService] = useState<ModelKindEntry | null>(null);
 	const [login, setLogin] = useState<string | null>(null);
+	const toolbarRef = useRef<HTMLDivElement>(null);
+	const narrowToolbar = useNarrowContainer(toolbarRef, 360);
+	const compactSearch = useNarrowContainer(toolbarRef, 480);
 	const addModalRef = useRef<HTMLDivElement>(null);
 	const addSearchRef = useRef<HTMLInputElement>(null);
 	useSlashSearch(() => focusAndSelect(addSearchRef.current), {
@@ -102,7 +105,7 @@ export function OtherModelsPanel() {
 	const visibleIds = ids.filter((id) => added(id) && matches(id, query));
 	return <div className="space-y-4">
 		<p className="text-xs leading-5 text-[var(--text-dim)]">{t("providers.otherModelsDesc")}</p>
-		<div className="flex flex-wrap items-center gap-2"><SearchInput className="min-w-[180px] flex-1" value={query} onChange={setQuery} placeholder={t("providers.otherModelsSearch")} ariaLabel={t("providers.otherModelsSearch")} /><Button icon={Plus} onClick={() => setAddOpen(true)}>{t("providers.addService")}</Button><Button icon={RefreshCw} disabled={loading} onClick={() => { void loadCatalog(true); void loadProviders(); }}>{t("common.refresh")}</Button></div>
+		<div ref={toolbarRef} className={narrowToolbar ? "flex flex-wrap items-center gap-1.5" : "flex flex-wrap items-center justify-between gap-2"}><CollapsibleSearchInput collapsed={narrowToolbar} className="min-w-[120px] flex-1 basis-[140px]" value={query} onChange={setQuery} placeholder={compactSearch && !narrowToolbar ? t("common.search") : t("providers.otherModelsSearch")} title={t("providers.otherModelsSearch")} ariaLabel={t("providers.otherModelsSearch")} /><div className="flex items-center gap-2"><Button icon={Plus} onClick={() => setAddOpen(true)}>{t("providers.addService")}</Button><Button icon={RefreshCw} disabled={loading} onClick={() => { void loadCatalog(true); void loadProviders(); }}>{t("common.refresh")}</Button></div></div>
 		{error && <div role="alert" className="flex items-start gap-2 text-xs text-rose-400"><p className="min-w-0 flex-1 break-words">{t("providers.otherModelsLoadError", { error })}</p><Button disabled={loading} onClick={() => void loadCatalog(true)}>{t("common.retry")}</Button></div>}
 		{providerError && <div role="alert" className="flex items-start gap-2 text-xs text-rose-400"><p className="min-w-0 flex-1 break-words">{t("providers.connectionLoadError", { error: providerError })}</p><Button onClick={() => void loadProviders()}>{t("common.retry")}</Button></div>}
 		{loading && <p role="status" className="flex items-center gap-2 text-xs"><Loader2 size={14} className="animate-spin" />{t("providers.otherModelsLoading")}</p>}

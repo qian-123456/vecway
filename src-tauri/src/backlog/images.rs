@@ -106,6 +106,9 @@ pub fn migrate(conn: &Connection, dir: &Path) -> Result<usize, String> {
         moved
             .entry(p.to_string())
             .or_insert_with(|| {
+                if let Some(migrated) = crate::paths::resolve_migrated_image_in(p, dir) {
+                    return Some(migrated.to_string_lossy().into_owned());
+                }
                 let src = Path::new(p);
                 if !src.is_file() {
                     return None;
@@ -242,6 +245,38 @@ mod tests {
         assert_eq!(std::fs::read(&a_path).unwrap(), b"AAAA");
         assert_eq!(std::fs::read(&b_path).unwrap(), b"BBBB");
         // Idempotent: a second run changes nothing.
+        assert_eq!(migrate(&conn, &dir).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rewrites_legacy_omp_workspace_paths_already_moved_to_images_dir() {
+        let base = std::env::temp_dir().join(format!("vecway-bimg-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.join(".vecway").join("images");
+        std::fs::create_dir_all(&dir).unwrap();
+        let new_path = dir.join("moved.png");
+        std::fs::write(&new_path, b"png").unwrap();
+
+        let legacy_path = base.join(".omp-workspace").join("images").join("moved.png");
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE backlog(id TEXT, text TEXT, refs TEXT)", [])
+            .unwrap();
+        let refs = format!(r#"[{{"kind":"image","path":"{}"}}]"#, legacy_path.display());
+        conn.execute(
+            "INSERT INTO backlog VALUES('a', ?1, ?2)",
+            params![format!("see [图片: {}]", legacy_path.display()), refs],
+        )
+        .unwrap();
+
+        assert_eq!(migrate(&conn, &dir).unwrap(), 1);
+        let (text, out_refs): (String, String) = conn
+            .query_row("SELECT text, refs FROM backlog WHERE id='a'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(text, format!("see [图片: {}]", new_path.display()));
+        assert!(out_refs.contains(&new_path.display().to_string()));
         assert_eq!(migrate(&conn, &dir).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&base);
     }

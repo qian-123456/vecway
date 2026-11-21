@@ -1008,6 +1008,9 @@ pub struct SessionSnapshot {
     /// Latest complete `ompws-plan-state` custom record's raw data object.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_state: Option<serde_json::Value>,
+    /// Latest complete `ompws-automation-state` (or legacy `ompws-automation-draft`) custom record's raw data object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automation_state: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1020,7 +1023,7 @@ pub struct Settings {
     pub system_detection: bool,
     /// Default false.
     pub smart_context_routing: bool,
-    /// Default 15; 0 = never.
+    /// Default 10; 0 = never.
     pub idle_suspend_minutes: u32,
     /// Default "write".
     pub default_approval_mode: String,
@@ -1208,7 +1211,7 @@ impl Default for Settings {
             diagnostics_enabled: true,
             system_detection: true,
             smart_context_routing: false,
-            idle_suspend_minutes: 15,
+            idle_suspend_minutes: 10,
             default_approval_mode: "yolo".to_string(),
             omp_binary: "omp".to_string(),
             notify_turn_end: true,

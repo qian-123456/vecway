@@ -29,3 +29,13 @@ export function basename(path: string): string {
 	const parts = path.replace(/\/+$/, "").split("/");
 	return parts[parts.length - 1] || path;
 }
+
+const LEGACY_IMAGES_SEGMENT = /([/\\])\.omp-workspace([/\\]images[/\\])/;
+
+/**
+ * Remap a legacy `~/.omp-workspace/images/...` path to `~/.vecway/images/...`
+ * after the app data directory migration.
+ */
+export function remapLegacyImagePath(path: string): string {
+	return path.replace(LEGACY_IMAGES_SEGMENT, "$1.vecway$2");
+}

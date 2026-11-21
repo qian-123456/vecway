@@ -53,7 +53,7 @@ export function WorkspaceCard({
 					handleOpenInFinder(e);
 				}}
 				className={clsx(
-					"group flex h-6 items-center gap-1.5 rounded-lg hairline bg-[var(--bg-panel)] px-2 py-0.5 text-left shadow-apple-card transition-all",
+					"@container group flex h-6 items-center gap-1.5 rounded-lg hairline bg-[var(--bg-panel)] px-2 py-0.5 text-left shadow-apple-card transition-all",
 					workspaces.length > 1
 						? "cursor-pointer hover:bg-[var(--bg-hover)] active:scale-[0.98]"
 						: "cursor-default",
@@ -75,7 +75,7 @@ export function WorkspaceCard({
 
 				{/* Title and path */}
 				<div className="min-w-0 flex-1 flex items-baseline gap-1.5 overflow-hidden">
-					<span className="truncate text-[11px] font-medium text-neutral-200 shrink-0 max-w-[120px]">
+					<span className="min-w-0 truncate text-[11px] font-medium text-neutral-200 @[210px]:shrink-0 @[210px]:max-w-[120px]">
 						{name}
 					</span>
 					{workspaces.length > 1 && (
@@ -87,7 +87,7 @@ export function WorkspaceCard({
 							)}
 						/>
 					)}
-					<span className="truncate font-mono text-[9.5px] text-neutral-500 flex-1">
+					<span className="hidden @[210px]:inline min-w-0 flex-1 truncate font-mono text-[9.5px] text-neutral-500">
 						{path || t("explorer.selectOrAddWorkspace")}
 					</span>
 				</div>

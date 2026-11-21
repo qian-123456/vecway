@@ -86,11 +86,13 @@ function HeatmapContent() {
 	const [usage, setUsage] = useState<ActivityUsage | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const refreshRef = useRef<() => void>(() => {});
+	const didInitialFetchRef = useRef(false);
 
 	useEffect(() => {
 		let mounted = true;
 		let inFlight = false;
 		let pending = false;
+		let lastSuccessAt = 0;
 		const refresh = () => {
 			if (inFlight) {
 				pending = true;
@@ -99,6 +101,7 @@ function HeatmapContent() {
 			inFlight = true;
 			void activityUsage().then((result) => {
 				if (mounted) {
+					lastSuccessAt = Date.now();
 					setUsage(result);
 					setError(null);
 				}
@@ -113,15 +116,20 @@ function HeatmapContent() {
 			});
 		};
 		refreshRef.current = refresh;
-		const timer = window.setInterval(refresh, 30_000);
+		const onVisibilityChange = () => {
+			if (document.visibilityState === "visible" && Date.now() - lastSuccessAt >= 60_000) {
+				refresh();
+			}
+		};
+		document.addEventListener("visibilitychange", onVisibilityChange);
 		return () => {
 			mounted = false;
+			didInitialFetchRef.current = false;
 			refreshRef.current = () => {};
-			window.clearInterval(timer);
+			document.removeEventListener("visibilitychange", onVisibilityChange);
 		};
 	}, []);
 
-	const didInitialFetchRef = useRef(false);
 	useEffect(() => {
 		const anyWorking = Object.values(sessions).some((s) => s.status === "working");
 		if (didInitialFetchRef.current && anyWorking) return;

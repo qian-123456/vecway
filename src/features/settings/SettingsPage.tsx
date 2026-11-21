@@ -284,7 +284,7 @@ export function SettingsPage({ onClose, initialSection }: SettingsPageProps = {}
 	return (
 		<div ref={rootRef} className="@container flex h-full min-h-0 overflow-hidden bg-transparent text-neutral-200">
 			{/* Left Navigation Bar */}
-			<div className="flex w-56 shrink-0 flex-col overflow-hidden border-r border-[var(--border-divider)] vibrancy-chrome p-2.5">
+			<div className="flex w-48 @[760px]:w-52 @[860px]:w-56 shrink-0 flex-col overflow-hidden border-r border-[var(--border-divider)] vibrancy-chrome p-2.5">
 				<div className="mb-2 flex items-center gap-1.5 rounded-lg hairline bg-[var(--well-bg)] px-2 py-1.5 focus-within:ring-1 focus-within:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]">
 					<Search className="h-3 w-3 shrink-0 text-neutral-500" />
 					<div className="relative min-w-0 flex-1">
@@ -387,7 +387,7 @@ export function SettingsPage({ onClose, initialSection }: SettingsPageProps = {}
 			</div>
 
 			{/* Main Settings Content Area */}
-			<div ref={contentRef} className="flex-1 overflow-y-auto p-6 lg:p-7">
+			<div ref={contentRef} className="@container min-w-0 flex-1 overflow-y-auto p-4 @[560px]:p-6 lg:p-7">
 				<div className="mx-auto max-w-3xl space-y-8">
 					{storeError && (
 						<Notice tone="danger" title={t("settings.saveFailed")}>

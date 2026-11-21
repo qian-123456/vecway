@@ -60,8 +60,8 @@ export function RightPanelEmptyState({ tabBadges }: RightPanelEmptyStateProps) {
 			</div>
 
 			{/* Centered card list matching Image 1 */}
-			<div className="flex flex-1 flex-col items-center justify-center px-6 pb-12">
-				<div className="w-full max-w-xs space-y-6">
+			<div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-3 pb-8 @[250px]:px-6 @[250px]:pb-12">
+				<div className="w-full max-w-xs space-y-5 @[250px]:space-y-6">
 					{/* Header titles */}
 					<div className="text-center space-y-1.5">
 						<h2 className="text-lg font-bold text-neutral-100 tracking-tight">

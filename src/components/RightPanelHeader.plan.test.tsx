@@ -7,7 +7,7 @@ import { type RightTab, useUi } from "../stores/ui";
 import { RightPanelHeader } from "./RightPanelHeader";
 
 const badges: Record<RightTab, number> = {
-	explorer: 0, sidechat: 0, heatmap: 0, git: 0, services: 0, terminal: 0, plan: 0, files: 0,
+	explorer: 0, sidechat: 0, heatmap: 0, git: 0, services: 0, terminal: 0, plan: 0, automation: 0, files: 0,
 };
 const approved: ApprovedPlan = {
 	planFile: null, planUrl: null, title: "t", content: "# c", prevContent: null, version: 1, status: "failed", error: "error",

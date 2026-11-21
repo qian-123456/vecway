@@ -18,6 +18,8 @@ export interface SearchInputProps {
 	placeholder?: string;
 	/** Accessible name of the input; defaults to `placeholder`. */
 	ariaLabel?: string;
+	/** Optional tooltip for the input (useful when a compact placeholder is shortened). */
+	title?: string;
 	autoFocus?: boolean;
 	/** Classes for the wrapper (width, flex sizing). */
 	className?: string;
@@ -25,6 +27,8 @@ export interface SearchInputProps {
 	inputClassName?: string;
 	/** Called when the clear button or Escape clears a non-empty value (after `onChange("")`). */
 	onClear?: () => void;
+	/** Show the trailing clear/dismiss button even when `value` is empty. */
+	showClearWhenEmpty?: boolean;
 	onKeyDown?: (e: KeyboardEvent<HTMLInputElement>) => void;
 	/** Search icon size in px. Default 14. */
 	iconSize?: number;
@@ -34,8 +38,8 @@ export interface SearchInputProps {
 	onBlur?: (e: FocusEvent<HTMLInputElement>) => void;
 }
 
-const DEFAULT_INPUT_CLASS =
-	"w-full rounded-lg hairline bg-[var(--bg-panel)] py-1.5 pl-8 pr-7 text-xs text-neutral-200 placeholder:text-neutral-500 focus:outline-none focus:ring-1 focus:ring-[var(--accent)]";
+const DEFAULT_INPUT_BASE_CLASS =
+	"w-full rounded-lg hairline bg-[var(--bg-panel)] py-1.5 pl-8 text-xs text-neutral-200 placeholder:text-neutral-500 focus:outline-none focus:ring-1 focus:ring-[var(--accent)]";
 
 /** Inline GitHub-style keycap hint (`按 [/] 搜索` / `Type [/] to search`) rendered inside an empty unfocused field. */
 export function SearchShortcutHint({
@@ -78,10 +82,12 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(functi
 		onChange,
 		placeholder,
 		ariaLabel,
+		title,
 		autoFocus,
 		className,
 		inputClassName,
 		onClear,
+		showClearWhenEmpty,
 		onKeyDown,
 		iconSize = 14,
 		shortcutHint,
@@ -93,8 +99,13 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(functi
 	const { t } = useT();
 	const [focused, setFocused] = useState(Boolean(autoFocus));
 	const showShortcutHint = Boolean(shortcutHint) && !focused && !value;
-	const resolvedInputClass = inputClassName ?? DEFAULT_INPUT_CLASS;
-	const hintInsetClass = resolvedInputClass.includes("pl-6") ? "inset-y-0 left-6 right-5" : "inset-y-0 left-8 right-7";
+	const showClearButton = Boolean(value || showClearWhenEmpty);
+	const resolvedInputClass = inputClassName ?? clsx(DEFAULT_INPUT_BASE_CLASS, showClearButton ? "pr-7" : "pr-2.5");
+	const hintInsetClass = resolvedInputClass.includes("pl-6")
+		? "inset-y-0 left-6 right-5"
+		: showClearButton
+			? "inset-y-0 left-8 right-7"
+			: "inset-y-0 left-8 right-2.5";
 	const clear = () => {
 		onChange("");
 		onClear?.();
@@ -112,6 +123,7 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(functi
 				autoFocus={autoFocus}
 				placeholder={placeholder}
 				aria-label={ariaLabel ?? placeholder}
+				title={title}
 				data-slash-search={shortcutHint === "/" ? "" : undefined}
 				onChange={(e) => onChange(e.target.value)}
 				onFocus={(e) => {
@@ -131,12 +143,13 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(functi
 						clear();
 					}
 				}}
-				className={clsx(resolvedInputClass, showShortcutHint && "placeholder:text-transparent")}
+				className={clsx(resolvedInputClass, "text-ellipsis", showShortcutHint && "placeholder:text-transparent")}
 			/>
 			{showShortcutHint && <SearchShortcutHint shortcut={shortcutHint} className={clsx("absolute", hintInsetClass)} />}
-			{value && (
+			{showClearButton && (
 				<button
 					type="button"
+					onMouseDown={(e) => e.preventDefault()}
 					onClick={clear}
 					aria-label={t("components.clearSearch")}
 					title={t("components.clearSearch")}
@@ -148,3 +161,140 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(functi
 		</div>
 	);
 });
+
+/**
+ * Observes a container's width and reports whether it is narrower than `threshold`.
+ * When width is `0` (e.g. jsdom or before first layout), returns `false` so callers
+ * default to the expanded layout.
+ */
+export function useNarrowContainer(ref: RefObject<HTMLElement | null>, threshold = 560): boolean {
+	const [narrow, setNarrow] = useState(false);
+
+	useEffect(() => {
+		const el = ref.current;
+		if (!el) return;
+
+		const update = (width: number) => {
+			setNarrow(width > 0 && width < threshold);
+		};
+
+		update(el.clientWidth);
+
+		if (typeof ResizeObserver === "undefined") return;
+		const ro = new ResizeObserver((entries) => {
+			const entry = entries[0];
+			const width = entry?.contentRect?.width ?? el.clientWidth;
+			update(width);
+		});
+		ro.observe(el);
+		return () => ro.disconnect();
+	}, [ref, threshold]);
+
+	return narrow;
+}
+
+export interface CollapsibleSearchInputProps extends SearchInputProps {
+	/** When true, collapses into a circular icon button while empty and inactive. */
+	collapsed: boolean;
+	/** Wrapper className used when expanded in narrow mode. Defaults to `w-full basis-full`. */
+	expandedClassName?: string;
+}
+
+/**
+ * Search field that collapses into a compact circular icon button in narrow toolbars
+ * while empty and unfocused, expanding in-place on click and collapsing on blur or Escape.
+ */
+export function CollapsibleSearchInput({
+	collapsed,
+	expandedClassName = "w-full basis-full",
+	className,
+	value,
+	onChange,
+	placeholder,
+	ariaLabel,
+	iconSize = 14,
+	onKeyDown,
+	onBlur,
+	onClear,
+	...rest
+}: CollapsibleSearchInputProps) {
+	const { t } = useT();
+	const [expanded, setExpanded] = useState(false);
+	const inputRef = useRef<HTMLInputElement>(null);
+	const prevValueRef = useRef(value);
+
+	const showButton = collapsed && !expanded && value === "";
+
+	useEffect(() => {
+		if (!collapsed) setExpanded(false);
+	}, [collapsed]);
+
+	useEffect(() => {
+		if (collapsed && expanded) {
+			inputRef.current?.focus();
+		}
+	}, [collapsed, expanded]);
+
+	useEffect(() => {
+		const hadValue = prevValueRef.current !== "";
+		prevValueRef.current = value;
+		if (collapsed && expanded && hadValue && value === "" && document.activeElement !== inputRef.current) {
+			setExpanded(false);
+		}
+	}, [collapsed, expanded, value]);
+
+	if (showButton) {
+		const label = ariaLabel ?? placeholder ?? t("common.search");
+		return (
+			<button
+				type="button"
+				onClick={() => setExpanded(true)}
+				aria-label={label}
+				title={label}
+				className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full hairline bg-[var(--well-bg)] text-neutral-400 transition-all hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+			>
+				<Search size={iconSize} />
+			</button>
+		);
+	}
+
+	return (
+		<SearchInput
+			{...rest}
+			ref={inputRef}
+			value={value}
+			onChange={onChange}
+			placeholder={placeholder}
+			ariaLabel={ariaLabel}
+			iconSize={iconSize}
+			autoFocus={collapsed && expanded}
+			className={collapsed ? expandedClassName : className}
+			showClearWhenEmpty={collapsed}
+			onClear={() => {
+				onClear?.();
+				if (collapsed) {
+					if (value === "") {
+						setExpanded(false);
+					} else {
+						inputRef.current?.focus();
+					}
+				}
+			}}
+			onKeyDown={(e) => {
+				onKeyDown?.(e);
+				if (e.defaultPrevented) return;
+				if (collapsed && e.key === "Escape" && !value && !isComposing(e)) {
+					claimEscape(e);
+					e.stopPropagation();
+					setExpanded(false);
+				}
+			}}
+			onBlur={(e) => {
+				onBlur?.(e);
+				if (collapsed && value.trim() === "") {
+					setExpanded(false);
+				}
+			}}
+		/>
+	);
+}

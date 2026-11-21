@@ -216,7 +216,7 @@ export function TemplateEditor({
 							placeholder={t("modelTemplates.templateNamePlaceholder")}
 							aria-label={t("modelTemplates.templateNameLabel")}
 							spellCheck={false}
-							className={`${INPUT_CLASS} w-64`}
+							className={`${INPUT_CLASS} w-64 max-w-full`}
 						/>
 						{trimmedName.length === 0 && (
 							<span className="text-[11px] text-[var(--text-dim)]">{t("modelTemplates.nameRequired")}</span>
@@ -297,7 +297,7 @@ export function TemplateEditor({
 									allowCustom
 									thinking
 									align="end"
-									widthClass="w-[380px]"
+									widthClass="w-[380px] max-w-[calc(100vw-2rem)]"
 									disabled={saving}
 									extras={[
 										{ value: UNSET, label: t("modelTemplates.unconfigured"), hint: t("modelTemplates.unconfiguredHint") },

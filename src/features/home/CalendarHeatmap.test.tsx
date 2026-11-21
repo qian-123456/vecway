@@ -108,7 +108,7 @@ describe("CalendarHeatmap", () => {
 			.toBe(container.querySelector('[data-date="2026-06-30"]')!.getAttribute("fill"));
 	});
 
-	it("refreshes when sessions change and periodically without remounting", async () => {
+	it("refreshes when sessions change and on visibility resume without blind 30s polling", async () => {
 		fetchUsage.mockResolvedValueOnce({ days: [day("2026-07-01", 100)] })
 			.mockResolvedValueOnce({ days: [day("2026-07-01", 200)] })
 			.mockResolvedValueOnce({ days: [day("2026-07-01", 300)] });
@@ -119,6 +119,14 @@ describe("CalendarHeatmap", () => {
 		await flush();
 		expect(screen.getByText(/200 tokens/)).toBeTruthy();
 		await act(async () => { vi.advanceTimersByTime(30_000); await Promise.resolve(); });
+		expect(fetchUsage).toHaveBeenCalledTimes(2);
+		await act(async () => {
+			vi.advanceTimersByTime(35_000);
+			Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+			document.dispatchEvent(new Event("visibilitychange"));
+			await Promise.resolve();
+		});
+		expect(fetchUsage).toHaveBeenCalledTimes(3);
 		expect(screen.getByText(/300 tokens/)).toBeTruthy();
 	});
 

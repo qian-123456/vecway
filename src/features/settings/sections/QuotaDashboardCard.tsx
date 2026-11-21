@@ -117,7 +117,7 @@ export function QuotaDashboardCard() {
 
 	return (
 		<div className="space-y-3" data-field-id="quotaDashboard">
-			<div className="flex items-center justify-between gap-3 px-1">
+			<div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-1">
 				<div className="min-w-0">
 					<h3 className="text-[13px] font-semibold text-[var(--text)]">{t("quota.dashboard.title")}</h3>
 					{data ? (
@@ -168,7 +168,7 @@ export function QuotaDashboardCard() {
 					}
 				/>
 			) : (
-				<div className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2">
+				<div className="grid grid-cols-1 items-stretch gap-4 @[560px]:grid-cols-2">
 					{providers.map((p) => (
 						<ProviderQuotaCard
 							key={p.providerId}

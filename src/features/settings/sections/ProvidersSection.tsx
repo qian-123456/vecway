@@ -1,5 +1,5 @@
 /** Settings ▸ 模型与供应商 (`providers`): API keys / provider catalog and subscription quota tabs. */
-import { ArrowLeft, FileText, SlidersHorizontal } from "lucide-react";
+import { ArrowLeft, FileText } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Segmented } from "../../../components/Segmented";
 import { ProviderPanel } from "../../providers/ProviderPanel";
@@ -53,19 +53,21 @@ export function ProvidersSection() {
 				title={t("settingsSections.providers.title")}
 				aside={tab === "config" && totalProviders > 0 ? t("providers.totalCount", { total: totalProviders }) : undefined}
 				description={(
-					<span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
-						<span>{t("settingsSections.providers.description")}</span>
+					<>
+						{t("settingsSections.providers.description")}
 						{tab === "config" && (
-							<button
-								type="button"
-								onClick={() => openSettingsTarget("modelContext")}
-								className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-[var(--border-divider)] bg-[var(--well-bg)] px-2 py-0.5 text-[11px] font-medium text-[var(--accent)] transition-colors hover:bg-[var(--bg-hover)]"
-							>
-								<SlidersHorizontal className="h-3 w-3 shrink-0" />
-								<span>{t("providers.contextWindowInlineAction")}</span>
-							</button>
+							<>
+								<span aria-hidden="true" className="mx-1.5 text-[var(--text-dim)]">·</span>
+								<button
+									type="button"
+									onClick={() => openSettingsTarget("modelContext")}
+									className="inline-flex items-center gap-0.5 align-baseline whitespace-nowrap font-medium text-[var(--accent)] hover:underline focus-visible:outline-none focus-visible:underline"
+								>
+									{t("providers.contextWindowInlineAction")}
+								</button>
+							</>
 						)}
-					</span>
+					</>
 				)}
 				actions={(
 					<>

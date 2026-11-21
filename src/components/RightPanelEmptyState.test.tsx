@@ -8,7 +8,7 @@ import { type RightTab, useUi } from "../stores/ui";
 import { RightPanelEmptyState } from "./RightPanelEmptyState";
 
 const badges: Record<RightTab, number> = {
-	explorer: 0, sidechat: 0, heatmap: 0, git: 0, services: 0, terminal: 0, plan: 0, files: 0,
+	explorer: 0, sidechat: 0, heatmap: 0, git: 0, services: 0, terminal: 0, plan: 0, automation: 0, files: 0,
 };
 
 describe("RightPanelEmptyState 辅助对话", () => {

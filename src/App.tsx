@@ -34,13 +34,16 @@ import { useOmpUpdate, watchOmpStaleness, watchOmpUpdateChecks } from "./stores/
 import { useAppUpdate, watchAppUpdateChecks } from "./stores/appUpdate";
 import { useStartupImageGc } from "./features/settings/useStartupImageGc";
 import {
+	MAX_RIGHT_WIDTH,
 	MAX_SIDEBAR_WIDTH,
 	MIN_CENTER_WIDTH,
+	MIN_RIGHT_WIDTH,
 	MIN_SIDEBAR_WIDTH,
 	SIDEBAR_COLLAPSE_THRESHOLD,
 	type CenterView,
 	useUi,
 } from "./stores/ui";
+import { computeShellWidths } from "./lib/shellWidths";
 import { CopyFeedbackPill } from "./components/CopyFeedbackPill";
 import { Toaster } from "./components/Toaster";
 import { BottomBar } from "./components/BottomBar";
@@ -161,6 +164,7 @@ export default function App() {
 	const { t } = useT();
 	useStartupImageGc();
 	const rightOpen = useUi((s) => s.rightOpen);
+	const rightWidth = useUi((s) => s.rightWidth);
 	const toggleRight = useUi((s) => s.toggleRight);
 	const setRightWidth = useUi((s) => s.setRightWidth);
 
@@ -170,6 +174,14 @@ export default function App() {
 	const setSidebarWidth = useUi((s) => s.setSidebarWidth);
 	const setSidebarOpen = useUi((s) => s.setSidebarOpen);
 
+	const [viewportWidth, setViewportWidth] = useState(() =>
+		typeof window !== "undefined" ? window.innerWidth : 1440,
+	);
+	useEffect(() => {
+		const onResize = () => setViewportWidth(window.innerWidth);
+		window.addEventListener("resize", onResize);
+		return () => window.removeEventListener("resize", onResize);
+	}, []);
 	const centerView = useUi((s) => s.centerView);
 	const previousCenterView = useUi((s) => s.previousCenterView);
 	const selectedSessionId = useUi((s) => s.selectedSessionId);
@@ -190,6 +202,17 @@ export default function App() {
 	const rightVisible = rightOpen && !CENTER_WITHOUT_RIGHT_PANEL.has(effectiveCenterView);
 	const rightVisibleRef = useRef(rightVisible);
 	rightVisibleRef.current = rightVisible;
+	const { leftWidth: effectiveSidebarWidth, rightWidth: effectiveRightWidth } = computeShellWidths({
+		viewportWidth,
+		sidebarOpen,
+		sidebarWidth,
+		rightVisible,
+		rightWidth,
+	});
+	const effectiveSidebarWidthRef = useRef(effectiveSidebarWidth);
+	effectiveSidebarWidthRef.current = effectiveSidebarWidth;
+	const effectiveRightWidthRef = useRef(effectiveRightWidth);
+	effectiveRightWidthRef.current = effectiveRightWidth;
 
 	// Resizable sidebars: delta-drag (seam keeps its grab offset under the pointer), rAF-throttled
 	// live updates, persistence only on drag end. Cursor/user-select live on the overlay div, so
@@ -201,18 +224,17 @@ export default function App() {
 	const onLeftDragStart = useCallback((e: React.MouseEvent) => {
 		if (e.button !== 0) return;
 		e.preventDefault();
-		drag.current = { side: "left", grabOffsetX: e.clientX - useUi.getState().sidebarWidth };
+		drag.current = { side: "left", grabOffsetX: e.clientX - effectiveSidebarWidthRef.current };
 		setDraggingSide("left");
 	}, []);
 
 	const onRightDragStart = useCallback((e: React.MouseEvent) => {
 		if (e.button !== 0) return;
 		e.preventDefault();
-		const seamX = window.innerWidth - useUi.getState().rightWidth;
+		const seamX = window.innerWidth - effectiveRightWidthRef.current;
 		drag.current = { side: "right", grabOffsetX: e.clientX - seamX };
 		setDraggingSide("right");
 	}, []);
-
 	useEffect(() => {
 		if (!draggingSide) return;
 		let rafId: number | null = null;
@@ -228,16 +250,16 @@ export default function App() {
 				if (raw < SIDEBAR_COLLAPSE_THRESHOLD) {
 					useUi.setState({ sidebarOpen: false });
 				} else {
-					const rightReserved = rightVisibleRef.current ? useUi.getState().rightWidth : 0;
+					const rightReserved = rightVisibleRef.current ? effectiveRightWidthRef.current : 0;
 					const maxLeft = Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth - rightReserved - MIN_CENTER_WIDTH);
 					const w = Math.min(MAX_SIDEBAR_WIDTH, maxLeft, Math.max(MIN_SIDEBAR_WIDTH, raw));
 					useUi.setState({ sidebarOpen: true, sidebarWidth: w });
 				}
 			} else {
 				const s = useUi.getState();
-				const leftReserved = s.sidebarOpen ? s.sidebarWidth : 0;
-				const maxRight = Math.max(260, window.innerWidth - leftReserved - MIN_CENTER_WIDTH);
-				const w = Math.min(720, maxRight, Math.max(260, window.innerWidth - latestClientX + d.grabOffsetX));
+				const leftReserved = s.sidebarOpen ? effectiveSidebarWidthRef.current : 0;
+				const maxRight = Math.max(MIN_RIGHT_WIDTH, window.innerWidth - leftReserved - MIN_CENTER_WIDTH);
+				const w = Math.min(MAX_RIGHT_WIDTH, maxRight, Math.max(MIN_RIGHT_WIDTH, window.innerWidth - latestClientX + d.grabOffsetX));
 				useUi.setState({ rightWidth: w });
 			}
 		};
@@ -384,7 +406,7 @@ export default function App() {
 				aria-hidden
 				className="pointer-events-none fixed inset-0 z-0 transition-all duration-300"
 			/>
-			{/* Body row: [left column][center column][right aside]; right aside spans full window height */}
+			{/* Body row: the sidebar spans the full height beside the center/right status bar. */}
 			<div className="relative z-10 flex min-h-0 flex-1">
 				{/* Invisible drag overlay prevents text selection and event loss across iframes/terminals */}
 				{isDragging && (
@@ -395,8 +417,8 @@ export default function App() {
 				{sidebarOpen && (
 					<>
 						<div
-							style={{ width: sidebarWidth, minWidth: 200 }}
-							className="flex shrink flex-col vibrancy-chrome"
+							style={{ width: effectiveSidebarWidth }}
+							className="flex shrink-0 flex-col overflow-hidden vibrancy-chrome"
 						>
 							<aside className="min-h-0 flex-1">
 								<SessionSidebar />
@@ -416,43 +438,46 @@ export default function App() {
 					</>
 				)}
 
-				{/* Center column: topbar + main conversation view */}
-				<div className="flex min-w-[360px] flex-1 flex-col">
-					<CenterHeader
-						sidebarOpen={sidebarOpen}
-						toggleSidebar={toggleSidebar}
-						rightOpen={rightOpen}
-						toggleRight={toggleRight}
-					/>
+				{/* Center and right columns share a bottom bar; the sidebar stays full-height. */}
+				<div className="flex min-h-0 min-w-0 flex-1 flex-col">
+					<div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+						{/* Center column: topbar + main conversation view */}
+						<div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+							<CenterHeader
+								sidebarOpen={sidebarOpen}
+								toggleSidebar={toggleSidebar}
+								rightOpen={rightOpen}
+								toggleRight={toggleRight}
+							/>
 
-					{/* Center main view */}
-					<main className="min-h-0 min-w-0 flex-1">
-						<ErrorBoundary label={t("shell.mainView")}>
-							<MainCenterView activeView={effectiveCenterView} />
-						</ErrorBoundary>
-					</main>
+							{/* Center main view */}
+							<main className="min-h-0 min-w-0 flex-1 overflow-hidden">
+								<ErrorBoundary label={t("shell.mainView")}>
+									<MainCenterView activeView={effectiveCenterView} />
+								</ErrorBoundary>
+							</main>
+						</div>
 
-					{/* Center-scoped bottom status bar so left sidebar & right aside extend full window height */}
+						{/* Right panel — shares the center column's bottom edge. */}
+						{rightVisible && (
+							<>
+								{/* Right panel drag handle */}
+								<div
+									onMouseDown={onRightDragStart}
+									className="group/handle relative z-40 w-0 shrink-0 cursor-col-resize"
+									title={t("shortcuts.dragRightCol")}
+								>
+									<div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2" />
+									<div
+										className={`pointer-events-none absolute inset-y-0 left-1/2 w-[2px] -translate-x-1/2 transition-colors ${draggingSide === "right" ? "bg-[#0A84FF]/60" : "bg-[var(--border-divider)] group-hover/handle:bg-[#0A84FF]/60"}`}
+									/>
+								</div>
+								<RightAside width={effectiveRightWidth} />
+							</>
+						)}
+					</div>
 					<BottomBar />
 				</div>
-
-				{/* Right panel — spans the full window height */}
-				{rightVisible && (
-					<>
-						{/* Right panel drag handle */}
-						<div
-							onMouseDown={onRightDragStart}
-							className="group/handle relative z-40 w-0 shrink-0 cursor-col-resize"
-							title={t("shortcuts.dragRightCol")}
-						>
-							<div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2" />
-							<div
-								className={`pointer-events-none absolute inset-y-0 left-1/2 w-[2px] -translate-x-1/2 transition-colors ${draggingSide === "right" ? "bg-[#0A84FF]/60" : "bg-[var(--border-divider)] group-hover/handle:bg-[#0A84FF]/60"}`}
-							/>
-						</div>
-						<RightAside />
-					</>
-				)}
 			</div>
 			{/* Global notifications stack */}
 			<Toaster />

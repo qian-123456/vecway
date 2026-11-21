@@ -42,18 +42,18 @@ describe("formatDuration", () => {
 
 describe("formatTokens", () => {
 	it("formats small tokens", () => {
-		expect(formatTokens(0)).toBe("0 token");
-		expect(formatTokens(800)).toBe("800 token");
+		expect(formatTokens(0)).toBe("0 tok");
+		expect(formatTokens(800)).toBe("800 tok");
 	});
 
 	it("formats thousands (k)", () => {
-		expect(formatTokens(44800)).toBe("44.8k token");
-		expect(formatTokens(1200)).toBe("1.2k token");
+		expect(formatTokens(44800)).toBe("44.8k tok");
+		expect(formatTokens(1200)).toBe("1.2k tok");
 	});
 
 	it("formats millions (M) and billions (B)", () => {
-		expect(formatTokens(1511000000)).toBe("1.5B token");
-		expect(formatTokens(12500000)).toBe("12.5M token");
+		expect(formatTokens(1511000000)).toBe("1.5B tok");
+		expect(formatTokens(12500000)).toBe("12.5M tok");
 	});
 });
 

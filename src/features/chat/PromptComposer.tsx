@@ -234,9 +234,12 @@ export function PromptComposer({
 			const minH = 26;
 			const maxH = 220;
 			const nextH = Math.min(Math.max(ta.scrollHeight, minH), maxH);
+			const scrollable = ta.scrollHeight > maxH;
 			ta.style.height = `${nextH}px`;
-			ta.style.overflowY = ta.scrollHeight > maxH ? "auto" : "hidden";
-			ta.scrollTop = savedScrollTop;
+			ta.style.overflowX = "hidden";
+			ta.style.overflowY = scrollable ? "auto" : "hidden";
+			ta.scrollLeft = 0;
+			ta.scrollTop = scrollable ? savedScrollTop : 0;
 			if (backdropRef.current) {
 				backdropRef.current.style.height = `${nextH}px`;
 				const gutter = ta.offsetWidth - ta.clientWidth;
@@ -254,6 +257,21 @@ export function PromptComposer({
 		ro.observe(ta);
 		return () => ro.disconnect();
 	}, [text]);
+
+	// React 19 registers JSX `onWheel` as passive, so attach a native non-passive
+	// listener to block horizontal trackpad swipes from panning the textarea sideways.
+	useEffect(() => {
+		const ta = taRef.current;
+		if (!ta) return;
+		const handleWheel = (e: WheelEvent) => {
+			if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && e.deltaX !== 0) {
+				e.preventDefault();
+				ta.scrollLeft = 0;
+			}
+		};
+		ta.addEventListener("wheel", handleWheel, { passive: false });
+		return () => ta.removeEventListener("wheel", handleWheel);
+	}, []);
 
 	// Workspace `@` file completion.
 	const { atToken, atMenu, dismiss: dismissAtMenu } = useAtFileMenu(
@@ -821,9 +839,14 @@ export function PromptComposer({
 						value={text}
 						rows={1}
 						placeholder={placeholder ?? t("composer.placeholderDefault")}
-						onScroll={() => {
-							if (backdropRef.current && taRef.current) {
-								backdropRef.current.scrollTop = taRef.current.scrollTop;
+						onScroll={(e) => {
+							const ta = e.currentTarget;
+							if (ta.scrollLeft !== 0) ta.scrollLeft = 0;
+							if (ta.style.overflowY !== "auto" && ta.scrollTop !== 0) {
+								ta.scrollTop = 0;
+							}
+							if (backdropRef.current) {
+								backdropRef.current.scrollTop = ta.scrollTop;
 							}
 						}}
 						onChange={(e) => {
@@ -858,11 +881,12 @@ export function PromptComposer({
 						style={{
 							outline: "none",
 							boxShadow: "none",
+							overflowX: "hidden",
 							...COMPOSER_TEXT_METRICS_STYLE,
 						}}
 						className={clsx(
 							COMPOSER_TEXT_METRICS_CLASS,
-							"w-full resize-none bg-transparent px-4 pt-3 pb-1.5 outline-none !outline-none focus:outline-none focus:ring-0 placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap placeholder:text-[var(--text-30,var(--text-dim))]",
+							"w-full resize-none overflow-x-hidden overflow-y-hidden overscroll-none bg-transparent px-4 pt-3 pb-1.5 outline-none !outline-none focus:outline-none focus:ring-0 placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap placeholder:text-[var(--text-30,var(--text-dim))]",
 							hasImageTokens
 								? "relative z-10 text-transparent caret-[var(--text)] selection:bg-sky-500/30 selection:text-transparent"
 								: "relative text-[var(--text)]",

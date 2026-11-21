@@ -17,7 +17,7 @@ import {
 	Terminal,
 	X,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FloatingLayer } from "../../../components/FloatingLayer";
 import type { ProbeTestResult } from "../../../lib/contracts";
 import { testScheduleProbe } from "../../../lib/ipc";
@@ -39,21 +39,48 @@ import {
 	resolveAutomationDraftAction,
 } from "./automationStatus";
 
+interface CachedProbeOutcome {
+	result: ProbeTestResult | null;
+	error: string | null;
+}
+
+const probeResultCache = new Map<string, CachedProbeOutcome>();
+
+/** Test helper to reset cached probe outcomes between unit tests. */
+export function clearAutomationProbeCacheForTest(): void {
+	probeResultCache.clear();
+}
+
 export function AutomationDraftCard({
 	sessionId,
 	status,
+	embedded = false,
+	highlighted = false,
 }: {
 	sessionId: string;
 	status: AutomationDraftStatus;
+	/** Rendered inside the right-hand AutomationDraftsPanel (parent controls horizontal padding & spacing). */
+	embedded?: boolean;
+	/** Briefly emphasize the card when jumped to from an inline conversation reference. */
+	highlighted?: boolean;
 }) {
 	const { t, locale } = useT();
 	const settings = useSettings((s) => s.settings);
+	const cacheKey = `${sessionId}:${status.draftId}`;
+	const cached = probeResultCache.get(cacheKey);
 	const [saving, setSaving] = useState(false);
 	const [testing, setTesting] = useState(false);
 	const [testMenuOpen, setTestMenuOpen] = useState(false);
-	const [probeResult, setProbeResult] = useState<ProbeTestResult | null>(null);
-	const [probeError, setProbeError] = useState<string | null>(null);
+	const [probeResult, setProbeResult] = useState<ProbeTestResult | null>(cached?.result ?? null);
+	const [probeError, setProbeError] = useState<string | null>(cached?.error ?? null);
 	const testBtnRef = useRef<HTMLButtonElement>(null);
+	const probeResultRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		const next = probeResultCache.get(cacheKey);
+		setProbeResult(next?.result ?? null);
+		setProbeError(next?.error ?? null);
+	}, [cacheKey]);
 
 	if (status.status === "dismissed") return null;
 
@@ -61,14 +88,20 @@ export function AutomationDraftCard({
 
 	if (status.status === "saved") {
 		return (
-			<div className="mx-3 mb-2 flex items-center justify-between gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2 text-xs">
-				<div className="flex min-w-0 items-center gap-2">
+			<div
+				className={clsx(
+					"flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2 text-xs transition-shadow",
+					!embedded && "mx-3 mb-2",
+					highlighted && "ring-2 ring-amber-400/60",
+				)}
+			>
+				<div className="flex min-w-0 flex-1 items-center gap-2">
 					<Check size={13} className="shrink-0 text-emerald-400" />
-					<span className="truncate font-medium text-emerald-300">
+					<span className="break-words font-medium text-emerald-300 select-text">
 						{t("schedules.draftEnabledDone")} · {draft.name}
 					</span>
 				</div>
-				<div className="flex shrink-0 items-center gap-1.5">
+				<div className="flex shrink-0 items-center gap-1.5 select-none">
 					<button
 						type="button"
 						onClick={() => useUi.getState().setCenter("schedules")}
@@ -139,7 +172,11 @@ export function AutomationDraftCard({
 	const folderLabel =
 		draft.cwd && draft.cwd !== "." ? basename(draft.cwd) : null;
 
-	const prefillComposer = (key: AutomationPromptKey, showTestHint: boolean) => {
+	const prefillComposer = (
+		key: AutomationPromptKey,
+		showTestHint: boolean,
+		testModeTitle?: string,
+	) => {
 		const store = useComposer.getState();
 		const text = renderAutomationPrompt(key, draft.name, settings, locale);
 		store.setDraft(sessionId, text);
@@ -148,6 +185,9 @@ export function AutomationDraftCard({
 			showTestHint ? t("schedules.testPrefillHint") : null,
 		);
 		store.focusComposer(sessionId);
+		if (testModeTitle) {
+			toast.info(t("schedules.draftTestPrefilledToast", { mode: testModeTitle }));
+		}
 	};
 
 	const handleAskAiAdjust = () => {
@@ -158,6 +198,30 @@ export function AutomationDraftCard({
 		} else {
 			store.focusComposer(sessionId);
 		}
+	};
+
+	const probeOutcomeLabel = (outcome: ProbeTestResult["outcome"]) =>
+		outcome === "quiet"
+			? t("schedules.probeOutcomeQuiet")
+			: outcome === "signal"
+				? t("schedules.probeOutcomeSignal")
+				: outcome === "ok"
+					? t("schedules.probeOutcomeOk")
+					: t("schedules.probeOutcomeError");
+
+	const probeOutcomeHint = (outcome: ProbeTestResult["outcome"]) =>
+		outcome === "quiet"
+			? t("schedules.probeOutcomeQuietHint")
+			: outcome === "signal"
+				? t("schedules.probeOutcomeSignalHint")
+				: outcome === "ok"
+					? t("schedules.probeOutcomeOkHint")
+					: t("schedules.probeOutcomeErrorHint");
+
+	const clearProbeOutcome = () => {
+		probeResultCache.delete(cacheKey);
+		setProbeResult(null);
+		setProbeError(null);
 	};
 
 	const handleScriptOnlyTest = async () => {
@@ -172,12 +236,26 @@ export function AutomationDraftCard({
 				agentTrigger: draft.agentTrigger ?? "on_signal",
 				scheduleId: draft.id ?? null,
 			});
+			probeResultCache.set(cacheKey, { result: res, error: null });
 			setProbeResult(res);
+			const summary = t("schedules.probeToastDone", {
+				outcome: probeOutcomeLabel(res.outcome),
+				ms: res.durationMs,
+			});
+			if (res.outcome === "error") toast.error(summary);
+			else if (res.outcome === "signal") toast.info(summary);
+			else toast.success(summary);
 		} catch (e) {
+			const message = e instanceof Error ? e.message : String(e);
+			probeResultCache.set(cacheKey, { result: null, error: message });
 			setProbeResult(null);
-			setProbeError(e instanceof Error ? e.message : String(e));
+			setProbeError(message);
+			toast.error(t("schedules.probeToastFailed", { error: message }));
 		} finally {
 			setTesting(false);
+			requestAnimationFrame(() => {
+				probeResultRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+			});
 		}
 	};
 
@@ -210,12 +288,25 @@ export function AutomationDraftCard({
 		void resolveAutomationDraftAction(sessionId, status.draftId, "dismissed");
 	};
 
+	const annotationLabel =
+		locale === "zh-CN"
+			? `${t("schedules.draftCardTitle")}：${draft.name}`
+			: `${t("schedules.draftCardTitle")}: ${draft.name}`;
+
 	return (
-		<div className="mx-3 mb-2 rounded-2xl border border-[var(--border-divider)] bg-[var(--bg-panel)] px-3.5 py-2.5 shadow-sm">
-			{/* Compact top action row */}
+		<div
+			data-annotation-label={annotationLabel}
+			data-automation-draft-id={status.draftId}
+			className={clsx(
+				"rounded-2xl border border-[var(--border-divider)] bg-[var(--bg-panel)] px-3.5 py-2.5 shadow-sm transition-shadow select-text",
+				!embedded && "mx-3 mb-2",
+				highlighted && "ring-2 ring-amber-400/60",
+			)}
+		>
+			{/* Compact top header + action row */}
 			<div className="flex flex-wrap items-center justify-between gap-2">
 				<div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-					<span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
+					<span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-400 select-none">
 						<Clock size={10} className="shrink-0" />
 						<span>{t("schedules.draftCardTitle")}</span>
 					</span>
@@ -264,7 +355,7 @@ export function AutomationDraftCard({
 					)}
 				</div>
 
-				<div className="flex flex-wrap shrink-0 items-center gap-1.5">
+				<div className="flex flex-wrap shrink-0 items-center gap-1.5 select-none">
 					<button
 						ref={testBtnRef}
 						type="button"
@@ -317,7 +408,7 @@ export function AutomationDraftCard({
 								type="button"
 								onClick={() => {
 									setTestMenuOpen(false);
-									prefillComposer("mockTest", true);
+									prefillComposer("mockTest", true, t("schedules.testMockTitle"));
 								}}
 								className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-[var(--ghost-hover,var(--bg-hover))]"
 							>
@@ -335,7 +426,7 @@ export function AutomationDraftCard({
 								type="button"
 								onClick={() => {
 									setTestMenuOpen(false);
-									prefillComposer("realOnceTest", true);
+									prefillComposer("realOnceTest", true, t("schedules.testRealOnceTitle"));
 								}}
 								className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-[var(--ghost-hover,var(--bg-hover))]"
 							>
@@ -353,7 +444,7 @@ export function AutomationDraftCard({
 								type="button"
 								onClick={() => {
 									setTestMenuOpen(false);
-									prefillComposer("realLoopTest", true);
+									prefillComposer("realLoopTest", true, t("schedules.testRealLoopTitle"));
 								}}
 								className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-[var(--ghost-hover,var(--bg-hover))]"
 							>
@@ -418,11 +509,11 @@ export function AutomationDraftCard({
 				</div>
 			</div>
 
-			{/* Human-readable 2-step summary (capped; never dumps long machine prompts) */}
+			{/* Human-readable 2-step summary (fully readable and selectable; never truncated) */}
 			{(triggerSummary || agentSummary) && (
-				<div className="mt-2 space-y-1 text-[11.5px] leading-snug text-[var(--text-60)]">
+				<div className="mt-2 space-y-1 text-[11.5px] leading-relaxed text-[var(--text-60)] select-text">
 					{triggerSummary && (
-						<p className="line-clamp-2 break-words" title={triggerSummary}>
+						<p className="break-words">
 							<span className="font-medium text-[var(--text-80,var(--text))]">
 								{t("schedules.draftSummaryStepTrigger")}：
 							</span>
@@ -430,7 +521,7 @@ export function AutomationDraftCard({
 						</p>
 					)}
 					{agentSummary && (
-						<p className="line-clamp-2 break-words" title={status.summary?.trim() || undefined}>
+						<p className="break-words">
 							<span className="font-medium text-[var(--text-80,var(--text))]">
 								{t("schedules.draftSummaryStepAgent")}：
 							</span>
@@ -442,37 +533,73 @@ export function AutomationDraftCard({
 
 			{/* Inline dry-run outcome if tested */}
 			{(probeResult || probeError) && (
-				<div className="mt-2 rounded-xl border border-[var(--border-divider)] bg-[var(--bg)] px-3 py-2 text-xs">
+				<div
+					ref={probeResultRef}
+					data-probe-result=""
+					className="mt-2 rounded-xl border border-[var(--border-divider)] bg-[var(--bg)] px-3 py-2 text-xs select-text"
+				>
 					{probeError ? (
-						<p className="whitespace-pre-wrap break-words text-[11px] text-rose-400">
-							{probeError}
-						</p>
+						<div className="flex items-start justify-between gap-2">
+							<p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[11px] text-rose-400">
+								{probeError}
+							</p>
+							<button
+								type="button"
+								onClick={clearProbeOutcome}
+								aria-label={t("schedules.probeClearResult")}
+								title={t("schedules.probeClearResult")}
+								className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--text-40)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] select-none"
+							>
+								<X size={11} />
+							</button>
+						</div>
 					) : (
 						probeResult && (
-							<div className="space-y-1">
-								<div className="flex items-center gap-2 text-[11px]">
-									<span
-										className={clsx(
-											"inline-flex shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-semibold",
-											probeResult.outcome === "error"
-												? "border-rose-500/35 bg-rose-500/15 text-rose-400"
-												: probeResult.outcome === "signal"
-													? "border-amber-500/35 bg-amber-500/15 text-amber-400"
-													: "border-emerald-500/35 bg-emerald-500/15 text-emerald-400",
+							<div className="space-y-1.5">
+								<div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+									<div className="flex flex-wrap items-center gap-1.5">
+										<span
+											className={clsx(
+												"inline-flex shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+												probeResult.outcome === "error"
+													? "border-rose-500/35 bg-rose-500/15 text-rose-400"
+													: probeResult.outcome === "signal"
+														? "border-amber-500/35 bg-amber-500/15 text-amber-400"
+														: "border-emerald-500/35 bg-emerald-500/15 text-emerald-400",
+											)}
+										>
+											{probeOutcomeLabel(probeResult.outcome)}
+										</span>
+										<span className="shrink-0 whitespace-nowrap text-[var(--text-40)]">
+											{probeResult.durationMs}ms
+										</span>
+										{probeResult.timedOut ? (
+											<span className="shrink-0 whitespace-nowrap rounded-md border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[10px] text-rose-400">
+												{t("schedules.probeTimedOut")}
+											</span>
+										) : (
+											probeResult.exitCode !== null && (
+												<span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border-divider)] bg-[var(--bg-panel)] px-1.5 py-0.5 text-[10px] text-[var(--text-40)]">
+													{t("schedules.probeExitCode", { code: probeResult.exitCode })}
+												</span>
+											)
 										)}
+									</div>
+									<button
+										type="button"
+										onClick={clearProbeOutcome}
+										aria-label={t("schedules.probeClearResult")}
+										title={t("schedules.probeClearResult")}
+										className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--text-40)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] select-none"
 									>
-										{probeResult.outcome === "quiet"
-											? t("schedules.probeOutcomeQuiet")
-											: probeResult.outcome === "signal"
-												? t("schedules.probeOutcomeSignal")
-												: probeResult.outcome === "ok"
-													? t("schedules.probeOutcomeOk")
-													: t("schedules.probeOutcomeError")}
-									</span>
-									<span className="text-[var(--text-40)]">{probeResult.durationMs}ms</span>
+										<X size={11} />
+									</button>
 								</div>
+								<p className="text-[11px] leading-snug text-[var(--text-60)]">
+									{probeOutcomeHint(probeResult.outcome)}
+								</p>
 								{probeResult.output.trim() && (
-									<pre className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] text-[var(--text-60)]">
+									<pre className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-[var(--border-divider)] bg-[var(--bg-panel)] p-2 font-mono text-[11px] text-[var(--text-60)]">
 										{probeResult.output}
 									</pre>
 								)}
@@ -485,7 +612,7 @@ export function AutomationDraftCard({
 			{/* On-demand disclosure for raw command & full prompt */}
 			{(draft.probeCommand || draft.prompt) && (
 				<details className="group mt-1.5 text-xs">
-					<summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[11px] text-[var(--text-40)] hover:text-[var(--text)]">
+					<summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[11px] text-[var(--text-40)] hover:text-[var(--text)] select-none">
 						<ChevronRight
 							size={11}
 							className="shrink-0 transition-transform group-open:rotate-90"

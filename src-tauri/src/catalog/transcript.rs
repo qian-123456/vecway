@@ -465,7 +465,11 @@ pub fn session_snapshot(path: &Path) -> std::io::Result<SessionSnapshot> {
         let plan = complete
             && contains(&line, b"\"customType\"")
             && contains(&line, b"\"ompws-plan-state\"");
-        if !(level || compaction || usage || plan) {
+        let automation = complete
+            && contains(&line, b"\"customType\"")
+            && (contains(&line, b"\"ompws-automation-state\"")
+                || contains(&line, b"\"ompws-automation-draft\""));
+        if !(level || compaction || usage || plan || automation) {
             continue;
         }
         let Ok(mut v) = serde_json::from_slice::<Value>(&line) else {
@@ -502,6 +506,17 @@ pub fn session_snapshot(path: &Path) -> std::io::Result<SessionSnapshot> {
             {
                 if let Some(data) = v.get_mut("data").filter(|data| data.is_object()) {
                     snap.plan_state = Some(data.take());
+                }
+            }
+            Some("custom")
+                if complete
+                    && matches!(
+                        v.get("customType").and_then(Value::as_str),
+                        Some("ompws-automation-state" | "ompws-automation-draft")
+                    ) =>
+            {
+                if let Some(data) = v.get_mut("data").filter(|data| data.is_object()) {
+                    snap.automation_state = Some(data.take());
                 }
             }
             _ => {}

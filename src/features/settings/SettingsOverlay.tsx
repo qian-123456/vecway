@@ -43,7 +43,7 @@ function SettingsOverlayInner() {
 
 	return (
 		<div
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] backdrop-blur-md p-4 sm:p-6"
+			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] backdrop-blur-md p-3 md:p-6"
 			onMouseDown={(e) => {
 				if (e.target === e.currentTarget) closeSettings();
 			}}
@@ -54,7 +54,7 @@ function SettingsOverlayInner() {
 				aria-modal="true"
 				aria-labelledby="settings-dialog-title"
 				tabIndex={-1}
-				className="flex h-[80vh] max-h-[820px] w-[920px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl bg-[var(--bg-panel)] text-neutral-200 shadow-apple-modal hairline outline-none"
+				className="flex h-[80vh] max-h-[820px] w-[920px] max-w-[calc(100vw-1.5rem)] md:max-w-[calc(100vw-3rem)] flex-col overflow-hidden rounded-2xl bg-[var(--bg-panel)] text-neutral-200 shadow-apple-modal hairline outline-none"
 				onMouseDown={(e) => e.stopPropagation()}
 				onKeyDown={(e) => {
 					if (isComposing(e)) return;

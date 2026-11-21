@@ -35,6 +35,8 @@ interface Sel {
 	text: string;
 	itemId?: string;
 	answerPart?: number;
+	/** Optional free-form source label (e.g. an automation draft card name). */
+	label?: string;
 	/** Which repeated match of `text` inside the message was selected (see quoteOccurrence). */
 	occurrence?: number;
 	/** Viewport-space bounding rect of the selection; re-measured on scroll while commenting. */
@@ -159,7 +161,14 @@ export function SelectionToolbar({
 		(s: Sel) =>
 			docFile
 				? { source: "doc" as const, file: docFile, text: s.text }
-				: { source: "message" as const, text: s.text, itemId: s.itemId, answerPart: s.answerPart, occurrence: s.occurrence },
+				: {
+						source: "message" as const,
+						text: s.text,
+						itemId: s.itemId,
+						answerPart: s.answerPart,
+						occurrence: s.occurrence,
+						...(s.label ? { label: s.label } : {}),
+					},
 		[docFile],
 	);
 
@@ -332,12 +341,12 @@ export function SelectionToolbar({
 			}
 			const rect = range.getBoundingClientRect();
 			const node = range.commonAncestorContainer;
-			const msgEl = (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>(
-				'[data-message-item-id], [id^="msg-"]',
-			);
+			const anchorEl = node instanceof Element ? node : node.parentElement;
+			const msgEl = anchorEl?.closest<HTMLElement>('[data-message-item-id], [id^="msg-"]');
 			const rawItemId = msgEl?.dataset.messageItemId ?? (msgEl?.id.startsWith("msg-") ? msgEl.id.slice(4) : undefined);
 			const itemId = rawItemId && rawItemId !== "live" && rawItemId !== "live-answer" ? rawItemId : undefined;
 			const answerPart = msgEl?.dataset.answerPart === undefined ? undefined : Number(msgEl.dataset.answerPart);
+			const label = anchorEl?.closest<HTMLElement>("[data-annotation-label]")?.dataset.annotationLabel || undefined;
 			// Remember which repeated match was selected so the marker/locate land on it.
 			let occurrence: number | undefined;
 			if (msgEl && itemId) {
@@ -345,7 +354,7 @@ export function SelectionToolbar({
 				const start = segmentOffset(segments, range.startContainer, range.startOffset);
 				if (start !== null) occurrence = quoteOccurrence(full, text, start);
 			}
-			setSel({ text, itemId, answerPart, occurrence, rect, range: range.cloneRange() });
+			setSel({ text, itemId, answerPart, label, occurrence, rect, range: range.cloneRange() });
 		};
 		const onDown = (e: Event) => {
 			if (isInteractiveInput(e.target)) return;

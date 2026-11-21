@@ -11,7 +11,7 @@ pub enum AppEvent {
     /// Every stdout frame except `ready`.
     RpcFrame {
         session_id: String,
-        frame: serde_json::Value,
+        frame: Arc<serde_json::Value>,
     },
     RpcProcess {
         session_id: String,

@@ -493,7 +493,7 @@ export function StorageSection() {
 					}
 					footer={
 						selected.size > 0 ? (
-							<div className="sticky bottom-2 z-10 -mx-1 flex items-center justify-between rounded-lg bg-[var(--bg-surface)] px-4 py-2.5 shadow-apple-card hairline">
+							<div className="sticky bottom-2 z-10 -mx-1 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--bg-surface)] px-4 py-2.5 shadow-apple-card hairline">
 								<span className="text-xs font-medium text-[var(--text)]">
 									{t("settingsSectionsStorage.storage.selectedCount", { count: selected.size, bytes: formatBytes(selectedTotal) })}
 								</span>
@@ -574,12 +574,12 @@ function WorkspaceBlock({
 	return (
 		<div className="border-b last:border-b-0 border-[var(--border-divider)]">
 			{/* Workspace Root Header (Like SessionSidebar Workspace row) */}
-			<div className="flex items-center gap-2 px-4 py-2.5 transition-colors hover:bg-[var(--bg-hover)]/40">
+			<div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-4 py-2.5 transition-colors hover:bg-[var(--bg-hover)]/40">
 				<button
 					type="button"
 					onClick={onToggleOpen}
 					aria-expanded={expanded}
-					className="flex min-w-0 flex-1 items-center gap-2 text-left"
+					className="flex min-w-[160px] flex-1 items-center gap-2 text-left"
 				>
 					<Chevron className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
 					{expanded ? (
@@ -597,7 +597,7 @@ function WorkspaceBlock({
 					</div>
 				</button>
 
-				<div className="flex items-center gap-2 shrink-0">
+				<div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center gap-2">
 					{hasMultipleWorktrees && (
 						<Chip>{t("settingsSectionsStorage.storage.worktreeCountChip", { count: group.worktrees.length })}</Chip>
 					)}
@@ -666,12 +666,12 @@ function WorktreeSubBlock({
 
 	return (
 		<div className="border-b last:border-b-0 border-[var(--border-divider)]">
-			<div className="flex items-center gap-2 px-3 py-2 transition-colors hover:bg-[var(--bg-hover)]/40">
+			<div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 transition-colors hover:bg-[var(--bg-hover)]/40">
 				<button
 					type="button"
 					onClick={onToggle}
 					aria-expanded={expanded}
-					className="flex min-w-0 flex-1 items-center gap-2 text-left"
+					className="flex min-w-[140px] flex-1 items-center gap-2 text-left"
 				>
 					<Chevron className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
 					{wt.isMain ? (
@@ -681,13 +681,13 @@ function WorktreeSubBlock({
 					)}
 					<span className="font-medium text-xs text-[var(--text)] truncate">{label}</span>
 					{!wt.isMain && (
-						<span className="text-[10px] px-1 rounded hairline text-[var(--text-dim)] bg-[var(--bg-panel)]">
+						<span className="shrink-0 whitespace-nowrap text-[10px] px-1 rounded hairline text-[var(--text-dim)] bg-[var(--bg-panel)]">
 							{t("settingsSectionsStorage.storage.worktreeTag")}
 						</span>
 					)}
 				</button>
 
-				<div className="flex items-center gap-2 shrink-0">
+				<div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center gap-2">
 					<Chip>{t("settingsSectionsStorage.storage.projectSessionsCount", { count: wt.project.sessions.length })}</Chip>
 					<span className="w-16 shrink-0 text-right text-xs tabular-nums text-[var(--text-muted)]">
 						{formatBytes(wt.bytes)}

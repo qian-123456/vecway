@@ -729,8 +729,8 @@ export const Markdown = React.memo(function Markdown({
 				"[&_ul_ul]:my-0.5 [&_ol_ol]:my-0.5 [&_ul_ol]:my-0.5 [&_ol_ul]:my-0.5",
 				// Tables (hairlines)
 				"[&_table]:w-full [&_table]:border-collapse [&_table]:my-3 [&_table]:text-[0.9em]",
-				"[&_th]:border [&_th]:border-[var(--line)] [&_th]:bg-[var(--ghost-hover)] [&_th]:px-2.5 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-[var(--text)]",
-				"[&_td]:border [&_td]:border-[var(--line)] [&_td]:px-2.5 [&_td]:py-1.5 [&_td]:text-[var(--text-60)]",
+				"[&_th]:whitespace-nowrap [&_th]:border [&_th]:border-[var(--line)] [&_th]:bg-[var(--ghost-hover)] [&_th]:px-2.5 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-[var(--text)]",
+				"[&_td]:min-w-[4.5em] [&_td]:border [&_td]:border-[var(--line)] [&_td]:px-2.5 [&_td]:py-1.5 [&_td]:text-[var(--text-60)]",
 				"[&_tbody_tr:hover]:bg-[var(--ghost-hover)]",
 				// Divider & quotes
 				"[&_hr]:my-4 [&_hr]:border-[var(--line)]",

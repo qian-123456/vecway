@@ -71,8 +71,9 @@ const GROUP_TITLE_KEYS: Record<
 	view: "shortcutsSettings.groups.view",
 };
 
-/** Shared column template: action | description | key cell (fixed width so capsules line up). */
-const ROW_GRID = "grid grid-cols-[150px_minmax(0,1fr)_auto] items-center gap-x-3 px-3";
+/** Shared column template: stacked label+desc when narrow, 3-column aligned grid when wide. */
+const ROW_GRID =
+	"flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 @[560px]:grid @[560px]:grid-cols-[150px_minmax(0,1fr)_auto]";
 
 /** A key-combo capsule: wide enough for glyph strings like ⌃⌥⇧⌘[ and never wraps. */
 const CAPSULE =
@@ -106,12 +107,16 @@ function TableRow({
 	return (
 		<div data-field-id={fieldId} className="border-t border-[var(--border-divider)] py-1 first:border-t-0 hover:bg-[var(--bg-hover)]">
 			<div className={ROW_GRID}>
-				<span className="flex items-center gap-1.5 whitespace-nowrap text-[13px] font-medium text-[var(--text)]">
-					{label}
-					<SaveIndicator status={status} error={statusError} />
-				</span>
-				<span className="text-xs leading-4 text-[var(--text-muted)]">{description}</span>
-				<div className="flex min-w-[144px] items-center justify-end gap-1.5">{control}</div>
+				<div className="min-w-[160px] flex-1 space-y-0.5 @[560px]:contents">
+					<span className="flex items-center gap-1.5 text-[13px] font-medium text-[var(--text)] @[560px]:whitespace-nowrap">
+						{label}
+						<SaveIndicator status={status} error={statusError} />
+					</span>
+					<span className="block text-xs leading-4 text-[var(--text-muted)] @[560px]:inline">{description}</span>
+				</div>
+				<div className="ml-auto flex min-w-[144px] max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5 @[560px]:ml-0">
+					{control}
+				</div>
 			</div>
 			{children && <div className="px-3 pb-1 pt-1">{children}</div>}
 		</div>
@@ -394,11 +399,11 @@ export function ShortcutsSection() {
 				}
 			/>
 
-			<div className="overflow-hidden rounded-xl hairline bg-[var(--bg-panel)] shadow-apple-card">
+			<div className="@container overflow-hidden rounded-xl hairline bg-[var(--bg-panel)] shadow-apple-card">
 				<div className={clsx(ROW_GRID, "border-b border-[var(--border-divider)] py-1.5 text-[11px] text-[var(--text-dim)]")}>
 					<span>{t("shortcutsSettings.colAction")}</span>
-					<span>{t("shortcutsSettings.colDesc")}</span>
-					<span className="w-[144px] text-right">{t("shortcutsSettings.colShortcut")}</span>
+					<span className="hidden @[560px]:inline">{t("shortcutsSettings.colDesc")}</span>
+					<span className="ml-auto w-[144px] text-right @[560px]:ml-0">{t("shortcutsSettings.colShortcut")}</span>
 				</div>
 				<ShortcutTable />
 

@@ -45,7 +45,7 @@ import { useFindHighlights } from "./find/useFindHighlights";
 import { useThreadFind } from "./find/threadFindStore";
 import { TopCapsule } from "./subagents/TopCapsule";
 import { useGutterSelection } from "./gutterSelection";
-import { AutomationDraftCard } from "./automation/AutomationDraftCard";
+import { useAutomationPanelLifecycle } from "./automation/useAutomationPanelLifecycle";
 
 const EMPTY_PENDING_UI: PendingUiRequest[] = [];
 const NO_REF = { current: null };
@@ -81,9 +81,7 @@ export function SessionView({
 	const alive = useLive((s) => s.sessions[sessionId]?.alive === true);
 	const interruption = useLive((s) => s.sessions[sessionId]?.interruption);
 	const automationState = useLive((s) => s.sessions[sessionId]?.automationState);
-	const visibleAutomationDrafts = (automationState?.drafts ?? []).filter(
-		(d) => d.status === "pending" || d.status === "saved",
-	);
+	useAutomationPanelLifecycle(sessionId, automationState, compact);
 	const pendingUi = useLive((s) => s.sessions[sessionId]?.pendingUi ?? EMPTY_PENDING_UI);
 	const setPendingUi = useLive((s) => s.setPendingUi);
 	const ask = useAskRouting(sessionId, pendingUi);
@@ -299,11 +297,11 @@ export function SessionView({
 	return (
 		<div
 			data-session-view=""
-			className="relative @container flex h-full flex-col"
+			className="relative @container flex h-full min-h-0 flex-col overflow-hidden"
 		>
 			{centered && <div className="min-h-[24px] flex-[0.95]" aria-hidden="true" />}
 			{centered && <StartGlow />}
-					<div className={`relative min-h-0 @container ${centered ? "flex-none" : "flex-1"}`}>
+					<div className={`relative @container ${centered ? "min-h-0 flex-none" : "min-h-[120px] flex-1"}`}>
 						{!compact && <TopCapsule />}
 						{!compact && (
 							<ChatTrace sessionId={sessionId} scrollRef={scrollRef} />
@@ -365,8 +363,8 @@ export function SessionView({
 					<div
 						className={
 							centered
-								? "mx-auto w-full max-w-[780px] px-6"
-								: "mx-auto w-full @min-[864px]:w-[calc(100%-6rem)] @min-[864px]:max-w-3xl"
+								? "mx-auto w-full max-w-[780px] shrink-0 px-6"
+								: "mx-auto w-full shrink-0 @min-[864px]:w-[calc(100%-6rem)] @min-[864px]:max-w-3xl"
 						}
 					>
 						{otherPendingUi.length > 0 && (
@@ -408,17 +406,6 @@ export function SessionView({
 								<Notice tone="warning">
 									{t(interruption === "restart" ? "chatView.streamRestore.restarted" : interruption === "stop" ? "chatView.streamRestore.stopped" : "chatView.streamRestore.disconnected")}
 								</Notice>
-							</div>
-						)}
-						{!compact && visibleAutomationDrafts.length > 0 && (
-							<div className="space-y-1.5">
-								{visibleAutomationDrafts.map((draftStatus) => (
-									<AutomationDraftCard
-										key={draftStatus.draftId}
-										sessionId={sessionId}
-										status={draftStatus}
-									/>
-								))}
 							</div>
 						)}
 						<StopTimeoutBanner sessionId={sessionId} />

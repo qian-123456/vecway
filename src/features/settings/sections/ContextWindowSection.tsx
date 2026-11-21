@@ -417,9 +417,9 @@ export function ContextWindowSection() {
 				description={t("settingsSectionsContext.context.descModelWindow", { matched: matchedTotal, total: rows.length })}
 				footer={t("settingsSectionsContext.context.footerModelWindow")}
 			>
-				<div className="flex min-h-[320px]">
-					{/* Family rail */}
-					<div className="w-40 shrink-0 space-y-0.5 self-start p-2">
+				<div className="@container flex min-h-[320px] flex-col @[580px]:flex-row">
+					{/* Family rail: wraps as compact pills when narrow; docked left rail when wide */}
+					<div className="flex flex-wrap gap-1 border-b border-[var(--border-divider)] p-2 @[580px]:w-36 @[580px]:shrink-0 @[580px]:flex-col @[580px]:gap-0.5 @[580px]:self-start @[580px]:border-b-0">
 						{(["all", ...FAMILIES.filter((f) => f === family || (familyCounts.get(f) ?? 0) > 0)] as const).map((f) => {
 							const count = f === "all" ? rows.length : (familyCounts.get(f) ?? 0);
 							return (
@@ -428,20 +428,20 @@ export function ContextWindowSection() {
 									type="button"
 									onClick={() => setFamily(f)}
 									className={clsx(
-										"flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11px]",
+										"flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] @[580px]:w-full @[580px]:gap-2",
 										family === f
 											? "bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-[var(--text)]"
 											: "text-[var(--text-muted)] hover:bg-[var(--bg-active-fill)]",
 									)}
 								>
-									<span className="min-w-0 flex-1 truncate">{f === "all" ? t("settingsSectionsContext.context.familyAll") : f === OTHER_FAMILY ? t("settingsModels.familyOther") : f}</span>
+									<span className="min-w-0 truncate @[580px]:flex-1">{f === "all" ? t("settingsSectionsContext.context.familyAll") : f === OTHER_FAMILY ? t("settingsModels.familyOther") : f}</span>
 									<Chip tone={family === f ? "accent" : "neutral"}>{count}</Chip>
 								</button>
 							);
 						})}
 					</div>
 
-					<div className="flex min-w-0 flex-1 flex-col gap-2 border-l border-[var(--border-divider)] p-3">
+					<div className="flex min-w-0 flex-1 flex-col gap-2 p-2.5 @[580px]:border-l @[580px]:border-[var(--border-divider)] @[580px]:p-3">
 						<div className="flex flex-wrap items-center gap-2">
 							<div className={clsx(INPUT_CLASS, "flex min-w-[160px] flex-1 items-center gap-1.5 py-1")}>
 								<Search className="h-3 w-3 shrink-0 text-[var(--text-dim)]" />
@@ -480,106 +480,110 @@ export function ContextWindowSection() {
 							/>
 						</div>
 
-						{sections.length > 0 && (
-							<div className="flex items-center gap-2 bg-[var(--bg-panel)] px-2 py-1 text-[10px] text-[var(--text-dim)]">
-								<input
-									type="checkbox"
-									aria-label={t("settingsSectionsContext.context.selectAllAria")}
-									ref={(el) => {
-										if (el) el.indeterminate = filterState === "some";
-									}}
-									checked={filterState === "all"}
-									onChange={(e) => toggle(filteredKeys, e.target.checked)}
-								/>
-								<button
-									type="button"
-									className="shrink-0 rounded-md hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] px-2 py-0.5 font-medium text-[var(--accent)] whitespace-nowrap cursor-pointer transition-colors"
-									onClick={() => toggle(filteredKeys, filterState !== "all")}
-								>
-									{filterState === "all" ? t("settingsSectionsContext.context.deselectAll") : t("settingsSectionsContext.context.selectAll")} {filteredKeys.length}
-								</button>
-								<span className="min-w-0 flex-1 whitespace-nowrap" title={t("settingsSectionsContext.context.colModelIdTitle")}>
-									{t("settingsSectionsContext.context.colModelId")}
-								</span>
-								<span className="w-28 shrink-0 whitespace-nowrap" title={t("settingsSectionsContext.context.colProviderTitle")}>
-									{t("settingsSectionsContext.context.colProvider")}
-								</span>
-								<span className="w-20 shrink-0 whitespace-nowrap text-right" title={t("settingsSectionsContext.context.colWindowSizeTitle")}>
-									{t("settingsSectionsContext.context.colWindowSize")}
-								</span>
-								<span className="w-24 shrink-0 whitespace-nowrap text-right" title={t("settingsSectionsContext.context.colCompactionTriggerTitle")}>
-									{t("settingsSectionsContext.context.colCompactionTrigger")}
-								</span>
-							</div>
-						)}
+						<div className="overflow-x-auto">
+							<div className="min-w-[440px]">
+								{sections.length > 0 && (
+									<div className="flex items-center gap-2 bg-[var(--bg-panel)] px-2 py-1 text-[10px] text-[var(--text-dim)]">
+										<input
+											type="checkbox"
+											aria-label={t("settingsSectionsContext.context.selectAllAria")}
+											ref={(el) => {
+												if (el) el.indeterminate = filterState === "some";
+											}}
+											checked={filterState === "all"}
+											onChange={(e) => toggle(filteredKeys, e.target.checked)}
+										/>
+										<button
+											type="button"
+											className="shrink-0 rounded-md hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] px-2 py-0.5 font-medium text-[var(--accent)] whitespace-nowrap cursor-pointer transition-colors"
+											onClick={() => toggle(filteredKeys, filterState !== "all")}
+										>
+											{filterState === "all" ? t("settingsSectionsContext.context.deselectAll") : t("settingsSectionsContext.context.selectAll")} {filteredKeys.length}
+										</button>
+										<span className="min-w-0 flex-1 whitespace-nowrap" title={t("settingsSectionsContext.context.colModelIdTitle")}>
+											{t("settingsSectionsContext.context.colModelId")}
+										</span>
+										<span className="w-24 @[620px]:w-28 shrink-0 leading-tight" title={t("settingsSectionsContext.context.colProviderTitle")}>
+											{t("settingsSectionsContext.context.colProvider")}
+										</span>
+										<span className="w-[68px] @[620px]:w-20 shrink-0 text-right leading-tight" title={t("settingsSectionsContext.context.colWindowSizeTitle")}>
+											{t("settingsSectionsContext.context.colWindowSize")}
+										</span>
+										<span className="w-[84px] @[620px]:w-24 shrink-0 text-right leading-tight" title={t("settingsSectionsContext.context.colCompactionTriggerTitle")}>
+											{t("settingsSectionsContext.context.colCompactionTrigger")}
+										</span>
+									</div>
+								)}
 
-						{sections.length === 0 && (
-							<div className="py-10 text-center text-[11px] text-[var(--text-dim)]">{t("settingsSectionsContext.context.noMatchingModels")}</div>
-						)}
-						{/* Settings dialog is min(80vh, 820px) tall; reserve room for the card's title, search row, column header and selection footer so the whole card fits one view.
-						    Rows are virtualized: the unfiltered list is ~1800 models. */}
-						<div ref={listRef} className="max-h-[calc(min(80vh,820px)-290px)] overflow-y-auto">
-							<div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
-								{virtualizer.getVirtualItems().map((v) => {
-									const item = flatItems[v.index];
-									if (!item) return null;
-									const pos = { transform: `translateY(${v.start}px)` };
-									if (item.kind === "head") {
-										const s = item.section;
-										const keys = s.rows.map(rowKey);
-										const allOn = keys.every((k) => selected.has(k));
-										const windows = windowsByType.get(s.key)?.size ?? 0;
-										const isCollapsed = collapsed.has(s.key);
-										return (
-											<div key={v.key} data-index={v.index} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full pt-2" style={pos}>
-												<div className="flex items-center gap-2 rounded-t-lg bg-[var(--well-bg)] px-2 py-1.5 text-[11px] hairline">
-													<input
-														type="checkbox"
-														aria-label={t("settingsSectionsContext.context.selectAllSection", { name: s.name })}
-														checked={allOn}
-														onChange={(e) => toggle(keys, e.target.checked)}
+								{sections.length === 0 && (
+									<div className="py-10 text-center text-[11px] text-[var(--text-dim)]">{t("settingsSectionsContext.context.noMatchingModels")}</div>
+								)}
+								{/* Settings dialog is min(80vh, 820px) tall; reserve room for the card's title, search row, column header and selection footer so the whole card fits one view.
+								    Rows are virtualized: the unfiltered list is ~1800 models. */}
+								<div ref={listRef} className="max-h-[calc(min(80vh,820px)-290px)] overflow-y-auto">
+									<div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+										{virtualizer.getVirtualItems().map((v) => {
+											const item = flatItems[v.index];
+											if (!item) return null;
+											const pos = { transform: `translateY(${v.start}px)` };
+											if (item.kind === "head") {
+												const s = item.section;
+												const keys = s.rows.map(rowKey);
+												const allOn = keys.every((k) => selected.has(k));
+												const windows = windowsByType.get(s.key)?.size ?? 0;
+												const isCollapsed = collapsed.has(s.key);
+												return (
+													<div key={v.key} data-index={v.index} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full pt-2" style={pos}>
+														<div className="flex items-center gap-2 rounded-t-lg bg-[var(--well-bg)] px-2 py-1.5 text-[11px] hairline">
+															<input
+																type="checkbox"
+																aria-label={t("settingsSectionsContext.context.selectAllSection", { name: s.name })}
+																checked={allOn}
+																onChange={(e) => toggle(keys, e.target.checked)}
+															/>
+															<button
+																type="button"
+																className="flex min-w-0 flex-1 items-center gap-1 text-left font-medium text-[var(--text)]"
+																onClick={() =>
+																	setCollapsed((prev) => {
+																		const next = new Set(prev);
+																		isCollapsed ? next.delete(s.key) : next.add(s.key);
+																		return next;
+																	})
+																}
+															>
+																{isCollapsed ? <ChevronRight className="h-3 w-3 shrink-0" /> : <ChevronDown className="h-3 w-3 shrink-0" />}
+																<HoverScrollText text={s.name} className="min-w-0 flex-1" title={s.name} />
+															</button>
+															<span className="shrink-0 whitespace-nowrap text-[var(--text-dim)]">{t("settingsSectionsContext.context.providerCount", { count: new Set(s.rows.map((r) => r.providerId)).size })}</span>
+															{windows > 1 && (
+																<span className="shrink-0" title={t("settingsSectionsContext.context.windowInconsistentTitle", { count: new Set(s.rows.map((r) => r.providerId)).size })}>
+																	<Chip tone="warning" icon={AlertTriangle}>
+																		{t("settingsSectionsContext.context.windowInconsistentChip")}
+																	</Chip>
+																</span>
+															)}
+														</div>
+													</div>
+												);
+											}
+											const r = item.row;
+											return (
+												<div key={v.key} data-index={v.index} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={pos}>
+													<ModelRowView
+														row={r}
+														checked={selected.has(rowKey(r))}
+														onCheck={(on) => toggle([rowKey(r)], on)}
+														trigger={compactionOn && r.contextWindow != null ? triggerOf(r.contextWindow) : null}
+														compactionOn={compactionOn}
+														modified={overrides.has(rowKey(r))}
+														onEdit={(to) => applyWithUndo([{ row: r, to }], r.modelId)}
 													/>
-													<button
-														type="button"
-														className="flex min-w-0 flex-1 items-center gap-1 text-left font-medium text-[var(--text)]"
-														onClick={() =>
-															setCollapsed((prev) => {
-																const next = new Set(prev);
-																isCollapsed ? next.delete(s.key) : next.add(s.key);
-																return next;
-															})
-														}
-													>
-														{isCollapsed ? <ChevronRight className="h-3 w-3 shrink-0" /> : <ChevronDown className="h-3 w-3 shrink-0" />}
-														<HoverScrollText text={s.name} className="min-w-0 flex-1" title={s.name} />
-													</button>
-													<span className="shrink-0 text-[var(--text-dim)]">{t("settingsSectionsContext.context.providerCount", { count: new Set(s.rows.map((r) => r.providerId)).size })}</span>
-													{windows > 1 && (
-														<span className="shrink-0" title={t("settingsSectionsContext.context.windowInconsistentTitle", { count: new Set(s.rows.map((r) => r.providerId)).size })}>
-															<Chip tone="warning" icon={AlertTriangle}>
-																{t("settingsSectionsContext.context.windowInconsistentChip")}
-															</Chip>
-														</span>
-													)}
 												</div>
-											</div>
-										);
-									}
-									const r = item.row;
-									return (
-										<div key={v.key} data-index={v.index} ref={virtualizer.measureElement} className="absolute left-0 top-0 w-full" style={pos}>
-											<ModelRowView
-												row={r}
-												checked={selected.has(rowKey(r))}
-												onCheck={(on) => toggle([rowKey(r)], on)}
-												trigger={compactionOn && r.contextWindow != null ? triggerOf(r.contextWindow) : null}
-												compactionOn={compactionOn}
-												modified={overrides.has(rowKey(r))}
-												onEdit={(to) => applyWithUndo([{ row: r, to }], r.modelId)}
-											/>
-										</div>
-									);
-								})}
+											);
+										})}
+									</div>
+								</div>
 							</div>
 						</div>
 					</div>
@@ -786,10 +790,10 @@ function ModelRowView({
 						</span>
 					)}
 				</span>
-				<span className="flex w-28 shrink-0 items-center gap-1 text-[var(--text-dim)]" title={row.providerName}>
+				<span className="flex w-24 @[620px]:w-28 shrink-0 items-center gap-1 text-[var(--text-dim)]" title={row.providerName}>
 					<span className="min-w-0 break-words">{row.providerName}</span>
 				</span>
-				<span className="w-20 shrink-0 text-right">
+				<span className="w-[68px] @[620px]:w-20 shrink-0 text-right">
 					{draft != null ? (
 						<input
 							// biome-ignore lint/a11y/noAutofocus: inline cell editor opened by click
@@ -842,7 +846,7 @@ function ModelRowView({
 					)}
 				</span>
 				<span
-					className={clsx("w-24 shrink-0 whitespace-nowrap text-right font-mono", trigger?.unreachable ? "text-[var(--status-error)]" : "text-[var(--text-dim)]")}
+					className={clsx("w-[84px] @[620px]:w-24 shrink-0 whitespace-nowrap text-right font-mono", trigger?.unreachable ? "text-[var(--status-error)]" : "text-[var(--text-dim)]")}
 					title={t("settingsSectionsContext.context.colCompactionTrigger")}
 				>
 					{!compactionOn ? t("settingsSectionsContext.context.compactionDisabled") : trigger == null ? "—" : trigger.unreachable ? t("settingsSectionsContext.context.compactionUnreachable") : fmt(trigger.tokens)}

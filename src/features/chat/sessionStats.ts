@@ -234,15 +234,15 @@ export function formatDuration(ms: number): string {
 }
 
 export function formatTokens(tokens: number): string {
-	if (!tokens || tokens <= 0) return "0 token";
+	if (!tokens || tokens <= 0) return "0 tok";
 	if (tokens >= 1_000_000_000) {
-		return `${(tokens / 1_000_000_000).toFixed(1)}B token`;
+		return `${(tokens / 1_000_000_000).toFixed(1)}B tok`;
 	}
 	if (tokens >= 1_000_000) {
-		return `${(tokens / 1_000_000).toFixed(1)}M token`;
+		return `${(tokens / 1_000_000).toFixed(1)}M tok`;
 	}
 	if (tokens >= 1_000) {
-		return `${(tokens / 1_000).toFixed(1)}k token`;
+		return `${(tokens / 1_000).toFixed(1)}k tok`;
 	}
-	return `${tokens} token`;
+	return `${tokens} tok`;
 }

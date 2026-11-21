@@ -226,34 +226,39 @@ export function ServicesPanel() {
 
 
 	return (
-		<div className="flex h-full flex-col text-xs">
-			<div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-divider)] px-3 py-2">
-				<span className="flex-1 font-medium text-[var(--text)]">
-					{t("services.title")}{" "}
-					{rows && (
-						<span className="font-mono text-neutral-500">({rows.length})</span>
-					)}
-				</span>
-				<label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-neutral-400 select-none">
-					<input
-						type="checkbox"
-						checked={all}
-						onChange={(e) => {
-							setAll(e.target.checked);
-							setDisplayLimit(50);
-						}}
-						className="rounded border-[var(--border-divider)] bg-[var(--well-bg)] text-[#0A84FF] focus:ring-0"
-					/>
-					{t("services.showAllPorts")}
-				</label>
-				<button
-					type="button"
-					title={t("services.refreshTitle")}
-					onClick={refresh}
-					className="rounded-lg p-1.5 text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-colors"
-				>
-					<RefreshCw size={13} className={loading ? "animate-spin" : ""} />
-				</button>
+		<div className="@container flex h-full flex-col text-xs">
+			<div className="flex shrink-0 flex-col gap-1.5 border-b border-[var(--border-divider)] px-3 py-2 @[290px]:flex-row @[290px]:items-center @[290px]:justify-between @[290px]:gap-2">
+				<div className="flex min-w-0 items-center justify-between gap-2 @[290px]:flex-1">
+					<span className="whitespace-nowrap font-medium text-[var(--text)]">
+						{t("services.title")}{" "}
+						{rows && (
+							<span className="font-mono text-neutral-500">({rows.length})</span>
+						)}
+					</span>
+				</div>
+				<div className="flex shrink-0 items-center justify-between gap-2 @[290px]:justify-end">
+					<label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[11px] text-neutral-400 select-none">
+						<input
+							type="checkbox"
+							checked={all}
+							onChange={(e) => {
+								setAll(e.target.checked);
+								setDisplayLimit(50);
+							}}
+							className="rounded border-[var(--border-divider)] bg-[var(--well-bg)] text-[#0A84FF] focus:ring-0"
+						/>
+						{t("services.showAllPorts")}
+					</label>
+					<button
+						type="button"
+						title={t("services.refreshTitle")}
+						aria-label={t("services.refreshTitle")}
+						onClick={refresh}
+						className="shrink-0 rounded-lg p-1 text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+					>
+						<RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+					</button>
+				</div>
 			</div>
 			{/* Detached background terminals block */}
 			{detachedTabs.length > 0 && (
@@ -269,9 +274,9 @@ export function ServicesPanel() {
 						{detachedTabs.map((tab) => (
 							<div
 								key={tab.id}
-								className="flex items-center justify-between gap-2 rounded-lg border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2.5 py-1.5 transition-colors hover:border-neutral-700"
+								className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2.5 py-1.5 transition-colors hover:border-neutral-700"
 							>
-								<div className="min-w-0 flex-1">
+								<div className="min-w-[120px] flex-1">
 									<div className="flex flex-wrap items-center gap-1.5">
 										<span className="min-w-0 break-words font-medium text-neutral-200">
 											{tab.title}
@@ -294,7 +299,7 @@ export function ServicesPanel() {
 										</span>
 									</div>
 								</div>
-								<div className="flex shrink-0 items-center gap-1">
+								<div className="ml-auto flex shrink-0 items-center gap-1">
 									<button
 										type="button"
 										onClick={() => handleReattachTerminal(tab.id, tab.title)}
@@ -393,30 +398,30 @@ export function ServicesPanel() {
 									: "hover:bg-[var(--bg-hover)]",
 							)}
 						>
-							<div className="flex items-start gap-2">
+							<div className="flex flex-wrap items-center gap-x-2 gap-y-1 @[290px]:flex-nowrap @[290px]:items-start">
 								<span className="shrink-0 font-mono text-sm font-semibold text-sky-400">
 									:{s.port}
 								</span>
 								<span
-									className="min-w-0 flex-1 break-words text-neutral-200"
+									className="order-last min-w-0 basis-full break-words text-neutral-200 @[290px]:order-none @[290px]:basis-auto @[290px]:flex-1"
 									title={s.command || s.name}
 								>
 									<span className="font-medium">{s.name}</span>
-									<span className="ml-1.5 font-mono text-[10px] text-neutral-500">
+									<span className="ml-1.5 whitespace-nowrap font-mono text-[10px] text-neutral-500">
 										pid {s.pid}
 									</span>
 									{s.startedByApp && (
-										<span className="ml-1.5 rounded bg-emerald-950/50 px-1 py-0.2 text-[10px] text-emerald-400 border border-emerald-800/50">
+										<span className="ml-1.5 inline-block whitespace-nowrap rounded bg-emerald-950/50 px-1 py-0.2 text-[10px] text-emerald-400 border border-emerald-800/50">
 											{t("services.badgeTimeMachine")}
 										</span>
 									)}
 									{isOrphan && (
-										<span className="ml-1.5 rounded bg-amber-950/50 px-1 py-0.2 text-[10px] text-amber-400 border border-amber-800/50">
+										<span className="ml-1.5 inline-block whitespace-nowrap rounded bg-amber-950/50 px-1 py-0.2 text-[10px] text-amber-400 border border-amber-800/50">
 											{t("services.badgeOrphan")}
 										</span>
 									)}
 								</span>
-								<div className="flex shrink-0 items-center gap-0.5">
+								<div className="ml-auto flex shrink-0 items-center gap-0.5 @[290px]:ml-0">
 									<IconBtn
 										title={t("services.openInBrowser")}
 										onClick={() => handleOpenBrowser(s.url)}

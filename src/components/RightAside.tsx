@@ -27,6 +27,11 @@ const CommandTerminalPanel = lazy(() =>
 const PlanPanel = lazy(() =>
 	import("../features/chat/PlanPanel").then((m) => ({ default: m.PlanPanel })),
 );
+const AutomationDraftsPanel = lazy(() =>
+	import("../features/chat/automation/AutomationDraftsPanel").then((m) => ({
+		default: m.AutomationDraftsPanel,
+	})),
+);
 const FilePreviewPanel = lazy(() =>
 	import("../features/files/FilePreviewPanel").then((m) => ({ default: m.FilePreviewPanel })),
 );
@@ -76,21 +81,24 @@ function RightPanelBody({ tab }: { tab: RightTab }) {
 			return <CommandTerminalPanel />;
 		case "plan":
 			return <PlanPanel />;
+		case "automation":
+			return <AutomationDraftsPanel />;
 		case "files":
 			return <FilePreviewPanel />;
 	}
 }
 
-export const RightAside = React.memo(function RightAside() {
+export const RightAside = React.memo(function RightAside({ width }: { width?: number }) {
 	const rightTab = useUi((s) => s.rightTab);
-	const rightWidth = useUi((s) => s.rightWidth);
+	const storedRightWidth = useUi((s) => s.rightWidth);
+	const rightWidth = width ?? storedRightWidth;
 	const selectedSessionId = useUi((s) => s.selectedSessionId);
 	const tabBadges = useTabBadges(selectedSessionId);
 
 	return (
 		<aside
-			style={{ width: rightWidth, minWidth: 200 }}
-			className="flex shrink flex-col vibrancy-chrome"
+			style={{ width: rightWidth }}
+			className="@container flex shrink-0 flex-col overflow-hidden vibrancy-chrome"
 		>
 			{rightTab ? (
 				<>

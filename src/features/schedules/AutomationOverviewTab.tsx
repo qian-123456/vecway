@@ -538,7 +538,7 @@ export function AutomationOverviewTab({
 		Boolean(schedule.probeCommand?.trim()) || schedule.agentTrigger !== "always";
 
 	return (
-		<div className="space-y-3.5">
+		<div className="@container space-y-3.5">
 			{/* 1. Compact 1-Line Plain Workflow Bar + Expandable Script/Prompt Details */}
 			<section aria-label={t("schedules.detailWorkflowTitle")}>
 				<details className="group rounded-xl border border-[var(--border-divider)] bg-[var(--bg-panel)] px-3.5 py-2.5 text-xs">
@@ -555,7 +555,7 @@ export function AutomationOverviewTab({
 
 					<div className="mt-2.5 space-y-2.5 border-t border-[var(--border-divider)] pt-3 text-[11.5px]">
 						{hasProbe && schedule.agentTrigger !== "never" && (
-							<div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+							<div className="grid grid-cols-1 gap-2 @[460px]:grid-cols-2">
 								<div className="rounded-lg border border-[var(--border-divider)] bg-[var(--bg)] px-3 py-2 text-[var(--text-60)]">
 									<div className="font-medium text-[var(--text)]">
 										{t("schedules.overviewProbeCardTitle")}

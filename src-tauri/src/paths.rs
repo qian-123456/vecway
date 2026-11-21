@@ -76,6 +76,44 @@ pub fn images_dir() -> PathBuf {
     data_dir().join("images")
 }
 
+/// Remap a legacy `~/.omp-workspace/images/<rel>` path into `images_dir` when
+/// the legacy path no longer exists on disk and the migrated file does.
+pub fn resolve_migrated_image_in(raw: &str, images_dir: &std::path::Path) -> Option<PathBuf> {
+    let p = std::path::Path::new(raw);
+    if p.is_file() {
+        return None;
+    }
+    let legacy_dir = std::ffi::OsStr::new(".omp-workspace");
+    let images_seg = std::ffi::OsStr::new("images");
+    let mut comps = p.components();
+    while let Some(c) = comps.next() {
+        if c == std::path::Component::Normal(legacy_dir) {
+            let mut rest = comps.clone();
+            if rest.next() == Some(std::path::Component::Normal(images_seg)) {
+                let rel: PathBuf = rest.collect();
+                if !rel.as_os_str().is_empty() {
+                    let candidate = images_dir.join(rel);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a stored image path: returns the path itself when it exists as a
+/// file, or its migrated counterpart inside `images_dir` if it came from
+/// `~/.omp-workspace/images/`.
+pub fn resolve_image_path_in(raw: &str, images_dir: &std::path::Path) -> Option<PathBuf> {
+    let p = std::path::Path::new(raw);
+    if p.is_file() {
+        return Some(p.to_path_buf());
+    }
+    resolve_migrated_image_in(raw, images_dir)
+}
+
 /// `~/.vecway/global/` — cwd for the 🌐 global workspace.
 pub fn global_dir() -> PathBuf {
     data_dir().join("global")
@@ -163,9 +201,47 @@ pub fn omp_sessions_dir() -> PathBuf {
     home().join(".omp").join("agent").join("sessions")
 }
 
+/// Move entries from `src` into an existing `dst` directory without overwriting
+/// any file that already exists in `dst`.
+fn merge_dir_missing(src: &std::path::Path, dst: &std::path::Path) {
+    let entries = match std::fs::read_dir(src) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!(
+                "vecway: read {} failed during migration: {e}",
+                src.display()
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if dst_path.symlink_metadata().is_err() {
+            if let Err(e) = std::fs::rename(&src_path, &dst_path) {
+                eprintln!(
+                    "vecway: migrate {} -> {} failed: {e}",
+                    src_path.display(),
+                    dst_path.display()
+                );
+            }
+        } else if src_path.is_dir() && dst_path.is_dir() {
+            merge_dir_missing(&src_path, &dst_path);
+            let _ = std::fs::remove_dir(&src_path);
+        }
+    }
+}
+
 /// One-time migration from `~/.omp-workspace` to `~/.vecway` when upgrading.
+///
+/// If `~/.vecway` already exists (for instance because shell-init or status
+/// files were written before first launch) but has no database yet, merge all
+/// non-conflicting files and directories from `~/.omp-workspace` into it.
 fn migrate_legacy_data_dir_in(legacy: &std::path::Path, target: &std::path::Path) {
-    if !target.exists() && legacy.is_dir() {
+    if !legacy.is_dir() {
+        return;
+    }
+    if target.symlink_metadata().is_err() {
         if let Err(e) = std::fs::rename(legacy, target) {
             eprintln!(
                 "vecway: migrate {} -> {} failed: {e}",
@@ -173,7 +249,20 @@ fn migrate_legacy_data_dir_in(legacy: &std::path::Path, target: &std::path::Path
                 target.display()
             );
         }
+        return;
     }
+    if !target.is_dir() {
+        return;
+    }
+    // Never overwrite an initialized database (or partial WAL/SHM journal).
+    if ["app.db", "app.db-wal", "app.db-shm"]
+        .iter()
+        .any(|name| target.join(name).exists())
+    {
+        return;
+    }
+    merge_dir_missing(legacy, target);
+    let _ = std::fs::remove_dir(legacy);
 }
 
 /// Create all app-owned directories at startup.
@@ -228,6 +317,111 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(target.join("marker.txt")).unwrap(),
             "ok"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn test_migrate_legacy_data_dir_merges_when_target_exists_without_db() {
+        let base = std::env::temp_dir().join(format!("vecway-mig-merge-{}", uuid::Uuid::new_v4()));
+        let legacy = base.join(".omp-workspace");
+        let target = base.join(".vecway");
+        std::fs::create_dir_all(legacy.join("images")).unwrap();
+        std::fs::create_dir_all(legacy.join("status")).unwrap();
+        std::fs::write(legacy.join("app.db"), "legacy-db").unwrap();
+        std::fs::write(legacy.join("app.db-wal"), "legacy-wal").unwrap();
+        std::fs::write(legacy.join("images").join("a.png"), "png").unwrap();
+        std::fs::write(legacy.join("status").join("old.json"), "old").unwrap();
+        std::fs::write(legacy.join("status").join("shared.json"), "from-legacy").unwrap();
+        std::fs::write(legacy.join("bashrc"), "old-bashrc").unwrap();
+
+        // Simulate pre-existing target created by shell-init / status before first app launch.
+        std::fs::create_dir_all(target.join("status")).unwrap();
+        std::fs::write(target.join("bashrc"), "new-bashrc").unwrap();
+        std::fs::write(target.join("status").join("shared.json"), "from-target").unwrap();
+
+        migrate_legacy_data_dir_in(&legacy, &target);
+
+        assert_eq!(
+            std::fs::read_to_string(target.join("app.db")).unwrap(),
+            "legacy-db"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("app.db-wal")).unwrap(),
+            "legacy-wal"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("images").join("a.png")).unwrap(),
+            "png"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("status").join("old.json")).unwrap(),
+            "old"
+        );
+        // Existing files in target are preserved.
+        assert_eq!(
+            std::fs::read_to_string(target.join("bashrc")).unwrap(),
+            "new-bashrc"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("status").join("shared.json")).unwrap(),
+            "from-target"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn test_migrate_legacy_data_dir_skips_when_target_has_db() {
+        let base = std::env::temp_dir().join(format!("vecway-mig-skip-{}", uuid::Uuid::new_v4()));
+        let legacy = base.join(".omp-workspace");
+        let target = base.join(".vecway");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(legacy.join("app.db"), "legacy-db").unwrap();
+        std::fs::write(legacy.join("extra.txt"), "legacy-extra").unwrap();
+        std::fs::write(target.join("app.db"), "target-db").unwrap();
+
+        migrate_legacy_data_dir_in(&legacy, &target);
+
+        assert_eq!(
+            std::fs::read_to_string(target.join("app.db")).unwrap(),
+            "target-db"
+        );
+        assert!(!target.join("extra.txt").exists());
+        assert!(legacy.join("app.db").exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_migrated_image_in() {
+        let base = std::env::temp_dir().join(format!("vecway-img-rel-{}", uuid::Uuid::new_v4()));
+        let images_dir = base.join(".vecway").join("images");
+        std::fs::create_dir_all(&images_dir).unwrap();
+        let target = images_dir.join("shot.png");
+        std::fs::write(&target, b"png").unwrap();
+
+        let legacy_path = base.join(".omp-workspace").join("images").join("shot.png");
+        let legacy_str = legacy_path.to_string_lossy().into_owned();
+        assert_eq!(
+            resolve_migrated_image_in(&legacy_str, &images_dir),
+            Some(target.clone())
+        );
+        assert_eq!(
+            resolve_image_path_in(&legacy_str, &images_dir),
+            Some(target.clone())
+        );
+        assert_eq!(
+            resolve_migrated_image_in(target.to_str().unwrap(), &images_dir),
+            None
+        );
+        assert_eq!(
+            resolve_image_path_in(target.to_str().unwrap(), &images_dir),
+            Some(target)
+        );
+        let missing = base.join(".omp-workspace").join("images").join("missing.png");
+        assert_eq!(
+            resolve_image_path_in(missing.to_str().unwrap(), &images_dir),
+            None
         );
         std::fs::remove_dir_all(&base).unwrap();
     }

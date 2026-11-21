@@ -27,6 +27,7 @@ import { PLAN_ROLE, effectiveRoles, planRoleScope, resolvePlanChoice, savedPlanV
 import { useDraftBaseContext, useDraftDefaultModel } from "./useDraftDefaultModel";
 import { clearPlanModelApplied, hasPlanModelApplied, markPlanModelApplied } from "./plan/planModelApplied";
 import { parseSavedPlanStatus, usePlanPanelLifecycle } from "./plan/usePlanPanelLifecycle";
+import { parseSavedAutomationState } from "./automation/automationStatus";
 import { setAutomationModeAction } from "./automation/automationStatus";
 import { setAutomationSessionMode } from "../../stores/live";
 import { applyArgName, buildArgItems, type ArgCandidate } from "./slash/argComplete";
@@ -487,10 +488,28 @@ export function Composer({
 				setSnapshotRec({ id: sessionId, snap });
 				// Disk restoration is only a baseline; a live status frame always wins.
 				const plan = !readonly ? parseSavedPlanStatus(snap.planState) : null;
-				if (plan) useLive.setState((state) => {
+				const automation = parseSavedAutomationState(snap.automationState);
+				if (plan || automation) useLive.setState((state) => {
 					const current = state.sessions[sessionId];
-					if (current?.plan !== undefined) return state;
-					return { sessions: { ...state.sessions, [sessionId]: { ...(current ?? emptySessionLive()), plan } } };
+					const applyPlan = Boolean(plan && current?.plan === undefined);
+					const applyAutomation = Boolean(
+						automation && (!current?.alive && (readonly || current?.automationState === undefined)),
+					);
+					if (!applyPlan && !applyAutomation) return state;
+					const base = current ?? emptySessionLive();
+					const latestDraft = automation?.drafts[automation.drafts.length - 1];
+					return {
+						sessions: {
+							...state.sessions,
+							[sessionId]: {
+								...base,
+								...(applyPlan && plan ? { plan } : {}),
+								...(applyAutomation && automation
+									? { automationState: automation, automationDraft: latestDraft }
+									: {}),
+							},
+						},
+					};
 				});
 			})
 			.catch((err) => console.warn("[composer] session snapshot fetch failed", err));
@@ -1199,13 +1218,17 @@ export function Composer({
 		const fit = () => {
 			const savedScrollTop = ta.scrollTop;
 			ta.style.height = "auto";
-			const minH = compact ? 22 : 26;
+			const minH = 26;
 			const maxH = 220;
 			const nextH = Math.min(Math.max(ta.scrollHeight, minH), maxH);
+			const scrollable = ta.scrollHeight > maxH;
 			ta.style.height = `${nextH}px`;
-			ta.style.overflowY = ta.scrollHeight > maxH ? "auto" : "hidden";
-			// Collapsing the height clamps scrollTop to 0; restore it.
-			ta.scrollTop = savedScrollTop;
+			ta.style.overflowX = "hidden";
+			ta.style.overflowY = scrollable ? "auto" : "hidden";
+			// Only preserve scroll position when the textarea actually overflows maxH;
+			// otherwise lock scrollTop/scrollLeft to 0 so placeholder/short drafts never slide.
+			ta.scrollLeft = 0;
+			ta.scrollTop = scrollable ? savedScrollTop : 0;
 			if (backdropRef.current) {
 				backdropRef.current.style.height = `${nextH}px`;
 				// Mirror the textarea's scrollbar gutter so both wrap at the same width.
@@ -1225,6 +1248,21 @@ export function Composer({
 		ro.observe(ta);
 		return () => ro.disconnect();
 	}, [text, compact, chipIndent]);
+
+	// React 19 registers JSX `onWheel` as passive, so attach a native non-passive
+	// listener to block horizontal trackpad swipes from panning the textarea sideways.
+	useEffect(() => {
+		const ta = taRef.current;
+		if (!ta) return;
+		const handleWheel = (e: WheelEvent) => {
+			if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && e.deltaX !== 0) {
+				e.preventDefault();
+				ta.scrollLeft = 0;
+			}
+		};
+		ta.addEventListener("wheel", handleWheel, { passive: false });
+		return () => ta.removeEventListener("wheel", handleWheel);
+	}, []);
 	/** Registry-facing hooks: pickers, text insertion. Fresh closure per call
 	 * so executors always see current state. */
 	const makeSlashDeps = (): SlashDeps => ({
@@ -2723,9 +2761,14 @@ export function Composer({
 						ref={taRef}
 						data-composer={sessionId}
 						value={text}
-						onScroll={() => {
-							if (backdropRef.current && taRef.current) {
-								backdropRef.current.scrollTop = taRef.current.scrollTop;
+						onScroll={(e) => {
+							const ta = e.currentTarget;
+							if (ta.scrollLeft !== 0) ta.scrollLeft = 0;
+							if (ta.style.overflowY !== "auto" && ta.scrollTop !== 0) {
+								ta.scrollTop = 0;
+							}
+							if (backdropRef.current) {
+								backdropRef.current.scrollTop = ta.scrollTop;
 							}
 						}}
 						onChange={(e) => {
@@ -2869,10 +2912,10 @@ export function Composer({
 											? t("sidechat.inputPlaceholder")
 											: (placeholderOverride ?? t("composer.placeholderDefault"))
 						}
-						style={{ outline: "none", boxShadow: "none", textIndent: legacyChip ? chipIndent : 0, ...COMPOSER_TEXT_METRICS_STYLE }}
+						style={{ outline: "none", boxShadow: "none", overflowX: "hidden", textIndent: legacyChip ? chipIndent : 0, ...COMPOSER_TEXT_METRICS_STYLE }}
 						className={clsx(
 							COMPOSER_TEXT_METRICS_CLASS,
-							"w-full resize-none bg-transparent px-4 pt-3 pb-1.5 outline-none !outline-none focus:outline-none focus:ring-0 placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap placeholder:text-[var(--text-30,var(--text-dim))] disabled:cursor-not-allowed",
+							"block w-full resize-none overflow-x-hidden overflow-y-hidden overscroll-none bg-transparent px-4 pt-3 pb-1.5 outline-none !outline-none focus:outline-none focus:ring-0 placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap placeholder:text-[var(--text-30,var(--text-dim))] disabled:cursor-not-allowed",
 							hasInlineTokens
 								? "relative z-10 text-transparent caret-[var(--text)] selection:bg-sky-500/30 selection:text-transparent"
 								: "relative text-[var(--text)]",
@@ -2904,7 +2947,7 @@ export function Composer({
 					)}
 				>
 					{readonly ? (
-						<div className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 pl-1.5">
+						<div className="flex min-h-7 min-w-0 flex-1 flex-nowrap items-center gap-1.5 pl-1.5">
 							<span
 								title={t("composer.externalTerminalRunning")}
 								className="relative flex h-2.5 w-2.5 shrink-0 items-center justify-center"

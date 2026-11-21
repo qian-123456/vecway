@@ -404,30 +404,33 @@ pub async fn storage_clear_omp_cache(_state: tauri::State<'_, AppState>) -> Resu
     .map_err(|e| format!("清空 OMP 缓存失败：{e}"))?
 }
 
+/// Delete expired status files (>24h old and whose owning PID is no longer alive).
+pub(crate) fn clean_expired_status_records_blocking() -> GcSummary {
+    let (_, expired) = expired_status_files(
+        &paths::status_dir(),
+        SystemTime::now(),
+        STATUS_MIN_AGE,
+        &crate::catalog::external::pid_alive,
+    );
+    let mut out = GcSummary::default();
+    for p in expired {
+        let bytes = fsutil::tree_size(&p);
+        if fsutil::remove_path(&p).is_ok() {
+            out.count += 1;
+            out.bytes += bytes;
+        }
+    }
+    out
+}
+
 /// Delete status files of sessions that are no longer running.
 #[tauri::command]
 pub async fn storage_clean_status_records(
     _state: tauri::State<'_, AppState>,
 ) -> Result<GcSummary, String> {
-    tokio::task::spawn_blocking(|| {
-        let (_, expired) = expired_status_files(
-            &paths::status_dir(),
-            SystemTime::now(),
-            STATUS_MIN_AGE,
-            &crate::catalog::external::pid_alive,
-        );
-        let mut out = GcSummary::default();
-        for p in expired {
-            let bytes = fsutil::tree_size(&p);
-            if fsutil::remove_path(&p).is_ok() {
-                out.count += 1;
-                out.bytes += bytes;
-            }
-        }
-        out
-    })
-    .await
-    .map_err(|e| format!("清理过期记录失败：{e}"))
+    tokio::task::spawn_blocking(clean_expired_status_records_blocking)
+        .await
+        .map_err(|e| format!("清理过期记录失败：{e}"))
 }
 
 #[derive(Debug, Serialize)]

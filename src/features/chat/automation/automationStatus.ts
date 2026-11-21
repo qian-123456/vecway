@@ -156,9 +156,17 @@ export function parseAutomationSessionState(text: unknown): AutomationSessionSta
 	} catch {
 		return null;
 	}
+	return parseAutomationStateObject(parsed, false);
+}
+
+function parseAutomationStateObject(
+	parsed: unknown,
+	allowV2: boolean,
+): AutomationSessionState | null {
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 	const obj = parsed as Record<string, unknown>;
-	if (obj.v !== 1) return null;
+	const validVersion = allowV2 ? obj.v === 1 || obj.v === 2 : obj.v === 1;
+	if (!validVersion) return null;
 
 	if (Array.isArray(obj.drafts)) {
 		const drafts = obj.drafts
@@ -180,6 +188,11 @@ export function parseAutomationSessionState(text: unknown): AutomationSessionSta
 		return { mode: obj.mode, drafts: [] };
 	}
 	return null;
+}
+
+/** Hydrate persisted `ompws-automation-state` (v2) or legacy `ompws-automation-draft` (v1) from transcript. */
+export function parseSavedAutomationState(value: unknown): AutomationSessionState | null {
+	return parseAutomationStateObject(value, true);
 }
 
 /** Legacy helper returning the latest draft item (kept for unit tests and compatibility). */

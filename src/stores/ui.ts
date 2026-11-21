@@ -20,13 +20,15 @@ export type RightTab =
 	| "services"
 	| "terminal"
 	| "plan"
+	| "automation"
 	| "files";
 
-export const MIN_SIDEBAR_WIDTH = 260;
+export const MIN_SIDEBAR_WIDTH = 188;
 export const MAX_SIDEBAR_WIDTH = 600;
-export const SIDEBAR_COLLAPSE_THRESHOLD = 200;
+export const SIDEBAR_COLLAPSE_THRESHOLD = 136;
 export const MIN_CENTER_WIDTH = 360;
-
+export const MIN_RIGHT_WIDTH = 200;
+export const MAX_RIGHT_WIDTH = 720;
 
 const STORAGE_KEYS = {
 	sidebarWidth: "ompws:sidebar-width",
@@ -50,6 +52,7 @@ const RIGHT_TABS: readonly RightTab[] = [
 	"services",
 	"terminal",
 	"plan",
+	"automation",
 	"files",
 ];
 
@@ -277,7 +280,7 @@ export const useUi = create<UiState>((set) => ({
 	rightTab: initialRight.active,
 	openRightTabs: initialRight.tabs,
 	rightOpen: initialRight.open,
-	rightWidth: readNumber(STORAGE_KEYS.rightWidth, 360, 260, 720),
+	rightWidth: readNumber(STORAGE_KEYS.rightWidth, 360, MIN_RIGHT_WIDTH, MAX_RIGHT_WIDTH),
 	gitListHeight: readNumber(STORAGE_KEYS.gitListHeight, 220, 80, 2000),
 	diffViewMode: readDiffViewMode(),
 	diffWrap: readBool(STORAGE_KEYS.diffWrap, false),
@@ -405,7 +408,7 @@ export const useUi = create<UiState>((set) => ({
 			return { rightOpen: open };
 		}),
 	setRightWidth: (w) => {
-		const clamped = Math.min(720, Math.max(260, w));
+		const clamped = Math.min(MAX_RIGHT_WIDTH, Math.max(MIN_RIGHT_WIDTH, w));
 		writeStorage(STORAGE_KEYS.rightWidth, clamped);
 		set({ rightWidth: clamped });
 	},

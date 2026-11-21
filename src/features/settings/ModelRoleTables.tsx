@@ -356,7 +356,7 @@ function RowEditor({
 	return (
 		<div className="space-y-1.5">
 			<Step win={mode === "pinned"} label={t("settingsModels.stepDedicated")}>
-				<div className="min-w-0">
+				<div className="min-w-0 max-w-full flex-1">
 					<div className="flex min-w-0 flex-wrap items-center gap-1.5">
 						{serviceRole !== null ? (
 							<ServiceRoleModelSelect
@@ -376,7 +376,7 @@ function RowEditor({
 								closeOnSelect
 								direction="down"
 								align="start"
-								widthClass="w-[360px]"
+								widthClass="w-[360px] max-w-[calc(100vw-2rem)]"
 								label={pinned ? parseSelection(shown ?? "").selector : t("settingsModels.selectModelBtn")}
 								buttonClass={`${MODEL_PICKER_BUTTON_CLASS} ${pinned ? "" : "italic text-[var(--text-muted)]"}`}
 								models={ctx.models}
@@ -402,7 +402,7 @@ function RowEditor({
 				</div>
 			</Step>
 			<Step win={mode === "reuse"} label={t("settingsModels.stepReuse")}>
-				<div className="min-w-0">
+				<div className="min-w-0 max-w-full flex-1">
 					<div className="flex min-w-0 flex-wrap items-center gap-1.5">
 						<NativeSelect
 							aria-label={t("settingsModels.reuseRoleAria", { subject, scope: scopeLabel })}
@@ -410,7 +410,7 @@ function RowEditor({
 							disabled={reuse.locked}
 							onChange={(e) => pickRole(e.target.value)}
 							className="text-[11px]"
-							containerClassName="w-[340px] max-w-full"
+							containerClassName="w-full max-w-[340px]"
 						>
 							{(!isAgent || pinned) && <option value="">{noneLabel}</option>}
 							{roleChoices.map((c) => {
@@ -475,22 +475,36 @@ function Summary({ row, ctx }: { row: AssignmentRow; ctx: AssignmentContext }) {
 	} else {
 		final = <span className="text-[var(--text-dim)]">{t("settingsModels.notSet")}</span>;
 	}
+	const hasMeta =
+		Boolean(row.thinking) ||
+		(row.kind === "agent" && row.projectShadowed) ||
+		(ctx.scope === "project" && e.inherited) ||
+		row.group === "custom";
 	return (
-		<>
-			<span className="min-w-0 w-72 max-w-full shrink break-all font-mono text-[12px] text-[var(--text)]">{final}</span>
-			<span className="w-12 shrink-0 text-[11px] text-[var(--text-dim)]" title={row.thinking ?? undefined}>
-				{row.thinking ? (THINKING_ZH[row.thinking] ?? row.thinking) : ""}
+		<div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-3 gap-y-1 @[560px]:flex-nowrap">
+			<span className="min-w-[140px] flex-1 break-words [overflow-wrap:anywhere] font-mono text-[12px] text-[var(--text)]">
+				{final}
 			</span>
-			{row.kind === "agent" && row.projectShadowed && (
-				<span className="shrink-0 text-[11px] text-[var(--status-warning)]" title={t("settingsModels.globalShadowedBadgeTitle")}>
-					{t("settingsModels.globalShadowedBadge")}
-				</span>
+			{hasMeta && (
+				<div className="flex shrink-0 flex-wrap items-center gap-1.5">
+					<span
+						className="whitespace-nowrap text-[11px] text-[var(--text-dim)] @[560px]:w-12"
+						title={row.thinking ?? undefined}
+					>
+						{row.thinking ? (THINKING_ZH[row.thinking] ?? row.thinking) : ""}
+					</span>
+					{row.kind === "agent" && row.projectShadowed && (
+						<span className="shrink-0 whitespace-nowrap text-[11px] text-[var(--status-warning)]" title={t("settingsModels.globalShadowedBadgeTitle")}>
+							{t("settingsModels.globalShadowedBadge")}
+						</span>
+					)}
+					{ctx.scope === "project" && e.inherited && (
+						<Chip>{t("settingsModels.inheritGlobalChip")}</Chip>
+					)}
+					{row.group === "custom" && <UsageChip users={ctx.roleUsers.get(row.name) ?? []} />}
+				</div>
 			)}
-			{ctx.scope === "project" && e.inherited && (
-				<Chip>{t("settingsModels.inheritGlobalChip")}</Chip>
-			)}
-			{row.group === "custom" && <UsageChip users={ctx.roleUsers.get(row.name) ?? []} />}
-		</>
+		</div>
 	);
 }
 
@@ -552,7 +566,7 @@ export function RoleAssignmentTable({ rows, query, ctx }: { rows: AssignmentRow[
 
 	return (
 		// Rows only: the card, its divider and its clipping belong to the panel.
-		<div data-testid="role-table" data-scope={ctx.scope}>
+		<div data-testid="role-table" data-scope={ctx.scope} className="@container">
 			{visible.map((r, i) => {
 				const key = `${r.kind}:${r.name}`;
 				const isOpen = open.has(key);
@@ -570,23 +584,25 @@ export function RoleAssignmentTable({ rows, query, ctx }: { rows: AssignmentRow[
 									setOpen((s) => toggle(s, key));
 								}
 							}}
-							className={`flex cursor-pointer items-center gap-3 px-4 py-2.5 hover:bg-[var(--bg-hover)] ${
+							className={`flex cursor-pointer items-start @[560px]:items-center gap-2.5 @[560px]:gap-3 px-3.5 @[560px]:px-4 py-2.5 hover:bg-[var(--bg-hover)] ${
 								i === 0 ? "" : gap ? "border-t-[6px] border-[var(--well-bg)]" : "border-t border-[var(--border-divider)]"
 							}`}
 						>
 							{isOpen ? (
-								<ChevronDown className="h-3 w-3 shrink-0 text-[var(--text-dim)]" />
+								<ChevronDown className="mt-1 @[560px]:mt-0 h-3 w-3 shrink-0 text-[var(--text-dim)]" />
 							) : (
-								<ChevronRight className="h-3 w-3 shrink-0 text-[var(--text-dim)]" />
+								<ChevronRight className="mt-1 @[560px]:mt-0 h-3 w-3 shrink-0 text-[var(--text-dim)]" />
 							)}
-							<span className="w-40 shrink-0">
-								<span className="block truncate font-mono text-[12px] font-semibold text-[var(--text)]">{r.name}</span>
-								{r.label && isOpen && <span className="block truncate text-[11px] text-[var(--text-dim)]">{r.label}</span>}
-							</span>
-							<Summary row={r} ctx={ctx} />
+							<div className="flex min-w-0 flex-1 flex-col gap-1 @[560px]:flex-row @[560px]:items-center @[560px]:gap-3">
+								<span className="min-w-0 @[560px]:w-36 @[560px]:shrink-0">
+									<span className="block truncate font-mono text-[12px] font-semibold text-[var(--text)]">{r.name}</span>
+									{r.label && isOpen && <span className="block truncate text-[11px] text-[var(--text-dim)]">{r.label}</span>}
+								</span>
+								<Summary row={r} ctx={ctx} />
+							</div>
 						</div>
 						{isOpen && (
-							<div className="bg-[var(--well-bg)]/40 py-1 pl-10 pr-4 pb-3.5">
+							<div className="bg-[var(--well-bg)]/40 py-1 pl-4 pr-3 @[560px]:pl-10 @[560px]:pr-4 pb-3.5">
 								<RowEditor
 									row={r}
 									ctx={ctx}

@@ -52,6 +52,22 @@ pub fn spawn_all(state: AppState) {
     tauri::async_runtime::spawn(async move {
         run_bus_loop(s4, bus_rx).await;
     });
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        if let Ok(summary) =
+            tokio::task::spawn_blocking(crate::storage::clean_expired_status_records_blocking)
+                .await
+        {
+            if summary.count > 0 {
+                tracing::info!(
+                    count = summary.count,
+                    bytes = summary.bytes,
+                    "cleaned expired status files at startup"
+                );
+            }
+        }
+    });
 }
 
 async fn run_watcher(state: AppState) {
@@ -63,13 +79,17 @@ async fn run_watcher(state: AppState) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<WatchBatch>();
 
     let watch_root = sessions_dir.clone();
+    let status_root = status_dir.clone();
     let debouncer_res = new_debouncer(
         Duration::from_millis(300),
         None,
         move |res: DebounceEventResult| {
             if let Ok(events) = res {
-                let batch =
-                    classify_events(&watch_root, events.iter().flat_map(|ev| ev.paths.iter()));
+                let batch = classify_events(
+                    &watch_root,
+                    &status_root,
+                    events.iter().flat_map(|ev| ev.paths.iter()),
+                );
                 if !batch.is_empty() {
                     let _ = tx.send(batch);
                 }
@@ -98,14 +118,17 @@ async fn run_watcher(state: AppState) {
         while let Ok(more) = rx.try_recv() {
             batch.merge(more);
         }
+        let notify_external = !batch.is_empty();
         if batch.full {
             super::search::request_rescan();
             super::rebuild(&state).await;
-        } else {
+        } else if !batch.sessions.is_empty() {
             super::search::request_paths(batch.sessions.iter().cloned().collect());
             super::refresh_paths(&state, batch.sessions.into_iter().collect()).await;
         }
-        notify_external_check();
+        if notify_external {
+            notify_external_check();
+        }
     }
 }
 
@@ -113,24 +136,28 @@ async fn run_watcher(state: AppState) {
 #[derive(Default)]
 struct WatchBatch {
     /// Something other than a plain change to a known-shaped session file
-    /// (status files, unexpected locations): rescan everything.
+    /// or status file (e.g. unexpected locations): rescan everything.
     full: bool,
     /// Changed `<sessions>/<bucket>/<name>.jsonl` files.
     sessions: std::collections::HashSet<std::path::PathBuf>,
+    /// Changed `.json` files under `<status_dir>`.
+    status_changed: bool,
 }
 
 impl WatchBatch {
     fn is_empty(&self) -> bool {
-        !self.full && self.sessions.is_empty()
+        !self.full && self.sessions.is_empty() && !self.status_changed
     }
     fn merge(&mut self, other: WatchBatch) {
         self.full |= other.full;
         self.sessions.extend(other.sessions);
+        self.status_changed |= other.status_changed;
     }
 }
 
 fn classify_events<'a>(
     sessions_dir: &std::path::Path,
+    status_dir: &std::path::Path,
     paths: impl Iterator<Item = &'a std::path::PathBuf>,
 ) -> WatchBatch {
     let mut batch = WatchBatch::default();
@@ -139,7 +166,9 @@ fn classify_events<'a>(
         if !matches!(ext, Some("jsonl" | "json")) {
             continue;
         }
-        if ext == Some("jsonl") && super::scan::is_session_file(sessions_dir, p) {
+        if ext == Some("json") && p.starts_with(status_dir) {
+            batch.status_changed = true;
+        } else if ext == Some("jsonl") && super::scan::is_session_file(sessions_dir, p) {
             batch.sessions.insert(p.clone());
         } else if ext == Some("jsonl") && p.starts_with(sessions_dir) {
             // Subagent / artifact logs below a session dir: not catalog input.
@@ -166,24 +195,25 @@ async fn run_external_loop(state: AppState) {
     let mut current_delay = MIN_DELAY;
 
     loop {
-        let s_dir = sessions_dir.clone();
-        let holders = tokio::task::spawn_blocking(move || external::lsof_holders(&s_dir))
-            .await
-            .unwrap_or_default();
-
-        let status_files = external::read_status_files(&status_dir);
-        let status_alive = external::status_validator(external::process_birth);
         let owned_pids: std::collections::HashSet<u32> = crate::rpc::registry()
             .read()
             .values()
             .map(|handle| handle.pid)
             .collect();
-        let external_status: Vec<_> = status_files
-            .iter()
-            .filter(|status| !owned_pids.contains(&status.pid))
-            .cloned()
-            .collect();
-        let new_ext = external::external_map(holders, &external_status, &status_alive, own_pid);
+        let s_dir = sessions_dir.clone();
+        let st_dir = status_dir.clone();
+        let new_ext = tokio::task::spawn_blocking(move || {
+            let holders = external::lsof_holders(&s_dir);
+            let status_files = external::read_status_files(&st_dir);
+            let status_alive = external::status_validator(external::process_birth);
+            let external_status: Vec<_> = status_files
+                .into_iter()
+                .filter(|status| !owned_pids.contains(&status.pid))
+                .collect();
+            external::external_map(holders, &external_status, &status_alive, own_pid)
+        })
+        .await
+        .unwrap_or_default();
 
         // Terminal squeezes GUI offline: an external holder on a file we also
         // hold via an app-owned RPC child means a single-writer conflict; step
@@ -253,7 +283,17 @@ async fn run_bus_loop(state: AppState, mut bus: tokio::sync::broadcast::Receiver
         };
 
         let (session_id, live_ev) = match ev {
-            AppEvent::RpcFrame { session_id, frame } => (session_id, LiveEvent::Frame(frame)),
+            AppEvent::RpcFrame { session_id, frame } => {
+                // status::apply only inspects lifecycle/dialog frames; skip
+                // high-frequency streaming deltas before locking the catalog.
+                if !matches!(
+                    frame.get("type").and_then(serde_json::Value::as_str),
+                    Some("agent_start" | "message_end" | "extension_ui_request" | "agent_end")
+                ) {
+                    continue;
+                }
+                (session_id, LiveEvent::Frame(frame.as_ref().clone()))
+            }
             AppEvent::RpcProcess {
                 session_id,
                 running,
@@ -312,20 +352,29 @@ mod watch_tests {
     #[test]
     fn classify_routes_session_subagent_and_status_events() {
         let dir = PathBuf::from("/s");
+        let status_dir = PathBuf::from("/status");
         let session = PathBuf::from("/s/b/one.jsonl");
         let subagent = PathBuf::from("/s/b/one/sub.jsonl");
         let status = PathBuf::from("/status/x.json");
         let other = PathBuf::from("/s/b/readme.txt");
 
-        let b = classify_events(&dir, [&session, &subagent, &other].into_iter());
+        let b = classify_events(&dir, &status_dir, [&session, &subagent, &other].into_iter());
         assert!(!b.full);
+        assert!(!b.status_changed);
         assert_eq!(b.sessions.len(), 1);
         assert!(b.sessions.contains(&session));
 
-        assert!(classify_events(&dir, [&status].into_iter()).full);
-        assert!(classify_events(&dir, [&other, &subagent].into_iter()).is_empty());
-        // Outside the sessions dir (e.g. a symlinked root): rescan everything.
+        let sb = classify_events(&dir, &status_dir, [&status].into_iter());
+        assert!(!sb.full);
+        assert!(sb.status_changed);
+        assert!(sb.sessions.is_empty());
+        assert!(!sb.is_empty());
+
+        assert!(classify_events(&dir, &status_dir, [&other, &subagent].into_iter()).is_empty());
+        // Outside the sessions/status dirs (e.g. a symlinked root or stray json): rescan everything.
         let elsewhere = PathBuf::from("/private/s/b/one.jsonl");
-        assert!(classify_events(&dir, [&elsewhere].into_iter()).full);
+        let stray_json = PathBuf::from("/other/x.json");
+        assert!(classify_events(&dir, &status_dir, [&elsewhere].into_iter()).full);
+        assert!(classify_events(&dir, &status_dir, [&stray_json].into_iter()).full);
     }
 }

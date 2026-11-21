@@ -81,9 +81,9 @@ function ProbeResultView({ outcome }: { outcome: ProbeOutcome }) {
 	);
 }
 
-/** One shared grid for header + rows so every column lines up across rows. */
+/** One shared 5-column template for wide containers; collapses into two readable lines below 720px. */
 const ROW_GRID =
-	"grid grid-cols-[minmax(0,1.6fr)_56px_112px_minmax(0,2fr)_168px] gap-x-3";
+	"@[720px]:grid @[720px]:grid-cols-[minmax(0,1.6fr)_56px_112px_minmax(0,2fr)_168px] @[720px]:gap-x-3";
 
 function OverviewRowView({
 	row,
@@ -122,68 +122,72 @@ function OverviewRowView({
 	};
 	return (
 		<div className="border-t border-[var(--border-divider)] px-4 py-2.5 text-[11px] transition-colors hover:bg-[var(--bg-hover)]/40">
-			<div className={`${ROW_GRID} items-center`}>
-				<span className="break-all font-mono text-xs leading-5 text-neutral-100" title={row.selector}>
-					<Highlight text={row.selector} terms={terms} />
-				</span>
-				<span>
-					<Chip tone="neutral">{t("modelReplace.locationsCount", { count: String(row.count) })}</Chip>
-				</span>
-				<span className="flex flex-wrap gap-1">
-					{row.levels.length > 0 ? (
-						<Chip tone="info" title={t("modelReplace.hasThinkingLevelTitle")}>
-							{row.levels.join("/")}
-						</Chip>
-					) : (
-						<span className="text-neutral-600">—</span>
-					)}
-				</span>
-				<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-					<span className="min-w-0 break-all text-neutral-400">
-						{first ? <Highlight text={`${first.title} · ${first.scope}`} terms={terms} /> : ""}
+			<div className={`flex flex-col gap-1.5 ${ROW_GRID} @[720px]:items-center`}>
+				<div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 @[720px]:contents">
+					<span className="min-w-[160px] flex-1 break-all font-mono text-xs leading-5 text-neutral-100 @[720px]:order-1" title={row.selector}>
+						<Highlight text={row.selector} terms={terms} />
 					</span>
-					{total > 1 && (
+					<div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2 @[720px]:order-5 @[720px]:ml-0">
+						{probeKind === null ? (
+							<span
+								title={t("modelReplace.unsupportedProbeTitle")}
+								className="whitespace-nowrap rounded-full bg-[var(--well-bg)] px-2.5 py-1 text-[10px] text-neutral-500"
+							>
+								{t("modelReplace.unsupportedProbe")}
+							</span>
+						) : (
+							<button
+								type="button"
+								onClick={() => void run()}
+								disabled={probing}
+								title={t("modelReplace.probeButtonTitle", { selector: row.selector })}
+								className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full hairline bg-[var(--well-bg)] px-3 py-1 text-[11px] text-neutral-300 transition-all hover:bg-[var(--bg-hover)] hover:text-neutral-100 active:scale-95 disabled:opacity-50"
+							>
+								{probing ? <Loader2 className="h-3 w-3 animate-spin" /> : <PlayCircle className="h-3 w-3" />}
+								{t("modelReplace.probe")}
+							</button>
+						)}
 						<button
 							type="button"
-							onClick={() => setExpanded((v) => !v)}
-							aria-expanded={expanded}
-							title={expanded ? t("modelReplace.collapseLocationList") : t("modelReplace.expandLocationList")}
-							className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full bg-[var(--bg-active-fill)] px-2 py-0.5 text-[10px] text-[var(--accent)] transition-all hover:bg-[var(--bg-hover)] active:scale-95"
+							onClick={() => onReplace(row)}
+							title={t("modelReplace.replaceButtonTitle")}
+							className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] px-3 py-1 text-[11px] font-medium text-[var(--accent)] transition-all hover:bg-[color-mix(in_oklab,var(--accent)_28%,transparent)] active:scale-95"
 						>
-							{expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-							{t("modelReplace.allLocationsCount", { count: String(total) })}
+							<ArrowRightLeft className="h-3 w-3" />
+							{t("modelReplace.replace")}
 						</button>
-					)}
+					</div>
 				</div>
-				<div className="flex items-center justify-end gap-2">
-					{probeKind === null ? (
-						<span
-							title={t("modelReplace.unsupportedProbeTitle")}
-							className="whitespace-nowrap rounded-full bg-[var(--well-bg)] px-2.5 py-1 text-[10px] text-neutral-500"
-						>
-							{t("modelReplace.unsupportedProbe")}
+				<div className="flex flex-wrap items-center gap-x-2 gap-y-1 @[720px]:contents">
+					<span className="shrink-0 @[720px]:order-2">
+						<Chip tone="neutral">{t("modelReplace.locationsCount", { count: String(row.count) })}</Chip>
+					</span>
+					<span className="flex shrink-0 flex-wrap gap-1 @[720px]:order-3">
+						{row.levels.length > 0 ? (
+							<Chip tone="info" title={t("modelReplace.hasThinkingLevelTitle")}>
+								{row.levels.join("/")}
+							</Chip>
+						) : (
+							<span className="text-neutral-600">—</span>
+						)}
+					</span>
+					<div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 @[720px]:order-4">
+						<span className="min-w-0 break-all text-neutral-400">
+							{first ? <Highlight text={`${first.title} · ${first.scope}`} terms={terms} /> : ""}
 						</span>
-					) : (
-						<button
-							type="button"
-							onClick={() => void run()}
-							disabled={probing}
-							title={t("modelReplace.probeButtonTitle", { selector: row.selector })}
-							className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full hairline bg-[var(--well-bg)] px-3 py-1 text-[11px] text-neutral-300 transition-all hover:bg-[var(--bg-hover)] hover:text-neutral-100 active:scale-95 disabled:opacity-50"
-						>
-							{probing ? <Loader2 className="h-3 w-3 animate-spin" /> : <PlayCircle className="h-3 w-3" />}
-							{t("modelReplace.probe")}
-						</button>
-					)}
-					<button
-						type="button"
-						onClick={() => onReplace(row)}
-						title={t("modelReplace.replaceButtonTitle")}
-						className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-[color-mix(in_oklab,var(--accent)_16%,transparent)] px-3 py-1 text-[11px] font-medium text-[var(--accent)] transition-all hover:bg-[color-mix(in_oklab,var(--accent)_28%,transparent)] active:scale-95"
-					>
-						<ArrowRightLeft className="h-3 w-3" />
-						{t("modelReplace.replace")}
-					</button>
+						{total > 1 && (
+							<button
+								type="button"
+								onClick={() => setExpanded((v) => !v)}
+								aria-expanded={expanded}
+								title={expanded ? t("modelReplace.collapseLocationList") : t("modelReplace.expandLocationList")}
+								className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full bg-[var(--bg-active-fill)] px-2 py-0.5 text-[10px] text-[var(--accent)] transition-all hover:bg-[var(--bg-hover)] active:scale-95"
+							>
+								{expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+								{t("modelReplace.allLocationsCount", { count: String(total) })}
+							</button>
+						)}
+					</div>
 				</div>
 			</div>
 			{expanded && (
@@ -286,7 +290,7 @@ export function ModelReplaceOverview({
 
 	return (
 		<div ref={rootRef} className="flex min-h-0 flex-1 flex-col">
-			<div className="flex items-center justify-between gap-4 px-4 pb-3">
+			<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 pb-3">
 				<p className="text-xs leading-5 text-neutral-400">
 					{t("modelReplace.overviewIntro")}
 				</p>
@@ -319,7 +323,7 @@ export function ModelReplaceOverview({
 					aria-label={t("modelReplace.scopeAria")}
 					value={scope}
 					onChange={(e) => onScopeChange(e.target.value as ReplaceScope)}
-					containerClassName="w-72"
+					containerClassName="w-72 max-w-full"
 					className="text-[11px]"
 					title={scopeOptions_.find((o) => o.value === scope)?.title}
 				>
@@ -378,7 +382,7 @@ export function ModelReplaceOverview({
 			)}
 
 			{visibleRows.length > 0 && (
-				<div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-3">
+				<div className="@container min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-3">
 					{(kindsReady ? sections : [{ group: null, rows: visibleRows }]).map((section) => (
 						<section
 							key={section.group ?? "all"}
@@ -396,7 +400,7 @@ export function ModelReplaceOverview({
 									</span>
 								</header>
 							)}
-							<div className={`${ROW_GRID} border-t border-[var(--border-divider)] px-4 py-1.5 text-[10px] font-medium tracking-wide text-neutral-500`}>
+							<div className={`hidden ${ROW_GRID} border-t border-[var(--border-divider)] px-4 py-1.5 text-[10px] font-medium tracking-wide text-neutral-500`}>
 								<span>{t("modelReplace.colModel")}</span>
 								<span>{t("modelReplace.colReferences")}</span>
 								<span>{t("modelReplace.colThinkingLevel")}</span>

@@ -868,7 +868,7 @@ fn sse_rpc_whitelist_covers_every_consumed_frame_type() {
     // Frames without a type never reach the wire either.
     let untyped = AppEvent::RpcFrame {
         session_id: "a".into(),
-        frame: json!({"noType": true}),
+        frame: std::sync::Arc::new(json!({"noType": true})),
     };
     assert!(server::sse_event(&untyped).is_none());
 }

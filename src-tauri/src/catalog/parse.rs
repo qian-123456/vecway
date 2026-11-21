@@ -759,6 +759,13 @@ pub fn resolve_blob_path(hash: &str) -> Option<String> {
 
 /// Extract structured image attachments from message content (both blocks and markers).
 pub fn parse_images(content: Option<&Value>) -> Vec<crate::contracts::ImageAttachment> {
+    parse_images_in(content, &crate::paths::images_dir())
+}
+
+fn parse_images_in(
+    content: Option<&Value>,
+    images_dir: &Path,
+) -> Vec<crate::contracts::ImageAttachment> {
     let mut images = Vec::new();
     let mut idx = 1;
 
@@ -806,7 +813,10 @@ pub fn parse_images(content: Option<&Value>) -> Vec<crate::contracts::ImageAttac
                     .name("path1")
                     .or_else(|| caps.name("path2"))
                     .map(|m| m.as_str().trim().to_string());
-                let resolved_path = raw_path.filter(|p| Path::new(p).exists());
+                let resolved_path = raw_path.and_then(|p| {
+                    crate::paths::resolve_image_path_in(&p, images_dir)
+                        .map(|pb| pb.to_string_lossy().into_owned())
+                });
 
                 // Numbered markers refer to native image slots, even when the
                 // marker's clipboard path differs from the persisted blob path.
@@ -1388,6 +1398,21 @@ mod tests {
         assert_eq!(images[0].path.as_deref(), two.to_str());
         assert_eq!(images[1].path.as_deref(), one.to_str());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn marker_only_legacy_omp_workspace_image_resolves_in_images_dir() {
+        let base = std::env::temp_dir().join(format!("vecway-parse-img-{}", uuid::Uuid::new_v4()));
+        let images_dir = base.join(".vecway").join("images");
+        std::fs::create_dir_all(&images_dir).unwrap();
+        let moved = images_dir.join("shot.png");
+        std::fs::write(&moved, []).unwrap();
+        let legacy = base.join(".omp-workspace").join("images").join("shot.png");
+        let content = serde_json::json!(format!("[Image #1, 100x50: {}]", legacy.display()));
+        let images = parse_images_in(Some(&content), &images_dir);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].path.as_deref(), moved.to_str());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

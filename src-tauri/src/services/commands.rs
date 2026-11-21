@@ -166,7 +166,15 @@ pub fn import_image_file_internal(
     src: &str,
 ) -> Result<String, String> {
     let src_path = std::path::Path::new(src);
-    let meta = std::fs::metadata(src_path).map_err(|e| format!("读取图片失败：{e}"))?;
+    let meta = match std::fs::metadata(src_path) {
+        Ok(m) => m,
+        Err(e) => {
+            if let Some(migrated) = crate::paths::resolve_migrated_image_in(src, images_dir) {
+                return Ok(migrated.to_string_lossy().into_owned());
+            }
+            return Err(format!("读取图片失败：{e}"));
+        }
+    };
     if !meta.is_file() {
         return Err(format!("不是文件：{src}"));
     }
@@ -665,6 +673,14 @@ mod tests {
         assert_eq!(
             import_image_file_internal(&cache, &images, legacy_s).unwrap(),
             legacy_s
+        );
+        // A legacy ~/.omp-workspace/images/ path resolves to its migrated target inside images_dir.
+        let migrated_legacy = base.join(".omp-workspace").join("images").join("Shot.PNG");
+        let moved_target = images.join("Shot.PNG");
+        std::fs::write(&moved_target, b"moved").unwrap();
+        assert_eq!(
+            import_image_file_internal(&cache, &images, migrated_legacy.to_str().unwrap()).unwrap(),
+            moved_target.to_string_lossy().as_ref()
         );
         assert!(import_image_file_internal(&cache, &images, base.to_str().unwrap()).is_err());
         let _ = std::fs::remove_dir_all(&base);

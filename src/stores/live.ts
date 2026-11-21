@@ -1690,9 +1690,9 @@ export function setAutomationDraftStatus(
 			idx >= 0
 				? existing.map((d, i) => (i === idx ? automationDraft : d))
 				: [...existing, automationDraft];
-		const hasPending = nextDrafts.some((d) => d.status === "pending");
+		// Preserve automation mode across draft confirmation/dismissal until explicitly disabled.
 		const nextState: AutomationSessionState = {
-			mode: hasPending ? (live.automationState?.mode ?? "active") : "idle",
+			mode: live.automationState?.mode ?? "active",
 			drafts: nextDrafts,
 		};
 		return {
