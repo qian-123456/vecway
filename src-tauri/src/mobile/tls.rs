@@ -22,7 +22,7 @@ struct CertMetadata {
     fingerprint: String,
 }
 
-static IDENTITY: Mutex<Option<(Option<String>, TlsIdentity)>> = Mutex::new(None);
+static IDENTITY: Mutex<Option<(PathBuf, Option<String>, TlsIdentity)>> = Mutex::new(None);
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn tls_dir() -> PathBuf {
@@ -155,7 +155,7 @@ fn persist_identity_files(
     Ok(())
 }
 
-fn compute_fingerprint(der: &[u8]) -> String {
+pub(crate) fn compute_fingerprint(der: &[u8]) -> String {
     let hash = Sha256::digest(der);
     hash.iter()
         .map(|b| format!("{b:02X}"))
@@ -188,10 +188,8 @@ fn is_covered(existing_sans: &[String], required: &[String]) -> bool {
 }
 
 /// Generate new self-signed certificate and persist atomically to disk with the key at 0600.
-fn generate_and_persist(sans: &[String]) -> Result<TlsIdentity, String> {
-    let dir = tls_dir();
-    ensure_tls_dir(&dir)?;
-
+fn generate_and_persist_in(dir: &Path, sans: &[String]) -> Result<TlsIdentity, String> {
+    ensure_tls_dir(dir)?;
     let cert_key = generate_simple_self_signed(sans.to_vec())
         .map_err(|e| format!("生成自签名证书失败: {e}"))?;
 
@@ -199,7 +197,7 @@ fn generate_and_persist(sans: &[String]) -> Result<TlsIdentity, String> {
     let key_der = cert_key.key_pair.serialize_der();
     let fingerprint = compute_fingerprint(&cert_der);
 
-    persist_identity_files(&dir, sans, &cert_der, &key_der, &fingerprint)?;
+    persist_identity_files(dir, sans, &cert_der, &key_der, &fingerprint)?;
 
     build_identity(cert_der, key_der, fingerprint)
 }
@@ -226,23 +224,13 @@ fn build_identity(
     })
 }
 
-/// Ensure a self-signed certificate exists that covers `localhost` and `ddns_hostname` (if set).
-/// Regenerates if the configured hostname is not covered.
-pub fn ensure_tls_identity(ddns_hostname: Option<&str>) -> Result<TlsIdentity, String> {
-    let host_norm = ddns_hostname
-        .map(str::trim)
-        .filter(|h| !h.is_empty())
-        .map(str::to_string);
-
-    let dir = tls_dir();
-    ensure_tls_dir(&dir)?;
-
-    let mut guard = IDENTITY.lock();
-    if let Some((cached_host, ident)) = guard.as_ref() {
-        if *cached_host == host_norm {
-            return Ok(ident.clone());
-        }
-    }
+/// Ensure a self-signed certificate exists in `dir` that covers `localhost` and
+/// `ddns_hostname` (if set). Regenerates atomically if the configured hostname is not covered.
+pub(crate) fn ensure_tls_identity_in(
+    dir: &Path,
+    ddns_hostname: Option<&str>,
+) -> Result<TlsIdentity, String> {
+    ensure_tls_dir(dir)?;
 
     let cert_path = dir.join("cert.der");
     let key_path = dir.join("key.der");
@@ -261,7 +249,6 @@ pub fn ensure_tls_identity(ddns_hostname: Option<&str>) -> Result<TlsIdentity, S
                         let fp = compute_fingerprint(&cert_der);
                         if fp == meta.fingerprint {
                             if let Ok(ident) = build_identity(cert_der, key_der, fp) {
-                                *guard = Some((host_norm, ident.clone()));
                                 return Ok(ident);
                             }
                         }
@@ -271,8 +258,27 @@ pub fn ensure_tls_identity(ddns_hostname: Option<&str>) -> Result<TlsIdentity, S
         }
     }
 
-    let ident = generate_and_persist(&needed_sans)?;
-    *guard = Some((host_norm, ident.clone()));
+    generate_and_persist_in(dir, &needed_sans)
+}
+
+/// Ensure a self-signed certificate exists that covers `localhost` and `ddns_hostname` (if set).
+/// Regenerates if the configured hostname is not covered.
+pub fn ensure_tls_identity(ddns_hostname: Option<&str>) -> Result<TlsIdentity, String> {
+    let host_norm = ddns_hostname
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .map(str::to_string);
+
+    let dir = tls_dir();
+    let mut guard = IDENTITY.lock();
+    if let Some((cached_dir, cached_host, ident)) = guard.as_ref() {
+        if *cached_dir == dir && *cached_host == host_norm {
+            return Ok(ident.clone());
+        }
+    }
+
+    let ident = ensure_tls_identity_in(&dir, ddns_hostname)?;
+    *guard = Some((dir, host_norm, ident.clone()));
     Ok(ident)
 }
 
@@ -322,6 +328,50 @@ mod tests {
             assert_eq!(key_mode, 0o600);
             assert_eq!(dir_mode, 0o700);
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn required_sans_keeps_stable_loopback_and_optional_ddns_without_lan_ipv4() {
+        assert_eq!(required_sans(None), vec!["localhost", "127.0.0.1", "::1"]);
+        assert_eq!(
+            required_sans(Some("  ")),
+            vec!["localhost", "127.0.0.1", "::1"]
+        );
+        assert_eq!(
+            required_sans(Some(" home.example.com ")),
+            vec!["localhost", "127.0.0.1", "::1", "home.example.com"]
+        );
+        assert_eq!(
+            required_sans(Some("LOCALHOST")),
+            vec!["localhost", "127.0.0.1", "::1"]
+        );
+    }
+
+    #[test]
+    fn ensure_tls_identity_in_reuses_persisted_cert_and_regenerates_for_new_ddns() {
+        let dir = std::env::temp_dir().join(format!("omp-tls-reuse-{}", uuid::Uuid::new_v4()));
+        let first = ensure_tls_identity_in(&dir, None).unwrap();
+        assert_eq!(first.cert_sha256.len(), 95);
+        assert_eq!(first.cert_sha256.split(':').count(), 32);
+        assert!(first.cert_sha256.split(':').all(|part| {
+            part.len() == 2
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+        }));
+
+        let second = ensure_tls_identity_in(&dir, None).unwrap();
+        assert_eq!(second.cert_sha256, first.cert_sha256);
+
+        // Adding a DDNS hostname regenerates the identity to cover it.
+        let third = ensure_tls_identity_in(&dir, Some("ddns.example.com")).unwrap();
+        assert_ne!(third.cert_sha256, first.cert_sha256);
+
+        // Subsequent LAN-only call reuses the DDNS-covering certificate (single shared identity).
+        let fourth = ensure_tls_identity_in(&dir, None).unwrap();
+        assert_eq!(fourth.cert_sha256, third.cert_sha256);
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

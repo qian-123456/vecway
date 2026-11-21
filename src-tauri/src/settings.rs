@@ -136,6 +136,15 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
     if settings.mobile_ipv6_port == settings.mobile_port {
         return Err("移动端 IPv6 端口号不能与 IPv4 端口号相同".to_string());
     }
+    if settings.mobile_lan_tls_port < 1024 {
+        return Err("移动端局域网 TLS 端口号必须在 1024 到 65535 之间".to_string());
+    }
+    if settings.mobile_lan_tls_port == settings.mobile_port {
+        return Err("移动端局域网 TLS 端口号不能与 HTTP 端口号相同".to_string());
+    }
+    if settings.mobile_lan_tls_port == settings.mobile_ipv6_port {
+        return Err("移动端局域网 TLS 端口号不能与 IPv6 端口号相同".to_string());
+    }
 
     // 4. OMP binary & model non-blank
     let omp_bin = settings.omp_binary.trim();
@@ -990,6 +999,40 @@ mod tests {
 
         settings.mobile_ipv6_port = 7789;
         assert!(validate(&settings).is_ok());
+    }
+
+    #[test]
+    fn test_validate_mobile_lan_tls_port() {
+        let mut settings = Settings {
+            mobile_port: 7788,
+            mobile_ipv6_port: 7789,
+            mobile_lan_tls_port: 7788,
+            ..Settings::default()
+        };
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("不能与 HTTP 端口号相同"));
+
+        settings.mobile_lan_tls_port = 7789;
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("不能与 IPv6 端口号相同"));
+
+        settings.mobile_lan_tls_port = 1023;
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("必须在 1024 到 65535 之间"));
+
+        settings.mobile_lan_tls_port = 0;
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("必须在 1024 到 65535 之间"));
+
+        settings.mobile_lan_tls_port = 7790;
+        assert!(validate(&settings).is_ok());
+        assert_eq!(Settings::default().mobile_lan_tls_port, 7790);
+
+        // Existing serialized settings without mobileLanTlsPort deserialize to 7790.
+        let mut v = serde_json::to_value(Settings::default()).unwrap();
+        v.as_object_mut().unwrap().remove("mobileLanTlsPort");
+        let decoded: Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(decoded.mobile_lan_tls_port, 7790);
     }
 
     #[test]

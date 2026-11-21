@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiUrl, errorMessage } from "../../../core/api";
+import { ApiError, errorMessage, postRaw } from "../../../core/api";
+import { getNativeBridge } from "../../../core/nativeBridge";
 import { toast } from "../../../ui";
 
 export function useVoiceInput({
@@ -12,6 +13,7 @@ export function useVoiceInput({
 	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 	const streamRef = useRef<MediaStream | null>(null);
 	const chunksRef = useRef<Blob[]>([]);
+	const nativeRecordingRef = useRef(false);
 	const alive = useRef(false);
 	const generation = useRef(0);
 	const busy = useRef(false);
@@ -24,6 +26,10 @@ export function useVoiceInput({
 			alive.current = false;
 			generation.current++;
 			transcription.current?.abort();
+			if (nativeRecordingRef.current) {
+				nativeRecordingRef.current = false;
+				void getNativeBridge()?.audio?.cancelRecording().catch(() => {});
+			}
 			const recorder = mediaRecorderRef.current;
 			if (recorder) {
 				recorder.onstop = null;
@@ -39,6 +45,36 @@ export function useVoiceInput({
 	}, []);
 
 	const stopRecording = useCallback(() => {
+		const nativeAudio = getNativeBridge()?.audio;
+		if (nativeAudio && nativeRecordingRef.current) {
+			nativeRecordingRef.current = false;
+			busy.current = true;
+			setRecording(false);
+			setTranscribing(true);
+			const epoch = generation.current;
+			const current = () => alive.current && generation.current === epoch;
+			void (async () => {
+				try {
+					const data = await nativeAudio.stopAndTranscribe();
+					if (!current()) return;
+					const text = typeof data?.text === "string" ? data.text.trim() : "";
+					if (text) {
+						callback.current(text);
+						toast("语音识别成功", { kind: "success" });
+					} else {
+						toast("未识别到清晰语音，请重试");
+					}
+				} catch (err) {
+					if (current()) toast(`语音识别失败：${errorMessage(err)}`, { kind: "error" });
+				} finally {
+					if (current()) {
+						busy.current = false;
+						setTranscribing(false);
+					}
+				}
+			})();
+			return;
+		}
 		if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
 			busy.current = true;
 			mediaRecorderRef.current.stop();
@@ -51,7 +87,35 @@ export function useVoiceInput({
 	}, []);
 
 	const startRecording = useCallback(async () => {
-		if (!alive.current || busy.current || mediaRecorderRef.current?.state === "recording") return;
+		if (!alive.current || busy.current || nativeRecordingRef.current || mediaRecorderRef.current?.state === "recording") return;
+		const nativeAudio = getNativeBridge()?.audio;
+		if (nativeAudio) {
+			busy.current = true;
+			const epoch = generation.current;
+			const current = () => alive.current && generation.current === epoch;
+			try {
+				await nativeAudio.startRecording();
+				if (!current()) {
+					void nativeAudio.cancelRecording().catch(() => {});
+					return;
+				}
+				nativeRecordingRef.current = true;
+				busy.current = false;
+				setRecording(true);
+			} catch (err: unknown) {
+				if (!current()) return;
+				nativeRecordingRef.current = false;
+				busy.current = false;
+				setRecording(false);
+				const e = err as { name?: string; message?: string };
+				if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") {
+					toast("麦克风权限被拒绝，请在系统或浏览器设置中允许", { kind: "error" });
+				} else {
+					toast(`无法启动麦克风录音：${errorMessage(err)}`, { kind: "error" });
+				}
+			}
+			return;
+		}
 		if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
 			toast("当前环境不支持录音（需安全上下文 HTTPS 或 localhost）", { kind: "error" });
 			return;
@@ -95,28 +159,14 @@ export function useVoiceInput({
 
 				setTranscribing(true);
 				try {
-					const res = await fetch(apiUrl("/voice/transcribe"), {
-						method: "POST",
-						signal: ctl.signal,
-						headers: {
-							"content-type": blob.type || "audio/webm",
-						},
-						body: blob,
-					});
-
-					if (!res.ok) {
-						const errData = await res.json().catch(() => null);
-						const detail = typeof errData?.error === "string" ? errData.error : errData?.error?.message;
-						throw new Error(
-							(typeof detail === "string" && detail) ||
-							(typeof errData?.message === "string" && errData.message) ||
-							`语音识别服务响应异常 (${res.status})`,
-						);
-					}
-
-					const data = await res.json();
+					const data = await postRaw<{ text?: string }>(
+						"/voice/transcribe",
+						blob,
+						blob.type || "audio/webm",
+						{ signal: ctl.signal },
+					);
 					if (!current() || ctl.signal.aborted) return;
-					const text = typeof data.text === "string" ? data.text.trim() : "";
+					const text = typeof data?.text === "string" ? data.text.trim() : "";
 					if (text) {
 						callback.current(text);
 						toast("语音识别成功", { kind: "success" });
@@ -124,7 +174,13 @@ export function useVoiceInput({
 						toast("未识别到清晰语音，请重试");
 					}
 				} catch (err) {
-					if (current() && !ctl.signal.aborted) toast(`语音识别失败：${errorMessage(err)}`, { kind: "error" });
+					if (current() && !ctl.signal.aborted) {
+						const detail =
+							err instanceof ApiError && err.status >= 400 && err.status !== 401 && err.message === `HTTP ${err.status}`
+								? `语音识别服务响应异常 (${err.status})`
+								: errorMessage(err);
+						toast(`语音识别失败：${detail}`, { kind: "error" });
+					}
 				} finally {
 					if (current()) { busy.current = false; transcription.current = null; setTranscribing(false); }
 				}
@@ -151,7 +207,7 @@ export function useVoiceInput({
 	}, []);
 
 	const toggleRecording = useCallback(async () => {
-		if (mediaRecorderRef.current?.state === "recording") {
+		if (nativeRecordingRef.current || mediaRecorderRef.current?.state === "recording") {
 			stopRecording();
 		} else {
 			await startRecording();

@@ -1,9 +1,13 @@
 import { CloudOff, KeyRound } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
+import { errorMessage } from "../core/api";
+import { getNativeBridge, isNativeApp, nativeHaptic, notifyNativeConnectionStatus } from "../core/nativeBridge";
 import { reconnectEvents } from "../core/sse";
 import { useConnection } from "../core/stores/connection";
+import { useSessions } from "../core/stores/sessions";
 import { BottomSheet } from "../ui/BottomSheet";
 import { Spinner } from "../ui/Spinner";
+import { toast } from "../ui/Toast";
 
 /** Floating capsule just below the top bar; never covers the bar's buttons. */
 function Pill({ role, tone, icon, text, action, onAction }: { role: "alert" | "status"; tone: "warn" | "danger"; icon: ReactNode; text: string; action: string; onAction: () => void }) {
@@ -25,16 +29,52 @@ function Pill({ role, tone, icon, text, action, onAction }: { role: "alert" | "s
 	);
 }
 
-/** Offline / reconnecting / unpaired (401) indicator with a re-pair guide. */
+/** Offline / reconnecting / unpaired (401) indicator with a re-pair guide or native scanner trigger. */
 export function ConnectionBanner() {
 	const phase = useConnection((s) => s.phase);
 	const error = useConnection((s) => s.error);
 	const [guide, setGuide] = useState(false);
+	const [pairing, setPairing] = useState(false);
 	const sawClosed = useRef(false);
 	if (phase === "closed") sawClosed.current = true;
 	if (phase === "open") sawClosed.current = false;
 
+	const handleNativeRepair = async () => {
+		const bridge = getNativeBridge();
+		if (!bridge || pairing) return;
+		setPairing(true);
+		try {
+			const res = await bridge.openPairScanner();
+			if (res.ok) {
+				useConnection.getState().reset();
+				if (res.status) notifyNativeConnectionStatus(res.status);
+				reconnectEvents();
+				void useSessions.getState().refresh().catch(() => {});
+				nativeHaptic("success");
+				toast("重新配对成功", { kind: "success" });
+			} else if (res.error) {
+				toast(res.error, { kind: "error" });
+			}
+		} catch (e) {
+			toast(errorMessage(e, "扫码配对失败"), { kind: "error" });
+		} finally {
+			setPairing(false);
+		}
+	};
+
 	if (phase === "unauthorized") {
+		if (isNativeApp()) {
+			return (
+				<Pill
+					role="alert"
+					tone="danger"
+					icon={<KeyRound size={16} />}
+					text="配对已失效"
+					action={pairing ? "配对中" : "重新配对"}
+					onAction={() => void handleNativeRepair()}
+				/>
+			);
+		}
 		return (
 			<>
 				<Pill role="alert" tone="danger" icon={<KeyRound size={16} />} text="配对已失效" action="重新配对" onAction={() => setGuide(true)} />

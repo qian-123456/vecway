@@ -47,6 +47,7 @@ import { useAppSettings } from "../settings/useAppSettings";
 type Busy =
 	| "server"
 	| "restart"
+	| "lanTlsRestart"
 	| "pair"
 	| "tunnel"
 	| "revoke"
@@ -68,9 +69,10 @@ function RunChip({ status }: { status: "unknown" | "running" | "stopped" | "noIp
 }
 
 
-function validatePort(v: string): string | null {
+function validatePort(v: string, minPort = 1): string | null {
 	const n = Number(v);
-	return /^\d+$/.test(v) && Number.isInteger(n) && n >= 1 && n <= 65535 ? null : tNow("mobile.portValidation");
+	if (/^\d+$/.test(v) && Number.isInteger(n) && n >= minPort && n <= 65535) return null;
+	return tNow(minPort >= 1024 ? "mobile.tlsPortValidation" : "mobile.portValidation");
 }
 
 function formatSyncTime(iso: string | null | undefined, locale?: string): string {
@@ -119,13 +121,14 @@ function UrlLine({ label, url }: { label: string; url: string }) {
 }
 
 /** Ports are applied only by an explicit action, never by blur or unmount. */
-function PortEditor({ value, activePort, running, disabled, busy, label, onSave }: {
+function PortEditor({ value, activePort, running, disabled, busy, label, minPort = 1, onSave }: {
 	value: number;
 	activePort?: number;
 	running: boolean;
 	disabled: boolean;
 	busy: boolean;
 	label: string;
+	minPort?: number;
 	onSave: (port: number) => Promise<void>;
 }) {
 	const { t } = useT();
@@ -138,7 +141,7 @@ function PortEditor({ value, activePort, running, disabled, busy, label, onSave 
 			event.preventDefault();
 			if (disabled || busy || !dirty) return;
 			const next = draft.trim();
-			const error = validatePort(next);
+			const error = validatePort(next, minPort);
 			setInvalid(error);
 			if (!error) void onSave(Number(next));
 		}}>
@@ -153,7 +156,7 @@ function PortEditor({ value, activePort, running, disabled, busy, label, onSave 
 					aria-invalid={invalid ? true : undefined}
 					disabled={disabled || busy}
 					onChange={(event) => { setDraft(event.target.value); setInvalid(null); }}
-					onBlur={() => setInvalid(validatePort(draft.trim()))}
+					onBlur={() => setInvalid(validatePort(draft.trim(), minPort))}
 				/>
 			</label>
 			{dirty && (
@@ -172,6 +175,7 @@ export function MobilePanel() {
 	const [status, setStatus] = useState<MobileStatus | null>(null);
 	const [pairing, setPairing] = useState<PairingInfo | null>(null);
 	const [pairTarget, setPairTarget] = useState<PairingTarget>("lan");
+	const [qrMode, setQrMode] = useState<"universal" | "app">("universal");
 	const [busy, setBusy] = useState<Busy | null>(null);
 	const [view, setView] = useState<"lan" | "remote">("lan");
 	const [remote, setRemote] = useState<"ipv6" | "tunnel">("ipv6");
@@ -312,6 +316,19 @@ export function MobilePanel() {
 			} else { toast.success(t("mobile.toastPortSaved")); }
 		});
 
+	const saveLanTlsPort = (port: number) =>
+		run("lanTlsRestart", async () => {
+			await save({ mobileLanTlsPort: port });
+			if (running) {
+				try {
+					await mobileStop();
+					if (pairTarget !== "ipv6") setPairing(null);
+					await mobileStart();
+					toast.success(t("mobile.toastLanTlsRestartedPort"));
+				} finally { await refresh(); }
+			} else { toast.success(t("mobile.toastPortSaved")); }
+		});
+
 	const ipv6Running = status?.ipv6Running ?? false;
 
 	const toggleIpv6 = () =>
@@ -373,6 +390,7 @@ export function MobilePanel() {
 			const info = await mobileCreatePairing(target);
 			setPairing(info);
 			setPairTarget(target);
+			setQrMode("universal");
 		});
 
 	const isTunnelRunning = Boolean(status?.tunnelUrl);
@@ -486,58 +504,92 @@ export function MobilePanel() {
 			</div>
 
 			{/* Active QR Code Card */}
-			{pairing && (
-				<div data-field-id="mobileQr" className="rounded-xl border border-[var(--border-divider)] bg-[var(--card-bg)] p-4 shadow-sm">
-					<div className="flex min-w-0 flex-wrap items-start gap-4">
-						<div className="relative shrink-0">
-							<div
-								className={`rounded-lg bg-white p-3 [&_svg]:h-44 [&_svg]:w-44 ${expired ? "opacity-20 blur-[2px]" : ""}`}
-								dangerouslySetInnerHTML={{ __html: pairing.qrSvg }}
-							/>
-							{expired && (
-								<div className="absolute inset-0 flex items-center justify-center">
-									<Button variant="primary" icon={RefreshCw} disabled={busy !== null} onClick={() => makePairing(view === "lan" ? "lan" : remote)}>
-										{t("mobile.btnRegenerate")}
-									</Button>
-								</div>
-							)}
-						</div>
-						<div className="min-w-[min(100%,16rem)] flex-1 space-y-3">
-							<div className="flex items-start justify-between gap-2">
-								<span className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs font-medium text-[var(--text)]">
-									{t("mobile.qrTitle", { target: targetLabels[pairTarget] })}
-									{expired ? (
-										<span className="whitespace-nowrap text-[var(--status-error)]">{t("mobile.qrExpired")}</span>
-									) : (
-										<span className={`whitespace-nowrap font-mono tabular-nums ${expiresIn <= 30 ? "text-[var(--status-warning)]" : "text-[var(--text-muted)]"}`}>
-											{t("mobile.qrExpiresIn", { mm, ss })}
-										</span>
-									)}
-								</span>
-								<IconButton icon={X} label={t("mobile.closeQrAria")} onClick={() => setPairing(null)} />
+			{pairing && (() => {
+				const hasAppQr = Boolean(pairing.appQrSvg && pairing.appUrl);
+				const activeQrMode = hasAppQr ? qrMode : "universal";
+				const activeQrSvg = activeQrMode === "app" && pairing.appQrSvg ? pairing.appQrSvg : pairing.qrSvg;
+				const activeQrUrl = activeQrMode === "app" && pairing.appUrl ? pairing.appUrl : pairing.url;
+				return (
+					<div data-field-id="mobileQr" className="rounded-xl border border-[var(--border-divider)] bg-[var(--card-bg)] p-4 shadow-sm">
+						<div className="flex min-w-0 flex-wrap items-start gap-4">
+							<div className="relative shrink-0">
+								<div
+									className={`rounded-lg bg-white p-3 [&_svg]:h-44 [&_svg]:w-44 ${expired ? "opacity-20 blur-[2px]" : ""}`}
+									dangerouslySetInnerHTML={{ __html: activeQrSvg }}
+								/>
+								{expired && (
+									<div className="absolute inset-0 flex items-center justify-center">
+										<Button variant="primary" icon={RefreshCw} disabled={busy !== null} onClick={() => makePairing(view === "lan" ? "lan" : remote)}>
+											{t("mobile.btnRegenerate")}
+										</Button>
+									</div>
+								)}
 							</div>
-							<p className="text-xs text-[var(--text-muted)]">
-								{expired ? t("mobile.qrExpiredHelp") : t("mobile.qrScanHelp")}
-							</p>
-							{!expired && (
-								<div className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg hairline bg-[var(--well-bg)] p-2">
-									<code className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[11px] text-[var(--text)]">{pairing.url}</code>
-									<Button
-										className="shrink-0"
-										icon={Copy}
-										title={t("mobile.copyPairUrlTitle")}
-										onClick={async () => {
-											await copyText(pairing.url, { label: t("mobile.toastPairUrlCopied") });
-										}}
-									>
-										{t("mobile.btnCopyLink")}
-									</Button>
+							<div className="min-w-[min(100%,16rem)] flex-1 space-y-3">
+								<div className="flex items-start justify-between gap-2">
+									<span className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs font-medium text-[var(--text)]">
+										{t("mobile.qrTitle", { target: targetLabels[pairTarget] })}
+										{expired ? (
+											<span className="whitespace-nowrap text-[var(--status-error)]">{t("mobile.qrExpired")}</span>
+										) : (
+											<span className={`whitespace-nowrap font-mono tabular-nums ${expiresIn <= 30 ? "text-[var(--status-warning)]" : "text-[var(--text-muted)]"}`}>
+												{t("mobile.qrExpiresIn", { mm, ss })}
+											</span>
+										)}
+									</span>
+									<IconButton icon={X} label={t("mobile.closeQrAria")} onClick={() => setPairing(null)} />
 								</div>
-							)}
+								{hasAppQr && !expired && (
+									<div className="flex flex-wrap items-center gap-2">
+										<Segmented
+											size="sm"
+											aria-label={t("mobile.qrModeAria")}
+											value={activeQrMode}
+											onChange={(val) => setQrMode(val as "universal" | "app")}
+											options={[
+												{ value: "universal", label: t("mobile.qrModeUniversal") },
+												{ value: "app", label: t("mobile.qrModeApp") },
+											]}
+										/>
+									</div>
+								)}
+								<p className="text-xs text-[var(--text-muted)]">
+									{expired
+										? t("mobile.qrExpiredHelp")
+										: activeQrMode === "app"
+											? t("mobile.qrScanHelpApp")
+											: hasAppQr
+												? t("mobile.qrScanHelpUniversal")
+												: t("mobile.qrScanHelp")}
+								</p>
+								{!expired && (
+									<div className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg hairline bg-[var(--well-bg)] p-2">
+										<code className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[11px] text-[var(--text)]">{activeQrUrl}</code>
+										<Button
+											className="shrink-0"
+											icon={Copy}
+											title={t("mobile.copyPairUrlTitle")}
+											onClick={async () => {
+												await copyText(activeQrUrl, { label: t("mobile.toastPairUrlCopied") });
+											}}
+										>
+											{t("mobile.btnCopyLink")}
+										</Button>
+									</div>
+								)}
+								{!expired && pairing.certSha256 && (
+									<CopyLine
+										label={t("mobile.certShaLabel")}
+										value={pairing.certSha256}
+										toastText={t("mobile.certShaCopied")}
+										copyLabel={t("mobile.certShaCopyAria")}
+									/>
+								)}
+							</div>
 						</div>
 					</div>
-				</div>
-			)}
+				);
+			})()}
 
 			<Segmented aria-label={t("settingsSections.mobile.title")} value={view} onChange={setView}
 				options={[{ value: "lan", label: t("mobile.tabLan") }, { value: "remote", label: t("mobile.tabRemote") }]} />
@@ -607,6 +659,60 @@ export function MobilePanel() {
 						>
 							{t("mobile.btnCopyLink")}
 						</Button>
+					)}
+				</div>
+
+				{/* LAN TLS (Native App) Card */}
+				<div className="space-y-3 rounded-xl border border-[var(--border-divider)] bg-[var(--card-bg)] p-3.5">
+					<div className="flex flex-wrap items-center justify-between gap-4">
+						<div className="flex min-w-0 flex-1 flex-wrap items-center gap-4">
+							<div className="min-w-0">
+								<div className="flex items-center gap-2">
+									<span className="whitespace-nowrap text-[11px] text-[var(--text-muted)]">{t("mobile.lanTlsUrlLabel")}</span>
+									<RunChip status={status == null ? "unknown" : status.lanTlsRunning ? "running" : "stopped"} />
+								</div>
+								{status?.lanTlsUrl ? (
+									<span className="font-mono text-sm font-semibold text-[var(--text)] [overflow-wrap:anywhere]">
+										{status.lanTlsUrl}
+									</span>
+								) : (
+									<span className="font-mono text-sm text-[var(--text-muted)]">—</span>
+								)}
+							</div>
+							<div className="hidden h-7 w-[1px] bg-[var(--border-divider)] sm:block" />
+							<PortEditor
+								value={settings?.mobileLanTlsPort ?? 7790}
+								activePort={status?.lanTlsPort}
+								running={status?.lanTlsRunning ?? false}
+								disabled={busy !== null || !settings || !status}
+								busy={busy === "lanTlsRestart"}
+								minPort={1024}
+								label={t("mobile.lanTlsPortLabel")}
+								onSave={saveLanTlsPort}
+							/>
+						</div>
+						{status?.lanTlsUrl && (
+							<Button
+								size="sm"
+								variant="secondary"
+								icon={Copy}
+								onClick={async () => {
+									await copyText(status.lanTlsUrl!, { label: t("mobile.toastAddressCopied") });
+								}}
+							>
+								{t("mobile.btnCopyLink")}
+							</Button>
+						)}
+					</div>
+					{status?.lanTlsRunning && status.certSha256 && (
+						<div className="border-t border-[var(--border-divider)] pt-3">
+							<CopyLine
+								label={t("mobile.certShaLabel")}
+								value={status.certSha256}
+								toastText={t("mobile.certShaCopied")}
+								copyLabel={t("mobile.certShaCopyAria")}
+							/>
+						</div>
 					)}
 				</div>
 			</div>

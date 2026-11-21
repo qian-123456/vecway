@@ -8,6 +8,7 @@
  */
 import type { RpcFrame } from "./types";
 import { api } from "./api";
+import { createEventSource } from "./nativeBridge";
 import { isUnauthorized, useConnection } from "./stores/connection";
 
 export interface SseEventMap {
@@ -64,6 +65,7 @@ export const events = new EventBus();
 
 export interface EventSourceLike {
 	readyState: number;
+	onopen?: (() => void) | null;
 	onerror: ((e: unknown) => void) | null;
 	addEventListener(type: string, fn: (e: { data: string }) => void): void;
 	close(): void;
@@ -93,10 +95,15 @@ export class SseClient {
 
 	stop(): void {
 		this.started = false;
+		this.attempt = 0;
 		this.probeVersion++;
 		clearTimeout(this.timer);
 		this.timer = 0;
 		this.close();
+	}
+
+	isStarted(): boolean {
+		return this.started;
 	}
 
 	/** Page became visible / network returned: revive a dead stream and tell views to refetch. */
@@ -180,26 +187,46 @@ export class SseClient {
 }
 
 let client: SseClient | null = null;
+let listenersWired = false;
+
+function ensureClient(): SseClient {
+	if (!client) {
+		client = new SseClient({
+			create: (url) => createEventSource(url),
+			probe: () => api("GET", "/sessions"),
+			random: Math.random,
+			bus: events,
+		});
+	}
+	if (!listenersWired && typeof document !== "undefined" && typeof window !== "undefined") {
+		listenersWired = true;
+		document.addEventListener("visibilitychange", () => {
+			if (!document.hidden) client?.resume("visible");
+		});
+		window.addEventListener("online", () => client?.resume("online"));
+		window.addEventListener("offline", () => {
+			if (client?.isStarted()) useConnection.getState().setPhase("closed", "网络已断开");
+		});
+	}
+	return client;
+}
 
 /** Start the app-wide stream (idempotent) and wire visibility/online resync. */
 export function startEvents(): void {
-	if (client) return;
-	client = new SseClient({
-		create: (url) => new EventSource(url) as unknown as EventSourceLike,
-		probe: () => api("GET", "/sessions"),
-		random: Math.random,
-		bus: events,
-	});
-	document.addEventListener("visibilitychange", () => {
-		if (!document.hidden) client?.resume("visible");
-	});
-	window.addEventListener("online", () => client?.resume("online"));
-	window.addEventListener("offline", () => useConnection.getState().setPhase("closed", "网络已断开"));
-	client.start();
+	ensureClient().start();
+}
+
+/** Stop the app-wide stream (e.g. on native unpair). `startEvents()` can restart it later. */
+export function stopEvents(): void {
+	client?.stop();
 }
 
 /** Re-probe now (banner "重试" button): restarts a stopped/closed stream. */
 export function reconnectEvents(): void {
-	if (!client) return startEvents();
-	client.resume("online");
+	const c = ensureClient();
+	if (!c.isStarted()) {
+		c.start();
+		return;
+	}
+	c.resume("online");
 }

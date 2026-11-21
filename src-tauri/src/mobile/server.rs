@@ -287,19 +287,17 @@ async fn require_auth<B: Backend>(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let (token, device_id) = match auth::token_from_headers(req.headers()) {
-        Some(t) => {
-            let db = ctx.db.lock();
-            match auth::authenticate(&db, &t, chrono::Utc::now()) {
-                Some(id) => (t, id),
-                None => {
-                    return ApiError(StatusCode::UNAUTHORIZED, "未配对或已被撤销".into())
-                        .into_response()
-                }
+    let Some(source) = auth::auth_from_headers(req.headers()) else {
+        return ApiError(StatusCode::UNAUTHORIZED, "未配对或已被撤销".into()).into_response();
+    };
+    let device_id = {
+        let db = ctx.db.lock();
+        match auth::authenticate(&db, source.token(), chrono::Utc::now()) {
+            Some(id) => id,
+            None => {
+                return ApiError(StatusCode::UNAUTHORIZED, "未配对或已被撤销".into())
+                    .into_response()
             }
-        }
-        None => {
-            return ApiError(StatusCode::UNAUTHORIZED, "未配对或已被撤销".into()).into_response()
         }
     };
     // Every state-changing verb (the web app also uses PUT/PATCH/DELETE), not just POST.
@@ -307,12 +305,28 @@ async fn require_auth<B: Backend>(
         *req.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
     ) {
-        let is_tls = req.extensions().get::<TlsConnection>().is_some();
-        if let Err(err) = verify_csrf(req.headers(), is_tls) {
-            return err.into_response();
+        let bearer_only =
+            matches!(source, auth::AuthSource::Bearer(_)) && !auth::has_auth_cookie(req.headers());
+        if bearer_only {
+            if let Some(site) = req
+                .headers()
+                .get("sec-fetch-site")
+                .and_then(|v| v.to_str().ok())
+            {
+                if site.eq_ignore_ascii_case("cross-site") {
+                    return ApiError(StatusCode::FORBIDDEN, "禁止跨站请求 (CSRF)".into())
+                        .into_response();
+                }
+            }
+        } else {
+            let is_tls = req.extensions().get::<TlsConnection>().is_some();
+            if let Err(err) = verify_csrf(req.headers(), is_tls) {
+                return err.into_response();
+            }
         }
     }
-    req.extensions_mut().insert(auth::Token(token));
+    req.extensions_mut()
+        .insert(auth::Token(source.into_token()));
     super::work::with_origin(device_id, next.run(req)).await
 }
 
@@ -320,6 +334,8 @@ async fn require_auth<B: Backend>(
 struct PairQuery {
     code: Option<String>,
     name: Option<String>,
+    #[serde(default, rename = "returnToken")]
+    return_token: bool,
 }
 
 /// Link previews and prefetchers may GET this URL, but cannot consume a code.
@@ -396,8 +412,32 @@ async fn pair<B: Backend>(
             Err(err) => return err.into_response(),
         }
     };
+    let https = tls_ext.is_some()
+        || headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|p| p.eq_ignore_ascii_case("https"));
+    let return_token = json && q.return_token;
+    if return_token && !https {
+        return ApiError(
+            StatusCode::FORBIDDEN,
+            "App 令牌配对仅允许通过 HTTPS/TLS 连接".into(),
+        )
+        .into_response();
+    }
+    let pair_invalid = || {
+        if return_token {
+            ApiError(
+                StatusCode::FORBIDDEN,
+                "配对码无效、已使用或已过期（5 分钟有效）".into(),
+            )
+            .into_response()
+        } else {
+            pair_failed_page()
+        }
+    };
     let Some(code) = q.code.filter(|c| !c.is_empty()) else {
-        return pair_failed_page();
+        return pair_invalid();
     };
     let ua = headers
         .get(header::USER_AGENT)
@@ -413,23 +453,45 @@ async fn pair<B: Backend>(
         .chars()
         .take(120)
         .collect();
-    let token = {
+    let (token, device) = {
         let db = ctx.db.lock();
-        match auth::redeem(&db, &code, &name, chrono::Utc::now()) {
+        let t = match auth::redeem(&db, &code, &name, chrono::Utc::now()) {
             Ok(Some(t)) => {
                 if auth::set_user_agent(&db, &t, &ua).is_err() {
-                    return pair_failed_page();
+                    return pair_invalid();
                 }
                 t
             }
-            _ => return pair_failed_page(),
-        }
+            _ => return pair_invalid(),
+        };
+        let device = if return_token {
+            match auth::device_for_token(&db, &t) {
+                Ok(Some(d)) => Some(d),
+                Ok(None) => {
+                    return ApiError(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "无法读取新配对设备信息".into(),
+                    )
+                    .into_response();
+                }
+                Err(e) => {
+                    return ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                        .into_response();
+                }
+            }
+        } else {
+            None
+        };
+        (t, device)
     };
-    let https = tls_ext.is_some()
-        || headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|p| p.eq_ignore_ascii_case("https"));
+    if return_token {
+        return (
+            StatusCode::OK,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(json!({ "token": token, "device": device })),
+        )
+            .into_response();
+    }
     let cookie = format!(
         "{}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{}",
         auth::COOKIE,
@@ -1008,7 +1070,16 @@ async fn drain_connections(tasks: &mut tokio::task::JoinSet<()>) {
 ///
 /// Same guards as the TLS listener (header-read timeout, connection cap, stop
 /// grace) so a plain-HTTP client cannot stall the accept loop or pin sockets.
+#[cfg(test)]
 pub async fn serve<B: Backend>(listener: tokio::net::TcpListener, ctx: Arc<Ctx<B>>) {
+    serve_notifying(listener, ctx, None).await;
+}
+
+pub(crate) async fn serve_notifying<B: Backend>(
+    listener: tokio::net::TcpListener,
+    ctx: Arc<Ctx<B>>,
+    on_unbind: Option<tokio::sync::oneshot::Sender<()>>,
+) {
     let mut sd = ctx.shutdown.clone();
     let app = app_service(router(ctx));
     let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
@@ -1020,6 +1091,10 @@ pub async fn serve<B: Backend>(listener: tokio::net::TcpListener, ctx: Arc<Ctx<B
         let builder = builder.clone();
         tasks.spawn(serve_conn(tcp, app, addr, builder, permit));
     }
+    drop(listener);
+    if let Some(tx) = on_unbind {
+        let _ = tx.send(());
+    }
     drain_connections(&mut tasks).await;
 }
 
@@ -1029,10 +1104,20 @@ pub async fn serve<B: Backend>(listener: tokio::net::TcpListener, ctx: Arc<Ctx<B
 /// (a silent client cannot stall the accept loop), hyper timeouts are armed,
 /// concurrent connections are capped, and stop force-closes stragglers after a
 /// short grace period.
+#[cfg(test)]
 pub async fn serve_tls<B: Backend>(
     listener: tokio::net::TcpListener,
     acceptor: tokio_rustls::TlsAcceptor,
     ctx: Arc<Ctx<B>>,
+) {
+    serve_tls_notifying(listener, acceptor, ctx, None).await;
+}
+
+pub(crate) async fn serve_tls_notifying<B: Backend>(
+    listener: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+    ctx: Arc<Ctx<B>>,
+    on_unbind: Option<tokio::sync::oneshot::Sender<()>>,
 ) {
     let mut sd = ctx.shutdown.clone();
     let app = app_service(router(ctx).layer(axum::Extension(TlsConnection)));
@@ -1060,6 +1145,10 @@ pub async fn serve_tls<B: Backend>(
                 };
             serve_conn(stream, app, addr, builder, permit).await;
         });
+    }
+    drop(listener);
+    if let Some(tx) = on_unbind {
+        let _ = tx.send(());
     }
     drain_connections(&mut tasks).await;
 }

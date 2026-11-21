@@ -25,6 +25,7 @@ describe("validateSettingsShape", () => {
 			mobilePort: 8080,
 			mobileIpv6Enabled: true,
 			mobileIpv6Port: 7789,
+			mobileLanTlsPort: 7790,
 			ddnsEnabled: true,
 			ddnsZoneId: "023e105f4ecef8ad9ca31a8372d0c353",
 			ddnsHostname: "home.example.com",
@@ -41,6 +42,7 @@ describe("validateSettingsShape", () => {
 			expect(res.value.mobilePort).toBe(8080);
 			expect(res.value.mobileIpv6Enabled).toBe(true);
 			expect(res.value.mobileIpv6Port).toBe(7789);
+			expect(res.value.mobileLanTlsPort).toBe(7790);
 			expect(res.value.ddnsEnabled).toBe(true);
 			expect(res.value.ddnsZoneId).toBe("023e105f4ecef8ad9ca31a8372d0c353");
 			expect(res.value.ddnsHostname).toBe("home.example.com");
@@ -129,6 +131,18 @@ describe("validateSettingsShape", () => {
 		expect(validateSettingsShape({ mobileIpv6Port: 7789 }).ok).toBe(true);
 		expect(validateSettingsShape({ mobileIpv6Port: 1 }).ok).toBe(true);
 		expect(validateSettingsShape({ mobileIpv6Port: 65535 }).ok).toBe(true);
+	});
+
+	it("validates mobileLanTlsPort boundaries and rejects invalid port", () => {
+		expect(validateSettingsShape({ mobileLanTlsPort: 0 }).ok).toBe(false);
+		expect(validateSettingsShape({ mobileLanTlsPort: 1023 }).ok).toBe(false);
+		expect(validateSettingsShape({ mobileLanTlsPort: 70000 }).ok).toBe(false);
+		expect(validateSettingsShape({ mobileLanTlsPort: -1 }).ok).toBe(false);
+		expect(validateSettingsShape({ mobileLanTlsPort: 1.5 }).ok).toBe(false);
+		expect(validateSettingsShape({ mobileLanTlsPort: "7790" }).ok).toBe(false);
+		expect(validateSettingsShape({ mobileLanTlsPort: 1024 }).ok).toBe(true);
+		expect(validateSettingsShape({ mobileLanTlsPort: 7790 }).ok).toBe(true);
+		expect(validateSettingsShape({ mobileLanTlsPort: 65535 }).ok).toBe(true);
 	});
 
 	it("validates mobileIpv6Enabled and ddnsEnabled booleans", () => {

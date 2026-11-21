@@ -22,12 +22,14 @@ export default defineMessages({
 		statusNoIpv6: "没有公网 IPv6",
 		statusStopped: "已停止",
 		portValidation: "端口需要是 1–65535 之间的整数",
+		tlsPortValidation: "端口需要是 1024–65535 之间的整数",
 		neverSynced: "从未同步",
 		toastAddressCopied: "地址已复制",
 		copyLabel: "复制{label}",
 		toastStopped: "手机访问已停止，已配对的手机暂时无法连接",
 		toastStarted: "手机访问已启动",
 		toastRestartedPort: "已用新端口重新启动",
+		toastLanTlsRestartedPort: "已用新的局域网 TLS 端口重新启动",
 		toastPortSaved: "端口已保存",
 		toastIpv6Stopped: "IPv6 直连已停止",
 		toastIpv6Started: "IPv6 直连已启动",
@@ -58,6 +60,8 @@ export default defineMessages({
 		btnStart: "启动",
 		btnStop: "停止",
 		lanUrlLabel: "局域网地址",
+		lanTlsUrlLabel: "局域网 TLS 地址（独立 App）",
+		lanTlsPortLabel: "TLS 端口",
 		portLabel: "端口",
 		portDesc:
 			"手机连接用的端口号，一般不需要改；和其他程序冲突导致启动失败时再换一个",
@@ -175,6 +179,13 @@ export default defineMessages({
 		qrExpiredHelp: "二维码已失效，请重新生成",
 		qrScanHelp:
 			"用手机相机或微信扫一扫打开链接，在手机浏览器中完成配对。每个二维码只能用一次。",
+		qrModeAria: "二维码类型",
+		qrModeUniversal: "通用二维码",
+		qrModeApp: "App 专用码",
+		qrScanHelpUniversal:
+			"浏览器和独立 App 通用：手机相机扫码可打开网页版，在 Vecway App 内扫码将自动走 TLS 加密配对。每个二维码只能用一次。",
+		qrScanHelpApp:
+			"用手机系统相机直接扫码拉起 Vecway App，或在 App 内扫码完成加密配对。每个二维码只能用一次。",
 		copyPairUrlTitle: "复制配对链接",
 		toastPairUrlCopied: "配对链接已复制，可发到手机上打开",
 		btnCopyLink: "复制链接",
@@ -229,6 +240,7 @@ export default defineMessages({
 		statusNoIpv6: "No public IPv6",
 		statusStopped: "Stopped",
 		portValidation: "Port must be an integer between 1 and 65535",
+		tlsPortValidation: "Port must be an integer between 1024 and 65535",
 		neverSynced: "Never synced",
 		toastAddressCopied: "Address copied",
 		copyLabel: "Copy {label}",
@@ -236,6 +248,7 @@ export default defineMessages({
 			"Mobile access stopped; paired phones cannot connect temporarily",
 		toastStarted: "Mobile access started",
 		toastRestartedPort: "Restarted with new port",
+		toastLanTlsRestartedPort: "Restarted with new LAN TLS port",
 		toastIpv6Stopped: "IPv6 direct access stopped",
 		toastPortSaved: "Port saved",
 		toastIpv6Started: "IPv6 direct access started",
@@ -269,6 +282,8 @@ export default defineMessages({
 		btnStart: "Start",
 		btnStop: "Stop",
 		lanUrlLabel: "LAN URL",
+		lanTlsUrlLabel: "LAN TLS URL (Native App)",
+		lanTlsPortLabel: "TLS port",
 		portLabel: "Port",
 		portDesc:
 			"Port for mobile connection; usually no need to change unless conflicting with other apps",
@@ -391,6 +406,13 @@ export default defineMessages({
 		qrExpiredHelp: "QR code expired; please regenerate",
 		qrScanHelp:
 			"Scan link with phone camera to open in browser and complete pairing. Each QR code is single-use.",
+		qrModeAria: "QR code mode",
+		qrModeUniversal: "Universal QR",
+		qrModeApp: "App QR",
+		qrScanHelpUniversal:
+			"Works for both browser and native app: scan with the system camera for web pairing, or scan inside the Vecway app for TLS pairing. Each QR code is single-use.",
+		qrScanHelpApp:
+			"Scan with your phone's camera to launch the Vecway app directly, or scan inside the app for encrypted pairing. Each QR code is single-use.",
 		copyPairUrlTitle: "Copy pairing link",
 		toastPairUrlCopied: "Pairing link copied; you can send it to your phone",
 		btnCopyLink: "Copy link",

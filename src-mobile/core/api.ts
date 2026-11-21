@@ -6,6 +6,7 @@
  */
 import { useConnection } from "./stores/connection";
 import { acceptCatalogResponse, catalogGeneration, invalidateProviderCatalog } from "./modelCatalog";
+import { base64ToBytes, blobToBase64, bytesToBase64, getNativeBridge, type NativeHttpResponse } from "./nativeBridge";
 
 export class ApiError extends Error {
 	readonly status: number;
@@ -42,7 +43,71 @@ function markUnauthorized(): ApiError {
 	return new ApiError(401, "unauthorized");
 }
 
+const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+const utf8Encoder = new TextEncoder();
+let nextNativeReqId = 0;
+
+function createRequestId(): string {
+	if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+		return crypto.randomUUID();
+	}
+	return `req-${Date.now()}-${++nextNativeReqId}`;
+}
+
+function createAbortError(): Error {
+	if (typeof DOMException !== "undefined") {
+		return new DOMException("The operation was aborted.", "AbortError");
+	}
+	const err = new Error("The operation was aborted.");
+	err.name = "AbortError";
+	return err;
+}
+
+function normalizeHeaders(headers: HeadersInit | undefined): Record<string, string> | undefined {
+	if (!headers) return undefined;
+	const out: Record<string, string> = {};
+	if (headers instanceof Headers) {
+		headers.forEach((value, key) => {
+			out[key] = value;
+		});
+	} else if (Array.isArray(headers)) {
+		for (const [key, value] of headers) out[key] = value;
+	} else {
+		for (const [key, value] of Object.entries(headers)) {
+			if (value !== undefined) out[key] = value;
+		}
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
+}
+
+async function bodyToBase64(body: BodyInit | null | undefined): Promise<string | undefined> {
+	if (body == null) return undefined;
+	if (typeof body === "string") return bytesToBase64(utf8Encoder.encode(body));
+	if (body instanceof Blob) return blobToBase64(body);
+	if (body instanceof ArrayBuffer) return bytesToBase64(new Uint8Array(body));
+	if (ArrayBuffer.isView(body)) {
+		return bytesToBase64(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+	}
+	throw new Error("不支持的请求体类型");
+}
+
+function nativeResponseToResponse(nativeRes: NativeHttpResponse): Response {
+	if (nativeRes.status < 200 || nativeRes.status > 599) {
+		throw new Error(NETWORK_ERROR);
+	}
+	const body = NULL_BODY_STATUSES.has(nativeRes.status)
+		? null
+		: nativeRes.bodyBase64
+			? base64ToBytes(nativeRes.bodyBase64)
+			: null;
+	return new Response(body, {
+		status: nativeRes.status,
+		headers: nativeRes.headers,
+	});
+}
+
 async function send(url: string, init: RequestInit, opts: ApiOptions | undefined): Promise<Response> {
+	const bridge = getNativeBridge();
 	const ctl = new AbortController();
 	const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	let timedOut = false;
@@ -54,10 +119,51 @@ async function send(url: string, init: RequestInit, opts: ApiOptions | undefined
 		else outer.addEventListener("abort", onAbort, { once: true });
 	}
 	try {
-		return await fetch(url, { ...init, credentials: "same-origin", cache: "no-store", signal: ctl.signal });
+		if (!bridge) {
+			return await fetch(url, { ...init, credentials: "same-origin", cache: "no-store", signal: ctl.signal });
+		}
+		if (ctl.signal.aborted) {
+			throw outer?.aborted ? (outer.reason ?? createAbortError()) : createAbortError();
+		}
+		const bodyBase64 = await bodyToBase64(init.body);
+		if (ctl.signal.aborted) {
+			throw outer?.aborted ? (outer.reason ?? createAbortError()) : createAbortError();
+		}
+		const reqPromise = bridge.httpRequest(
+			{
+				id: createRequestId(),
+				method: init.method ?? "GET",
+				path: url,
+				headers: normalizeHeaders(init.headers),
+				bodyBase64,
+				timeoutMs: timeoutMs > 0 ? timeoutMs : undefined,
+			},
+			ctl.signal,
+		);
+		reqPromise.catch(() => {});
+		const nativeRes = await new Promise<NativeHttpResponse>((resolve, reject) => {
+			const onSignalAbort = () => reject(outer?.aborted ? (outer.reason ?? createAbortError()) : createAbortError());
+			if (ctl.signal.aborted) {
+				onSignalAbort();
+				return;
+			}
+			ctl.signal.addEventListener("abort", onSignalAbort, { once: true });
+			reqPromise.then(
+				(res) => {
+					ctl.signal.removeEventListener("abort", onSignalAbort);
+					resolve(res);
+				},
+				(err) => {
+					ctl.signal.removeEventListener("abort", onSignalAbort);
+					reject(err);
+				},
+			);
+		});
+		return nativeResponseToResponse(nativeRes);
 	} catch (e) {
 		if (outer?.aborted) throw e; // caller cancelled: let the AbortError through untouched
-		const err = new ApiError(timedOut ? 408 : 0, timedOut ? "请求超时" : NETWORK_ERROR);
+		const bridgeMsg = bridge && e instanceof Error && e.message ? e.message : NETWORK_ERROR;
+		const err = new ApiError(timedOut ? 408 : 0, timedOut ? "请求超时" : bridgeMsg);
 		useConnection.getState().setError(err.message);
 		throw err;
 	} finally {
@@ -68,21 +174,47 @@ async function send(url: string, init: RequestInit, opts: ApiOptions | undefined
 
 async function readBody(res: Response): Promise<unknown> {
 	if (res.status === 204) return null;
-	const type = res.headers.get("content-type") || "";
+	const type = typeof res.headers?.get === "function" ? res.headers.get("content-type") || "" : "";
 	try {
-		return type.includes("json") ? await res.json() : await res.text();
+		if (type.includes("json")) return await res.json();
+		if (typeof res.text === "function") {
+			const text = await res.text();
+			if (!type && text) {
+				try {
+					return JSON.parse(text);
+				} catch {
+					return text;
+				}
+			}
+			return text;
+		}
+		if (typeof res.json === "function") return await res.json();
+		return null;
 	} catch {
 		return null;
 	}
+}
+
+function extractBodyError(data: unknown): string {
+	if (!data || typeof data !== "object") return "";
+	if ("error" in data) {
+		const err = data.error;
+		if (typeof err === "string" && err) return err;
+		if (err && typeof err === "object" && "message" in err && typeof err.message === "string" && err.message) {
+			return err.message;
+		}
+	}
+	if ("message" in data && typeof data.message === "string" && data.message) return data.message;
+	return "";
 }
 
 async function finish<T>(res: Response): Promise<T> {
 	if (res.status === 401) throw markUnauthorized();
 	const data = await readBody(res);
 	if (!res.ok) {
-		const fromBody = data && typeof data === "object" ? (data as { error?: unknown }).error : undefined;
+		const fromBody = extractBodyError(data);
 		const text = typeof data === "string" && data.length < 200 ? data.trim() : "";
-		throw new ApiError(res.status, (typeof fromBody === "string" && fromBody) || text || res.statusText || `HTTP ${res.status}`);
+		throw new ApiError(res.status, fromBody || text || res.statusText || `HTTP ${res.status}`);
 	}
 	if (useConnection.getState().error) useConnection.getState().setError(null);
 	return data as T;
@@ -124,6 +256,26 @@ export async function upload<T = { path: string; name: string; size: number }>(
 			url,
 			{ method: "POST", headers: { "content-type": file.type || "application/octet-stream", ...opts.headers }, body: file },
 			{ ...opts, timeoutMs: opts.timeoutMs ?? UPLOAD_TIMEOUT_MS },
+		),
+	);
+}
+
+/** Raw-body POST (e.g. `/voice/transcribe`); shares `api.ts` transport across web and native. */
+export async function postRaw<T = unknown>(
+	path: string,
+	body: Blob,
+	contentType: string,
+	opts?: ApiOptions,
+): Promise<T> {
+	return finish<T>(
+		await send(
+			apiUrl(path),
+			{
+				method: "POST",
+				headers: { "content-type": contentType || body.type || "application/octet-stream", ...opts?.headers },
+				body,
+			},
+			opts,
 		),
 	);
 }

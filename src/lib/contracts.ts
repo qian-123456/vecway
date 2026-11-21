@@ -613,6 +613,9 @@ export interface PairingInfo {
 	url: string;
 	qrSvg: string;
 	expiresAt: string;
+	certSha256?: string | null;
+	appUrl?: string | null;
+	appQrSvg?: string | null;
 }
 
 export type PairingTarget = "lan" | "tunnel" | "ipv6";
@@ -647,6 +650,9 @@ export interface MobileStatus {
 	running: boolean;
 	port: number;
 	lanUrl: string | null;
+	lanTlsRunning: boolean;
+	lanTlsPort: number;
+	lanTlsUrl: string | null;
 	tunnelUrl: string | null;
 	cloudflaredInstalled: boolean;
 	cloudflaredLoggedIn: boolean;
@@ -716,6 +722,8 @@ export interface Settings {
 	mobileIpv6Enabled: boolean;
 	/** Default 7789. */
 	mobileIpv6Port: number;
+	/** Default 7790 (LAN TLS listener for native mobile apps). */
+	mobileLanTlsPort: number;
 	/** Cloudflare DDNS for the IPv6 address. Default false. */
 	ddnsEnabled: boolean;
 	ddnsZoneId: string | null;

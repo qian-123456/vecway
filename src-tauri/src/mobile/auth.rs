@@ -319,16 +319,27 @@ pub fn revoke_all(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Extract the device token from `Cookie` or `Authorization: Bearer` headers.
-pub fn token_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
-    if let Some(auth) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-    {
-        if let Some(t) = auth.strip_prefix("Bearer ") {
-            return Some(t.trim().to_string());
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthSource {
+    Bearer(String),
+    Cookie(String),
+}
+
+impl AuthSource {
+    pub fn token(&self) -> &str {
+        match self {
+            Self::Bearer(t) | Self::Cookie(t) => t,
         }
     }
+
+    pub fn into_token(self) -> String {
+        match self {
+            Self::Bearer(t) | Self::Cookie(t) => t,
+        }
+    }
+}
+
+fn cookie_token_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
     headers
         .get_all(axum::http::header::COOKIE)
         .iter()
@@ -337,6 +348,33 @@ pub fn token_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
         .filter_map(|kv| kv.trim().split_once('='))
         .find(|(k, _)| *k == COOKIE)
         .map(|(_, v)| v.to_string())
+}
+
+/// True when the request includes the `ompws_token` auth cookie (even alongside Bearer).
+pub fn has_auth_cookie(headers: &axum::http::HeaderMap) -> bool {
+    cookie_token_from_headers(headers).is_some()
+}
+
+/// Extract the device token and its source (`Authorization: Bearer` preferred over `Cookie`).
+pub fn auth_from_headers(headers: &axum::http::HeaderMap) -> Option<AuthSource> {
+    if let Some(auth) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(t) = auth.strip_prefix("Bearer ") {
+            let trimmed = t.trim();
+            if !trimmed.is_empty() {
+                return Some(AuthSource::Bearer(trimmed.to_string()));
+            }
+        }
+    }
+    cookie_token_from_headers(headers).map(AuthSource::Cookie)
+}
+
+/// Extract the device token from `Cookie` or `Authorization: Bearer` headers.
+#[cfg(test)]
+pub fn token_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    auth_from_headers(headers).map(AuthSource::into_token)
 }
 
 #[cfg(test)]
@@ -542,18 +580,56 @@ mod tests {
     #[test]
     fn token_extraction() {
         use axum::http::{header, HeaderMap, HeaderValue};
+        let empty = HeaderMap::new();
+        assert!(auth_from_headers(&empty).is_none());
+        assert!(!has_auth_cookie(&empty));
+        assert!(token_from_headers(&empty).is_none());
+
+        let mut other_cookie = HeaderMap::new();
+        other_cookie.insert(header::COOKIE, HeaderValue::from_static("a=1; theme=dark"));
+        assert!(auth_from_headers(&other_cookie).is_none());
+        assert!(!has_auth_cookie(&other_cookie));
+
         let mut h = HeaderMap::new();
         h.insert(
             header::COOKIE,
             HeaderValue::from_static("a=1; ompws_token=abc; b=2"),
         );
+        assert_eq!(
+            auth_from_headers(&h),
+            Some(AuthSource::Cookie("abc".to_string()))
+        );
+        assert!(has_auth_cookie(&h));
         assert_eq!(token_from_headers(&h).as_deref(), Some("abc"));
+
+        // Bearer takes precedence over cookie, while has_auth_cookie remains true.
         h.insert(
             header::AUTHORIZATION,
             HeaderValue::from_static("Bearer xyz"),
         );
+        assert_eq!(
+            auth_from_headers(&h),
+            Some(AuthSource::Bearer("xyz".to_string()))
+        );
+        assert!(has_auth_cookie(&h));
         assert_eq!(token_from_headers(&h).as_deref(), Some("xyz"));
-        assert!(token_from_headers(&HeaderMap::new()).is_none());
+
+        // Bearer-only (with or without unrelated cookies) has_auth_cookie == false.
+        let mut bearer_only = HeaderMap::new();
+        bearer_only.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer native-tok"),
+        );
+        bearer_only.insert(header::COOKIE, HeaderValue::from_static("prefs=1"));
+        assert_eq!(
+            auth_from_headers(&bearer_only),
+            Some(AuthSource::Bearer("native-tok".to_string()))
+        );
+        assert!(!has_auth_cookie(&bearer_only));
+        assert_eq!(
+            token_from_headers(&bearer_only).as_deref(),
+            Some("native-tok")
+        );
     }
 
     #[test]
