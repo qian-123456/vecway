@@ -7,6 +7,7 @@ import { FloatingLayer } from "../../components/FloatingLayer";
 import { copyText } from "../../lib/dialogs";
 import { toast } from "../../lib/toast";
 import { FileIcon } from "./FileIcon";
+import { filterVisibleEntries } from "./filterEntries";
 import { useT } from "../../stores/language";
 
 interface FileTreeNodeProps {
@@ -21,6 +22,8 @@ interface FileTreeNodeProps {
 	childrenMap: Record<string, DirEntry[]>;
 	loadingPaths: Set<string>;
 	onRefreshDir: (path: string) => void;
+	showHidden?: boolean;
+	forceVisiblePaths?: ReadonlySet<string>;
 }
 
 export function FileTreeNode({
@@ -35,12 +38,15 @@ export function FileTreeNode({
 	childrenMap,
 	loadingPaths,
 	onRefreshDir,
+	showHidden = true,
+	forceVisiblePaths,
 }: FileTreeNodeProps) {
 	const { t } = useT();
 	const isExpanded = expandedPaths.has(entry.path);
 	const isSelected = selectedPath === entry.path;
 	const isLoading = loadingPaths.has(entry.path);
-	const children = childrenMap[entry.path] ?? [];
+	const rawChildren = childrenMap[entry.path] ?? [];
+	const children = filterVisibleEntries(rawChildren, showHidden, forceVisiblePaths);
 
 	const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(
 		null,
@@ -178,7 +184,7 @@ export function FileTreeNode({
 							style={{ paddingLeft: `${(depth + 1) * 10 + 16}px` }}
 							className="py-0.5 text-[10px] text-neutral-500 italic select-none"
 						>
-							{t("explorer.emptyDirectory")}
+							{rawChildren.length > 0 ? t("explorer.allItemsHidden") : t("explorer.emptyDirectory")}
 						</div>
 					) : (
 						children.map((child) => (
@@ -195,6 +201,8 @@ export function FileTreeNode({
 								childrenMap={childrenMap}
 								loadingPaths={loadingPaths}
 								onRefreshDir={onRefreshDir}
+								showHidden={showHidden}
+								forceVisiblePaths={forceVisiblePaths}
 							/>
 						))
 					)}

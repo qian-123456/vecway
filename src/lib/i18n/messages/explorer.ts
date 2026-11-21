@@ -33,6 +33,11 @@ export default defineMessages({
 		workspaceCardTip: "{name}\n{path}\n(右键在访达中显示{switchHint})",
 		switchHint: "，点击切换工作区",
 		backToWorkspace: "返回项目目录",
+		showHiddenFiles: "显示隐藏与构建文件",
+		revealActiveFile: "定位当前预览文件",
+		allItemsHidden: "所有项目已隐藏",
+		showHiddenAction: "显示隐藏项",
+		explorerActions: "文件树操作",
 	},
 	"en-US": {
 		copiedRelativePath: "Relative path copied",
@@ -66,5 +71,10 @@ export default defineMessages({
 		workspaceCardTip: "{name}\n{path}\n(Right-click to reveal in Finder{switchHint})",
 		switchHint: ", click to switch workspace",
 		backToWorkspace: "Back to workspace",
+		showHiddenFiles: "Show hidden & build files",
+		revealActiveFile: "Reveal active preview file",
+		allItemsHidden: "All items hidden",
+		showHiddenAction: "Show hidden",
+		explorerActions: "Explorer actions",
 	},
 });

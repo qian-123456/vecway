@@ -11,14 +11,12 @@ interface WorkspaceCardProps {
 	currentWorkspace: Workspace | null;
 	workspaces: Workspace[];
 	onSelectWorkspace: (ws: Workspace) => void;
-	gitDirtyCount?: number;
 }
 
 export function WorkspaceCard({
 	currentWorkspace,
 	workspaces,
 	onSelectWorkspace,
-	gitDirtyCount = 0,
 }: WorkspaceCardProps) {
 	const { t } = useT();
 	const [menuOpen, setMenuOpen] = useState(false);
@@ -37,25 +35,34 @@ export function WorkspaceCard({
 		}
 	};
 
+	const canSwitch = workspaces.length > 1;
+	const hasWorkspace = Boolean(currentWorkspace);
+
 	return (
-		<div className="relative px-2 py-1">
+		<div className="relative min-w-0 flex-1">
 			<div
 				ref={cardRef}
-				role="button"
-				tabIndex={0}
+				role={canSwitch ? "button" : undefined}
+				tabIndex={canSwitch ? 0 : undefined}
 				onClick={() => {
-					if (workspaces.length > 1) {
+					if (canSwitch) {
+						setMenuOpen((v) => !v);
+					}
+				}}
+				onKeyDown={(e) => {
+					if (canSwitch && (e.key === "Enter" || e.key === " ")) {
+						e.preventDefault();
 						setMenuOpen((v) => !v);
 					}
 				}}
 				onContextMenu={(e) => {
 					e.preventDefault();
-					handleOpenInFinder(e);
+					void handleOpenInFinder(e);
 				}}
 				className={clsx(
-					"@container group flex h-6 items-center gap-1.5 rounded-lg hairline bg-[var(--bg-panel)] px-2 py-0.5 text-left shadow-apple-card transition-all",
-					workspaces.length > 1
-						? "cursor-pointer hover:bg-[var(--bg-hover)] active:scale-[0.98]"
+					"group flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-md px-1 text-left transition-colors",
+					canSwitch
+						? "cursor-pointer hover:bg-[var(--bg-hover)] active:scale-[0.99]"
 						: "cursor-default",
 				)}
 				title={
@@ -63,51 +70,35 @@ export function WorkspaceCard({
 						? t("explorer.workspaceCardTip", {
 								name,
 								path,
-								switchHint: workspaces.length > 1 ? t("explorer.switchHint") : "",
+								switchHint: canSwitch ? t("explorer.switchHint") : "",
 						  })
 						: name
 				}
 			>
-				{/* Folder icon container */}
-				<div className="flex h-4 w-4 shrink-0 items-center justify-center rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-					<Folder size={11} />
-				</div>
-
-				{/* Title and path */}
-				<div className="min-w-0 flex-1 flex items-baseline gap-1.5 overflow-hidden">
-					<span className="min-w-0 truncate text-[11px] font-medium text-neutral-200 @[210px]:shrink-0 @[210px]:max-w-[120px]">
-						{name}
-					</span>
-					{workspaces.length > 1 && (
-						<ChevronDown
-							size={11}
-							className={clsx(
-								"text-neutral-500 transition-transform duration-200 shrink-0 self-center",
-								menuOpen && "rotate-180 text-neutral-300",
-							)}
-						/>
+				<Folder
+					size={13}
+					className={clsx(
+						"shrink-0",
+						hasWorkspace ? "text-amber-500/90" : "text-[var(--text-dim)]",
 					)}
-					<span className="hidden @[210px]:inline min-w-0 flex-1 truncate font-mono text-[9.5px] text-neutral-500">
-						{path || t("explorer.selectOrAddWorkspace")}
-					</span>
-				</div>
-
-				{/* Status indicator dot */}
-				<div className="shrink-0 flex items-center pr-0.5">
-					<span
+				/>
+				<span
+					className={clsx(
+						"min-w-0 truncate text-xs font-medium",
+						hasWorkspace ? "text-[var(--text)]" : "text-[var(--text-muted)]",
+					)}
+				>
+					{name}
+				</span>
+				{canSwitch && (
+					<ChevronDown
+						size={11}
 						className={clsx(
-							"h-1.5 w-1.5 rounded-full transition-colors",
-							gitDirtyCount > 0
-								? "bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.5)]"
-								: "bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.5)]",
+							"shrink-0 text-[var(--text-muted)] transition-transform duration-150",
+							menuOpen && "rotate-180 text-[var(--text)]",
 						)}
-						title={
-							gitDirtyCount > 0
-								? t("explorer.workspaceReadyWithDirty", { count: gitDirtyCount })
-								: t("explorer.workspaceReady")
-						}
 					/>
-				</div>
+				)}
 			</div>
 
 			{/* Workspace dropdown selector */}

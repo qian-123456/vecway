@@ -25,7 +25,7 @@ vi.mock("../../lib/ipc", async (original) => ({
 	readTextFile: h.readTextFile,
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), openUrl: vi.fn(), revealItemInDir: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
+vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path, invoke: vi.fn(async () => undefined) }));
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: async () => "/Users/me" }));
 vi.mock("../chat/mermaidRender", () => ({
 	currentMermaidMode: () => "dark",
@@ -41,6 +41,14 @@ import { useSessions } from "../../stores/sessions";
 import { useUi } from "../../stores/ui";
 import { useToasts } from "../../lib/toast";
 import { tNow } from "../../stores/language";
+
+if (typeof globalThis.ResizeObserver === "undefined") {
+	globalThis.ResizeObserver = class {
+		observe() {}
+		unobserve() {}
+		disconnect() {}
+	} as unknown as typeof ResizeObserver;
+}
 
 describe("file tree preview routing", () => {
 	beforeEach(() => {
@@ -58,6 +66,7 @@ describe("file tree preview routing", () => {
 			customRootPath: null,
 			pendingRevealPath: null,
 			revealNonce: 0,
+			showHidden: false,
 		});
 		useFilePreview.setState({ tabs: [], activePath: null });
 		useUi.setState({ centerView: "session", selectedSessionId: null, docPath: null, rightTab: null });
@@ -185,5 +194,142 @@ describe("file tree preview routing", () => {
 
 		await waitFor(() => expect(useExplorer.getState().customRootPath).toBeNull());
 		await screen.findByText("notes.md");
+	});
+
+	it("hides dotfiles and build directories by default and toggles them from the overflow menu", async () => {
+		h.fsReadDir.mockImplementation(async () => [
+			{ name: ".git", path: "/project/.git", isDir: true },
+			{ name: ".env", path: "/project/.env", isDir: false },
+			{ name: "node_modules", path: "/project/node_modules", isDir: true },
+			{ name: "target", path: "/project/target", isDir: true },
+			{ name: "src", path: "/project/src", isDir: true },
+			{ name: "README.md", path: "/project/README.md", isDir: false },
+		]);
+
+		render(<FileExplorer />);
+		await screen.findByText("README.md");
+
+		expect(screen.queryByText(".git")).toBeNull();
+		expect(screen.queryByText(".env")).toBeNull();
+		expect(screen.queryByText("node_modules")).toBeNull();
+		expect(screen.queryByText("target")).toBeNull();
+		expect(screen.getByText("src")).toBeTruthy();
+
+		// Overflow menu toggles hidden & build entries on
+		fireEvent.click(screen.getByRole("button", { name: tNow("explorer.explorerActions") }));
+		const toggle = await screen.findByRole("menuitemcheckbox", {
+			name: tNow("explorer.showHiddenFiles"),
+		});
+		expect(toggle.getAttribute("aria-checked")).toBe("false");
+		fireEvent.click(toggle);
+
+		expect(await screen.findByText(".git")).toBeTruthy();
+		expect(screen.getByText(".env")).toBeTruthy();
+		expect(screen.getByText("node_modules")).toBeTruthy();
+		expect(screen.getByText("target")).toBeTruthy();
+		expect(useExplorer.getState().showHidden).toBe(true);
+	});
+
+	it("reveals the active preview file from the overflow menu even inside a dot directory", async () => {
+		const tree: Record<string, Array<{ name: string; path: string; isDir: boolean }>> = {
+			"/project": [
+				{ name: ".github", path: "/project/.github", isDir: true },
+				{ name: "README.md", path: "/project/README.md", isDir: false },
+			],
+			"/project/.github": [
+				{ name: "workflows", path: "/project/.github/workflows", isDir: true },
+			],
+			"/project/.github/workflows": [
+				{ name: "ci.yml", path: "/project/.github/workflows/ci.yml", isDir: false },
+			],
+		};
+		h.fsReadDir.mockImplementation(async (p: string) => tree[p] ?? []);
+		useFilePreview.setState({
+			tabs: [{ path: "/project/.github/workflows/ci.yml", mode: "preview", cwd: "/project" }],
+			activePath: "/project/.github/workflows/ci.yml",
+		});
+
+		const { container } = render(<FileExplorer />);
+		await screen.findByText("README.md");
+
+		fireEvent.click(screen.getByRole("button", { name: tNow("explorer.explorerActions") }));
+		const revealItem = await screen.findByRole("menuitem", {
+			name: tNow("explorer.revealActiveFile"),
+		});
+		fireEvent.click(revealItem);
+
+		await screen.findByText("ci.yml");
+		const node = container.querySelector<HTMLElement>(
+			'[data-tree-path="/project/.github/workflows/ci.yml"]',
+		);
+		expect(node).not.toBeNull();
+		expect(node?.getAttribute("aria-selected")).toBe("true");
+	});
+
+	it("auto-refreshes silently on window focus and active session activity", async () => {
+		let files = [{ name: "a.ts", path: "/project/a.ts", isDir: false }];
+		h.fsReadDir.mockImplementation(async () => files);
+		useSessions.setState({
+			workspaces: [{ id: "project", name: "Project", path: "/project", kind: "project", mode: "code" }],
+			sessions: {
+				s1: {
+					id: "s1",
+					cwd: "/project",
+					workspaceId: "project",
+					status: "running",
+					updatedAt: "2026-11-21T00:00:00Z",
+				},
+			},
+		} as never);
+		useUi.setState({ selectedSessionId: "s1" });
+
+		render(<FileExplorer />);
+		await screen.findByText("a.ts");
+		expect(screen.queryByText("created-on-focus.ts")).toBeNull();
+
+		// 1. Window focus triggers silent refresh
+		files = [
+			{ name: "a.ts", path: "/project/a.ts", isDir: false },
+			{ name: "created-on-focus.ts", path: "/project/created-on-focus.ts", isDir: false },
+		];
+		fireEvent(window, new Event("focus"));
+		await screen.findByText("created-on-focus.ts");
+
+		// 2. Active session status/updatedAt change triggers debounced silent refresh
+		files = [
+			...files,
+			{ name: "created-by-agent.ts", path: "/project/created-by-agent.ts", isDir: false },
+		];
+		act(() => {
+			useSessions.setState((s) => ({
+				...s,
+				sessions: {
+					...s.sessions,
+					s1: {
+						...s.sessions.s1,
+						status: "idle",
+						updatedAt: "2026-11-21T00:00:05Z",
+					},
+				},
+			}));
+		});
+		await screen.findByText("created-by-agent.ts", {}, { timeout: 2000 });
+	});
+
+	it("keeps a single compact toolbar without duplicate Files header and closes inline search on Escape", async () => {
+		render(<FileExplorer />);
+		await screen.findByText("notes.md");
+
+		expect(screen.queryByText(tNow("explorer.files"))).toBeNull();
+		expect(screen.queryByTitle(tNow("explorer.collapseAllTip"))).toBeNull();
+		expect(screen.queryByTitle(tNow("explorer.refreshTreeTip"))).toBeNull();
+		expect(screen.queryByTitle(tNow("explorer.revealWorkspaceTip"))).toBeNull();
+
+		fireEvent.click(screen.getByTitle(tNow("explorer.searchFilesTip")));
+		const input = screen.getByPlaceholderText(tNow("explorer.searchFilterPlaceholder"));
+		fireEvent.keyDown(input, { key: "Escape" });
+		await waitFor(() =>
+			expect(screen.queryByPlaceholderText(tNow("explorer.searchFilterPlaceholder"))).toBeNull(),
+		);
 	});
 });
