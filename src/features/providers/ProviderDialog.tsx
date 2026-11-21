@@ -7,6 +7,7 @@ import { FloatingLayer } from "../../components/FloatingLayer";
 import { InfoTip } from "../../components/InfoTip";
 import { Modal } from "../../components/Modal";
 import { NativeSelect } from "../../components/NativeSelect";
+import { SearchInput } from "../../components/SearchInput";
 import type { DiscoveredModel, ProviderRow } from "../../lib/contracts";
 import { confirmDialog, errMsg } from "../../lib/dialogs";
 import { isComposing } from "../../lib/hooks";
@@ -112,6 +113,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 		: keyInputProblem({ mode: keyMode, envName, plainKey: apiKey, requirePlainKey: editing !== null && initialMode === "env" });
 	const [modelRows, setModelRows] = useState<ModelRow[]>(() => modelEntriesToRows(initialModels));
 	const [newModelInput, setNewModelInput] = useState("");
+	const [modelSearch, setModelSearch] = useState("");
 	const rowsContainerRef = useRef<HTMLDivElement>(null);
 	const [providerWindow, setProviderWindow] = useState(() => {
 		const saved = editing ? loadProviderWindows()[editing.id] : undefined;
@@ -119,6 +121,8 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 	});
 	const [providerWindowChanged, setProviderWindowChanged] = useState(false);
 	const [batchMaxTokens, setBatchMaxTokens] = useState("");
+	const [filteredBatchContextWindow, setFilteredBatchContextWindow] = useState("");
+	const [filteredBatchMaxTokens, setFilteredBatchMaxTokens] = useState("");
 	const [probingAll, setProbingAll] = useState(false);
 	const [showKey, setShowKey] = useState(false);
 	const [saving, setSaving] = useState(false);
@@ -136,6 +140,35 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 	const [fetchingModels, setFetchingModels] = useState(false);
 	const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[] | null>(null);
 
+	const trimmedSearch = modelSearch.trim().toLowerCase();
+	const isFiltering = trimmedSearch.length > 0;
+	const visibleModelEntries = useMemo(
+		() =>
+			modelRows
+				.map((row, index) => ({ row, index }))
+				.filter(({ row }) => !isFiltering || row.id.toLowerCase().includes(trimmedSearch)),
+		[modelRows, isFiltering, trimmedSearch],
+	);
+	const visibleIndexSet = useMemo(
+		() => new Set(visibleModelEntries.map((entry) => entry.index)),
+		[visibleModelEntries],
+	);
+	const testableModels = useMemo(
+		() => visibleModelEntries.map((entry) => entry.row.id.trim()).filter(Boolean),
+		[visibleModelEntries],
+	);
+	const handleModelSearchChange = useCallback((value: string) => {
+		setModelSearch(value);
+		setFilteredBatchContextWindow("");
+		setFilteredBatchMaxTokens("");
+	}, []);
+	const clearModelSearch = useCallback(() => {
+		handleModelSearchChange("");
+	}, [handleModelSearchChange]);
+
+	useEffect(() => {
+		clearModelSearch();
+	}, [target.mode, editing?.id, clearModelSearch]);
 	const api = isBuiltin ? (editing?.api ?? "") : apiChoice === OTHER_API ? apiOther.trim() : apiChoice;
 
 	const isDirty = useMemo(() => {
@@ -226,6 +259,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 				maxTokens: batchMaxTokens || row.maxTokens,
 			})),
 		);
+		clearModelSearch();
 	};
 
 	const resetPreset = () => {
@@ -244,6 +278,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 		setExpandedModelRows(new Set());
 		setModelRows([]);
 		setNewModelInput("");
+		clearModelSearch();
 	};
 
 	const buildAppendedRows = useCallback(
@@ -272,8 +307,15 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 
 	const appendFromInput = (raw: string) => {
 		if (!raw.trim()) return;
+		const parsedIds = raw
+			.split(/[\s,，\n]+/)
+			.map((part) => part.trim())
+			.filter(Boolean);
 		setModelRows((prev) => buildAppendedRows(prev, raw));
 		setNewModelInput("");
+		if (isFiltering && parsedIds.some((mid) => !mid.toLowerCase().includes(trimmedSearch))) {
+			clearModelSearch();
+		}
 		if (formError) setFormError(null);
 		requestAnimationFrame(() => {
 			if (rowsContainerRef.current) {
@@ -347,13 +389,16 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 			const existing = new Set(prev.map((r) => r.id.trim()).filter(Boolean));
 			return [...prev, ...fresh.filter((r) => !existing.has(r.id))];
 		});
+		if (!append || (isFiltering && selectedIds.some((mid) => !mid.toLowerCase().includes(trimmedSearch)))) {
+			clearModelSearch();
+		}
 		setDiscoveredModels(null);
 		if (formError) setFormError(null);
 	};
 
 	const handleProbeAll = async () => {
 		if (!editing || !editing.testable || probingAll || !runModelTest) return;
-		const ids = modelRows.map((r) => r.id.trim()).filter(Boolean);
+		const ids = testableModels;
 		if (ids.length === 0) return;
 		setProbingAll(true);
 		let cursor = 0;
@@ -655,7 +700,6 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 		(keyAttempted || (keyProblem !== "envEmpty" && keyProblem !== "plainRequired"));
 	const shownEnvName = envName.trim();
 	const envStatus = editing?.key.kind === "envVar" && editing.key.envVar === shownEnvName ? editing.key.envSet : undefined;
-	const testableModels = modelRows.map((r) => r.id.trim()).filter(Boolean);
 	const activeAuthSeg = authNone ? "none" : keyMode;
 
 	return (
@@ -1151,12 +1195,12 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 						{/* 2. Models table: header batch adjust + flexible scrollable rows + pinned add bar */}
 						<section className="flex min-h-[260px] flex-1 flex-col gap-2 rounded-xl border border-[var(--border-divider)] bg-[var(--well-bg)]/45 p-2.5">
 							<div className="flex flex-wrap items-center justify-between gap-2">
-								<div className="flex items-center gap-2">
-									<span className={labelCls}>
+								<div className="flex shrink-0 items-center gap-2">
+									<span className={`${labelCls} whitespace-nowrap`}>
 										{isBuiltin ? t("providers.modelsHeaderExtra") : t("providers.modelsHeaderAll")}
 									</span>
-									<span className="inline-flex items-center rounded-full bg-[var(--bg-active-fill)] px-2 py-0.5 text-[11px] font-medium tabular-nums text-neutral-300">
-										{modelRows.length}
+									<span className="inline-flex items-center whitespace-nowrap rounded-full bg-[var(--bg-active-fill)] px-2 py-0.5 text-[11px] font-medium tabular-nums text-neutral-300">
+										{isFiltering ? `${visibleModelEntries.length} / ${modelRows.length}` : modelRows.length}
 									</span>
 								</div>
 								<div className="flex flex-wrap items-center gap-1.5">
@@ -1198,7 +1242,11 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 										className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg hairline bg-[var(--bg-panel)] px-2.5 py-1 text-xs font-medium text-neutral-200 transition-all hover:bg-[var(--bg-hover)] active:scale-95 disabled:opacity-40"
 									>
 										{probingAll ? <Loader2 className="h-3 w-3 animate-spin" /> : <Activity className="h-3 w-3" />}
-										<span>{t("providers.probeAllBtn")}</span>
+										<span>
+											{isFiltering
+												? t("providers.probeMatchedBtn", { count: testableModels.length })
+												: t("providers.probeAllBtn")}
+										</span>
 									</button>
 									<button
 										type="button"
@@ -1223,6 +1271,16 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 								</p>
 							)}
 
+							<SearchInput
+								value={modelSearch}
+								onChange={handleModelSearchChange}
+								placeholder={t("providers.modelSearchPlaceholder")}
+								ariaLabel={t("providers.modelSearchAria")}
+								iconSize={13}
+								className="w-full"
+								inputClassName={`w-full rounded-lg hairline bg-[var(--bg-panel)] py-1 pl-7 text-xs text-neutral-200 placeholder:text-neutral-500 focus:outline-none focus:ring-1 focus:ring-[var(--accent)] ${modelSearch ? "pr-7" : "pr-2.5"}`}
+							/>
+
 							<div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--border-divider)] bg-[var(--bg-panel)]">
 								<div className={`${MODEL_TABLE_GRID} border-b border-[var(--border-divider)] bg-[var(--bg-active-fill)] px-3 py-1.5 text-[11px] font-medium text-neutral-400`}>
 									<span>{t("providers.colModelId")}</span>
@@ -1231,56 +1289,98 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 									<span className="text-right">{t("providers.colActions")}</span>
 								</div>
 
-								{!serviceMode && (
-									<div className={`${MODEL_TABLE_GRID} border-b border-[var(--border-divider)] bg-[var(--well-bg)]/55 px-3 py-1.5`}>
-										<span className="text-[11px] text-neutral-400">{t("providers.batchAdjustLabel")}</span>
-										<input
-											type="text"
-											inputMode="numeric"
-											value={providerWindow}
-											aria-label={t("providers.colContextWindow")}
-											onChange={(e) => {
-												const value = digitsOnly(e.target.value);
-												setProviderWindowChanged(true);
-												setProviderWindow(value);
-												setModelRows((prev) => prev.map((row) => ({ ...row, contextWindow: value })));
-											}}
-											className={batchCellCls}
-											placeholder={t("providers.batchContextPlaceholder")}
-										/>
-										<input
-											type="text"
-											inputMode="numeric"
-											value={batchMaxTokens}
-											aria-label={t("providers.batchMaxTokensAria")}
-											onChange={(e) => {
-												const value = digitsOnly(e.target.value);
-												setBatchMaxTokens(value);
-												setModelRows((prev) => prev.map((row) => ({ ...row, maxTokens: value })));
-											}}
-											className={batchCellCls}
-											placeholder={t("providers.batchMaxTokensPlaceholder")}
-										/>
-										<div className="text-right">
-											{providerWindow || batchMaxTokens ? (
-												<button
-													type="button"
-													onClick={() => {
-														setProviderWindowChanged(true);
-														setProviderWindow("");
-														setBatchMaxTokens("");
-														setModelRows((prev) => prev.map((row) => ({ ...row, contextWindow: "", maxTokens: "" })));
-													}}
-													className="whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200"
-												>
-													{t("providers.batchClearBtn")}
-												</button>
-											) : (
-												<span className="whitespace-nowrap text-[11px] text-neutral-500">{t("providers.batchSyncTip")}</span>
-											)}
+								{!serviceMode && (() => {
+									const batchDisabled = isFiltering && visibleModelEntries.length === 0;
+									const hasFilteredRowLimits =
+										isFiltering && visibleModelEntries.some(({ row }) => Boolean(row.contextWindow || row.maxTokens));
+									const canBatchClear = isFiltering
+										? visibleModelEntries.length > 0 &&
+											Boolean(filteredBatchContextWindow || filteredBatchMaxTokens || hasFilteredRowLimits)
+										: Boolean(providerWindow || batchMaxTokens);
+									const batchLabel = isFiltering
+										? t("providers.batchAdjustMatchedLabel", { count: visibleModelEntries.length })
+										: t("providers.batchAdjustLabel");
+									return (
+										<div className={`${MODEL_TABLE_GRID} border-b border-[var(--border-divider)] bg-[var(--well-bg)]/55 px-3 py-1.5`}>
+											<span title={batchLabel} className="truncate whitespace-nowrap text-[11px] text-neutral-400">
+												{batchLabel}
+											</span>
+											<input
+												type="text"
+												inputMode="numeric"
+												value={isFiltering ? filteredBatchContextWindow : providerWindow}
+												aria-label={t("providers.colContextWindow")}
+												disabled={batchDisabled}
+												onChange={(e) => {
+													const value = digitsOnly(e.target.value);
+													if (isFiltering) {
+														setFilteredBatchContextWindow(value);
+														setModelRows((prev) =>
+															prev.map((row, i) => (visibleIndexSet.has(i) ? { ...row, contextWindow: value } : row)),
+														);
+														return;
+													}
+													setProviderWindowChanged(true);
+													setProviderWindow(value);
+													setModelRows((prev) => prev.map((row) => ({ ...row, contextWindow: value })));
+												}}
+												className={`${batchCellCls} disabled:opacity-40`}
+												placeholder={t("providers.batchContextPlaceholder")}
+											/>
+											<input
+												type="text"
+												inputMode="numeric"
+												value={isFiltering ? filteredBatchMaxTokens : batchMaxTokens}
+												aria-label={t("providers.batchMaxTokensAria")}
+												disabled={batchDisabled}
+												onChange={(e) => {
+													const value = digitsOnly(e.target.value);
+													if (isFiltering) {
+														setFilteredBatchMaxTokens(value);
+														setModelRows((prev) =>
+															prev.map((row, i) => (visibleIndexSet.has(i) ? { ...row, maxTokens: value } : row)),
+														);
+														return;
+													}
+													setBatchMaxTokens(value);
+													setModelRows((prev) => prev.map((row) => ({ ...row, maxTokens: value })));
+												}}
+												className={`${batchCellCls} disabled:opacity-40`}
+												placeholder={t("providers.batchMaxTokensPlaceholder")}
+											/>
+											<div className="text-right">
+												{canBatchClear ? (
+													<button
+														type="button"
+														onClick={() => {
+															if (isFiltering) {
+																setFilteredBatchContextWindow("");
+																setFilteredBatchMaxTokens("");
+																setModelRows((prev) =>
+																	prev.map((row, i) =>
+																		visibleIndexSet.has(i) ? { ...row, contextWindow: "", maxTokens: "" } : row,
+																	),
+																);
+																return;
+															}
+															setProviderWindowChanged(true);
+															setProviderWindow("");
+															setBatchMaxTokens("");
+															setModelRows((prev) => prev.map((row) => ({ ...row, contextWindow: "", maxTokens: "" })));
+														}}
+														className="whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200"
+													>
+														{t("providers.batchClearBtn")}
+													</button>
+												) : (
+													<span className="whitespace-nowrap text-[11px] text-neutral-500">
+														{isFiltering ? t("providers.batchSyncMatchedTip") : t("providers.batchSyncTip")}
+													</span>
+												)}
+											</div>
 										</div>
-									</div>
-								)}
+									);
+								})()}
 
 								<div
 									ref={rowsContainerRef}
@@ -1294,8 +1394,19 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 													? t("providers.autoDiscoverNoModels")
 													: t("providers.customNoModels")}
 										</div>
+									) : visibleModelEntries.length === 0 ? (
+										<div className="flex min-h-[160px] h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs text-neutral-500">
+											<span>{t("providers.noMatchingModels")}</span>
+											<button
+												type="button"
+												onClick={clearModelSearch}
+												className="whitespace-nowrap rounded-lg hairline bg-[var(--well-bg)] px-2.5 py-1 text-xs font-medium text-neutral-200 transition-all hover:bg-[var(--bg-hover)] active:scale-95"
+											>
+												{t("providers.clearModelSearchBtn")}
+											</button>
+										</div>
 									) : (
-										modelRows.map((row, index) => {
+										visibleModelEntries.map(({ row, index }) => {
 											const mid = row.id.trim();
 											const modelTest = editing && mid ? modelTests[`${editing.id}::${mid}`] : undefined;
 											const testingModel = modelTest?.state === "testing";

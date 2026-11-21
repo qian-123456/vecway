@@ -183,6 +183,9 @@ export default defineMessages({
 			idleCompactionReason: "开启「空闲压缩」后生效",
 			autoBackgroundReason: "开启「自动后台运行」后生效",
 			autoLearnReason: "开启「自主学习」后生效",
+			memoryEnableTitle: "启用记忆",
+			memoryEnableDescription: "允许 AI 跨会话记住项目背景、决策与偏好；关闭时不运行记忆子系统。",
+			memoryBackendDescription: "选择跨会话记忆的保存方式：本地摘要、Mnemopi（本地 SQLite）、Hindsight（远程记忆服务）或 Sharpshooter。",
 		},
 		ompValueEditors: {
 			listEmpty: "列表为空",
@@ -571,6 +574,9 @@ export default defineMessages({
 			idleCompactionReason: 'Effective after enabling "Idle Compaction"',
 			autoBackgroundReason: 'Effective after enabling "Auto Background Execution"',
 			autoLearnReason: 'Effective after enabling "Auto-Learn"',
+			memoryEnableTitle: "Enable Memory",
+			memoryEnableDescription: "Let AI remember project context, decisions, and preferences across sessions; turn off to disable the memory subsystem.",
+			memoryBackendDescription: "Choose how cross-session memory is stored: local summary pipeline, Mnemopi SQLite, Hindsight remote memory, or Sharpshooter.",
 		},
 		ompValueEditors: {
 			listEmpty: "List is empty",

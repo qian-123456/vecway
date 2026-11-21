@@ -20,10 +20,12 @@ import {
 	type AskResolution,
 	type AskSpec,
 	findOpenAsks,
+	initialToggledForQuestion,
 	isAnswerSubmittable,
 	matchRequest,
-	OTHER_OPTION,
+	parseAskArgs,
 	resolveRequest,
+	serializeFormData,
 	unansweredQuestions,
 } from "./askDriver";
 import { claimEscape } from "../../../lib/escapeClaim";
@@ -31,6 +33,10 @@ import { claimEscape } from "../../../lib/escapeClaim";
 /** Driver progress keyed `${sessionId}:${toolCallId}:${qIndex}`; module-level
  * so it survives SessionView remounts (session switch). */
 const driverStates = new Map<string, AskDriverState>();
+/** Stored answers for direct `method: "form"` submissions, keyed `${sessionId}:${toolCallId}`. */
+const formSubmissions = new Map<string, readonly (AskAnswer | undefined)[]>();
+/** Last non-final question index sent to omp per ask, keyed `${sessionId}:${toolCallId}`. */
+const activeQuestionIndices = new Map<string, number>();
 /** Request ids already answered by the driver, keyed `sessionId:id` (ids may be
  * reused across sessions; guards double responses). */
 const respondedIds = new Set<string>();
@@ -41,6 +47,8 @@ export function pruneAskState(sessionIds: readonly string[]): void {
 	const prefixes = sessionIds.map((sid) => `${sid}:`);
 	const hit = (k: string) => prefixes.some((p) => k.startsWith(p));
 	for (const k of [...driverStates.keys()]) if (hit(k)) driverStates.delete(k);
+	for (const k of [...formSubmissions.keys()]) if (hit(k)) formSubmissions.delete(k);
+	for (const k of [...activeQuestionIndices.keys()]) if (hit(k)) activeQuestionIndices.delete(k);
 	for (const k of [...respondedIds]) if (hit(k)) respondedIds.delete(k);
 }
 
@@ -49,6 +57,30 @@ export interface AskRoute {
 	spec: AskSpec;
 	match: AskMatch;
 	resolution: AskResolution;
+}
+
+function matchSpecRequest(
+	sessionId: string,
+	req: PendingUiRequest,
+	spec: AskSpec,
+): AskRoute | null {
+	const formKey = `${sessionId}:${spec.toolCallId}`;
+	const match = matchRequest(spec, req.request, activeQuestionIndices.get(formKey));
+	if (!match) return null;
+	if (match.method === "form") {
+		const submitted = formSubmissions.get(formKey);
+		const resolution: AskResolution = submitted
+			? { kind: "autoForm", data: serializeFormData(spec, submitted) }
+			: { kind: "present" };
+		return { req, spec, match, resolution };
+	}
+	const key = `${sessionId}:${spec.toolCallId}:${match.qIndex}`;
+	const resolution = resolveRequest(
+		spec.questions[match.qIndex],
+		match,
+		driverStates.get(key),
+	);
+	return resolution.kind !== "fallback" ? { req, spec, match, resolution } : null;
 }
 
 export function useAskRouting(sessionId: string, pendingUi: PendingUiRequest[]) {
@@ -64,16 +96,20 @@ export function useAskRouting(sessionId: string, pendingUi: PendingUiRequest[]) 
 		const specs = findOpenAsks(Object.values(tools ?? {}), items ?? []);
 		for (const req of pendingUi) {
 			for (const spec of specs) {
-				const match = matchRequest(spec, req.request);
-				if (!match) continue;
-				const key = `${sessionId}:${spec.toolCallId}:${match.qIndex}`;
-				const resolution = resolveRequest(
-					spec.questions[match.qIndex],
-					match,
-					driverStates.get(key),
-				);
-				if (resolution.kind !== "fallback")
-					return { req, spec, match, resolution };
+				const found = matchSpecRequest(sessionId, req, spec);
+				if (found) return found;
+			}
+			// Direct `method: "form"` RPC request without a matched open ask tool call.
+			const raw =
+				typeof req.request === "object" && req.request !== null
+					? (req.request as Record<string, unknown>)
+					: null;
+			if (raw?.method === "form" && typeof raw.id === "string" && typeof raw.html === "string") {
+				const adHoc = parseAskArgs(`form:${raw.id}`, { html: raw.html });
+				if (adHoc) {
+					const found = matchSpecRequest(sessionId, req, adHoc);
+					if (found) return found;
+				}
 			}
 		}
 		return null;
@@ -82,31 +118,69 @@ export function useAskRouting(sessionId: string, pendingUi: PendingUiRequest[]) 
 	// Replay the stored answer one response at a time; omp re-sends the next
 	// request, which re-runs this effect.
 	useEffect(() => {
-		if (!route || route.resolution.kind !== "auto") return;
+		if (!route) return;
 		const { match, spec, resolution } = route;
+		if (resolution.kind !== "auto" && resolution.kind !== "autoForm") return;
 		const id = match.requestId;
 		const rkey = respondedKey(sessionId, id);
 		if (respondedIds.has(rkey)) return;
 		respondedIds.add(rkey);
+		const formKey = `${sessionId}:${spec.toolCallId}`;
+
+		if (resolution.kind === "autoForm") {
+			setAwaiting(true);
+			rpcUiRespond(sessionId, { id, data: resolution.data })
+				.then(() => {
+					formSubmissions.delete(formKey);
+					activeQuestionIndices.delete(formKey);
+					setAwaiting(false);
+					dismissUi(sessionId, id);
+				})
+				.catch((err) => {
+					formSubmissions.delete(formKey);
+					activeQuestionIndices.delete(formKey);
+					respondedIds.delete(rkey);
+					toast.error(tNow("ask.submitFailed", { error: errMsg(err) }));
+					setAwaiting(false);
+					bump();
+				});
+			return;
+		}
+
 		const key = `${sessionId}:${spec.toolCallId}:${match.qIndex}`;
 		const state = driverStates.get(key);
+		const q = spec.questions[match.qIndex];
+		const isHtmlMultiOtherInput =
+			match.isHtml === true &&
+			q.multi &&
+			(match.method === "input" || match.method === "editor");
 		const final =
-			match.method === "editor" ||
-			(resolution.value !== OTHER_OPTION &&
-				(!spec.questions[match.qIndex].multi || resolution.value === match.doneOption));
+			q.kind === "text" ||
+			((match.method === "editor" || match.method === "input") && !isHtmlMultiOtherInput) ||
+			(match.method === "select" &&
+				resolution.value !== match.otherOption &&
+				(!q.multi || resolution.value === match.doneOption));
+		const isLastQuestion = match.qIndex === spec.questions.length - 1;
 		setAwaiting(true);
 		rpcUiRespond(sessionId, { id, value: resolution.value })
 			.then(() => {
 				if (final) {
 					driverStates.delete(key);
-					// No further question follows: release the composer now.
-					setAwaiting(false);
+					activeQuestionIndices.delete(formKey);
+					if (isLastQuestion) setAwaiting(false);
+				} else if (state) {
+					driverStates.set(key, {
+						...state,
+						toggled: resolution.toggled,
+						...(resolution.otherSent ? { otherSent: true } : {}),
+					});
+					activeQuestionIndices.set(formKey, match.qIndex);
 				}
-				else if (state) driverStates.set(key, { ...state, toggled: resolution.toggled });
 				dismissUi(sessionId, id);
 			})
 			.catch((err) => {
 				driverStates.delete(key);
+				activeQuestionIndices.delete(formKey);
 				respondedIds.delete(rkey);
 				toast.error(tNow("ask.submitFailed", { error: errMsg(err) }));
 				setAwaiting(false);
@@ -130,13 +204,18 @@ export function useAskRouting(sessionId: string, pendingUi: PendingUiRequest[]) 
 	const submit = useCallback(
 		(answers: readonly (AskAnswer | undefined)[]) => {
 			if (!route) return;
-			answers.forEach((answer, i) => {
-				if (answer)
-					driverStates.set(`${sessionId}:${route.spec.toolCallId}:${i}`, {
-						answer,
-						toggled: [],
-					});
-			});
+			if (route.match.method === "form") {
+				formSubmissions.set(`${sessionId}:${route.spec.toolCallId}`, answers);
+			} else {
+				answers.forEach((answer, i) => {
+					if (answer) {
+						driverStates.set(`${sessionId}:${route.spec.toolCallId}:${i}`, {
+							answer,
+							toggled: initialToggledForQuestion(route.spec, route.spec.questions[i]),
+						});
+					}
+				});
+			}
 			bump();
 		},
 		[route, sessionId],
@@ -158,8 +237,6 @@ export function useAskRouting(sessionId: string, pendingUi: PendingUiRequest[]) 
 	return { route, awaiting, submit, cancel };
 }
 
-
-
 interface Draft extends AskAnswer {
 	cursor: number;
 }
@@ -170,19 +247,70 @@ const validRecommended = (q: AskQuestion): number | undefined =>
 		: undefined;
 
 function initialDraft(q: AskQuestion): Draft {
+	if (q.kind === "text") {
+		return { cursor: 0, selected: [], custom: "", text: q.value ?? "" };
+	}
+	if (q.multi) {
+		const preChecked = q.options.filter((o) => o.checked).map((o) => o.label);
+		const firstChecked = q.options.findIndex((o) => o.checked);
+		return {
+			cursor: firstChecked >= 0 ? firstChecked : 0,
+			selected: preChecked,
+			custom: "",
+			notes: {},
+		};
+	}
 	const rec = validRecommended(q);
 	return {
 		cursor: rec ?? 0,
-		selected: !q.multi && rec !== undefined ? [q.options[rec].label] : [],
+		selected: rec !== undefined ? [q.options[rec].label] : [],
 		custom: "",
+		notes: {},
 	};
 }
 
-/** Single-select: typed text replaces the option pick (omp's Other path). */
-const answerOf = (q: AskQuestion, d: Draft): AskAnswer =>
-	q.multi
-		? { selected: d.selected, custom: d.custom }
-		: { selected: d.custom.trim() ? [] : d.selected, custom: d.custom };
+function cleanNotes(
+	selected: readonly string[],
+	notes: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+	if (!notes) return undefined;
+	const out: Record<string, string> = {};
+	let hasAny = false;
+	for (const label of selected) {
+		const v = notes[label]?.trim();
+		if (v) {
+			out[label] = v;
+			hasAny = true;
+		}
+	}
+	return hasAny ? out : undefined;
+}
+
+/** Single-select: typed Other text replaces the option pick; per-option notes stay with chosen options. */
+function answerOf(q: AskQuestion, d: Draft): AskAnswer {
+	if (q.kind === "text") {
+		return { selected: [], custom: "", text: d.text ?? "" };
+	}
+	if (q.multi) {
+		const notes = cleanNotes(d.selected, d.notes);
+		return notes
+			? { selected: d.selected, custom: d.custom, notes }
+			: { selected: d.selected, custom: d.custom };
+	}
+	const selected = d.custom.trim() ? [] : d.selected;
+	const notes = cleanNotes(selected, d.notes);
+	return notes
+		? { selected, custom: d.custom, notes }
+		: { selected, custom: d.custom };
+}
+
+const TEXT_INPUT_TYPES: Record<string, "text" | "number" | "email" | "url" | "date"> = {
+	text: "text",
+	number: "number",
+	email: "email",
+	url: "url",
+	date: "date",
+};
 
 /** All questions of one ask; navigation is local, only 提交 talks to omp. */
 export function AskPanel({
@@ -209,13 +337,20 @@ export function AskPanel({
 		d[startIndex] = initialDraft(spec.questions[startIndex]);
 		return d;
 	});
+	const [focusNoteLabel, setFocusNoteLabel] = useState<string | null>(null);
 	const panelRef = useRef<HTMLDivElement>(null);
-	const inputRef = useRef<HTMLInputElement>(null);
+	const otherInputRef = useRef<HTMLInputElement>(null);
+	const textInputRef = useRef<HTMLInputElement>(null);
+	const textAreaRef = useRef<HTMLTextAreaElement>(null);
+	const noteInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
 	const question = spec.questions[current];
+	const isText = question.kind === "text";
 	const { options, multi } = question;
+	const showOther = !isText && question.hasOther !== false;
 	const draft = drafts[current] ?? initialDraft(question);
 	const otherIdx = options.length;
+	const rowCount = showOther ? options.length + 1 : options.length;
 	const rec = validRecommended(question);
 	const answers = spec.questions.map((q, i) => {
 		const d = drafts[i];
@@ -225,8 +360,19 @@ export function AskPanel({
 	const isLast = current === total - 1;
 
 	useEffect(() => {
-		panelRef.current?.focus();
-	}, []);
+		if (isText) {
+			if (question.multiline) textAreaRef.current?.focus();
+			else textInputRef.current?.focus();
+		} else {
+			panelRef.current?.focus();
+		}
+	}, [current, isText, question.multiline]);
+
+	useEffect(() => {
+		if (!focusNoteLabel) return;
+		noteInputRefs.current[focusNoteLabel]?.focus();
+		setFocusNoteLabel(null);
+	}, [focusNoteLabel]);
 
 	const update = (patch: Partial<Draft>) =>
 		setDrafts((ds) => {
@@ -244,7 +390,6 @@ export function AskPanel({
 			return next;
 		});
 		setCurrent(i);
-		panelRef.current?.focus();
 	};
 
 	const submitAll = () => {
@@ -254,83 +399,150 @@ export function AskPanel({
 	};
 
 	const activate = (i: number) => {
-		if (i === otherIdx) {
+		if (showOther && i === otherIdx) {
 			update({ cursor: i });
-			inputRef.current?.focus();
+			otherInputRef.current?.focus();
 			return;
 		}
+		if (i < 0 || i >= options.length) return;
 		const label = options[i].label;
 		if (multi) {
-			const s = draft.selected;
-			update({
-				cursor: i,
-				selected: s.includes(label) ? s.filter((l) => l !== label) : [...s, label],
+			setDrafts((ds) => {
+				const next = [...ds];
+				const cur = ds[current] ?? initialDraft(question);
+				const s = cur.selected;
+				next[current] = {
+					...cur,
+					cursor: i,
+					selected: s.includes(label) ? s.filter((l) => l !== label) : [...s, label],
+				};
+				return next;
 			});
 			return;
 		}
+		// Selecting a radio option never auto-advances; user confirms with 下一步 / 提交.
 		update({ cursor: i, selected: [label], custom: "" });
-		// Codex: picking an option advances; the last question waits for 提交.
-		if (!isLast) goTo(current + 1);
+	};
+
+	const selectOptionForNote = (label: string, i: number) => {
+		setDrafts((ds) => {
+			const next = [...ds];
+			const cur = ds[current] ?? initialDraft(question);
+			const selected = multi
+				? cur.selected.includes(label)
+					? cur.selected
+					: [...cur.selected, label]
+				: [label];
+			next[current] = {
+				...cur,
+				cursor: i,
+				selected,
+				...(multi ? {} : { custom: "" }),
+			};
+			return next;
+		});
+	};
+
+	const updateOptionNote = (label: string, i: number, value: string) => {
+		setDrafts((ds) => {
+			const next = [...ds];
+			const cur = ds[current] ?? initialDraft(question);
+			const selected = multi
+				? cur.selected.includes(label)
+					? cur.selected
+					: [...cur.selected, label]
+				: [label];
+			next[current] = {
+				...cur,
+				cursor: i,
+				selected,
+				...(multi ? {} : { custom: "" }),
+				notes: { ...(cur.notes ?? {}), [label]: value },
+			};
+			return next;
+		});
+	};
+
+	const openOptionNote = (label: string, i: number) => {
+		selectOptionForNote(label, i);
+		setFocusNoteLabel(label);
 	};
 
 	const onKeyDown = (e: React.KeyboardEvent) => {
 		if (isComposing(e) || busy) return;
-		const inInput = e.target === inputRef.current;
+		const target = e.target as HTMLElement | null;
+		const inTextarea = target?.tagName === "TEXTAREA";
+		const inTextEntry =
+			target?.tagName === "INPUT" || inTextarea || target?.isContentEditable === true;
 		const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+
 		if (e.key === "Escape") {
 			claimEscape(e);
-			if (inInput) panelRef.current?.focus();
+			if (inTextEntry) panelRef.current?.focus();
 			else onCancel();
 			return;
 		}
-		if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+		if (e.key === "Enter") {
+			if (inTextarea) {
+				if (e.metaKey || e.ctrlKey) {
+					e.preventDefault();
+					if (isLast) submitAll();
+					else goTo(current + 1);
+				}
+				return;
+			}
+			if (!e.shiftKey) {
+				e.preventDefault();
+				if (isLast) submitAll();
+				else goTo(current + 1);
+				return;
+			}
+		}
+		if (inTextEntry) return;
+		if (!isText && rowCount > 0 && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
 			e.preventDefault();
-			const next =
-				(draft.cursor + (e.key === "ArrowDown" ? 1 : -1) + otherIdx + 1) % (otherIdx + 1);
+			const next = (draft.cursor + (e.key === "ArrowDown" ? 1 : -1) + rowCount) % rowCount;
 			update({ cursor: next });
-			if (next === otherIdx) inputRef.current?.focus();
+			if (showOther && next === otherIdx) otherInputRef.current?.focus();
 			else panelRef.current?.focus();
 			return;
 		}
-		if (e.key === "Enter" && !e.shiftKey) {
-			e.preventDefault();
-			if (!inInput && !multi && draft.cursor < otherIdx) activate(draft.cursor);
-			else if (isLast) submitAll();
-			else goTo(current + 1);
-			return;
-		}
-		if (inInput) return;
 		if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && plain) {
 			e.preventDefault();
 			goTo(current + (e.key === "ArrowRight" ? 1 : -1));
 			return;
 		}
-		if (e.key === " " && multi && draft.cursor < otherIdx) {
+		if (e.key === " " && !isText && draft.cursor < options.length) {
 			e.preventDefault();
 			activate(draft.cursor);
 			return;
 		}
-		if (/^[1-9]$/.test(e.key) && plain) {
+		if (/^[1-9]$/.test(e.key) && plain && !isText) {
 			const i = Number(e.key) - 1;
-			if (i <= otherIdx) {
+			if (i < rowCount) {
 				e.preventDefault();
 				activate(i);
 			}
 			return;
 		}
-		// Typing while on the options jumps into the free-text row (Codex).
-		if (e.key.length === 1 && plain) {
+		// Typing while focused on choice panel jumps into the free-text Other row if available.
+		if (e.key.length === 1 && plain && showOther) {
 			update({ cursor: otherIdx });
-			inputRef.current?.focus();
+			otherInputRef.current?.focus();
 		}
 	};
 
-	const row =
-		"group flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors";
 	const ghostBtn =
-		"inline-flex items-center gap-1 rounded border border-[var(--line)] px-2.5 py-1 text-xs font-medium text-[var(--text-60)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] disabled:opacity-50";
+		"inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-[var(--line)] px-2.5 py-1 text-xs font-medium text-[var(--text-60)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] disabled:opacity-50";
 	const primaryBtn =
-		"inline-flex items-center gap-1 rounded bg-[var(--text)] px-2.5 py-1 text-xs font-medium text-[var(--bg)] transition-colors hover:opacity-90 disabled:opacity-50";
+		"inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded bg-[var(--text)] px-2.5 py-1 text-xs font-medium text-[var(--bg)] transition-colors hover:opacity-90 disabled:opacity-50";
+	const enterAction = isLast ? t("ask.hintSubmit") : t("ask.hintNext");
+	const hintLine = isText
+		? question.multiline
+			? `${t("ask.hintMultiline", { action: enterAction })}${total > 1 ? t("ask.hintSwitch") : ""}${t("ask.hintEsc")}`
+			: `${t("ask.hintText")}${total > 1 ? t("ask.hintSwitch") : ""}${t("ask.hintEnter", { action: enterAction })}${t("ask.hintEsc")}`
+		: `${multi ? t("ask.hintMulti") : t("ask.hintSingle")}${total > 1 ? t("ask.hintSwitch") : ""}${t("ask.hintEnter", { action: enterAction })}${t("ask.hintEsc")}`;
+
 	return (
 		<div
 			ref={panelRef}
@@ -338,18 +550,23 @@ export function AskPanel({
 			onKeyDown={onKeyDown}
 			className="my-2 rounded-2xl border border-[var(--line)] bg-[var(--bg-panel)] p-3 text-[var(--text)] outline-none"
 		>
-			<div className="flex items-center gap-2 text-[11px] text-[var(--text-40)]">
-				{question.header && (
-					<span className="rounded border border-[var(--line)] px-1.5 py-px text-[var(--text-60)]">
+			<div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-40)]">
+				{question.header && question.header !== question.question && (
+					<span className="whitespace-nowrap rounded border border-[var(--line)] px-1.5 py-px text-[var(--text-60)]">
 						{question.header}
 					</span>
 				)}
 				{total > 1 && (
-					<span>
+					<span className="whitespace-nowrap">
 						{t("ask.questionProgress", { current: current + 1, total })}
 					</span>
 				)}
-				{multi && <span>{t("ask.multiSelect")}</span>}
+				{!isText && multi && <span className="whitespace-nowrap">{t("ask.multiSelect")}</span>}
+				{question.required && (
+					<span className="whitespace-nowrap rounded border border-[var(--line)] px-1.5 py-px text-[var(--text-60)]">
+						{t("ask.required")}
+					</span>
+				)}
 				{total > 1 && (
 					<span className="ml-auto flex items-center gap-1">
 						{spec.questions.map((q, i) => {
@@ -357,7 +574,7 @@ export function AskPanel({
 							const done = i < startIndex || (a !== undefined && isAnswerSubmittable(q, a));
 							return (
 								<button
-									key={q.id}
+									key={`${q.id}-${i}`}
 									type="button"
 									disabled={busy || i < startIndex}
 									aria-label={t("ask.questionAria", { index: i + 1 })}
@@ -373,76 +590,167 @@ export function AskPanel({
 			<div className="mt-1.5 whitespace-pre-wrap text-[13px] font-medium">
 				{question.question}
 			</div>
-			<div className="mt-2 flex flex-col">
-				{options.map((o, i) => {
-					const on = draft.selected.includes(o.label) && (multi || !draft.custom.trim());
-					return (
-						<button
-							key={o.label}
-							type="button"
-							disabled={busy}
-							onMouseEnter={() => update({ cursor: i })}
-							onClick={() => activate(i)}
-							className={`${row} ${draft.cursor === i ? "bg-[var(--ghost-hover)]" : ""}`}
-						>
-							<span className="w-4 shrink-0 pt-px text-right text-[12px] tabular-nums text-[var(--text-40)]">
-								{i + 1}.
-							</span>
-							{multi && (
-								<span
-									className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border ${on ? "border-[var(--text)] bg-[var(--text)] text-[var(--bg)]" : "border-[var(--text-40)]"}`}
-								>
-									{on && <Check size={10} strokeWidth={3} />}
-								</span>
-							)}
-							<span className="min-w-0 flex-1">
-								<span className={`text-[13px] ${on && !multi ? "font-medium" : ""}`}>
-									{o.label}
-								</span>
-								{i === rec && (
-									<span className="ml-1.5 text-[11px] text-[var(--text-40)]">{t("ask.recommended")}</span>
-								)}
-								{o.description && (
-									<span className="block whitespace-pre-wrap text-[12px] text-[var(--text-40)]">
-										{o.description}
-									</span>
-								)}
-							</span>
-							{!multi && on && (
-								<Check size={13} className="mt-0.5 shrink-0 text-[var(--text-60)]" />
-							)}
-						</button>
-					);
-				})}
-				<div
-					className={`${row} ${draft.cursor === otherIdx ? "bg-[var(--ghost-hover)]" : ""}`}
-					onMouseEnter={() => update({ cursor: otherIdx })}
-				>
-					<span className="w-4 shrink-0 pt-px text-right text-[12px] tabular-nums text-[var(--text-40)]">
-						{otherIdx + 1}.
-					</span>
-					<input
-						ref={inputRef}
-						value={draft.custom}
-						disabled={busy}
-						onFocus={() => update({ cursor: otherIdx })}
-						onChange={(e) => update({ custom: e.target.value })}
-						placeholder={multi ? t("ask.notesOptional") : t("ask.otherLabel")}
-						className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[var(--text-40)]"
-					/>
+			{question.context && (
+				<div className="mt-1 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--text-60)]">
+					{question.context}
 				</div>
-			</div>
-			<div className="mt-2 flex items-center gap-2">
-				<span
-					className="min-w-0 flex-1 text-[11px] text-[var(--text-40)]"
-				>
+			)}
+			{isText ? (
+				question.multiline ? (
+					<textarea
+						ref={textAreaRef}
+						rows={3}
+						value={draft.text ?? ""}
+						disabled={busy}
+						placeholder={question.placeholder ?? t("ask.textPlaceholder")}
+						onChange={(e) => update({ text: e.target.value })}
+						className="mt-2 w-full resize-y rounded-lg border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[13px] text-[var(--text)] outline-none transition-colors focus:border-[var(--text-40)] placeholder:text-[var(--text-40)]"
+					/>
+				) : (
+					<input
+						ref={textInputRef}
+						type={TEXT_INPUT_TYPES[question.inputType ?? "text"] ?? "text"}
+						value={draft.text ?? ""}
+						disabled={busy}
+						placeholder={question.placeholder ?? t("ask.textPlaceholder")}
+						onChange={(e) => update({ text: e.target.value })}
+						className="mt-2 w-full rounded-lg border border-[var(--line)] bg-[var(--bg)] px-2.5 py-1.5 text-[13px] text-[var(--text)] outline-none transition-colors focus:border-[var(--text-40)] placeholder:text-[var(--text-40)]"
+					/>
+				)
+			) : (
+				<div className="mt-2 flex flex-col gap-1">
+					{options.map((o, i) => {
+						const on = draft.selected.includes(o.label) && (multi || !draft.custom.trim());
+						const noteVal = draft.notes?.[o.label] ?? "";
+						const showNoteInput = on || noteVal.length > 0;
+						return (
+							<div
+								key={`${o.label}-${i}`}
+								onMouseEnter={() => update({ cursor: i })}
+								className={`rounded-lg border transition-colors ${
+									on
+										? "border-[var(--text-40)] bg-[var(--ghost-hover)]"
+										: draft.cursor === i
+											? "border-transparent bg-[var(--ghost-hover)]"
+											: "border-transparent"
+								}`}
+							>
+								<div className="flex items-start gap-2 px-2 py-1.5">
+									<button
+										type="button"
+										disabled={busy}
+										aria-pressed={on}
+										onClick={() => activate(i)}
+										className="flex min-w-0 flex-1 items-start gap-2 text-left disabled:opacity-50"
+									>
+										<span
+											className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center whitespace-nowrap rounded-md border text-[11px] font-medium tabular-nums transition-colors ${
+												on
+													? "border-[var(--text)] bg-[var(--text)] text-[var(--bg)]"
+													: "border-[var(--line)] bg-[var(--bg)] text-[var(--text-60)]"
+											}`}
+										>
+											{i + 1}
+										</span>
+										{multi && (
+											<span
+												className={`mt-1 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border ${on ? "border-[var(--text)] bg-[var(--text)] text-[var(--bg)]" : "border-[var(--text-40)]"}`}
+											>
+												{on && <Check size={10} strokeWidth={3} />}
+											</span>
+										)}
+										<span className="min-w-0 flex-1 pt-0.5">
+											<span className={`text-[13px] ${on && !multi ? "font-medium" : ""}`}>
+												{o.label}
+											</span>
+											{i === rec && (
+												<span className="ml-1.5 whitespace-nowrap rounded border border-[var(--line)] px-1 py-px text-[10px] text-[var(--text-60)]">
+													{t("ask.recommended")}
+												</span>
+											)}
+											{o.description && (
+												<span className="block whitespace-pre-wrap text-[12px] text-[var(--text-40)]">
+													{o.description}
+												</span>
+											)}
+										</span>
+									</button>
+									{!showNoteInput && (
+										<button
+											type="button"
+											disabled={busy}
+											onClick={() => openOptionNote(o.label, i)}
+											className="mt-0.5 shrink-0 whitespace-nowrap rounded border border-[var(--line)] bg-[var(--bg)] px-1.5 py-0.5 text-[11px] text-[var(--text-60)] transition-colors hover:border-[var(--text-40)] hover:text-[var(--text)] disabled:opacity-50"
+										>
+											{t("ask.addNote")}
+										</button>
+									)}
+									{!multi && on && (
+										<Check size={13} className="mt-1.5 shrink-0 text-[var(--text-60)]" />
+									)}
+								</div>
+								{showNoteInput && (
+									<div className="px-2 pb-2 pl-9">
+										<input
+											ref={(el) => {
+												noteInputRefs.current[o.label] = el;
+											}}
+											type="text"
+											value={noteVal}
+											disabled={busy}
+											aria-label={t("ask.optionNoteAria", { option: o.label })}
+											placeholder={t("ask.optionNotePlaceholder")}
+											onFocus={() => selectOptionForNote(o.label, i)}
+											onChange={(e) => updateOptionNote(o.label, i, e.target.value)}
+											className="w-full rounded-md border border-[var(--line)] bg-[var(--bg)] px-2 py-1 text-[12px] text-[var(--text)] outline-none transition-colors focus:border-[var(--text-40)] placeholder:text-[var(--text-40)]"
+										/>
+									</div>
+								)}
+							</div>
+						);
+					})}
+					{showOther && (
+						<div
+							className={`flex w-full items-center gap-2 rounded-lg border px-2 py-1.5 transition-colors ${
+								draft.custom.trim()
+									? "border-[var(--text-40)] bg-[var(--ghost-hover)]"
+									: draft.cursor === otherIdx
+										? "border-transparent bg-[var(--ghost-hover)]"
+										: "border-transparent"
+							}`}
+							onMouseEnter={() => update({ cursor: otherIdx })}
+						>
+							<span
+								className={`flex h-5 w-5 shrink-0 items-center justify-center whitespace-nowrap rounded-md border text-[11px] font-medium tabular-nums transition-colors ${
+									draft.custom.trim()
+										? "border-[var(--text)] bg-[var(--text)] text-[var(--bg)]"
+										: "border-[var(--line)] bg-[var(--bg)] text-[var(--text-60)]"
+								}`}
+							>
+								{otherIdx + 1}
+							</span>
+							<input
+								ref={otherInputRef}
+								value={draft.custom}
+								disabled={busy}
+								onFocus={() => update({ cursor: otherIdx })}
+								onChange={(e) => update({ custom: e.target.value })}
+								placeholder={multi ? t("ask.notesOptional") : t("ask.otherLabel")}
+								className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[var(--text-40)]"
+							/>
+						</div>
+					)}
+				</div>
+			)}
+			<div className="mt-2.5 flex items-center gap-2">
+				<span className="min-w-0 flex-1 text-[11px] text-[var(--text-40)]">
 					{isLast && missing.length > 0
 						? t("ask.unanswered", {
 								questions: missing
 									.map((i) => t("ask.questionAria", { index: i + 1 }))
 									.join(locale === "zh-CN" ? "、" : ", "),
 							})
-						: `${multi ? t("ask.hintMulti") : t("ask.hintSingle")}${total > 1 ? t("ask.hintSwitch") : ""}${t("ask.hintEnter", { action: isLast ? t("ask.hintSubmit") : t("ask.hintNext") })}${t("ask.hintEsc")}`}
+						: hintLine}
 				</span>
 				<button type="button" disabled={busy} onClick={onCancel} className={ghostBtn}>
 					{t("ask.skip")}

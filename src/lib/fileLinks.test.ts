@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
 	canPreviewFile,
+	findDirPaths,
 	findFilePaths,
 	isPreviewableFile,
+	looksLikeDirPath,
 	looksLikeFilePath,
 	previewKind,
 	resolveFilePath,
@@ -41,6 +43,49 @@ describe("looksLikeFilePath", () => {
 	});
 });
 
+describe("looksLikeDirPath", () => {
+	it("accepts absolute and home directory paths ending with /", () => {
+		expect(looksLikeDirPath("/foo/bar/")).toBe(true);
+		expect(looksLikeDirPath("~/foo/")).toBe(true);
+		expect(looksLikeDirPath("~/.omp/agent/managed-skills/")).toBe(true);
+		expect(looksLikeDirPath("@~/.omp/agent/managed-skills/")).toBe(true);
+		expect(looksLikeDirPath("file:///Users/me/docs/")).toBe(true);
+	});
+
+	it("accepts relative directory paths only when allowRelative is true", () => {
+		expect(looksLikeDirPath(".cache/")).toBe(false);
+		expect(looksLikeDirPath("docs/statecharts/")).toBe(false);
+		expect(looksLikeDirPath("./src/")).toBe(false);
+		expect(looksLikeDirPath("../dir/")).toBe(false);
+
+		expect(looksLikeDirPath(".cache/", { allowRelative: true })).toBe(true);
+		expect(looksLikeDirPath("docs/statecharts/", { allowRelative: true })).toBe(true);
+		expect(looksLikeDirPath("./src/", { allowRelative: true })).toBe(true);
+		expect(looksLikeDirPath("../dir/", { allowRelative: true })).toBe(true);
+	});
+
+	it("rejects bare slashes, dot-only segments, URLs, globs, spaces, and non-trailing-slash paths", () => {
+		for (const bad of [
+			"/",
+			"~/",
+			"./",
+			"../",
+			"../../",
+			"/Users/a/project",
+			"docs/statecharts",
+			"https://example.com/",
+			"http://localhost:3000/dir/",
+			"ssh://host/dir/",
+			"//example.com/dir/",
+			"/Users/a/*/dir/",
+			"/Users/a/<name>/",
+			"/a path/with space/",
+		]) {
+			expect(looksLikeDirPath(bad, { allowRelative: true })).toBe(false);
+		}
+	});
+});
+
 describe("findFilePaths", () => {
 	it("finds paths embedded in CJK prose and trims punctuation", () => {
 		const text = "已经阅读了 /Users/me/.omp/agent/AGENTS.md、~/CodingWiki/x/y.md。";
@@ -66,6 +111,24 @@ describe("findFilePaths", () => {
 	it("ignores directories and keeps the file before a fragment", () => {
 		expect(findFilePaths("目录 /Users/a/b")).toEqual([]);
 		expect(findFilePaths("行 /tmp/x.txt#L3").map((m) => m.path)).toEqual(["/tmp/x.txt"]);
+	});
+});
+
+describe("findDirPaths", () => {
+	it("finds absolute and home directory paths ending with / in prose", () => {
+		const text = "查看 ~/.omp/agent/managed-skills/ 和 /tmp/statecharts/。";
+		expect(findDirPaths(text).map((m) => m.path)).toEqual([
+			"~/.omp/agent/managed-skills/",
+			"/tmp/statecharts/",
+		]);
+	});
+
+	it("keeps @ mention prefix outside the match and ignores URLs and non-slash directories", () => {
+		expect(findDirPaths("见 @~/.omp/agent/managed-skills/")).toEqual([
+			{ start: 3, end: 31, path: "~/.omp/agent/managed-skills/" },
+		]);
+		expect(findDirPaths("see https://example.com/a/b/ now")).toEqual([]);
+		expect(findDirPaths("目录 /Users/a/b 以及 docs/statecharts/")).toEqual([]);
 	});
 });
 

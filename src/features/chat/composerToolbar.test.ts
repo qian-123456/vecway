@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { abbreviateThinking, mergedSuffix, pickToolbarTier } from "./composerToolbar";
+import { pickToolbarTier, TIER_FULL, TIER_NO_PERCENT, TIER_TIGHT } from "./composerToolbar";
 
 const base = {
 	modelLabel: "gemini-3.8-flash",
@@ -9,32 +9,25 @@ const base = {
 
 describe("pickToolbarTier", () => {
 	it("is full when wide or unmeasured", () => {
-		expect(pickToolbarTier({ ...base, width: 640 })).toBe(0);
-		expect(pickToolbarTier({ ...base, width: 0 })).toBe(0);
+		expect(pickToolbarTier({ ...base, width: 640 })).toBe(TIER_FULL);
+		expect(pickToolbarTier({ ...base, width: 0 })).toBe(TIER_FULL);
 	});
-	it("collapses monotonically as width shrinks", () => {
+	it("collapses monotonically as width shrinks and stays within 0..2", () => {
 		let prev = 0;
+		const seen = new Set<number>();
 		for (let w = 700; w >= 100; w -= 10) {
 			const t = pickToolbarTier({ ...base, width: w });
 			expect(t).toBeGreaterThanOrEqual(prev);
+			expect(t).toBeLessThanOrEqual(TIER_TIGHT);
+			seen.add(t);
 			prev = t;
 		}
-		expect(prev).toBe(4);
+		expect(seen.has(TIER_FULL)).toBe(true);
+		expect(seen.has(TIER_NO_PERCENT)).toBe(true);
+		expect(prev).toBe(TIER_TIGHT);
 	});
-	it("merges the chips on a narrow side-chat composer", () => {
-		expect(pickToolbarTier({ ...base, width: 280 })).toBeGreaterThanOrEqual(3);
-	});
-});
-
-describe("merged chip text", () => {
-	it("abbreviates levels", () => {
-		expect(abbreviateThinking("xhigh")).toBe("xhi");
-		expect(abbreviateThinking("custom")).toBe("cus");
-	});
-	it("suffix per state", () => {
-		expect(mergedSuffix("levels", "high", false)).toBe(" · high");
-		expect(mergedSuffix("levels", "high", true)).toBe(" · hi");
-		expect(mergedSuffix("unsupported", "auto", false)).toBe("");
-		expect(mergedSuffix("unconfigured", "auto", false)).toBe(" · 未配置");
+	it("stops at TIER_TIGHT on narrow side-chat widths and never merges chips", () => {
+		expect(pickToolbarTier({ ...base, width: 280 })).toBe(TIER_TIGHT);
+		expect(pickToolbarTier({ ...base, width: 160 })).toBe(TIER_TIGHT);
 	});
 });

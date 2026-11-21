@@ -194,6 +194,35 @@ export function looksLikeFilePath(
 }
 
 /**
+ * Whether a whole token (inline code, link href) denotes a directory path
+ * ending with `/`. `allowRelative` enables relative tokens such as `.cache/`
+ * or `docs/statecharts/` (used for inline code spans and markdown hrefs).
+ */
+export function looksLikeDirPath(
+	token: string,
+	opts: { allowRelative?: boolean } = {},
+): boolean {
+	const raw = stripMentionPrefix(token.trim());
+	if (!raw || /\s/.test(raw)) return false;
+	if (!/^file:\/\//i.test(raw) && /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) return false;
+	// Globs, templates and shell metacharacters are not concrete directories.
+	if (/[*?{}<>"`'|\\$]/.test(raw)) return false;
+	if (raw.includes("\0")) return false;
+
+	let path = raw;
+	if (/^file:\/\//i.test(path)) path = path.slice("file://".length);
+	if (!path.endsWith("/")) return false;
+	if (path.startsWith("//") || path.includes("//")) return false;
+
+	const absolute = path.startsWith("/") || path.startsWith("~/");
+	if (!absolute && !opts.allowRelative) return false;
+
+	const body = path.startsWith("~/") ? path.slice(2) : path;
+	const segments = body.split("/").filter(Boolean);
+	return segments.some((seg) => seg !== "." && seg !== "..");
+}
+
+/**
  * Resolve a link target to an absolute path (`~` expanded when the home dir is
  * known; the backend also accepts a leading `~/`). Returns "" when a relative
  * path has no base directory.
@@ -241,6 +270,24 @@ export function findFilePaths(text: string): FilePathMatch[] {
 		if (prev && /[A-Za-z0-9_.:~\/%+\-=]/.test(prev)) continue;
 		const token = match[0].replace(TRAILING_JUNK_RE, "");
 		if (!looksLikeFilePath(token)) continue;
+		out.push({ start, end: start + token.length, path: token });
+	}
+	return out;
+}
+
+/**
+ * Find absolute/home directory paths ending with `/` embedded in prose.
+ */
+export function findDirPaths(text: string): FilePathMatch[] {
+	const out: FilePathMatch[] = [];
+	const re = /(?:~\/|\/)[A-Za-z0-9._~\/@%+\-=]+/g;
+	let match: RegExpExecArray | null;
+	while ((match = re.exec(text)) !== null) {
+		const start = match.index;
+		const prev = start > 0 ? text[start - 1] : "";
+		if (prev && /[A-Za-z0-9_.:~\/%+\-=]/.test(prev)) continue;
+		const token = match[0].replace(TRAILING_JUNK_RE, "");
+		if (!looksLikeDirPath(token)) continue;
 		out.push({ start, end: start + token.length, path: token });
 	}
 	return out;

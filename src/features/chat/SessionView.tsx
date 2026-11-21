@@ -88,6 +88,7 @@ export function SessionView({
 	const askReq = ask.route?.req;
 	const otherPendingUi = askReq ? pendingUi.filter((r) => r !== askReq) : pendingUi;
 	const askActive = Boolean(ask.route) || ask.awaiting;
+	const hideComposer = askActive || otherPendingUi.length > 0;
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	useGutterSelection(scrollRef);
@@ -384,7 +385,7 @@ export function SessionView({
 									key={ask.route.spec.toolCallId}
 									spec={ask.route.spec}
 									startIndex={ask.route.match.qIndex}
-									busy={ask.route.resolution.kind === "auto"}
+									busy={ask.route.resolution.kind === "auto" || ask.route.resolution.kind === "autoForm"}
 									onSubmit={ask.submit}
 									onCancel={ask.cancel}
 								/>
@@ -412,7 +413,7 @@ export function SessionView({
 						{sharing ? (
 							<ShareSelectionBar sessionId={sessionId} />
 						) : (
-							<div className={askActive ? "hidden" : centered ? "start-rise" : undefined}>
+							<div className={hideComposer ? "hidden" : centered ? "start-rise" : undefined}>
 								<TreeResendBanner sessionId={sessionId} />
 								<Composer
 									key={sessionId}

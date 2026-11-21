@@ -549,6 +549,266 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 	);
 }
 
+const MEMORY_LAST_BACKEND_STORAGE_KEY = "ompws:memory-last-backend";
+const VALID_MEMORY_BACKENDS: Record<string, true> = {
+	local: true,
+	hindsight: true,
+	mnemopi: true,
+	sharpshooter: true,
+};
+
+function readRememberedMemoryBackend(): string {
+	try {
+		const saved = window.localStorage.getItem(MEMORY_LAST_BACKEND_STORAGE_KEY)?.trim();
+		if (saved && VALID_MEMORY_BACKENDS[saved] === true) return saved;
+	} catch {
+		// Ignore storage access failures.
+	}
+	return "local";
+}
+
+function rememberMemoryBackend(backend: string): void {
+	const normalized = backend.trim();
+	if (!normalized || normalized === "off" || VALID_MEMORY_BACKENDS[normalized] !== true) return;
+	try {
+		window.localStorage.setItem(MEMORY_LAST_BACKEND_STORAGE_KEY, normalized);
+	} catch {
+		// Ignore storage access failures.
+	}
+}
+
+/**
+ * Dedicated two-row presentation for `memory.backend`:
+ * 1. An explicit Enable Memory switch that toggles between `"off"` and the last active backend (defaulting to `"local"`).
+ * 2. The Memory Backend selector (shown only when enabled) with `"off"` filtered out.
+ */
+export function MemoryBackendRows({ entry, onChanged }: { entry: OmpConfigEntry; onChanged?: () => void }) {
+	const save = useSaveStatus();
+	const project = useContext(ProjectLayerContext);
+	const load = useOmpConfigStore((s) => s.load);
+	const { t, locale } = useT();
+	const [busy, setBusy] = useState(false);
+
+	const rawBackend = typeof entry.value === "string" && entry.value.trim() ? entry.value.trim() : "off";
+	const enabled = rawBackend !== "off";
+
+	useEffect(() => {
+		if (enabled) rememberMemoryBackend(rawBackend);
+	}, [enabled, rawBackend]);
+
+	const changed = () => {
+		if (onChanged) {
+			onChanged();
+			return;
+		}
+		// Re-list so edited values (and dependent backend sections) stay in sync with omp.
+		void load(true);
+		project.refresh();
+	};
+
+	const persist = async (nextBackend: string) => {
+		setBusy(true);
+		try {
+			const ok = await save.run(() => ompConfigSet(entry.key, nextBackend));
+			if (ok) changed();
+			return ok;
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const handleToggle = (nextEnabled: boolean) => {
+		if (nextEnabled) {
+			void persist(readRememberedMemoryBackend());
+			return;
+		}
+		rememberMemoryBackend(rawBackend);
+		void persist("off");
+	};
+
+	const handleSelectBackend = (nextBackend: string) => {
+		const trimmed = nextBackend.trim();
+		if (!trimmed) return;
+		rememberMemoryBackend(trimmed);
+		void persist(trimmed);
+	};
+
+	const enableTitle = t("settingsCore.ompList.memoryEnableTitle");
+	const enableDescription = t("settingsCore.ompList.memoryEnableDescription");
+	const backendTitle = ompConfigTitle(entry.key, locale);
+	const backendDescription = (
+		(locale !== "en-US"
+			? ompConfigValueDescription(
+					entry.key,
+					entry.value === null || entry.value === undefined ? OMP_CONFIG_DEFAULTS[entry.key] : entry.value,
+				)
+			: null) ?? t("settingsCore.ompList.memoryBackendDescription")
+	).trim();
+	const warning = OMP_CONFIG_META[entry.key]?.warning?.trim() ?? "";
+	const override = project.overrideFor(entry.key);
+	const state = defaultState(entry.key, entry.value, entry.redacted);
+	const defText = defaultText(entry.key);
+	const isUnset = entry.value === null || entry.value === undefined;
+	const modified = state === "modified";
+	const canReset = modified || (state === "unknown" && !isUnset);
+
+	const reset = async () => {
+		const target = defText ? t("settingsCore.ompList.defaultTarget", { target: defText }) : t("settingsCore.ompList.ompDefaultTarget");
+		if (!(await confirmDialog(t("settingsCore.ompList.restoreDefaultConfirm", { title: backendTitle, target }), { danger: true, okLabel: t("settingsCore.ompList.restoreDefault") }))) return;
+		rememberMemoryBackend(rawBackend);
+		setBusy(true);
+		try {
+			const ok = await save.run(() => ompConfigReset(entry.key));
+			if (ok) changed();
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const options = (ompConfigOptions(entry.key) ?? []).filter((o) => o.value !== "off");
+	const labeled = options.map((o) => ({ ...o, text: ompConfigOptionLabel(entry.key, o, locale) }));
+	const selectOptions = [
+		...labeled.map((o) => ({
+			value: o.value,
+			label: o.text,
+			badge: o.text !== o.value ? o.value : undefined,
+			description: o.description,
+		})),
+		...(enabled && !labeled.some((o) => o.value === rawBackend)
+			? [
+					{
+						value: rawBackend,
+						label: rawBackend,
+						badge: t("settingsCore.popoverSelect.customBadge"),
+					},
+				]
+			: []),
+	];
+
+	const tuiLocation = ompTuiLocation(entry.key, locale);
+	const labelTooltip = [
+		modified ? t("settingsCore.ompList.defaultWithFallback", { value: defText ?? t("settingsCore.ompList.ompDefaultTarget") }) : null,
+		tuiLocation,
+		t("settingsCore.ompList.configKey", { key: entry.key }),
+	]
+		.filter(Boolean)
+		.join("\n");
+
+	const overrideChip = override ? (
+		<Chip
+			tone="accent"
+			icon={FolderGit2}
+			title={t("settingsCore.ompList.projectOverriddenTitle", { path: override.path, value: displayValue(override.value, t("settingsCore.ompList.unset")) })}
+		>
+			{t("settingsCore.ompList.projectOverridden")}
+		</Chip>
+	) : null;
+
+	const saveErrorNode =
+		save.status === "error" && save.error ? (
+			<div className="mt-1 flex select-text items-start gap-1 text-xs text-[var(--status-error)]">
+				<AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+				<span className="break-all">{save.error}</span>
+			</div>
+		) : null;
+
+	return (
+		<>
+			<div
+				data-omp-key={!enabled ? entry.key : undefined}
+				data-omp-row=""
+				data-omp-type="boolean"
+				tabIndex={-1}
+				className="px-4 py-3 outline-none transition-colors focus-visible:bg-[var(--bg-hover)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]"
+			>
+				<div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+					<div className="min-w-[160px] flex-1">
+						<div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+							<span className="whitespace-nowrap text-[13px] font-medium text-[var(--text)]" title={!enabled ? labelTooltip : undefined}>
+								{enableTitle}
+							</span>
+							{!enabled && overrideChip}
+							{!enabled && <SaveIndicator status={save.status} error={save.error} />}
+						</div>
+						<ClampedDescription text={enableDescription} />
+						{!enabled && saveErrorNode}
+					</div>
+					<div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5 pt-0.5">
+						<Switch checked={enabled} disabled={busy} ariaLabel={enableTitle} onChange={handleToggle} />
+					</div>
+				</div>
+			</div>
+
+			{enabled && (
+				<div
+					data-omp-key={entry.key}
+					data-omp-row=""
+					data-omp-type={entry.valueType}
+					tabIndex={-1}
+					className="px-4 py-3 outline-none transition-colors focus-visible:bg-[var(--bg-hover)] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]"
+				>
+					<div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+						<div className="min-w-[160px] flex-1">
+							<div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+								{modified && (
+									<span
+										aria-hidden
+										className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent)]"
+										title={labelTooltip}
+									/>
+								)}
+								<span
+									className={clsx(
+										"whitespace-nowrap text-[13px] font-medium",
+										modified ? "text-[var(--accent)]" : "text-[var(--text)]",
+									)}
+									title={labelTooltip}
+								>
+									{backendTitle}
+								</span>
+								{warning && (
+									<span className="text-[var(--status-warning)]" title={warning} role="img" aria-label={t("settingsCore.ompList.riskWarning")}>
+										⚠
+									</span>
+								)}
+								{overrideChip}
+								<SaveIndicator status={save.status} error={save.error} />
+							</div>
+							{warning && <div className="mt-0.5 text-xs leading-[1.5] text-[var(--status-warning)]">{warning}</div>}
+							{backendDescription && <ClampedDescription text={backendDescription} />}
+							{saveErrorNode}
+						</div>
+						<div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5 pt-0.5">
+							<PopoverSelect
+								aria-label={backendTitle}
+								disabled={busy}
+								value={rawBackend}
+								allowCustom
+								customOptionLabel={t("settingsCore.ompList.custom")}
+								customInputType="text"
+								customMono
+								customInputAriaLabel={t("settingsCore.ompList.customLabel", { title: backendTitle })}
+								options={selectOptions}
+								containerClassName="min-w-40 max-w-full sm:max-w-80"
+								onChange={handleSelectBackend}
+							/>
+							{canReset && (
+								<IconButton
+									icon={RotateCcw}
+									label={t("settingsCore.ompList.restoreDefault")}
+									size="sm"
+									disabled={busy}
+									onClick={() => void reset()}
+								/>
+							)}
+						</div>
+					</div>
+				</div>
+			)}
+		</>
+	);
+}
+
 // ── Sections ─────────────────────────────────────────────────────────
 
 interface PageGroup {
@@ -662,9 +922,13 @@ export function OmpSections({ page, slot, only }: { page: OmpHostPage; slot?: st
 					return (
 						<div key={g.section.id} data-jump={secTitle} className="scroll-mt-4">
 							<SettingsCard title={secTitle} aside={g.section.tui} description={g.section.description}>
-								{g.visible.map((entry) => (
-									<OmpSettingRow key={entry.key} entry={entry} />
-								))}
+								{g.visible.map((entry) =>
+									entry.key === "memory.backend" ? (
+										<MemoryBackendRows key={entry.key} entry={entry} />
+									) : (
+										<OmpSettingRow key={entry.key} entry={entry} />
+									),
+								)}
 								{g.hints.map((hint) => (
 									<div key={hint} className="px-4 py-2.5 text-xs text-[var(--text-dim)]">
 										{hint}

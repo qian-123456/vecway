@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
  * Plan mode from a new-chat draft: the command chip must not follow the draft
- * onto the real session, a failed command keeps it, and the plan tab opens only
- * for a newer plan revision.
+ * onto the real session, a failed command keeps it, and the plan tab opens once
+ * per reviewable plan revision.
  */
 
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
@@ -18,6 +18,7 @@ import { loadChip, saveChip } from "./slash/chip";
 import { Composer } from "./Composer";
 import { useTreeEditPending } from "./treeNav";
 import { PLAN_OFF, PLAN_STATUS_KEY, type PlanStatus } from "./plan/planStatus";
+import { resetPlanAutoOpenForTest } from "./plan/usePlanPanelLifecycle";
 import { abortTurn } from "./send";
 
 const DRAFT = "local-draft:plan-1";
@@ -232,6 +233,7 @@ describe("submitted annotation ownership after draft handoff", () => {
 
 describe("plan tab auto-open", () => {
 	beforeEach(() => {
+		resetPlanAutoOpenForTest();
 		// Session selection restores its remembered panel. Seed that first,
 		// then the target panel; combining both in setState is overwritten.
 		useUi.getState().selectSession(REAL);
@@ -248,9 +250,11 @@ describe("plan tab auto-open", () => {
 			}));
 		});
 
-	it("opens only for a newer revision, not for resume or mode start", () => {
+	it("opens once per reviewable revision, respects dismissal, and reopens on a newer version", () => {
 		setPlan(review(3));
 		render(<Composer sessionId={REAL} />);
+		expect(useUi.getState().rightTab).toBe("plan");
+		act(() => useUi.getState().closeRightTab("plan"));
 		expect(useUi.getState().rightTab).toBe("git");
 		setPlan(review(3));
 		expect(useUi.getState().rightTab).toBe("git");
@@ -303,7 +307,7 @@ describe("plan tab auto-open", () => {
 	});
 
 	it("does not pop a draft after abortTurn or a late revision in the stopped turn", async () => {
-		setPlan(review(1));
+		setPlan({ ...PLAN_OFF, enabled: true });
 		render(<Composer sessionId={REAL} />);
 		setPlan(review(2), true);
 		await act(async () => {
@@ -328,20 +332,31 @@ describe("plan tab auto-open", () => {
 	});
 
 	it("does not treat a process exit as a completed revision", () => {
-		setPlan(review(1));
+		setPlan({ ...PLAN_OFF, enabled: true });
 		render(<Composer sessionId={REAL} />);
 		setPlan(review(2), true);
 		act(() => useLive.getState().reduceProcess({ sessionId: REAL, running: false, exitCode: 1 }));
 		expect(useUi.getState().rightTab).toBe("git");
 	});
 
-	it("treats a higher version in a switched session as its baseline", () => {
-		setPlan(review(1));
+	it("opens once when switching to a session with an unseen reviewable plan and stays dismissed until a newer version", () => {
+		setPlan({ ...PLAN_OFF, enabled: true });
 		setPlan(review(9), false, "other");
 		const view = render(<Composer sessionId={REAL} />);
 		act(() => {
 			useUi.getState().selectSession("other");
+		});
+		view.rerender(<Composer sessionId="other" />);
+		expect(useUi.getState().rightTab).toBe("plan");
+		act(() => {
 			useUi.getState().setRightTab("explorer");
+		});
+		act(() => {
+			useUi.getState().selectSession(REAL);
+		});
+		view.rerender(<Composer sessionId={REAL} />);
+		act(() => {
+			useUi.getState().selectSession("other");
 		});
 		view.rerender(<Composer sessionId="other" />);
 		expect(useUi.getState().rightTab).toBe("explorer");
@@ -365,13 +380,13 @@ describe("plan tab auto-open", () => {
 		expect(useUi.getState().openRightTabs).toEqual(["sidechat"]);
 	});
 
-	it("does not open when the first status frame restores a plan or mode starts at zero", () => {
+	it("opens when the first status frame arrives as reviewable, not when mode starts at zero", () => {
 		setPlan(undefined);
 		render(<Composer sessionId={REAL} />);
-		setPlan(review(7));
-		expect(useUi.getState().rightTab).toBe("git");
 		setPlan({ ...PLAN_OFF, enabled: true });
 		expect(useUi.getState().rightTab).toBe("git");
+		setPlan(review(7));
+		expect(useUi.getState().rightTab).toBe("plan");
 	});
 
 	it("restores a cold approved snapshot without waking RPC or opening the panel", async () => {
@@ -384,12 +399,14 @@ describe("plan tab auto-open", () => {
 		expect(h.rpcSend).not.toHaveBeenCalledWith(REAL, expect.objectContaining({ message: "/plan-action status" }));
 	});
 
-	it("uses a cold review as a baseline and only opens a subsequent completed revision", async () => {
+	it("opens a cold review once and reopens only on a subsequent completed revision", async () => {
 		h.sessionSnapshot.mockResolvedValue({ planState: {
 			enabled: true, phase: "review", lastContent: "# Restored\n\nSaved body", version: 8,
 		} });
 		render(<Composer sessionId={REAL} />);
 		await waitFor(() => expect(useLive.getState().sessions[REAL].plan?.version).toBe(8));
+		expect(useUi.getState().rightTab).toBe("plan");
+		act(() => useUi.getState().closeRightTab("plan"));
 		expect(useUi.getState().rightTab).toBe("git");
 		setPlan(review(9));
 		expect(useUi.getState().rightTab).toBe("plan");
@@ -407,7 +424,7 @@ describe("plan tab auto-open", () => {
 		const receivedPlan = useLive.getState().sessions[REAL].plan;
 		await act(async () => finish({ planState: { enabled: false } }));
 		expect(useLive.getState().sessions[REAL].plan).toBe(receivedPlan);
-		expect(useUi.getState().rightTab).toBe("git");
+		expect(useUi.getState().rightTab).toBe("plan");
 	});
 
 	it("does not invent a plan status for a cold session without a persisted record", async () => {

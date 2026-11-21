@@ -206,6 +206,7 @@ export default function App() {
 	useStartupImageGc();
 	const rightOpen = useUi((s) => s.rightOpen);
 	const rightWidth = useUi((s) => s.rightWidth);
+	const rightMaximized = useUi((s) => s.rightMaximized);
 	const toggleRight = useUi((s) => s.toggleRight);
 	const setRightWidth = useUi((s) => s.setRightWidth);
 
@@ -241,6 +242,7 @@ export default function App() {
 	// Full-width views drop the right dock entirely; the persisted `rightOpen`
 	// preference stays untouched so it is restored on the next normal view.
 	const rightVisible = rightOpen && !CENTER_WITHOUT_RIGHT_PANEL.has(effectiveCenterView);
+	const isRightMaximized = rightVisible && rightMaximized;
 	const rightVisibleRef = useRef(rightVisible);
 	rightVisibleRef.current = rightVisible;
 	const { leftWidth: effectiveSidebarWidth, rightWidth: effectiveRightWidth } = computeShellWidths({
@@ -455,7 +457,7 @@ export default function App() {
 				)}
 
 				{/* Left column: topbar cell + session sidebar, strictly matches sidebarWidth */}
-				{sidebarOpen && (
+				{sidebarOpen && !isRightMaximized && (
 					<>
 						<div
 							style={{ width: effectiveSidebarWidth }}
@@ -483,37 +485,41 @@ export default function App() {
 				<div className="flex min-h-0 min-w-0 flex-1 flex-col">
 					<div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
 						{/* Center column: topbar + main conversation view */}
-						<div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-							<CenterHeader
-								sidebarOpen={sidebarOpen}
-								toggleSidebar={toggleSidebar}
-								rightOpen={rightOpen}
-								toggleRight={toggleRight}
-							/>
+						{!isRightMaximized && (
+							<div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+								<CenterHeader
+									sidebarOpen={sidebarOpen}
+									toggleSidebar={toggleSidebar}
+									rightOpen={rightOpen}
+									toggleRight={toggleRight}
+								/>
 
-							{/* Center main view */}
-							<main className="min-h-0 min-w-0 flex-1 overflow-hidden">
-								<ErrorBoundary label={t("shell.mainView")}>
-									<MainCenterView activeView={effectiveCenterView} />
-								</ErrorBoundary>
-							</main>
-						</div>
+								{/* Center main view */}
+								<main className="min-h-0 min-w-0 flex-1 overflow-hidden">
+									<ErrorBoundary label={t("shell.mainView")}>
+										<MainCenterView activeView={effectiveCenterView} />
+									</ErrorBoundary>
+								</main>
+							</div>
+						)}
 
 						{/* Right panel — shares the center column's bottom edge. */}
 						{rightVisible && (
 							<>
 								{/* Right panel drag handle */}
-								<div
-									onMouseDown={onRightDragStart}
-									className="group/handle relative z-40 w-0 shrink-0 cursor-col-resize"
-									title={t("shortcuts.dragRightCol")}
-								>
-									<div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2" />
+								{!isRightMaximized && (
 									<div
-										className={`pointer-events-none absolute inset-y-0 left-1/2 w-[2px] -translate-x-1/2 transition-colors ${draggingSide === "right" ? "bg-[#0A84FF]/60" : "bg-[var(--border-divider)] group-hover/handle:bg-[#0A84FF]/60"}`}
-									/>
-								</div>
-								<RightAside width={effectiveRightWidth} />
+										onMouseDown={onRightDragStart}
+										className="group/handle relative z-40 w-0 shrink-0 cursor-col-resize"
+										title={t("shortcuts.dragRightCol")}
+									>
+										<div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2" />
+										<div
+											className={`pointer-events-none absolute inset-y-0 left-1/2 w-[2px] -translate-x-1/2 transition-colors ${draggingSide === "right" ? "bg-[#0A84FF]/60" : "bg-[var(--border-divider)] group-hover/handle:bg-[#0A84FF]/60"}`}
+										/>
+									</div>
+								)}
+								<RightAside width={effectiveRightWidth} maximized={isRightMaximized} />
 							</>
 						)}
 					</div>

@@ -98,17 +98,9 @@ jobs:
             ---
 
             ### 本次更新 / What's New
-            #### 新增功能 / Features
-            - **供应商与模型体验升级**：全新供应商配置界面与模型自动发现，支持记录最近使用的模型选择历史。
-            - **Provider & Model Experience**: Reworked provider setup dialog and model discovery with catalog refresh and recent picker history.
-            - **定时自动化工作流重做**：全新任务创建与切换体验，支持指定多个工作目录并行执行。
-            - **Scheduled Automations Overhaul**: Streamlined creation and switching flow with multi-worktree targeting.
-            - **对话与会话交互增强**：新增内联引用来源标签与多源预览弹窗、对话中直接交互式确认、请求统计可点击查看、复制结果提示，以及侧边栏会话悬停预览与筛选。
-            - **Chat & Session Interactions**: Added inline citation chips with multi-source preview popovers, interactive prompts, clickable request stats, copy feedback pill, session hover cards, and sidebar filters.
-
-            #### 修复与优化 / Fixes & Improvements
-            - 优化会话目录识别、多工作树角色配置继承，以及启动页与侧边栏的排版间距。
-            - Improved session catalog identity resolution, worktree role inheritance, and start/sidebar layout spacing.
+            #### 修复与优化 / Fixes
+            - **修复 macOS 应用内更新重启后提示"已损坏"**：修复重启辅助脚本在正式版安装包内错误创建空 `dev.icns` 文件导致 Apple 代码签名校验失败的问题（`v0.2.0` / `v0.2.1` 自动升级到本版本时旧进程仍会执行最后一次旧重启脚本，如遇提示请重新从 `.dmg` 拖入覆盖安装，后续版本即可正常无缝重启）。
+            - **Fix macOS "App is damaged" after in-app update relaunch**: Prevented the relaunch helper from creating an empty `dev.icns` inside signed release bundles, which invalidated the sealed code signature (when upgrading from `v0.2.0` / `v0.2.1`, the previous version's relaunch script runs one final time—reinstall from the `.dmg` if prompted, and subsequent updates will relaunch cleanly).
 
             ---
 

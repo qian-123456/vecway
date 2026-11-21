@@ -183,7 +183,14 @@ fn relaunch_extra_args(args: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
 }
 
 #[cfg(any(target_os = "macos", test))]
-const MACOS_RELAUNCH_SCRIPT: &str = r#"pid="$1"
+const MACOS_RELAUNCH_TOUCH_SCRIPT: &str = r#"for p in "$app" "$app/Contents/Info.plist" "$app/Contents/Resources/icon.icns" "$app/Contents/Resources/dev.icns"; do
+  [ -e "$p" ] && /usr/bin/touch -c "$p" 2>/dev/null || true
+done"#;
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_relaunch_script() -> String {
+    format!(
+        r#"pid="$1"
 app="$2"
 shift 2
 i=0
@@ -194,7 +201,7 @@ done
 if kill -0 "$pid" 2>/dev/null; then
   exit 1
 fi
-/usr/bin/touch "$app" "$app/Contents/Info.plist" "$app/Contents/Resources/icon.icns" "$app/Contents/Resources/dev.icns" 2>/dev/null || true
+{MACOS_RELAUNCH_TOUCH_SCRIPT}
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [ -x "$LSREGISTER" ]; then
   "$LSREGISTER" -f "$app" >/dev/null 2>&1 || true
@@ -204,7 +211,9 @@ if [ "$#" -gt 0 ]; then
   exec /usr/bin/open "$app" --args "$@"
 else
   exec /usr/bin/open "$app"
-fi"#;
+fi"#
+    )
+}
 
 /// Locate the `.icns` resource inside a packaged macOS `.app` bundle.
 #[cfg(any(target_os = "macos", test))]
@@ -385,7 +394,7 @@ fn spawn_macos_relaunch_helper(
     // of creating a duplicate running icon beside the pinned Dock item.
     Command::new("/bin/sh")
         .arg("-c")
-        .arg(MACOS_RELAUNCH_SCRIPT)
+        .arg(macos_relaunch_script())
         .arg("omp-workspace-relaunch")
         .arg(std::process::id().to_string())
         .arg(bundle_root)
@@ -978,13 +987,58 @@ tools:
 
     #[test]
     fn test_macos_relaunch_script_refreshes_bundle_before_open() {
-        assert!(MACOS_RELAUNCH_SCRIPT.contains("/usr/bin/touch"));
-        assert!(MACOS_RELAUNCH_SCRIPT.contains("lsregister"));
-        assert!(MACOS_RELAUNCH_SCRIPT.contains("-f \"$app\""));
-        let touch_pos = MACOS_RELAUNCH_SCRIPT.find("/usr/bin/touch").unwrap();
-        let lsreg_pos = MACOS_RELAUNCH_SCRIPT.find("lsregister").unwrap();
-        let open_pos = MACOS_RELAUNCH_SCRIPT.find("/usr/bin/open").unwrap();
+        let script = macos_relaunch_script();
+        assert!(script.contains("/usr/bin/touch -c"));
+        assert!(script.contains("[ -e \"$p\" ]"));
+        assert!(script.contains("lsregister"));
+        assert!(script.contains("-f \"$app\""));
+        let touch_pos = script.find("/usr/bin/touch -c").unwrap();
+        let lsreg_pos = script.find("lsregister").unwrap();
+        let open_pos = script.find("/usr/bin/open").unwrap();
         assert!(touch_pos < lsreg_pos && lsreg_pos < open_pos);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_macos_relaunch_touch_script_never_creates_missing_icons() {
+        let tmp = std::env::temp_dir().join(format!("vecway-touch-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let prod_app = tmp.join("Vecway.app");
+        let prod_contents = prod_app.join("Contents");
+        let prod_res = prod_contents.join("Resources");
+        std::fs::create_dir_all(&prod_res).unwrap();
+        std::fs::write(prod_contents.join("Info.plist"), b"plist").unwrap();
+        std::fs::write(prod_res.join("icon.icns"), b"prod-icon").unwrap();
+
+        let status = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(MACOS_RELAUNCH_TOUCH_SCRIPT)
+            .env("app", &prod_app)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(prod_res.join("icon.icns").is_file());
+        assert!(!prod_res.join("dev.icns").exists());
+
+        let dev_app = tmp.join("Vecway Dev.app");
+        let dev_contents = dev_app.join("Contents");
+        let dev_res = dev_contents.join("Resources");
+        std::fs::create_dir_all(&dev_res).unwrap();
+        std::fs::write(dev_contents.join("Info.plist"), b"plist").unwrap();
+        std::fs::write(dev_res.join("dev.icns"), b"dev-icon").unwrap();
+
+        let status = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(MACOS_RELAUNCH_TOUCH_SCRIPT)
+            .env("app", &dev_app)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(dev_res.join("dev.icns").is_file());
+        assert!(!dev_res.join("icon.icns").exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

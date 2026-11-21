@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as Dialogs from "../../lib/dialogs";
 
-const { openPath, openUrl, importImageFile } = vi.hoisted(() => ({
+const { openPath, openUrl, importImageFile, copyText } = vi.hoisted(() => ({
 	openPath: vi.fn(async (_path: string): Promise<void> => undefined),
 	openUrl: vi.fn(async (_url: string): Promise<void> => undefined),
 	importImageFile: vi.fn(async (path: string) => path),
+	copyText: vi.fn(async (_text: string, _opts?: { label?: string }): Promise<void> => undefined),
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({
 	openPath,
@@ -21,6 +23,10 @@ vi.mock("../../lib/ipc", () => ({
 	writeTextFile: vi.fn(async () => undefined),
 	importImageFile,
 }));
+vi.mock("../../lib/dialogs", async (original) => ({
+	...(await original<typeof Dialogs>()),
+	copyText,
+}));
 vi.mock("../chat/mermaidRender", () => ({
 	currentMermaidMode: () => "dark",
 	renderMermaidSvg: vi.fn(async () => '<svg viewBox="0 0 100 40"></svg>'),
@@ -29,6 +35,7 @@ vi.mock("../chat/mermaidRender", () => ({
 
 import { FilePreviewPanel } from "./FilePreviewPanel";
 import { useFilePreview } from "../../stores/filePreview";
+import { useUi } from "../../stores/ui";
 
 describe("FilePreviewPanel", () => {
 	beforeEach(() => {
@@ -36,6 +43,8 @@ describe("FilePreviewPanel", () => {
 		importImageFile.mockReset();
 		importImageFile.mockImplementation(async (path: string) => path);
 		useFilePreview.setState({ tabs: [], activePath: null });
+		copyText.mockReset();
+		useUi.setState({ rightOpen: true, rightTab: "files", rightMaximized: false });
 	});
 
 	afterEach(cleanup);
@@ -124,5 +133,34 @@ describe("FilePreviewPanel", () => {
 		fire({ type: "omp-html-preview-open", href: "https://evil.test/" }, window);
 		expect(openUrl).toHaveBeenCalledTimes(1);
 		expect(openUrl).toHaveBeenCalledWith("https://example.com/");
+	});
+
+	it("copies the full path from the compact toolbar and toggles right-panel maximize", async () => {
+		readTextFile.mockResolvedValue("# Doc");
+		useFilePreview.getState().openFile("/Users/me/.local/share/report.md");
+		render(<FilePreviewPanel />);
+		const pathBtn = await screen.findByTitle("/Users/me/.local/share/report.md");
+		await waitFor(() => expect(pathBtn.textContent).toBe("~/.local/share/report.md"));
+		fireEvent.click(pathBtn);
+		expect(copyText).toHaveBeenCalledWith("/Users/me/.local/share/report.md", { label: "已复制路径" });
+
+		const maxBtn = screen.getByRole("button", { name: "全屏展开右侧面板" });
+		fireEvent.click(maxBtn);
+		expect(useUi.getState().rightMaximized).toBe(true);
+		const restoreBtn = screen.getByRole("button", { name: "还原分栏" });
+		fireEvent.click(restoreBtn);
+		expect(useUi.getState().rightMaximized).toBe(false);
+	});
+
+	it("shows clickable path and maximize toggle in the image preview toolbar", async () => {
+		useFilePreview.getState().openFile("/Users/me/project/chart.png");
+		render(<FilePreviewPanel />);
+		const pathBtn = await screen.findByTitle("/Users/me/project/chart.png");
+		await waitFor(() => expect(pathBtn.textContent).toBe("~/project/chart.png"));
+		fireEvent.click(pathBtn);
+		expect(copyText).toHaveBeenCalledWith("/Users/me/project/chart.png", { label: "已复制路径" });
+
+		fireEvent.click(screen.getByRole("button", { name: "全屏展开右侧面板" }));
+		expect(useUi.getState().rightMaximized).toBe(true);
 	});
 });

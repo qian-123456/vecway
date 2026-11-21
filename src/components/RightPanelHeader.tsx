@@ -16,6 +16,8 @@ import {
 	Cpu,
 	Folder,
 	GitBranch,
+	Maximize2,
+	Minimize2,
 	MessageSquare,
 	Minus,
 	NotebookPen,
@@ -40,6 +42,7 @@ import { type RightTab, useUi } from "../stores/ui";
 import { FloatingLayer } from "./FloatingLayer";
 import { sessionDisplayName } from "../lib/sessionName";
 import { basename } from "../lib/paths";
+import { useTrafficLightsVisible } from "../lib/trafficLights";
 import { openNewSideChat, isBlankTab, resolveActiveTab, useSideChatView } from "../features/sidechat/viewStore";
 import { sideChatTitle } from "../features/sidechat/sideChatTitle";
 import { SIDE_CHAT_TAB_ACTIONS } from "../features/sidechat/sideChatActions";
@@ -102,6 +105,9 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 	const setRightTab = useUi((s) => s.setRightTab);
 	const closeRightTab = useUi((s) => s.closeRightTab);
 	const toggleRight = useUi((s) => s.toggleRight);
+	const rightMaximized = useUi((s) => s.rightMaximized);
+	const toggleRightMaximized = useUi((s) => s.toggleRightMaximized);
+	const trafficLightsVisible = useTrafficLightsVisible();
 	const drawerTabs = useDrawerStore((s) => s.tabs);
 	const activeTerminalId = useDrawerStore((s) => s.activeTabId);
 	const { scope: terminalScope } = useTerminalScope();
@@ -310,7 +316,12 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 		);
 
 	return (
-		<div className="relative flex h-10 shrink-0 items-center gap-1 border-b border-[var(--border-divider)] bg-neutral-950/80 px-1.5 select-none">
+		<div
+			className={clsx(
+				"relative flex h-10 shrink-0 items-center gap-1 border-b border-[var(--border-divider)] bg-neutral-950/80 pr-1.5 select-none",
+				rightMaximized && trafficLightsVisible ? "pl-[78px]" : "pl-1.5",
+			)}
+		>
 			<div ref={stripRef} className="flex min-w-0 flex-1 items-center gap-1 self-stretch">
 				{/* flex-basis is set explicitly: a flex container's intrinsic width
 				    ignores its items' flex-basis, so without it every tab would
@@ -437,6 +448,16 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 					<Plus size={14} />
 				</button>
 			</div>
+
+			<button
+				type="button"
+				onClick={toggleRightMaximized}
+				className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-800/80 hover:text-neutral-200"
+				title={rightMaximized ? t("rightPanel.restorePanel") : t("rightPanel.maximizePanel")}
+				aria-label={rightMaximized ? t("rightPanel.restorePanel") : t("rightPanel.maximizePanel")}
+			>
+				{rightMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+			</button>
 
 			<button
 				type="button"

@@ -1,23 +1,29 @@
 import clsx from "clsx";
 import {
+	Check,
+	Crosshair,
+	Eye,
+	FolderOpen,
 	FolderUp,
+	FoldVertical,
 	Loader2,
+	MoreHorizontal,
 	RefreshCw,
 	Search,
-	FoldVertical,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DirEntry } from "../../lib/contracts";
 import { resolveActiveSessionTarget } from "../../lib/activeSessionTarget";
 import { canPreviewFile } from "../../lib/fileLinks";
-import { basename } from "../../lib/paths";
+import { basename, isInside, shortPath, trimTrailingSlash } from "../../lib/paths";
 import { usePendingSession } from "../sessions/pendingSession";
 import { fsReadDir, listWorkspaceFiles } from "../../lib/ipc";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { EmptyState } from "../../components/EmptyState";
+import { FloatingLayer } from "../../components/FloatingLayer";
 import { SearchInput } from "../../components/SearchInput";
 import { toast } from "../../lib/toast";
-import { isComposing } from "../../lib/hooks";
+import { isComposing, useHomeDir } from "../../lib/hooks";
 import { useExplorer } from "../../stores/explorer";
 import { useFilePreview } from "../../stores/filePreview";
 import { useSessions } from "../../stores/sessions";
@@ -25,6 +31,8 @@ import { useUi } from "../../stores/ui";
 import { FileIcon } from "./FileIcon";
 import { FileTreeNode } from "./FileTreeNode";
 import { WorkspaceCard } from "./WorkspaceCard";
+import { collectForceVisiblePaths, filterVisibleEntries } from "./filterEntries";
+import { keepIfEqual, useAutoRefresh } from "../git/useAutoRefresh";
 import { claimEscape } from "../../lib/escapeClaim";
 import { useT } from "../../stores/language";
 import { focusDeferred, useSlashSearch } from "../shortcuts/searchShortcut";
@@ -47,6 +55,15 @@ export function FileExplorer() {
 	});
 	const manualWorkspaceId = useExplorer((s) => s.workspaceId);
 	const setManualWorkspaceId = useExplorer((s) => s.setWorkspaceId);
+	const customRootPath = useExplorer((s) => s.customRootPath);
+	const pendingRevealPath = useExplorer((s) => s.pendingRevealPath);
+	const revealNonce = useExplorer((s) => s.revealNonce);
+	const setCustomRootPath = useExplorer((s) => s.setCustomRootPath);
+	const clearCustomRoot = useExplorer((s) => s.clearCustomRoot);
+	const showHidden = useExplorer((s) => s.showHidden);
+	const setShowHidden = useExplorer((s) => s.setShowHidden);
+	const toggleShowHidden = useExplorer((s) => s.toggleShowHidden);
+	const home = useHomeDir();
 
 	const currentWorkspace = useMemo(() => {
 		if (workspaces.length === 0) return null;
@@ -62,6 +79,8 @@ export function FileExplorer() {
 		return { ...found, path: activeTarget.cwd };
 	}, [workspaces, manualWorkspaceId, activeTarget.workspaceId, activeTarget.cwd]);
 
+	const effectiveRootPath = customRootPath ?? currentWorkspace?.path ?? null;
+
 	// Tree state
 	const [rootEntries, setRootEntries] = useState<DirEntry[]>([]);
 	const [childrenMap, setChildrenMap] = useState<Record<string, DirEntry[]>>({});
@@ -69,8 +88,19 @@ export function FileExplorer() {
 	const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
 	const [selectedPath, setSelectedPath] = useState<string | null>(activePreviewPath);
 	const [isRootLoading, setIsRootLoading] = useState(false);
-	const rootPathRef = useRef(currentWorkspace?.path);
-	rootPathRef.current = currentWorkspace?.path;
+	const rootPathRef = useRef(effectiveRootPath);
+	rootPathRef.current = effectiveRootPath;
+	const [pendingScrollPath, setPendingScrollPath] = useState<string | null>(null);
+	const expandedPathsRef = useRef(expandedPaths);
+	expandedPathsRef.current = expandedPaths;
+	const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+	const moreBtnRef = useRef<HTMLButtonElement>(null);
+
+	const activeSession = selectedSessionId ? sessions[selectedSessionId] : undefined;
+	const sessionActivityKey = activeSession
+		? `${activeSession.id}:${activeSession.status}:${activeSession.updatedAt}`
+		: null;
+	const prevSessionActivityRef = useRef(sessionActivityKey);
 
 	// Search state
 	const [searchOpen, setSearchOpen] = useState(false);
@@ -114,43 +144,103 @@ export function FileExplorer() {
 		}
 	}, []);
 
-	// Refresh root directory and reload expanded directories in current workspace
-	const refreshRoot = useCallback(async () => {
-		if (!currentWorkspace?.path) {
-			setRootEntries([]);
-			return;
-		}
-		setIsRootLoading(true);
-		try {
-			const entries = await fsReadDir(currentWorkspace.path);
-			if (rootPathRef.current !== currentWorkspace.path) return;
-			setRootEntries(entries);
-			// Also reload currently expanded directories
-			for (const expPath of expandedPaths) {
-				if (expPath.startsWith(currentWorkspace.path)) {
-					loadDir(expPath).catch(() => {});
-				}
+	// Refresh root directory and reload expanded directories under the effective root.
+	// Silent mode avoids spinners, error toasts, and unnecessary re-renders for background sync.
+	const refreshTree = useCallback(
+		async (opts?: { silent?: boolean }) => {
+			const root = rootPathRef.current;
+			if (!root) {
+				setRootEntries((prev) => (prev.length === 0 ? prev : []));
+				return;
 			}
-		} catch (err) {
-			if (rootPathRef.current !== currentWorkspace.path) return;
-			toast.error(t("explorer.loadWorkspaceFilesFailed", { error: String(err) }));
-			setRootEntries([]);
-		} finally {
-			if (rootPathRef.current === currentWorkspace.path) setIsRootLoading(false);
-		}
-	}, [currentWorkspace?.path, expandedPaths, loadDir]);
+			const silent = opts?.silent ?? false;
+			if (!silent) setIsRootLoading(true);
+			try {
+				const entries = await fsReadDir(root);
+				if (rootPathRef.current !== root) return;
+				setRootEntries((prev) => keepIfEqual(prev, entries));
 
-	// Reset tree expansion and cache on workspace change, then load new root
+				const expanded = Array.from(expandedPathsRef.current).filter((p) => isInside(p, root));
+				if (expanded.length > 0) {
+					const results = await Promise.allSettled(
+						expanded.map(async (dir) => [dir, await fsReadDir(dir)] as const),
+					);
+					if (rootPathRef.current !== root) return;
+					const updated: Record<string, DirEntry[]> = {};
+					const deletedDirs: string[] = [];
+					results.forEach((res, i) => {
+						if (res.status === "fulfilled") {
+							updated[res.value[0]] = res.value[1];
+						} else if (silent) {
+							deletedDirs.push(expanded[i]);
+						}
+					});
+					if (Object.keys(updated).length > 0 || deletedDirs.length > 0) {
+						setChildrenMap((prev) => {
+							let changed = false;
+							const next = { ...prev };
+							for (const [dir, list] of Object.entries(updated)) {
+								const kept = keepIfEqual(prev[dir], list);
+								if (kept !== prev[dir]) {
+									next[dir] = kept;
+									changed = true;
+								}
+							}
+							for (const dir of deletedDirs) {
+								if (dir in next) {
+									delete next[dir];
+									changed = true;
+								}
+							}
+							return changed ? next : prev;
+						});
+						if (deletedDirs.length > 0) {
+							setExpandedPaths((prev) => {
+								const next = new Set(prev);
+								for (const dir of deletedDirs) next.delete(dir);
+								return next.size === prev.size ? prev : next;
+							});
+						}
+					}
+				}
+			} catch (err) {
+				if (rootPathRef.current !== root) return;
+				if (!silent) {
+					toast.error(t("explorer.loadWorkspaceFilesFailed", { error: String(err) }));
+					setRootEntries([]);
+				}
+			} finally {
+				if (!silent && rootPathRef.current === root) setIsRootLoading(false);
+			}
+		},
+		[t],
+	);
+
+	// Auto-refresh on window focus, tab visibility restore, and calm interval while visible
+	useAutoRefresh(() => void refreshTree({ silent: true }), 10_000);
+
+	// Auto-refresh shortly after the active session's status/updatedAt changes (e.g. AI edits files)
+	useEffect(() => {
+		if (prevSessionActivityRef.current === sessionActivityKey) return;
+		prevSessionActivityRef.current = sessionActivityKey;
+		if (!effectiveRootPath || !sessionActivityKey) return;
+		const timer = window.setTimeout(() => {
+			void refreshTree({ silent: true });
+		}, 250);
+		return () => window.clearTimeout(timer);
+	}, [sessionActivityKey, effectiveRootPath, refreshTree]);
+
+	// Reset tree expansion and cache on root change, then load new root
 	useEffect(() => {
 		let cancelled = false;
 		setExpandedPaths(new Set());
 		setChildrenMap({});
-		if (!currentWorkspace?.path) {
+		if (!effectiveRootPath) {
 			setRootEntries([]);
 			return;
 		}
 		setIsRootLoading(true);
-		fsReadDir(currentWorkspace.path)
+		fsReadDir(effectiveRootPath)
 			.then((entries) => {
 				if (cancelled) return;
 				setRootEntries(entries);
@@ -165,7 +255,104 @@ export function FileExplorer() {
 				setIsRootLoading(false);
 			});
 		return () => { cancelled = true; };
-	}, [currentWorkspace?.path]);
+	}, [effectiveRootPath]);
+
+	// Reveal/expand a directory requested from chat links or external callers
+	useEffect(() => {
+		if (!pendingRevealPath) return;
+		const target = pendingRevealPath;
+		const nonce = revealNonce;
+		const wsRoot = currentWorkspace?.path
+			? (trimTrailingSlash(currentWorkspace.path) || "/")
+			: null;
+		const insideWorkspace = !!wsRoot && isInside(target, wsRoot);
+
+		setSearchQuery("");
+
+		if (!insideWorkspace) {
+			setCustomRootPath(target);
+			setSelectedPath(target);
+			useExplorer.setState((s) => (s.revealNonce === nonce ? { pendingRevealPath: null } : s));
+			return;
+		}
+
+		// If a temporary custom root is active, clear it first and let the next render
+		// reset the tree to the workspace root before expanding the target path.
+		if (customRootPath !== null) {
+			clearCustomRoot();
+			return;
+		}
+
+		let cancelled = false;
+		const rel =
+			target === wsRoot
+				? ""
+				: wsRoot === "/"
+					? target.slice(1)
+					: target.slice(wsRoot.length + 1);
+		const segments = rel ? rel.split("/").filter(Boolean) : [];
+		const dirsToExpand: string[] = [];
+		let acc = wsRoot;
+		for (const seg of segments) {
+			acc = acc === "/" ? `/${seg}` : `${acc}/${seg}`;
+			dirsToExpand.push(acc);
+		}
+
+		setSelectedPath(target);
+		if (dirsToExpand.length > 0) {
+			setExpandedPaths((prev) => {
+				const next = new Set(prev);
+				for (const dir of dirsToExpand) next.add(dir);
+				return next;
+			});
+			setPendingScrollPath(target);
+		}
+
+		void (async () => {
+			const loaded: Record<string, DirEntry[]> = {};
+			await Promise.all(
+				dirsToExpand.map(async (dir) => {
+					try {
+						loaded[dir] = await fsReadDir(dir);
+					} catch (err) {
+						if (!cancelled) {
+							toast.error(t("explorer.readDirFailed", { error: String(err) }));
+						}
+					}
+				}),
+			);
+			if (cancelled) return;
+			if (Object.keys(loaded).length > 0) {
+				setChildrenMap((prev) => ({ ...prev, ...loaded }));
+			}
+			useExplorer.setState((s) => (s.revealNonce === nonce ? { pendingRevealPath: null } : s));
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [
+		pendingRevealPath,
+		revealNonce,
+		customRootPath,
+		currentWorkspace?.path,
+		setCustomRootPath,
+		clearCustomRoot,
+	]);
+
+	// Scroll the revealed directory node into view once it renders in the tree
+	useEffect(() => {
+		if (!pendingScrollPath) return;
+		const container = panelRef.current;
+		if (!container) return;
+		for (const el of container.querySelectorAll<HTMLElement>("[data-tree-path]")) {
+			if (el.dataset.treePath === pendingScrollPath) {
+				el.scrollIntoView?.({ block: "nearest" });
+				setPendingScrollPath(null);
+				return;
+			}
+		}
+	}, [pendingScrollPath, rootEntries, childrenMap, expandedPaths]);
 
 	// Toggle folder expand/collapse
 	const handleToggleExpand = useCallback(
@@ -195,27 +382,84 @@ export function FileExplorer() {
 	const handleOpenFile = (path: string) => {
 		setSelectedPath(path);
 		if (canPreviewFile(path)) {
-			useFilePreview.getState().openFile(path, { cwd: currentWorkspace?.path ?? null });
+			useFilePreview.getState().openFile(path, { cwd: effectiveRootPath ?? null });
 		} else {
 			toast.error(t("shell.blockedPreviewNonTextOrImage", { name: basename(path) }));
 		}
 	};
 
-	// Reveal current workspace root in Finder
+	// Reveal current effective root in Finder
 	const handleRevealInFinder = async () => {
-		if (!currentWorkspace?.path) return;
+		if (!effectiveRootPath) return;
 		try {
-			await revealItemInDir(currentWorkspace.path);
+			await revealItemInDir(effectiveRootPath);
 		} catch (err) {
 			toast.error(t("explorer.openInFinderFailed", { error: String(err) }));
 		}
 	};
 
+	const canRevealActiveFile = Boolean(
+		activePreviewPath && effectiveRootPath && isInside(activePreviewPath, effectiveRootPath),
+	);
+
+	const handleRevealActiveFile = useCallback(async () => {
+		if (!activePreviewPath || !effectiveRootPath || !isInside(activePreviewPath, effectiveRootPath)) {
+			return;
+		}
+		setSearchQuery("");
+		setSearchOpen(false);
+		const root = trimTrailingSlash(effectiveRootPath) || "/";
+		const rel =
+			activePreviewPath === root
+				? ""
+				: root === "/"
+					? activePreviewPath.slice(1)
+					: activePreviewPath.slice(root.length + 1);
+		const segments = rel ? rel.split("/").filter(Boolean) : [];
+		const dirsToExpand: string[] = [];
+		let acc = root;
+		for (let i = 0; i < segments.length - 1; i++) {
+			acc = acc === "/" ? `/${segments[i]}` : `${acc}/${segments[i]}`;
+			dirsToExpand.push(acc);
+		}
+		setSelectedPath(activePreviewPath);
+		if (dirsToExpand.length > 0) {
+			setExpandedPaths((prev) => {
+				const next = new Set(prev);
+				for (const dir of dirsToExpand) next.add(dir);
+				return next;
+			});
+			const loaded: Record<string, DirEntry[]> = {};
+			await Promise.all(
+				dirsToExpand.map(async (dir) => {
+					try {
+						loaded[dir] = await fsReadDir(dir);
+					} catch (err) {
+						toast.error(t("explorer.readDirFailed", { error: String(err) }));
+					}
+				}),
+			);
+			if (Object.keys(loaded).length > 0) {
+				setChildrenMap((prev) => ({ ...prev, ...loaded }));
+			}
+		}
+		setPendingScrollPath(activePreviewPath);
+	}, [activePreviewPath, effectiveRootPath, t]);
+
+	const forceVisiblePaths = useMemo(
+		() => collectForceVisiblePaths(effectiveRootPath, selectedPath, expandedPaths),
+		[effectiveRootPath, selectedPath, expandedPaths],
+	);
+	const visibleRootEntries = useMemo(
+		() => filterVisibleEntries(rootEntries, showHidden, forceVisiblePaths),
+		[rootEntries, showHidden, forceVisiblePaths],
+	);
+
 	// Perform workspace file search when query changes
 	useEffect(() => {
 		let cancelled = false;
 		const q = searchQuery.trim();
-		if (!q || !currentWorkspace?.path) {
+		if (!q || !effectiveRootPath) {
 			setSearchResults([]);
 			return;
 		}
@@ -223,7 +467,7 @@ export function FileExplorer() {
 		const timer = setTimeout(async () => {
 			setIsSearchingFiles(true);
 			try {
-				const allFiles = await listWorkspaceFiles(currentWorkspace.path);
+				const allFiles = await listWorkspaceFiles(effectiveRootPath);
 				if (cancelled) return;
 				const lowerQ = q.toLowerCase();
 				const matched = allFiles.filter((rel) =>
@@ -237,79 +481,13 @@ export function FileExplorer() {
 			}
 		}, 150);
 		return () => { cancelled = true; clearTimeout(timer); };
-	}, [searchQuery, currentWorkspace?.path]);
+	}, [searchQuery, effectiveRootPath]);
 
 	return (
 		<div ref={panelRef} tabIndex={-1} data-slash-panel="" className="flex h-full flex-col bg-transparent text-neutral-300 text-xs select-none outline-none">
-			{/* Top Tool Section: Actions Toolbar matching the reference screenshot */}
-			<div className="flex items-center justify-between border-b border-[var(--border-divider)] px-2 py-1 bg-[var(--bg-active-fill)]">
-				<span className="text-[10.5px] font-semibold uppercase tracking-wider text-neutral-400">
-					{t("explorer.files")}
-				</span>
-
-				{/* Toolbar Icons matching the screenshot */}
-				<div className="flex items-center gap-0.5">
-					{/* Search */}
-					<button
-						type="button"
-						onClick={() => {
-							setSearchOpen((v) => {
-								const next = !v;
-								if (next) {
-									setTimeout(() => searchInputRef.current?.focus(), 50);
-								} else {
-									setSearchQuery("");
-								}
-								return next;
-							});
-						}}
-						className={clsx(
-							"flex h-6 w-6 items-center justify-center rounded transition-all active:scale-95",
-							searchOpen
-								? "bg-[var(--bg-hover)] text-neutral-100"
-								: "text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200",
-						)}
-						title={t("explorer.searchFilesTip")}
-					>
-						<Search size={13} />
-					</button>
-
-					{/* Reveal in Finder / Open */}
-					<button
-						type="button"
-						onClick={handleRevealInFinder}
-						className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-95 transition-all"
-						title={t("explorer.revealWorkspaceTip")}
-					>
-						<FolderUp size={13} />
-					</button>
-					{/* Collapse All */}
-					<button
-						type="button"
-						onClick={handleCollapseAll}
-						className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-95 transition-all"
-						title={t("explorer.collapseAllTip")}
-					>
-						<FoldVertical size={13} />
-					</button>
-					{/* Refresh */}
-					<button
-						type="button"
-						onClick={refreshRoot}
-						className={clsx(
-							"flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-95 transition-all",
-							isRootLoading && "animate-spin text-neutral-200",
-						)}
-						title={t("explorer.refreshTreeTip")}
-					>
-						<RefreshCw size={12} />
-					</button>
-				</div>
-			</div>
-
-			{/* Search Input Bar (revealed on search click) */}
-			{searchOpen && (
-				<div className="border-b border-[var(--border-divider)] p-1.5 bg-[var(--well-bg)]">
+			{/* Compact single-row toolbar: workspace/dir selector + Search + More menu */}
+			<div className="flex h-8 shrink-0 items-center gap-1 border-b border-[var(--border-divider)] px-2">
+				{searchOpen ? (
 					<SearchInput
 						ref={searchInputRef}
 						value={searchQuery}
@@ -317,7 +495,15 @@ export function FileExplorer() {
 						shortcutHint="/"
 						placeholder={t("explorer.searchFilterPlaceholder")}
 						iconSize={12}
-						inputClassName="w-full rounded hairline bg-[var(--well-bg)] py-0.5 pl-6 pr-5 text-xs text-neutral-200 placeholder:text-neutral-500 focus:ring-1 focus:ring-[#0A84FF]/50 focus:outline-none"
+						showClearWhenEmpty
+						onClear={() => {
+							if (!searchQuery) {
+								setSearchOpen(false);
+								panelRef.current?.focus();
+							}
+						}}
+						className="min-w-0 flex-1"
+						inputClassName="h-6 w-full rounded-md hairline bg-[var(--well-bg)] py-0.5 pl-6 pr-6 text-xs text-[var(--text)] placeholder:text-[var(--text-muted)] focus:ring-1 focus:ring-[#0A84FF]/50 focus:outline-none"
 						onKeyDown={(e) => {
 							if (isComposing(e)) return;
 							if (e.key === "Escape" && !searchQuery) {
@@ -327,15 +513,159 @@ export function FileExplorer() {
 							}
 						}}
 					/>
-				</div>
-			)}
+				) : (
+					<div className="flex min-w-0 flex-1 items-center gap-1">
+						{customRootPath ? (
+							<>
+								<div
+									className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-0.5"
+									title={customRootPath}
+									onContextMenu={(e) => {
+										e.preventDefault();
+										void handleRevealInFinder();
+									}}
+								>
+									<FolderOpen size={13} className="shrink-0 text-[var(--accent)]" />
+									<span className="min-w-0 flex-1 truncate font-mono text-[11px] font-medium text-[var(--text)]">
+										{shortPath(customRootPath, home)}
+									</span>
+								</div>
+								<button
+									type="button"
+									onClick={clearCustomRoot}
+									className="shrink-0 whitespace-nowrap rounded-md border border-[var(--line)] bg-[var(--bg-panel)] px-1.5 py-0.5 text-[10.5px] font-medium text-[var(--text)] transition-colors hover:bg-[var(--bg-hover)] active:scale-95"
+								>
+									{t("explorer.backToWorkspace")}
+								</button>
+							</>
+						) : (
+							<WorkspaceCard
+								currentWorkspace={currentWorkspace}
+								workspaces={workspaces}
+								onSelectWorkspace={(ws) => setManualWorkspaceId(ws.id)}
+							/>
+						)}
+					</div>
+				)}
 
-			{/* Workspace Card at the top */}
-			<WorkspaceCard
-				currentWorkspace={currentWorkspace}
-				workspaces={workspaces}
-				onSelectWorkspace={(ws) => setManualWorkspaceId(ws.id)}
-			/>
+				<div className="flex shrink-0 items-center gap-0.5">
+					{!searchOpen && (
+						<button
+							type="button"
+							onClick={() => {
+								setSearchOpen(true);
+								focusDeferred(searchInputRef);
+							}}
+							className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:scale-95"
+							title={t("explorer.searchFilesTip")}
+							aria-label={t("explorer.searchFilesTip")}
+						>
+							<Search size={13} />
+						</button>
+					)}
+					<button
+						ref={moreBtnRef}
+						type="button"
+						onClick={() => setMoreMenuOpen((v) => !v)}
+						className={clsx(
+							"flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors active:scale-95",
+							moreMenuOpen
+								? "bg-[var(--bg-hover)] text-[var(--text)]"
+								: "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]",
+						)}
+						title={t("explorer.explorerActions")}
+						aria-label={t("explorer.explorerActions")}
+						aria-expanded={moreMenuOpen}
+						aria-haspopup="menu"
+					>
+						<MoreHorizontal size={14} />
+					</button>
+				</div>
+			</div>
+
+			<FloatingLayer
+				anchor={moreMenuOpen ? moreBtnRef.current : null}
+				placement="bottom-end"
+				offset={4}
+				layer="menu"
+				ignoreRefs={[moreBtnRef]}
+				onDismiss={() => setMoreMenuOpen(false)}
+				className="min-w-[180px] p-1 text-xs text-[var(--text)]"
+			>
+				<button
+					type="button"
+					role="menuitemcheckbox"
+					aria-checked={showHidden}
+					onClick={() => {
+						toggleShowHidden();
+						setMoreMenuOpen(false);
+					}}
+					className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] active:scale-[0.98]"
+				>
+					<Eye size={13} className="shrink-0 text-[var(--text-muted)]" />
+					<span className="flex-1 whitespace-nowrap">{t("explorer.showHiddenFiles")}</span>
+					<Check
+						size={12}
+						className={clsx("shrink-0 text-[var(--accent)]", !showHidden && "opacity-0")}
+					/>
+				</button>
+				<button
+					type="button"
+					role="menuitem"
+					disabled={!canRevealActiveFile}
+					onClick={() => {
+						setMoreMenuOpen(false);
+						void handleRevealActiveFile();
+					}}
+					className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
+				>
+					<Crosshair size={13} className="shrink-0 text-[var(--text-muted)]" />
+					<span className="whitespace-nowrap">{t("explorer.revealActiveFile")}</span>
+				</button>
+				<div className="my-1 border-t border-[var(--border-divider)]" />
+				<button
+					type="button"
+					role="menuitem"
+					disabled={expandedPaths.size === 0}
+					onClick={() => {
+						setMoreMenuOpen(false);
+						handleCollapseAll();
+					}}
+					className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
+				>
+					<FoldVertical size={13} className="shrink-0 text-[var(--text-muted)]" />
+					<span className="whitespace-nowrap">{t("explorer.collapseAllTip")}</span>
+				</button>
+				<button
+					type="button"
+					role="menuitem"
+					disabled={!effectiveRootPath}
+					onClick={() => {
+						setMoreMenuOpen(false);
+						void handleRevealInFinder();
+					}}
+					className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
+				>
+					<FolderUp size={13} className="shrink-0 text-[var(--text-muted)]" />
+					<span className="whitespace-nowrap">{t("explorer.revealInFinder")}</span>
+				</button>
+				<button
+					type="button"
+					role="menuitem"
+					disabled={!effectiveRootPath}
+					onClick={() => {
+						setMoreMenuOpen(false);
+						void refreshTree({ silent: false });
+					}}
+					className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
+				>
+					<RefreshCw
+						size={13}
+						className={clsx("shrink-0 text-[var(--text-muted)]", isRootLoading && "animate-spin")}
+					/>
+					<span className="whitespace-nowrap">{t("explorer.refreshTreeTip")}</span>
+				</button>
+			</FloatingLayer>
 
 			{/* Tree or Search Results Container */}
 			<div className="flex-1 overflow-y-auto px-0.5 py-0.5 focus:outline-none">
@@ -353,8 +683,8 @@ export function FileExplorer() {
 						) : (
 							<>
 								{searchResults.slice(0, searchLimit).map((rel) => {
-									const full = currentWorkspace
-										? `${currentWorkspace.path}/${rel}`
+									const full = effectiveRootPath
+										? `${effectiveRootPath}/${rel}`
 										: rel;
 									const fileName = rel.split("/").pop() || rel;
 									const isSelected = selectedPath === full;
@@ -405,14 +735,25 @@ export function FileExplorer() {
 								<span>{t("explorer.loadingDirectory")}</span>
 							</div>
 						) : rootEntries.length === 0 ? (
-							<EmptyState title={t("explorer.noFilesInWorkspace")} />
+							<EmptyState title={customRootPath ? t("explorer.emptyDirectory") : t("explorer.noFilesInWorkspace")} />
+						) : visibleRootEntries.length === 0 ? (
+							<div className="flex flex-col items-center justify-center gap-2 py-6 text-center text-xs text-[var(--text-muted)]">
+								<span>{t("explorer.allItemsHidden")}</span>
+								<button
+									type="button"
+									onClick={() => setShowHidden(true)}
+									className="whitespace-nowrap rounded-md border border-[var(--line)] bg-[var(--bg-panel)] px-2 py-0.5 text-[11px] font-medium text-[var(--text)] transition-colors hover:bg-[var(--bg-hover)]"
+								>
+									{t("explorer.showHiddenAction")}
+								</button>
+							</div>
 						) : (
-							rootEntries.map((entry) => (
+							visibleRootEntries.map((entry) => (
 								<FileTreeNode
 									key={entry.path}
 									entry={entry}
 									depth={0}
-									rootPath={currentWorkspace?.path || ""}
+									rootPath={effectiveRootPath || ""}
 									expandedPaths={expandedPaths}
 									selectedPath={selectedPath}
 									onToggleExpand={handleToggleExpand}
@@ -423,6 +764,8 @@ export function FileExplorer() {
 									childrenMap={childrenMap}
 									loadingPaths={loadingPaths}
 									onRefreshDir={loadDir}
+									showHidden={showHidden}
+									forceVisiblePaths={forceVisiblePaths}
 								/>
 							))
 						)}

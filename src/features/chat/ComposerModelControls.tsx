@@ -4,10 +4,10 @@ import { ChevronDown } from "lucide-react";
 import { useRef } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
 import { ModelMenuContent } from "../../components/ModelSelect";
-import { ThinkingLevelPicker, ThinkingLevelStrip } from "../../components/ThinkingLevelPicker";
+import { ThinkingLevelPicker } from "../../components/ThinkingLevelPicker";
 import type { ModelOption } from "../../lib/models";
 import { useT } from "../../stores/language";
-import { mergedSuffix, TIER_BADGE, TIER_MERGED, TIER_TIGHT, type ThinkingKind } from "./composerToolbar";
+import { TIER_TIGHT, type ThinkingKind } from "./composerToolbar";
 
 export function ComposerModelControls({
 	pickerId,
@@ -17,7 +17,6 @@ export function ComposerModelControls({
 	modelLabel,
 	currentValue,
 	currentThinking,
-	thinkingKind,
 	thinkingLevels,
 	reasoning,
 	planPreview = false,
@@ -38,7 +37,7 @@ export function ComposerModelControls({
 	modelLabel: string;
 	currentValue: string;
 	currentThinking: string;
-	thinkingKind: ThinkingKind;
+	thinkingKind?: ThinkingKind;
 	thinkingLevels: string[];
 	reasoning?: boolean | null;
 	planPreview?: boolean;
@@ -57,7 +56,7 @@ export function ComposerModelControls({
 
 	return (
 		<>
-			<div className="relative min-w-0" ref={modelMenuRef}>
+			<div className="relative min-w-0 shrink" ref={modelMenuRef}>
 				<button
 					type="button"
 					data-model-picker={pickerId}
@@ -66,16 +65,7 @@ export function ComposerModelControls({
 						onModelOpenChange(next);
 						if (next && (!models || models.length === 0)) onEnsureModels?.();
 					}}
-					title={
-						planPreview
-							? t("composer.planModelTitle")
-							: toolbarTier >= TIER_MERGED && thinkingKind !== "unsupported"
-								? t("composer.modelThinkingTooltip", {
-										model: modelLabel,
-										level: currentThinking,
-									})
-								: modelLabel
-					}
+					title={planPreview ? t("composer.planModelTitle") : modelLabel}
 					className={clsx(
 						"flex min-w-0 max-w-full items-center gap-1 rounded-md py-1 text-[12px] text-[var(--text-60,var(--text-muted))] transition-colors hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]",
 						toolbarTier >= TIER_TIGHT ? "px-1.5" : "px-2",
@@ -84,11 +74,6 @@ export function ComposerModelControls({
 					<span className={clsx("min-w-0 truncate", !compact && "max-w-44")}>
 						{modelLabel}
 					</span>
-					{toolbarTier >= TIER_MERGED && !planChoiceUnknown && (
-						<span className="shrink-0 whitespace-pre">
-							{mergedSuffix(thinkingKind, currentThinking, toolbarTier === TIER_BADGE)}
-						</span>
-					)}
 					<ChevronDown
 						size={10}
 						className="shrink-0 text-[var(--text-30,var(--text-dim))]"
@@ -115,22 +100,12 @@ export function ComposerModelControls({
 								onModelOpenChange(false);
 							}}
 						/>
-						{toolbarTier >= TIER_MERGED && !planChoiceUnknown && (
-							<ThinkingLevelStrip
-								levels={thinkingLevels}
-								reasoning={reasoning}
-								value={currentThinking}
-								onSelect={(level) => {
-									void onSelectThinking(level);
-								}}
-							/>
-						)}
 					</FloatingLayer>
 				)}
 			</div>
 
 			{/* Thinking chip: levels from the catalog, or a grey 未配置/不支持 chip; never hidden */}
-			{toolbarTier < TIER_MERGED && !planChoiceUnknown && (
+			{!planChoiceUnknown && (
 				<ThinkingLevelPicker
 					levels={thinkingLevels}
 					reasoning={reasoning}

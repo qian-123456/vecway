@@ -13,7 +13,7 @@
  * One instance per worktree. Port and data dir are persisted in
  * `.cache/dev-worktree/<slug>.json` so a second call reports the running
  * window instead of spawning a duplicate; the data dir is always isolated
- * from the release app (~/.omp-workspace).
+ * from the release app (~/.vecway).
  */
 
 import { spawn, spawnSync } from "node:child_process";

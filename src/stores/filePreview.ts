@@ -19,6 +19,7 @@ import { listWorkspaceFiles, validatePath } from "../lib/ipc";
 import { useUi } from "./ui";
 import { useSessions } from "./sessions";
 import { useLive } from "./live";
+import { useExplorer } from "./explorer";
 
 export type FileViewMode = "preview" | "edit";
 
@@ -92,13 +93,36 @@ interface OpenFileLinkOptions {
 	sessionId?: string | null;
 }
 
-async function exists(path: string): Promise<boolean> {
+async function checkPath(path: string): Promise<{ exists: boolean; isDir: boolean }> {
 	try {
 		const check = await validatePath(path);
-		return check.exists && !check.isDir;
+		return { exists: check.exists, isDir: check.isDir };
 	} catch {
-		return false;
+		return { exists: false, isDir: false };
 	}
+}
+
+async function exists(path: string): Promise<boolean> {
+	const check = await checkPath(path);
+	return check.exists && !check.isDir;
+}
+
+function normalizeCandidatePath(p: string): string {
+	const lead = p.startsWith("/") ? "/" : "";
+	const out: string[] = [];
+	for (const seg of p.split("/")) {
+		if (!seg || seg === ".") continue;
+		if (seg === "..") {
+			if (out.length > 0 && out[out.length - 1] !== "..") {
+				out.pop();
+			} else if (!lead) {
+				out.push("..");
+			}
+			continue;
+		}
+		out.push(seg);
+	}
+	return lead + out.join("/") || (lead ? "/" : p);
 }
 
 /**
@@ -148,36 +172,48 @@ async function resolveSessionLocalFile(
 async function locateFile(
 	raw: string,
 	opts: OpenFileLinkOptions,
-): Promise<{ path: string; found: boolean }> {
-	const token = decodeFilePath(stripMentionPrefix(
+): Promise<{ path: string; found: boolean; isDir: boolean }> {
+	const rawToken = decodeFilePath(stripMentionPrefix(
 		stripLineSuffix(raw.trim())
 			.replace(/^file:\/\//i, "")
 			.replace(/[?#].*$/, ""),
 	));
+	const hadTrailingSlash = rawToken.endsWith("/") && rawToken.length > 1;
+	const token = rawToken === "/" ? "/" : rawToken.replace(/\/+$/, "");
 	if (/^local:\/\//i.test(token)) {
 		const rel = token.replace(/^local:\/\//i, "");
 		const resolved = await resolveSessionLocalFile(rel, opts.sessionId, { matchBasename: false });
-		if (resolved.found && resolved.path) return { path: resolved.path, found: true };
-		return { path: resolved.path || token, found: false };
+		if (resolved.found && resolved.path) return { path: resolved.path, found: true, isDir: false };
+		return { path: resolved.path || token, found: false, isDir: false };
 	}
 	if (token.startsWith("/")) {
-		if (await exists(token)) return { path: token, found: true };
-		const fallback = await resolveSessionLocalFile(token, opts.sessionId, { matchBasename: true });
-		if (fallback.found && fallback.path) return { path: fallback.path, found: true };
-		return { path: token, found: true };
+		const normalized = normalizeCandidatePath(token);
+		const status = await checkPath(normalized);
+		if (status.exists) return { path: normalized, found: true, isDir: status.isDir };
+		if (!hadTrailingSlash) {
+			const fallback = await resolveSessionLocalFile(normalized, opts.sessionId, { matchBasename: true });
+			if (fallback.found && fallback.path) return { path: fallback.path, found: true, isDir: false };
+			return { path: normalized, found: true, isDir: false };
+		}
+		return { path: normalized, found: false, isDir: false };
 	}
 	const candidates: string[] = [];
 	const add = (p: string | undefined | null) => {
-		if (p && !candidates.includes(p)) candidates.push(p);
+		if (!p) return;
+		const normalized = normalizeCandidatePath(p);
+		if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
 	};
 	const rel = token.replace(/^\.\//, "");
-	if (token.startsWith("~/")) {
+	if (token === "~" || token.startsWith("~/")) {
 		// Home-relative: only the home dir (and the literal path) apply.
 		const expanded = opts.home
-			? `${opts.home.replace(/\/+$/, "")}/${token.slice(2)}`
+			? token === "~"
+				? opts.home.replace(/\/+$/, "") || "/"
+				: normalizeCandidatePath(`${opts.home.replace(/\/+$/, "")}/${token.slice(2)}`)
 			: token;
-		if (await exists(expanded)) return { path: expanded, found: true };
-		return { path: expanded, found: false };
+		const status = await checkPath(expanded);
+		if (status.exists) return { path: expanded, found: true, isDir: status.isDir };
+		return { path: expanded, found: false, isDir: false };
 	}
 	// Agents often prefix the repo name (`omp-workspace/src/x.ts`) while the
 	// session runs inside a worktree, so try the cwd's ancestors as well.
@@ -196,26 +232,29 @@ async function locateFile(
 	for (const root of roots) add(`${root.replace(/\/+$/, "")}/${rel}`);
 
 	for (const candidate of candidates) {
-		if (await exists(candidate)) return { path: candidate, found: true };
+		const status = await checkPath(candidate);
+		if (status.exists) return { path: candidate, found: true, isDir: status.isDir };
 	}
-	for (const root of roots) {
-		try {
-			// Entries are paths relative to `root`; a leading repo-name segment
-			// (`omp-workspace/AGENTS.md`) is dropped when it names the root itself.
-			const files = await listWorkspaceFiles(root);
-			const rootName = root.slice(root.lastIndexOf("/") + 1);
-			const local = rel.startsWith(`${rootName}/`) ? rel.slice(rootName.length + 1) : rel;
-			const matches = files
-				.filter((f) => f === rel || f === local || f.endsWith(`/${rel}`))
-				.sort((a, b) => a.length - b.length);
-			if (matches[0]) {
-				return { path: `${root.replace(/\/+$/, "")}/${matches[0]}`, found: true };
+	if (!hadTrailingSlash) {
+		for (const root of roots) {
+			try {
+				// Entries are paths relative to `root`; a leading repo-name segment
+				// (`omp-workspace/AGENTS.md`) is dropped when it names the root itself.
+				const files = await listWorkspaceFiles(root);
+				const rootName = root.slice(root.lastIndexOf("/") + 1);
+				const local = rel.startsWith(`${rootName}/`) ? rel.slice(rootName.length + 1) : rel;
+				const matches = files
+					.filter((f) => f === rel || f === local || f.endsWith(`/${rel}`))
+					.sort((a, b) => a.length - b.length);
+				if (matches[0]) {
+					return { path: `${root.replace(/\/+$/, "")}/${matches[0]}`, found: true, isDir: false };
+				}
+			} catch {
+				/* listing is best-effort */
 			}
-		} catch {
-			/* listing is best-effort */
 		}
 	}
-	return { path: candidates[0] || resolveFilePath(raw, opts) || token, found: false };
+	return { path: candidates[0] || resolveFilePath(raw, opts) || token, found: false, isDir: false };
 }
 
 /**
@@ -228,13 +267,17 @@ export async function openFileLink(
 	raw: string,
 	opts: OpenFileLinkOptions = {},
 ): Promise<void> {
-	const { path, found } = await locateFile(raw, opts);
+	const { path, found, isDir } = await locateFile(raw, opts);
 	if (!path) {
 		toast.error(tNow("shell.cannotLocateFileNoCwd", { raw }));
 		return;
 	}
 	if (!found) {
 		toast.error(tNow("shell.fileNotFound", { raw, path }));
+		return;
+	}
+	if (isDir && !/\.app$/i.test(path)) {
+		useExplorer.getState().openDirectory(path);
 		return;
 	}
 	if (!canPreviewFile(path)) {

@@ -12,7 +12,9 @@
 
 import {
 	canPreviewFile,
+	findDirPaths,
 	findFilePaths,
+	looksLikeDirPath,
 	looksLikeFilePath,
 	stripMentionPrefix,
 } from "../../lib/fileLinks";
@@ -61,8 +63,18 @@ function linkNode(path: string, fromCode = false): HastNode {
 
 /** Split one text node into text / file-link nodes. */
 function splitText(value: string): HastNode[] {
-	// Only paths the right panel can actually preview become links.
-	const matches = findFilePaths(value).filter((m) => canPreviewFile(m.path));
+	// Link previewable file paths and absolute/home directory paths, avoiding overlaps.
+	const candidates = [
+		...findFilePaths(value).filter((m) => canPreviewFile(m.path)),
+		...findDirPaths(value),
+	].sort((a, b) => a.start - b.start || b.end - a.end);
+	const matches: typeof candidates = [];
+	let lastEnd = 0;
+	for (const m of candidates) {
+		if (m.start < lastEnd) continue;
+		matches.push(m);
+		lastEnd = m.end;
+	}
 	if (matches.length === 0) return [{ type: "text", value }];
 	const out: HastNode[] = [];
 	let cursor = 0;
@@ -112,8 +124,9 @@ function walk(node: HastNode): void {
 			}
 			const path = stripMentionPrefix(text);
 			if (
-				canPreviewFile(path) &&
-				looksLikeFilePath(path, { allowRelative: true, allowBare: true })
+				(canPreviewFile(path) &&
+					looksLikeFilePath(path, { allowRelative: true, allowBare: true })) ||
+				looksLikeDirPath(path, { allowRelative: true })
 			) {
 				// Keep a leading `@` (agent mention syntax) outside the link.
 				const replacement =

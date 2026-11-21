@@ -73,7 +73,7 @@ export function ThinkingLevelPicker({
 			<span
 				title={t("components.thinkingUnsupportedTip")}
 				className={clsx(
-					"shrink-0 select-none",
+					"shrink-0 select-none whitespace-nowrap",
 					variant === "pill"
 						? "flex h-8 items-center gap-1 rounded-lg hairline bg-[var(--bg-active-fill)] px-2.5 text-xs text-neutral-500 opacity-60"
 						: "rounded-full bg-[var(--well-bg,var(--bg-hover))] px-2 py-0.5 text-[12px] text-[var(--text-30,var(--text-dim))]",
@@ -90,10 +90,10 @@ export function ThinkingLevelPicker({
 				onClick={onConfigure}
 				title={t("components.thinkingUnconfiguredTip")}
 				className={clsx(
-					"shrink-0 select-none transition-colors",
+					"shrink-0 select-none whitespace-nowrap transition-colors",
 					variant === "pill"
-						? "flex h-8 items-center gap-1 whitespace-nowrap rounded-lg border border-dashed border-[var(--border-divider)] bg-[var(--bg-active-fill)] px-2.5 text-xs text-amber-600 dark:text-amber-400/90 hover:border-amber-500 hover:text-amber-700 dark:hover:text-amber-300"
-						: "whitespace-nowrap rounded-full border border-[var(--line,var(--border-divider))] bg-[var(--well-bg,var(--bg-hover))] px-2 py-0.5 text-[12px] text-[var(--text-40,var(--text-dim))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]",
+						? "flex h-8 items-center gap-1 rounded-lg border border-dashed border-[var(--border-divider)] bg-[var(--bg-active-fill)] px-2.5 text-xs text-amber-600 dark:text-amber-400/90 hover:border-amber-500 hover:text-amber-700 dark:hover:text-amber-300"
+						: "rounded-full border border-[var(--line,var(--border-divider))] bg-[var(--well-bg,var(--bg-hover))] px-2 py-0.5 text-[12px] text-[var(--text-40,var(--text-dim))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]",
 				)}
 			>
 				{t("components.thinkingUnconfigured")}
@@ -107,7 +107,7 @@ export function ThinkingLevelPicker({
 				onClick={() => onOpenChange(!open)}
 				title={t("components.thinkingLevelTitle", { label: cur.label, desc: cur.desc ? ` (${cur.desc})` : "" })}
 				className={clsx(
-					"flex select-none items-center whitespace-nowrap transition-colors",
+					"flex shrink-0 select-none items-center whitespace-nowrap transition-colors",
 					variant === "pill"
 						? "h-8 gap-1.5 rounded-lg hairline bg-[var(--bg-active-fill)] px-2.5 text-xs text-[var(--text)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] active:scale-[0.98]"
 						: clsx(
@@ -314,53 +314,6 @@ function ThinkingLevelControl({
 						</div>
 					</div>
 				</FloatingLayer>
-			)}
-		</div>
-	);
-}
-
-/** Inline thinking-level control for popovers where the separate chip has been
- * merged into the model chip. Same states as the chip: levels from the
- * catalog, 「不支持思考」, or 「未配置思考等级」 (opens settings). */
-export function ThinkingLevelStrip({
-	levels,
-	reasoning,
-	value,
-	onSelect,
-	onConfigure = () => openSettingsTarget("providers"),
-}: {
-	levels: string[];
-	reasoning?: boolean | null;
-	value: string;
-	onSelect: (level: string) => void;
-	onConfigure?: () => void;
-}) {
-	const { t } = useT();
-	const chip = thinkingChipState(levels, reasoning);
-	if (chip.kind === "levels") {
-		return (
-			<div className="border-t border-[var(--line,var(--border-divider))]">
-				<ThinkingLevelControl levels={chip.levels} value={value} onSelect={onSelect} />
-			</div>
-		);
-	}
-	return (
-		<div className="border-t border-[var(--line,var(--border-divider))] px-2.5 py-2">
-			<div className="pb-1 text-[11px] text-[var(--text-40,var(--text-dim))]">{t("components.thinkingLevel")}</div>
-			{chip.kind === "unsupported" && (
-				<span className="inline-block shrink-0 whitespace-nowrap rounded-full bg-[var(--well-bg,var(--bg-hover))] px-2 py-0.5 text-[12px] text-[var(--text-30,var(--text-dim))]">
-					{t("components.thinkingUnsupported")}
-				</span>
-			)}
-			{chip.kind === "unconfigured" && (
-				<button
-					type="button"
-					onClick={onConfigure}
-					title={t("components.thinkingUnconfiguredTip")}
-					className="shrink-0 whitespace-nowrap rounded-full border border-[var(--line,var(--border-divider))] bg-[var(--well-bg,var(--bg-hover))] px-2 py-0.5 text-[12px] text-[var(--text-40,var(--text-dim))] transition-colors hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]"
-				>
-					{t("components.thinkingUnconfigured")}
-				</button>
 			)}
 		</div>
 	);

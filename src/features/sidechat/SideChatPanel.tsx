@@ -700,7 +700,7 @@ function NewSideChat({ parentId, tabId }: { parentId: string; tabId: string }) {
 							/>
 							</div>
 
-							<div className="flex min-w-0 items-center justify-between gap-2 px-2.5 pb-2 text-[12px]">
+							<div className="flex min-w-0 flex-nowrap items-center gap-1 px-2 pb-2 text-[12px]">
 								<button
 									ref={addBtnRef}
 									type="button"
@@ -725,12 +725,12 @@ function NewSideChat({ parentId, tabId }: { parentId: string; tabId: string }) {
 								)}
 								<div className="flex min-w-0 flex-1 flex-nowrap items-center gap-0.5 select-none">
 									{/* Model Picker */}
-									<div className="relative min-w-0" ref={modelMenuRef}>
+									<div className="relative min-w-0 shrink" ref={modelMenuRef}>
 										<button
 											type="button"
 											onClick={() => setModelOpen((v) => !v)}
 											title={t("sidechat.modelTooltip", { model: displayModelName, source: effective.source === "picker" ? "" : effective.source === "setting" ? t("sidechat.sourceDedicated") : t("sidechat.sourceFollowParent") })}
-											className="flex min-w-0 max-w-full items-center gap-1 rounded-md px-2 py-1 text-[12px] text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors select-none"
+											className="flex min-w-0 max-w-full items-center gap-1 rounded-md px-1.5 py-1 text-[12px] text-[var(--text-60,var(--text-muted))] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors select-none"
 										>
 											<span className="min-w-0 truncate text-left">{displayModelName}</span>
 											<ChevronDown size={10} className="shrink-0 text-[var(--text-30,var(--text-dim))]" />
@@ -744,7 +744,7 @@ function NewSideChat({ parentId, tabId }: { parentId: string; tabId: string }) {
 												layer="popover"
 												ignoreRefs={[modelMenuRef]}
 												onDismiss={() => setModelOpen(false)}
-												className="flex w-[320px] flex-col overflow-hidden rounded-2xl border border-[var(--border-divider)] !bg-[var(--bg-panel)] shadow-apple-modal"
+												className="flex w-[min(420px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border border-[var(--border-divider)] !bg-[var(--bg-panel)] shadow-apple-modal"
 											>
 												<ModelMenuContent
 													catalogManaged
@@ -778,6 +778,7 @@ function NewSideChat({ parentId, tabId }: { parentId: string; tabId: string }) {
 										open={thinkingOpen}
 										onOpenChange={setThinkingOpen}
 										onSelect={setThinking}
+										tight
 									/>
 								</div>
 

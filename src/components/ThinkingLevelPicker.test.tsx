@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { ThinkingLevelStrip } from "./ThinkingLevelPicker";
+import { ThinkingLevelPicker } from "./ThinkingLevelPicker";
 
 beforeAll(() => {
 	vi.stubGlobal(
@@ -20,10 +21,47 @@ const status = () => document.querySelector<HTMLButtonElement>('button[aria-hasp
 const items = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));
 const slider = () => document.querySelector<HTMLElement>('[role="slider"]')!;
 
-describe("ThinkingLevelStrip control", () => {
+function openPicker(props: { levels: string[]; value: string; onSelect: (level: string) => void }) {
+	function Harness() {
+		const [open, setOpen] = useState(false);
+		return <ThinkingLevelPicker {...props} open={open} onOpenChange={setOpen} />;
+	}
+	render(<Harness />);
+	fireEvent.click(document.querySelector<HTMLButtonElement>("button")!);
+}
+
+describe("ThinkingLevelPicker", () => {
+	it("keeps shrink-0 and whitespace-nowrap across states and variants", () => {
+		for (const variant of ["ghost", "pill"] as const) {
+			const levelsRender = render(
+				<ThinkingLevelPicker levels={LEVELS} value="high" open={false} onOpenChange={() => {}} onSelect={() => {}} variant={variant} />,
+			);
+			const levelsBtn = levelsRender.container.querySelector("button")!;
+			expect(levelsBtn.className).toContain("whitespace-nowrap");
+			expect(levelsBtn.className).toContain("shrink-0");
+			levelsRender.unmount();
+
+			const unconfiguredRender = render(
+				<ThinkingLevelPicker levels={[]} reasoning={true} value="" open={false} onOpenChange={() => {}} onSelect={() => {}} variant={variant} />,
+			);
+			const unconfiguredBtn = unconfiguredRender.container.querySelector("button")!;
+			expect(unconfiguredBtn.className).toContain("whitespace-nowrap");
+			expect(unconfiguredBtn.className).toContain("shrink-0");
+			unconfiguredRender.unmount();
+
+			const unsupportedRender = render(
+				<ThinkingLevelPicker levels={[]} reasoning={false} value="" open={false} onOpenChange={() => {}} onSelect={() => {}} variant={variant} />,
+			);
+			const unsupportedSpan = unsupportedRender.container.querySelector("span")!;
+			expect(unsupportedSpan.className).toContain("whitespace-nowrap");
+			expect(unsupportedSpan.className).toContain("shrink-0");
+			unsupportedRender.unmount();
+		}
+	});
+
 	it("shows the capitalized current level with no list until the status button is clicked", () => {
 		const onSelect = vi.fn();
-		render(<ThinkingLevelStrip levels={LEVELS} value="high" onSelect={onSelect} />);
+		openPicker({ levels: LEVELS, value: "high", onSelect });
 		expect(status().textContent).toBe("High");
 		expect(items()).toHaveLength(0);
 		fireEvent.click(status());
@@ -33,7 +71,7 @@ describe("ThinkingLevelStrip control", () => {
 
 	it("list pick commits the raw level once and closes only the list", () => {
 		const onSelect = vi.fn();
-		render(<ThinkingLevelStrip levels={LEVELS} value="high" onSelect={onSelect} />);
+		openPicker({ levels: LEVELS, value: "high", onSelect });
 		fireEvent.click(status());
 		fireEvent.click(items().find((b) => b.querySelector(".font-medium")?.textContent === "auto")!);
 		expect(onSelect).toHaveBeenCalledExactlyOnceWith("auto");
@@ -43,7 +81,7 @@ describe("ThinkingLevelStrip control", () => {
 
 	it("picking the saved level only closes the list", () => {
 		const onSelect = vi.fn();
-		render(<ThinkingLevelStrip levels={LEVELS} value="high" onSelect={onSelect} />);
+		openPicker({ levels: LEVELS, value: "high", onSelect });
 		fireEvent.click(status());
 		fireEvent.click(items().find((b) => b.getAttribute("aria-checked") === "true")!);
 		expect(onSelect).not.toHaveBeenCalled();
@@ -52,7 +90,7 @@ describe("ThinkingLevelStrip control", () => {
 
 	it("slider keys commit the neighbouring concrete level; auto is not a stop", () => {
 		const onSelect = vi.fn();
-		render(<ThinkingLevelStrip levels={LEVELS} value="high" onSelect={onSelect} />);
+		openPicker({ levels: LEVELS, value: "high", onSelect });
 		fireEvent.keyDown(slider(), { key: "ArrowRight" });
 		expect(onSelect).toHaveBeenLastCalledWith("xhigh");
 		fireEvent.keyDown(slider(), { key: "Home" });
@@ -60,13 +98,13 @@ describe("ThinkingLevelStrip control", () => {
 	});
 
 	it("keeps an unknown saved level verbatim", () => {
-		render(<ThinkingLevelStrip levels={["low", "weird"]} value="weird" onSelect={() => {}} />);
+		openPicker({ levels: ["low", "weird"], value: "weird", onSelect: () => {} });
 		expect(status().textContent).toBe("weird");
 	});
 
 	it("a single concrete stop is a disabled slider that never commits", () => {
 		const onSelect = vi.fn();
-		render(<ThinkingLevelStrip levels={["auto", "high"]} value="high" onSelect={onSelect} />);
+		openPicker({ levels: ["auto", "high"], value: "high", onSelect });
 		expect(slider().getAttribute("aria-disabled")).toBe("true");
 		fireEvent.keyDown(slider(), { key: "ArrowLeft" });
 		expect(onSelect).not.toHaveBeenCalled();
