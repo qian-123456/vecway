@@ -98,21 +98,9 @@ jobs:
             ---
 
             ### 本次更新 / What's New
-            #### 新增功能 / Features
-            - **macOS 权限引导弹窗**：在「设置 → 通用」新增辅助功能、屏幕录制与完全磁盘访问权限状态检查及系统设置直达引导。
-            - **macOS Permissions Guide**: Added status probes and System Settings deep links for Accessibility, Screen Recording, and Full Disk Access in General Settings.
-            - **文件浏览、预览与搜索体验增强**：文件树合并为紧凑单行工具栏，支持隐藏点文件/构建目录、自动刷新与定位预览文件；支持右侧面板临时最大化、目录链接直接定位，以及全局 `/` 快捷键快速搜索。
-            - **Explorer, Preview & Search**: Consolidated the file explorer header into a compact toolbar with dotfile/build filtering, auto-refresh, active-file reveal, right-panel maximize, directory link navigation, and scoped `/` search shortcuts.
-            - **定时自动化草稿与交互升级**：新增定时任务草稿面板、统一表单/问答确认面板，并优化供应商模型搜索与记忆开关设置。
-            - **Automations & Chat Interactions**: Added the automation drafts panel, unified ask-form step navigation, provider model search/batch actions, and explicit memory enablement toggle.
-
-            #### 修复与优化 / Fixes & Performance
-            - **性能与内存大幅瘦身**：精简前端与移动端包体积、按需懒加载弹窗、批处理 RPC 事件帧并优化流式渲染与手绘草图热路径。
-            - **Frontend & Mobile Performance**: Trimmed bundle sizes, gated lazy overlays, batched RPC frames, and optimized streaming and sketch rendering hot paths.
-            - **后端安全与并发加固**：改为按会话独立加锁、有界子代理与缓存读取、SQLite/磁盘扫描隔离、更稳健的进程超时与资源上限控制。
-            - **Backend Security & Concurrency**: Switched to per-session startup locks, bounded caches/process limits, offloaded SQLite/catalog scans, and hardened provider/mobile authorization.
-            - **桌面端细节修复**：优化待审阅计划自动弹出、子代理分段计时与多处布局/主题对比度细节。
-            - **Desktop Polish**: Refined plan panel auto-open lifecycle, multi-segment subagent run timing, and layout/theme contrast details.
+            #### 修复与优化 / Fixes
+            - **修复 macOS 应用内更新重启后提示"已损坏"**：修复重启辅助脚本在正式版安装包内错误创建空 `dev.icns` 文件导致 Apple 代码签名校验失败的问题（`v0.2.0` / `v0.2.1` 自动升级到本版本时旧进程仍会执行最后一次旧重启脚本，如遇提示请重新从 `.dmg` 拖入覆盖安装，后续版本即可正常无缝重启）。
+            - **Fix macOS "App is damaged" after in-app update relaunch**: Prevented the relaunch helper from creating an empty `dev.icns` inside signed release bundles, which invalidated the sealed code signature (when upgrading from `v0.2.0` / `v0.2.1`, the previous version's relaunch script runs one final time—reinstall from the `.dmg` if prompted, and subsequent updates will relaunch cleanly).
 
             ---
 
