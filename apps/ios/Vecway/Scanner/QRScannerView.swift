@@ -5,12 +5,22 @@ import UIKit
 /// Native QR scanner & pairing confirmation sheet supporting both dual-use `#app=` QR codes
 /// and `vecway://pair?...` deep links, plus manual link paste fallback for Simulator / denied camera.
 struct QRScannerView: View {
+    private enum ManualPairingTab: String, CaseIterable {
+        case domain
+        case link
+    }
+
     @ObservedObject var controller: AppController
     @Environment(\.dismiss) private var dismiss
 
     @State private var cameraPermission: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
     @State private var hasCameraHardware: Bool = AVCaptureDevice.default(for: .video) != nil
-    @State private var showManualInput: Bool = false
+    @State private var showManualInput: Bool
+    @State private var manualTab: ManualPairingTab = .domain
+    @State private var domainInput: String = ""
+    @State private var domainCodeInput: String = ""
+    @State private var domainFingerprintInput: String = ""
+    @State private var showAdvancedFingerprint: Bool = false
     @State private var manualLink: String = ""
     @State private var parsedPayload: PairingPayload?
     @State private var parseError: String?
@@ -18,9 +28,14 @@ struct QRScannerView: View {
     @State private var isPairing: Bool = false
     @State private var showFullFingerprint: Bool = false
 
-    init(controller: AppController, initialPayload: PairingPayload? = nil) {
+    init(
+        controller: AppController,
+        initialPayload: PairingPayload? = nil,
+        initialMode: AppController.PairScannerMode = .scan
+    ) {
         self.controller = controller
         _parsedPayload = State(initialValue: initialPayload)
+        _showManualInput = State(initialValue: initialMode == .domain)
     }
 
     var body: some View {
@@ -34,7 +49,7 @@ struct QRScannerView: View {
                     cameraScannerView
                 }
             }
-            .navigationTitle(parsedPayload == nil ? "扫码配对电脑" : "确认安全配对")
+            .navigationTitle(parsedPayload == nil ? (showManualInput ? "域名或链接配对" : "扫码配对电脑") : "确认安全配对")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -95,9 +110,10 @@ struct QRScannerView: View {
 
                 Button {
                     parseError = nil
+                    pairingError = nil
                     showManualInput = true
                 } label: {
-                    Label("手动粘贴配对链接", systemImage: "doc.on.clipboard")
+                    Label("用域名或链接配对", systemImage: "globe")
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 18)
                         .padding(.vertical, 10)
@@ -109,16 +125,16 @@ struct QRScannerView: View {
         }
     }
 
-    // MARK: - Manual Paste / Permission Denied Fallback
+    // MARK: - Manual Domain / Link Pairing Fallback
 
     private var manualInputView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                if hasCameraHardware && (cameraPermission == .denied || cameraPermission == .restricted) {
+                if hasCameraHardware && (cameraPermission == .denied || cameraPermission == .restricted) && manualTab == .link {
                     VStack(alignment: .leading, spacing: 10) {
                         Label("相机权限未开启", systemImage: "camera.fill")
                             .font(.headline)
-                        Text("如需直接扫码，请在系统设置中允许 Vecway 访问相机；也可以在下方手动粘贴电脑端配对链接。")
+                        Text("如需直接扫码，请在系统设置中允许 Vecway 访问相机；也可以在下方用域名或粘贴配对链接完成连接。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         Button("前往系统设置") {
@@ -131,65 +147,179 @@ struct QRScannerView: View {
                     .padding()
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                } else if !hasCameraHardware {
-                    Label("当前设备无可用相机，请粘贴配对链接完成配对", systemImage: "qrcode")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("配对链接")
-                        .font(.subheadline.weight(.semibold))
-                    TextField("粘贴 vecway://pair?... 或含 #app= 的配对链接", text: $manualLink, axis: .vertical)
-                        .lineLimit(3...6)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.footnote, design: .monospaced))
-                        .padding(12)
-                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                Picker("配对方式", selection: $manualTab) {
+                    Text("域名配对").tag(ManualPairingTab.domain)
+                    Text("粘贴链接").tag(ManualPairingTab.link)
+                }
+                .pickerStyle(.segmented)
+                .disabled(isPairing)
+                .onChange(of: manualTab) { _ in
+                    parseError = nil
+                    pairingError = nil
                 }
 
-                if let parseError {
-                    Label(parseError, systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote)
-                        .foregroundColor(.red)
-                }
-
-                HStack(spacing: 12) {
-                    Button {
-                        if let pasted = UIPasteboard.general.string {
-                            manualLink = pasted
-                            parseError = nil
-                        }
-                    } label: {
-                        Label("从剪贴板粘贴", systemImage: "doc.on.clipboard")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        handleScannedString(manualLink)
-                    } label: {
-                        Text("解析链接")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(manualLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if manualTab == .domain {
+                    domainPairingForm
+                } else {
+                    linkPasteForm
                 }
 
                 if hasCameraHardware && cameraPermission == .authorized {
                     Button {
                         parseError = nil
+                        pairingError = nil
                         showManualInput = false
                     } label: {
                         Label("返回相机扫码", systemImage: "camera")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderless)
-                    .padding(.top, 8)
+                    .disabled(isPairing)
+                    .padding(.top, 4)
                 }
             }
             .padding(20)
+        }
+    }
+
+    private var domainPairingForm: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("域名或访问地址")
+                    .font(.subheadline.weight(.semibold))
+                TextField("例如 omp.example.com 或 https://omp.example.com", text: $domainInput)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.subheadline, design: .monospaced))
+                    .padding(12)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .disabled(isPairing)
+                    .onChange(of: domainInput) { newValue in
+                        parseError = nil
+                        pairingError = nil
+                        if domainCodeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                           let extracted = PairingPayload.extractCodeFromInput(newValue) {
+                            domainCodeInput = extracted
+                        }
+                    }
+                Text("支持 Cloudflare Tunnel、反代 HTTPS 域名或直连域名（自动补全 https://，禁止明文 http://）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("配对码")
+                    .font(.subheadline.weight(.semibold))
+                TextField("粘贴电脑端「设置 → 手机访问」生成的配对码", text: $domainCodeInput)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.subheadline, design: .monospaced))
+                    .padding(12)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .disabled(isPairing)
+                    .onChange(of: domainCodeInput) { _ in
+                        parseError = nil
+                        pairingError = nil
+                    }
+            }
+
+            DisclosureGroup(isExpanded: $showAdvancedFingerprint) {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("AA:BB:CC:...:FF（仅自签名 DDNS 端口需要）", text: $domainFingerprintInput, axis: .vertical)
+                        .lineLimit(2...4)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .font(.system(.caption, design: .monospaced))
+                        .padding(10)
+                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .disabled(isPairing)
+                    Text("使用 Cloudflare Tunnel 或带有效 HTTPS 证书的域名请留空（走系统根证书校验）；仅直连 Cloudflare DDNS IPv6 自签名端口时填写电脑端指纹。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 6)
+            } label: {
+                Text("自签名证书指纹（可选）")
+                    .font(.footnote.weight(.medium))
+            }
+
+            if let errorText = parseError ?? pairingError {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text(errorText)
+                        .font(.footnote)
+                        .foregroundColor(.red)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            Button {
+                performDomainPairing()
+            } label: {
+                HStack {
+                    if isPairing {
+                        ProgressView()
+                            .tint(.white)
+                            .padding(.trailing, 4)
+                    }
+                    Text(isPairing ? "正在建立加密连接…" : "连接并配对")
+                        .font(.headline)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isPairing || domainInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+    }
+
+    private var linkPasteForm: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("配对链接")
+                    .font(.subheadline.weight(.semibold))
+                TextField("粘贴 vecway://pair?...、含 #app= 或 https://域名/pair?code=...", text: $manualLink, axis: .vertical)
+                    .lineLimit(3...6)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.footnote, design: .monospaced))
+                    .padding(12)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            if let parseError {
+                Label(parseError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundColor(.red)
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    if let pasted = UIPasteboard.general.string {
+                        manualLink = pasted
+                        parseError = nil
+                    }
+                } label: {
+                    Label("从剪贴板粘贴", systemImage: "doc.on.clipboard")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    handleScannedString(manualLink)
+                } label: {
+                    Text("解析链接")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(manualLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
         }
     }
 
@@ -222,7 +352,7 @@ struct QRScannerView: View {
                         endpointRow(label: "IPv6 TLS", url: v6, badge: nil)
                     }
                     if let tunnel = payload.endpoints.tunnel {
-                        endpointRow(label: "Cloudflare Tunnel", url: tunnel, badge: "系统 CA")
+                        endpointRow(label: "Cloudflare / 公网域名", url: tunnel, badge: "系统 CA")
                     }
                 }
                 .padding(14)
@@ -252,7 +382,7 @@ struct QRScannerView: View {
                                 .font(.caption.weight(.medium))
                         }
                     } else {
-                        Text("仅使用 Cloudflare Tunnel（由系统根证书校验）")
+                        Text("使用 Cloudflare / 公网域名（由系统根证书校验）")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -340,6 +470,22 @@ struct QRScannerView: View {
             parseError = nil
             pairingError = nil
             parsedPayload = payload
+        } catch {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            parseError = error.localizedDescription
+        }
+    }
+
+    private func performDomainPairing() {
+        parseError = nil
+        pairingError = nil
+        do {
+            let payload = try PairingPayload.fromDomainInput(
+                domainOrURL: domainInput,
+                code: domainCodeInput,
+                certSha256: domainFingerprintInput
+            )
+            performPairing(payload)
         } catch {
             UINotificationFeedbackGenerator().notificationOccurred(.error)
             parseError = error.localizedDescription

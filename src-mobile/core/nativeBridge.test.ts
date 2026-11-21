@@ -9,6 +9,7 @@ import {
 	getNativeBridge,
 	isNativeApp,
 	nativeHaptic,
+	normalizeHttpsEndpointInput,
 	notifyNativeConnectionStatus,
 	subscribeNativeConnectionStatus,
 	validateHttpsEndpoint,
@@ -177,12 +178,16 @@ describe("nativeBridge helpers", () => {
 		expect(validateHttpsEndpoint("", "局域网 TLS 地址")).toBeNull();
 		expect(validateHttpsEndpoint("https://192.168.1.10:7790", "局域网 TLS 地址")).toBeNull();
 		expect(validateHttpsEndpoint("https://[2001:db8::1]:7789", "IPv6 TLS 地址")).toBeNull();
-		expect(validateHttpsEndpoint("https://abc.trycloudflare.com", "Cloudflare 隧道地址")).toBeNull();
+		expect(validateHttpsEndpoint("https://abc.trycloudflare.com", "Cloudflare / 公网域名地址")).toBeNull();
 
 		expect(validateHttpsEndpoint("http://192.168.1.10:7788", "局域网 TLS 地址")).toContain("http://");
 		expect(validateHttpsEndpoint("ws://192.168.1.10:7788", "局域网 TLS 地址")).toContain("https://");
 		expect(validateHttpsEndpoint("not-a-url", "局域网 TLS 地址")).toContain("格式无效");
 		expect(validateHttpsEndpoint("https://user:pass@192.168.1.10:7790", "局域网 TLS 地址")).toContain("用户名");
+
+		expect(normalizeHttpsEndpointInput("  omp.example.com/  ")).toBe("https://omp.example.com");
+		expect(normalizeHttpsEndpointInput("http://omp.example.com")).toBe("http://omp.example.com");
+		expect(normalizeHttpsEndpointInput("")).toBe("");
 	});
 
 	it("wires bridge.onConnectionStatusChange once across multiple subscribers and cleans up", () => {

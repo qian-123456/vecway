@@ -38,7 +38,7 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
     private let sseBridge: SSEBridge
     private let voiceRecorder: NativeVoiceRecorder
     private let pushManager: NativePushManager
-    private let openScannerHandler: @MainActor () async -> ScannerOutcome
+    private let openScannerHandler: @MainActor (AppController.PairScannerMode) async -> ScannerOutcome
 
     private var activeHttpTasks: [String: Task<Void, Never>] = [:]
 
@@ -47,7 +47,7 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
         sseBridge: SSEBridge,
         voiceRecorder: NativeVoiceRecorder,
         pushManager: NativePushManager,
-        openScannerHandler: @escaping @MainActor () async -> ScannerOutcome
+        openScannerHandler: @escaping @MainActor (AppController.PairScannerMode) async -> ScannerOutcome
     ) {
         self.endpointManager = endpointManager
         self.sseBridge = sseBridge
@@ -126,8 +126,10 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
 
         case "openPairScanner":
             guard let callId else { return }
+            let rawMode = payload["mode"] as? String ?? ""
+            let mode = AppController.PairScannerMode(rawValue: rawMode) ?? .scan
             Task {
-                let outcome = await openScannerHandler()
+                let outcome = await openScannerHandler(mode)
                 var dict: [String: Any] = ["ok": outcome.ok]
                 if let error = outcome.error {
                     dict["error"] = error
@@ -643,8 +645,8 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
             getConnectionStatus: function () {
               return callNative("getConnectionStatus");
             },
-            openPairScanner: function () {
-              return callNative("openPairScanner");
+            openPairScanner: function (opts) {
+              return callNative("openPairScanner", opts && typeof opts === "object" ? { mode: opts.mode } : {});
             },
             updateEndpoints: function (endpoints) {
               return callNative("updateEndpoints", { endpoints: endpoints || {} });

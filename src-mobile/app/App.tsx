@@ -1,4 +1,4 @@
-import { QrCode, ShieldAlert } from "lucide-react";
+import { Globe, QrCode, ShieldAlert } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { ROUTES } from "./routes";
 import { ConnectionBanner } from "./ConnectionBanner";
@@ -54,11 +54,11 @@ function RouteView() {
 	);
 }
 
-async function triggerNativePair(setError: (msg: string | null) => void): Promise<void> {
+async function triggerNativePair(setError: (msg: string | null) => void, mode?: "scan" | "domain"): Promise<void> {
 	const bridge = getNativeBridge();
 	if (!bridge) return;
 	setError(null);
-	const res = await bridge.openPairScanner();
+	const res = await bridge.openPairScanner(mode ? { mode } : undefined);
 	if (res.ok) {
 		const next = res.status ?? (await bridge.getConnectionStatus());
 		useConnection.getState().reset();
@@ -81,13 +81,13 @@ function NativeUnpairedScreen() {
 	const [scanning, setScanning] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	const onPair = async () => {
+	const onPair = async (mode: "scan" | "domain") => {
 		if (scanning) return;
 		setScanning(true);
 		try {
-			await triggerNativePair(setError);
+			await triggerNativePair(setError, mode);
 		} catch (e) {
-			const msg = errorMessage(e, "扫码配对失败");
+			const msg = errorMessage(e, mode === "domain" ? "域名配对失败" : "扫码配对失败");
 			setError(msg);
 			toast(msg, { kind: "error" });
 		} finally {
@@ -103,16 +103,19 @@ function NativeUnpairedScreen() {
 			</div>
 			<h1 className="relative text-m-lg font-semibold tracking-[-0.01em] text-m-text">连接 Vecway 桌面端</h1>
 			<p className="relative max-w-xs text-m-sm break-words text-m-text-3">
-				在电脑上打开 Vecway，进入「设置 → 连接与设备」，扫描配对二维码即可建立加密连接。
+				在电脑上打开 Vecway，进入「设置 → 手机访问」，扫描配对二维码，或直接输入 Cloudflare / 公网域名与配对码建立加密连接。
 			</p>
 			{error && (
 				<p role="alert" className="relative max-w-xs text-m-sm break-words text-m-danger">
 					{error}
 				</p>
 			)}
-			<div className="relative mt-2">
-				<Button variant="primary" icon={<QrCode size={18} />} busy={scanning} onClick={() => void onPair()}>
+			<div className="relative mt-2 flex flex-wrap justify-center gap-3">
+				<Button variant="primary" icon={<QrCode size={18} />} busy={scanning} onClick={() => void onPair("scan")}>
 					扫码配对
+				</Button>
+				<Button variant="tonal" icon={<Globe size={18} />} disabled={scanning} onClick={() => void onPair("domain")}>
+					用域名连接
 				</Button>
 			</div>
 		</main>

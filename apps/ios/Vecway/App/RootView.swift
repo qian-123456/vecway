@@ -33,7 +33,8 @@ struct RootView: View {
         ) {
             QRScannerView(
                 controller: controller,
-                initialPayload: controller.pendingDeepLinkPayload
+                initialPayload: controller.pendingDeepLinkPayload,
+                initialMode: controller.scannerInitialMode
             )
         }
         .alert(

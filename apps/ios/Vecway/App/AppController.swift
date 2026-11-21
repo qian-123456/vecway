@@ -6,6 +6,11 @@ import UIKit
 /// `AppSchemeHandler`, `NativeVoiceRecorder`, `NativePushManager`) and SwiftUI presentation state.
 @MainActor
 final class AppController: ObservableObject {
+    enum PairScannerMode: String, Sendable {
+        case scan
+        case domain
+    }
+
     let credentialStore: KeychainStore
     let transport: PinnedTransport
     let endpointManager: EndpointManager
@@ -17,6 +22,7 @@ final class AppController: ObservableObject {
 
     @Published private(set) var status: NativeEndpointStatus
     @Published var isScannerPresented: Bool = false
+    @Published var scannerInitialMode: PairScannerMode = .scan
     @Published var pendingDeepLinkPayload: PairingPayload?
     @Published var deepLinkError: String?
 
@@ -48,11 +54,11 @@ final class AppController: ObservableObject {
             sseBridge: sseBridge,
             voiceRecorder: voiceRecorder,
             pushManager: pushManager,
-            openScannerHandler: { [weak self] in
+            openScannerHandler: { [weak self] mode in
                 guard let self else {
                     return ScannerOutcome(ok: false, error: "应用已释放", status: nil)
                 }
-                return await self.openScannerFromBridge()
+                return await self.openScannerFromBridge(mode: mode)
             }
         )
 
@@ -92,7 +98,7 @@ final class AppController: ObservableObject {
 
     // MARK: - Pairing & Scanner
 
-    func openScannerFromBridge() async -> ScannerOutcome {
+    func openScannerFromBridge(mode: PairScannerMode = .scan) async -> ScannerOutcome {
         if let existing = scannerContinuation {
             scannerContinuation = nil
             existing.resume(returning: ScannerOutcome(ok: false, error: "已被新的扫码请求取代", status: nil))
@@ -100,6 +106,7 @@ final class AppController: ObservableObject {
 
         scannerCompletedOutcome = nil
         pendingDeepLinkPayload = nil
+        scannerInitialMode = mode
         isScannerPresented = true
 
         return await withCheckedContinuation { continuation in
@@ -107,9 +114,10 @@ final class AppController: ObservableObject {
         }
     }
 
-    func openScannerManually() {
+    func openScannerManually(mode: PairScannerMode = .scan) {
         scannerCompletedOutcome = nil
         pendingDeepLinkPayload = nil
+        scannerInitialMode = mode
         isScannerPresented = true
     }
 
@@ -147,6 +155,7 @@ final class AppController: ObservableObject {
         do {
             let payload = try PairingPayload.parse(url.absoluteString)
             scannerCompletedOutcome = nil
+            scannerInitialMode = .scan
             pendingDeepLinkPayload = payload
             isScannerPresented = true
         } catch {

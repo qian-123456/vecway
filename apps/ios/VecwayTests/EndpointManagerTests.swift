@@ -419,4 +419,31 @@ final class EndpointManagerTests: XCTestCase {
         XCTAssertTrue(json["pinMismatch"] is NSNull)
         XCTAssertNotNil(json["candidates"] as? [String: Any])
     }
+
+    func testUpdateEndpointsNormalizesBareDomainAndPreservesCustomDomainsOnSync() async throws {
+        let store = makeSeededStore(ipv6: "https://home.example.com:7789", tunnel: nil)
+        let mock = MockHTTPTransport()
+        mock.setSendHandler { channel, _, path, _ in
+            if channel == .lanTls { throw TransportError.unreachable("not on wifi") }
+            if path == "/api/device" { return Self.okJSON(["id": "dev1"]) }
+            if path == "/api/left/settings" {
+                return Self.okJSON([
+                    "mobile": [
+                        "lanTlsUrl": "https://192.168.1.10:7790",
+                        "ipv6Url": "https://[240e:1234::99]:7789",
+                        "tunnelUrl": "https://ephemeral.trycloudflare.com",
+                    ]
+                ])
+            }
+            return Self.okJSON([:])
+        }
+
+        let manager = EndpointManager(store: store, transport: mock, lanProbeTimeout: 0.5, remoteProbeTimeout: 1.0)
+        let updated = try await manager.updateEndpoints(EndpointUpdatePatch(tunnel: .some("omp.example.com/")))
+
+        XCTAssertEqual(updated.candidates.tunnel, "https://omp.example.com")
+        // Custom DDNS domain is not overwritten by raw IPv6 literal, and custom CF domain is not overwritten by trycloudflare.
+        XCTAssertEqual(updated.candidates.ipv6, "https://home.example.com:7789")
+        XCTAssertEqual(updated.candidates.tunnel, "https://omp.example.com")
+    }
 }

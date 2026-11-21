@@ -8,6 +8,7 @@ import {
 	getNativeBridge,
 	isNativeApp,
 	nativeHaptic,
+	normalizeHttpsEndpointInput,
 	notifyNativeConnectionStatus,
 	subscribeNativeConnectionStatus,
 	validateHttpsEndpoint,
@@ -58,10 +59,6 @@ function UrlRow({ label, url, small = false }: { label: string; url: string; sma
 			}
 		/>
 	);
-}
-
-function stripTrailingSlash(value: string): string {
-	return value.trim().replace(/\/+$/, "");
 }
 
 export function ConnectionSheet({
@@ -185,13 +182,13 @@ export function ConnectionSheet({
 		const bridge = getNativeBridge();
 		if (!bridge || updatingEndpoints) return;
 		setEndpointError(null);
-		const lanTls = stripTrailingSlash(lanTlsInput);
-		const ipv6 = stripTrailingSlash(ipv6Input);
-		const tunnel = stripTrailingSlash(tunnelInput);
+		const lanTls = normalizeHttpsEndpointInput(lanTlsInput);
+		const ipv6 = normalizeHttpsEndpointInput(ipv6Input);
+		const tunnel = normalizeHttpsEndpointInput(tunnelInput);
 		const err =
 			validateHttpsEndpoint(lanTls, "局域网 TLS 地址") ||
 			validateHttpsEndpoint(ipv6, "IPv6 TLS 地址") ||
-			validateHttpsEndpoint(tunnel, "Cloudflare 隧道地址");
+			validateHttpsEndpoint(tunnel, "Cloudflare / 公网域名地址");
 		if (err) {
 			setEndpointError(err);
 			return;
@@ -214,7 +211,10 @@ export function ConnectionSheet({
 			syncCandidateInputs(next);
 			notifyNativeConnectionStatus(next);
 			if (next.paired && !next.pinMismatch) reconnectEvents();
-			toast("连接地址已更新", { kind: "success" });
+			toast(
+				next.activeChannel ? `已保存并连接：${NATIVE_CHANNEL_LABEL[next.activeChannel]}` : "地址已保存，但暂未探测到可用连接",
+				{ kind: next.activeChannel ? "success" : "info" },
+			);
 		} catch (e) {
 			const msg = errorMessage(e, "更新端点失败");
 			setEndpointError(msg);
@@ -291,7 +291,7 @@ export function ConnectionSheet({
 							</Button>
 						</GroupBlock>
 					</ListGroup>
-					<ListGroup title="手动更新端点" note="仅允许 https:// 加密地址，禁止降级为明文 http://。">
+					<ListGroup title="手动更新端点" note="支持直接填写域名（自动补全 https://），禁止降级为明文 http://。">
 						<GroupBlock>
 							<form
 								noValidate
@@ -302,16 +302,33 @@ export function ConnectionSheet({
 								className="flex flex-col gap-3"
 							>
 								<div className="flex flex-col gap-1">
+									<label htmlFor="endpoint-tunnel" className="text-m-sm text-m-text">Cloudflare / 公网域名地址</label>
+									<input
+										id="endpoint-tunnel"
+										type="url"
+										inputMode="url"
+										value={tunnelInput}
+										onChange={(event) => setTunnelInput(event.target.value)}
+										placeholder="https://omp.example.com 或 xxx.trycloudflare.com"
+										className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text"
+									/>
+									<p className="text-m-xs text-m-text-3">适用于 Cloudflare Tunnel 域名或有效 HTTPS 反代域名，走系统根证书校验。</p>
+								</div>
+								<div className="flex flex-col gap-1">
 									<label htmlFor="endpoint-lan-tls" className="text-m-sm text-m-text">局域网 TLS 地址</label>
 									<input
 										id="endpoint-lan-tls"
 										type="url"
 										inputMode="url"
 										value={lanTlsInput}
+										disabled={!nativeStatus?.certSha256 && !lanTlsInput}
 										onChange={(event) => setLanTlsInput(event.target.value)}
 										placeholder="https://192.168.1.10:7790"
-										className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text"
+										className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text disabled:opacity-50"
 									/>
+									{!nativeStatus?.certSha256 && (
+										<p className="text-m-xs text-m-text-3">当前仅通过公网域名配对，如需补充局域网直连请先在同 Wi-Fi 下「重新扫码配对」以锁定证书指纹。</p>
+									)}
 								</div>
 								<div className="flex flex-col gap-1">
 									<label htmlFor="endpoint-ipv6" className="text-m-sm text-m-text">IPv6 TLS 地址</label>
@@ -320,22 +337,12 @@ export function ConnectionSheet({
 										type="url"
 										inputMode="url"
 										value={ipv6Input}
+										disabled={!nativeStatus?.certSha256 && !ipv6Input}
 										onChange={(event) => setIpv6Input(event.target.value)}
-										placeholder="https://example.com:7789"
-										className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text"
+										placeholder="https://[240e:...]:7789 或 DDNS 域名:7789"
+										className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text disabled:opacity-50"
 									/>
-								</div>
-								<div className="flex flex-col gap-1">
-									<label htmlFor="endpoint-tunnel" className="text-m-sm text-m-text">Cloudflare 隧道地址</label>
-									<input
-										id="endpoint-tunnel"
-										type="url"
-										inputMode="url"
-										value={tunnelInput}
-										onChange={(event) => setTunnelInput(event.target.value)}
-										placeholder="https://xxx.trycloudflare.com"
-										className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text"
-									/>
+									<p className="text-m-xs text-m-text-3">仅用于电脑 IPv6 / Cloudflare DDNS 端口直连（校验证书指纹）；Cloudflare Tunnel 域名请填在上方。</p>
 								</div>
 								{endpointError && (
 									<p role="alert" className="text-m-sm break-words text-m-danger">

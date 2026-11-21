@@ -505,8 +505,32 @@ public final class PinnedTransport: HTTPTransporting, @unchecked Sendable {
             }
         }
 
-        let response = try await execute(request: request, session: session, pinningDelegate: pinningDelegate)
+        let response = try await execute(
+            request: request,
+            session: session,
+            pinningDelegate: pinningDelegate,
+            preserveSetCookie: channel == .tunnel
+        )
+        if response.status == 204, channel == .tunnel,
+           let setCookie = response.headers.first(where: { $0.key.lowercased() == "set-cookie" })?.value,
+           let cookieToken = Self.extractOmpwsToken(fromSetCookie: setCookie),
+           !cookieToken.isEmpty {
+            return PairExchangeResponse(token: cookieToken, device: nil)
+        }
         guard response.status == 200 else {
+            if (300...399).contains(response.status) {
+                let location = response.headers.first { $0.key.lowercased() == "location" }?.value.lowercased() ?? ""
+                if location.contains("cloudflareaccess") {
+                    throw TransportError.httpError(
+                        status: response.status,
+                        message: "域名触发了 Cloudflare Zero Trust 登录拦截，请在控制台为配对与 API 放行后重试"
+                    )
+                }
+                throw TransportError.httpError(
+                    status: response.status,
+                    message: "域名返回了重定向（HTTP \(response.status)），若开启了登录网关请先放行"
+                )
+            }
             let errMsg = Self.extractServerErrorMessage(from: response.body)
                 ?? "配对失败（HTTP \(response.status)）"
             throw TransportError.httpError(status: response.status, message: errMsg)
@@ -601,7 +625,8 @@ public final class PinnedTransport: HTTPTransporting, @unchecked Sendable {
     private func execute(
         request: URLRequest,
         session: URLSession,
-        pinningDelegate: PinningSessionDelegate?
+        pinningDelegate: PinningSessionDelegate?,
+        preserveSetCookie: Bool = false
     ) async throws -> TransportResponse {
         guard let url = request.url else {
             throw TransportError.invalidURL("")
@@ -616,7 +641,7 @@ public final class PinnedTransport: HTTPTransporting, @unchecked Sendable {
             var responseHeaders: [String: String] = [:]
             for (k, v) in http.allHeaderFields {
                 let keyStr = String(describing: k)
-                if keyStr.lowercased() == "set-cookie" {
+                if !preserveSetCookie && keyStr.lowercased() == "set-cookie" {
                     continue
                 }
                 responseHeaders[keyStr] = String(describing: v)
@@ -628,9 +653,30 @@ public final class PinnedTransport: HTTPTransporting, @unchecked Sendable {
             if let mismatch = pinningDelegate?.consumeMismatch(forHost: url.host) {
                 throw TransportError.pinMismatch(mismatch)
             }
-            if let urlError = error as? URLError, urlError.code == .cancelled {
-                if Task.isCancelled {
+            if let urlError = error as? URLError {
+                if urlError.code == .cancelled && Task.isCancelled {
                     throw TransportError.cancelled
+                }
+                if pinningDelegate == nil {
+                    let nsError = urlError as NSError
+                    let underlying = (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).map {
+                        " / \($0.domain)(\($0.code))"
+                    } ?? ""
+                    switch urlError.code {
+                    case .serverCertificateUntrusted,
+                         .serverCertificateHasUnknownRoot,
+                         .serverCertificateNotYetValid,
+                         .serverCertificateHasBadDate:
+                        throw TransportError.unreachable(
+                            "HTTPS 证书未受系统根证书信任（URLError \(urlError.code.rawValue)\(underlying)）：\(urlError.localizedDescription)。若这是自签名 DDNS 端口，请填写电脑端证书指纹或改用扫码配对"
+                        )
+                    case .secureConnectionFailed:
+                        throw TransportError.unreachable(
+                            "TLS 握手连接失败（URLError \(urlError.code.rawValue)\(underlying)）：\(urlError.localizedDescription)。请确认当前网络/代理可正常访问该域名（可先在手机 Safari 打开该域名测试），或检查 Cloudflare 边缘连接"
+                        )
+                    default:
+                        break
+                    }
                 }
             }
             throw TransportError.unreachable(error.localizedDescription)
@@ -646,6 +692,20 @@ public final class PinnedTransport: HTTPTransporting, @unchecked Sendable {
         config.urlCredentialStorage = nil
         config.waitsForConnectivity = false
         return config
+    }
+
+    /// Extracts `ompws_token=<value>` from a `Set-Cookie` response header returned by legacy HTTPS `/pair`.
+    public static func extractOmpwsToken(fromSetCookie header: String) -> String? {
+        for segment in header.split(separator: ";") {
+            let trimmed = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let range = trimmed.range(of: "ompws_token=", options: [.anchored]) {
+                let value = String(trimmed[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty {
+                    return value
+                }
+            }
+        }
+        return nil
     }
 
     public static func extractServerErrorMessage(from body: Data) -> String? {

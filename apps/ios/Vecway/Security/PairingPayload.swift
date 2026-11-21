@@ -10,7 +10,7 @@ public enum NativeChannel: String, Codable, Equatable, Hashable, Sendable {
         switch self {
         case .lanTls: return "局域网 TLS"
         case .ipv6Tls: return "IPv6 TLS"
-        case .tunnel: return "Cloudflare Tunnel"
+        case .tunnel: return "Cloudflare / 公网域名"
         }
     }
 
@@ -139,7 +139,7 @@ public enum PairingPayloadError: Error, LocalizedError, Equatable, Sendable {
         case .invalidURL:
             return "配对二维码或链接格式无效"
         case .missingAppPayload:
-            return "二维码缺少独立 App 加密连接参数（请更新电脑端 Vecway）"
+            return "二维码缺少独立 App 加密连接参数（请使用支持局域网加密的新版电脑端生成，或改用「域名配对」）"
         case .invalidBase64Payload, .invalidJSONPayload:
             return "配对载荷解析失败，请重新生成二维码"
         case .unsupportedVersion(let version):
@@ -248,6 +248,105 @@ public struct PairingPayload: Equatable, Sendable {
         return normalized
     }
 
+    /// Normalizes user-entered endpoint text (`omp.example.com` -> `https://omp.example.com`)
+    /// while strictly rejecting explicit `http://` or any non-HTTPS scheme.
+    public static func normalizeHttpsEndpointInput(_ raw: String, field: String) throws -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw PairingPayloadError.invalidEndpointURL(field: field, value: raw)
+        }
+        if trimmed.contains("://") {
+            return try validateHttpsEndpoint(trimmed, field: field)
+        }
+        return try validateHttpsEndpoint("https://\(trimmed)", field: field)
+    }
+
+    /// Extracts an embedded `?code=...` pairing code from a pasted URL if present.
+    public static func extractCodeFromInput(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard let components = URLComponents(string: candidate) else { return nil }
+        return queryDictionary(from: components.queryItems)["code"]
+    }
+
+    /// Builds a validated `PairingPayload` from manual domain/URL + pairing code input
+    /// (supporting Cloudflare Tunnel / reverse-proxy CA domains without `#app=`, as well as
+    /// optional self-signed certificate SHA-256 pinning for direct DDNS IPv6 ports).
+    public static func fromDomainInput(
+        domainOrURL: String,
+        code rawCode: String?,
+        certSha256 rawFingerprint: String? = nil
+    ) throws -> PairingPayload {
+        let trimmedInput = domainOrURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInput.isEmpty else {
+            throw PairingPayloadError.invalidEndpointURL(field: "domain", value: domainOrURL)
+        }
+
+        if trimmedInput.lowercased().hasPrefix("vecway://") {
+            return try parse(trimmedInput)
+        }
+
+        let normalizedInput = trimmedInput.contains("://") ? trimmedInput : "https://\(trimmedInput)"
+        guard var components = URLComponents(string: normalizedInput) else {
+            throw PairingPayloadError.invalidEndpointURL(field: "domain", value: domainOrURL)
+        }
+        guard let scheme = components.scheme?.lowercased(), scheme == "https" else {
+            throw PairingPayloadError.insecureEndpoint(field: "domain", value: domainOrURL)
+        }
+        guard let host = components.host, !host.isEmpty else {
+            throw PairingPayloadError.invalidEndpointURL(field: "domain", value: domainOrURL)
+        }
+        guard components.user == nil, components.password == nil else {
+            throw PairingPayloadError.invalidEndpointURL(field: "domain", value: domainOrURL)
+        }
+
+        let queryMap = queryDictionary(from: components.queryItems)
+        let manualCode = rawCode?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedCode = (manualCode?.isEmpty == false) ? manualCode : queryMap["code"]
+        let code = try validateCode(resolvedCode)
+
+        // If a full dual-use URL with `#app=` was pasted and no manual overrides exist, parse it directly.
+        if let fragment = components.fragment,
+           extractFragmentParameter(named: "app", from: fragment) != nil,
+           (manualCode == nil || manualCode?.isEmpty == true),
+           (rawFingerprint?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            return try parse(normalizedInput)
+        }
+
+        components.scheme = "https"
+        components.path = ""
+        components.queryItems = nil
+        components.fragment = nil
+        guard let origin = components.string else {
+            throw PairingPayloadError.invalidEndpointURL(field: "domain", value: domainOrURL)
+        }
+
+        let trimmedFP = rawFingerprint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedFP.isEmpty {
+            guard let digest = CertificateFingerprint.parse(trimmedFP) else {
+                throw PairingPayloadError.invalidFingerprint
+            }
+            return PairingPayload(
+                version: 1,
+                code: code,
+                preferredTarget: .ipv6,
+                endpoints: EndpointCandidates(ipv6: origin),
+                certSha256: trimmedFP,
+                certSha256Digest: digest
+            )
+        }
+
+        return PairingPayload(
+            version: 1,
+            code: code,
+            preferredTarget: .tunnel,
+            endpoints: EndpointCandidates(tunnel: origin),
+            certSha256: nil,
+            certSha256Digest: nil
+        )
+    }
+
     /// Returns candidate channels in the exact order pairing should attempt them.
     public func orderedPairingAttempts() -> [(channel: NativeChannel, url: String)] {
         var order: [NativeChannel] = [.lanTls, .ipv6Tls, .tunnel]
@@ -264,37 +363,59 @@ public struct PairingPayload: Equatable, Sendable {
     // MARK: - Private Parsers
 
     private static func parseDualUseURL(_ components: URLComponents) throws -> PairingPayload {
-        // SECURITY: Explicitly ignore `components.scheme`, `components.host`, and `components.port`.
-        // Only the pairing `code` query item and `#app=<base64url(json)>` fragment are read.
+        // SECURITY: Explicitly ignore `components.scheme`, `components.host`, and `components.port`
+        // whenever `#app=` is present. If `#app=` is absent on an `https://` URL, fall back to
+        // system-CA HTTPS domain pairing for that validated origin (never for plaintext `http://`).
         let queryMap = queryDictionary(from: components.queryItems)
         let code = try validateCode(queryMap["code"])
 
-        guard let fragment = components.fragment, !fragment.isEmpty else {
-            throw PairingPayloadError.missingAppPayload
-        }
-        guard let encodedAppPayload = extractFragmentParameter(named: "app", from: fragment),
-              !encodedAppPayload.isEmpty else {
-            throw PairingPayloadError.missingAppPayload
-        }
-        guard let jsonData = decodeBase64URL(encodedAppPayload) else {
-            throw PairingPayloadError.invalidBase64Payload
-        }
-        let decoded: FragmentPayloadJSON
-        do {
-            decoded = try JSONDecoder().decode(FragmentPayloadJSON.self, from: jsonData)
-        } catch {
-            throw PairingPayloadError.invalidJSONPayload
+        if let fragment = components.fragment,
+           !fragment.isEmpty,
+           let encodedAppPayload = extractFragmentParameter(named: "app", from: fragment),
+           !encodedAppPayload.isEmpty {
+            guard let jsonData = decodeBase64URL(encodedAppPayload) else {
+                throw PairingPayloadError.invalidBase64Payload
+            }
+            let decoded: FragmentPayloadJSON
+            do {
+                decoded = try JSONDecoder().decode(FragmentPayloadJSON.self, from: jsonData)
+            } catch {
+                throw PairingPayloadError.invalidJSONPayload
+            }
+
+            return try buildValidatedPayload(
+                version: decoded.v,
+                code: code,
+                rawTarget: decoded.t,
+                rawLanTls: decoded.lt,
+                rawIpv6: decoded.v6,
+                rawTunnel: decoded.tn,
+                rawFingerprint: decoded.fp
+            )
         }
 
-        return try buildValidatedPayload(
-            version: decoded.v,
-            code: code,
-            rawTarget: decoded.t,
-            rawLanTls: decoded.lt,
-            rawIpv6: decoded.v6,
-            rawTunnel: decoded.tn,
-            rawFingerprint: decoded.fp
-        )
+        if components.scheme?.lowercased() == "https",
+           let host = components.host,
+           !host.isEmpty,
+           components.user == nil,
+           components.password == nil {
+            var originComps = URLComponents()
+            originComps.scheme = "https"
+            originComps.host = host
+            originComps.port = components.port
+            if let origin = originComps.string {
+                return PairingPayload(
+                    version: 1,
+                    code: code,
+                    preferredTarget: .tunnel,
+                    endpoints: EndpointCandidates(tunnel: origin),
+                    certSha256: nil,
+                    certSha256Digest: nil
+                )
+            }
+        }
+
+        throw PairingPayloadError.missingAppPayload
     }
 
     private static func parseDirectAppURL(_ components: URLComponents) throws -> PairingPayload {

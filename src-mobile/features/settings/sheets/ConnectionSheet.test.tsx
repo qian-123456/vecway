@@ -138,6 +138,15 @@ describe("ConnectionSheet native mode", () => {
 		fireEvent.click(screen.getByRole("button", { name: "保存端点" }));
 		await waitFor(() => expect(updateEndpoints).toHaveBeenCalledTimes(1));
 		expect(updateEndpoints).toHaveBeenCalledWith({ lanTls: "https://192.168.1.99:7790" });
+
+		const domainInput = screen.getByLabelText("Cloudflare / 公网域名地址") as HTMLInputElement;
+		fireEvent.change(domainInput, { target: { value: "omp.example.com/" } });
+		fireEvent.click(screen.getByRole("button", { name: "保存端点" }));
+		await waitFor(() => expect(updateEndpoints).toHaveBeenCalledTimes(2));
+		expect(updateEndpoints).toHaveBeenLastCalledWith({
+			lanTls: "https://192.168.1.99:7790",
+			tunnel: "https://omp.example.com",
+		});
 	});
 
 	it("delegates reprobeConnection, openPairScanner, and confirmed unpair to native bridge", async () => {
@@ -160,7 +169,7 @@ describe("ConnectionSheet native mode", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "重新探测连接" }));
 		await waitFor(() => expect(reprobeConnection).toHaveBeenCalledTimes(1));
-		expect(await screen.findByText("Cloudflare 隧道")).toBeDefined();
+		expect(await screen.findByText("Cloudflare / 公网域名")).toBeDefined();
 
 		fireEvent.click(screen.getByRole("button", { name: "重新扫码配对" }));
 		await waitFor(() => expect(openPairScanner).toHaveBeenCalledTimes(1));

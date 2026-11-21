@@ -509,6 +509,12 @@ export function MobilePanel() {
 				const activeQrMode = hasAppQr ? qrMode : "universal";
 				const activeQrSvg = activeQrMode === "app" && pairing.appQrSvg ? pairing.appQrSvg : pairing.qrSvg;
 				const activeQrUrl = activeQrMode === "app" && pairing.appUrl ? pairing.appUrl : pairing.url;
+				let pairCode: string | null = null;
+				try {
+					pairCode = new URL(pairing.url).searchParams.get("code");
+				} catch {
+					pairCode = null;
+				}
 				return (
 					<div data-field-id="mobileQr" className="rounded-xl border border-[var(--border-divider)] bg-[var(--card-bg)] p-4 shadow-sm">
 						<div className="flex min-w-0 flex-wrap items-start gap-4">
@@ -576,6 +582,14 @@ export function MobilePanel() {
 											{t("mobile.btnCopyLink")}
 										</Button>
 									</div>
+								)}
+								{!expired && pairCode && (
+									<CopyLine
+										label={t("mobile.pairCodeLabel")}
+										value={pairCode}
+										toastText={t("mobile.pairCodeCopied")}
+										copyLabel={t("mobile.pairCodeCopyAria")}
+									/>
 								)}
 								{!expired && pairing.certSha256 && (
 									<CopyLine
@@ -734,6 +748,18 @@ export function MobilePanel() {
 					</div>
 					<div className="flex items-center gap-2">
 						<RunChip status={status == null ? "unknown" : ipv6Running ? "running" : !status.ipv6Address ? "noIpv6" : "stopped"} />
+						{running && status?.ipv6Url && (
+							<Button
+								size="sm"
+								variant="secondary"
+								icon={QrCode}
+								loading={busy === "pair"}
+								disabled={busy !== null}
+								onClick={() => makePairing("ipv6")}
+							>
+								{t("mobile.btnGenerateIpv6Qr")}
+							</Button>
+						)}
 						<Button size="sm" variant="secondary" icon={Power} loading={busy === "ipv6Server"} disabled={busy !== null || status == null} onClick={toggleIpv6}>
 							{busy === "ipv6Server" ? (ipv6Running ? t("mobile.btnStopping") : t("mobile.btnStarting")) : ipv6Running ? t("mobile.btnStop") : t("mobile.btnStart")}
 						</Button>
@@ -995,22 +1021,35 @@ export function MobilePanel() {
 
 					{status?.tunnelUrl && (
 						<div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border-divider)] bg-[var(--well-bg)] px-3 py-2">
-							<div>
+							<div className="min-w-0 flex-1">
 								<span className="block text-[11px] text-[var(--text-muted)]">{t("mobile.tunnelPublicUrlLabel")}</span>
-								<span className="font-mono text-sm font-semibold text-[var(--text)]">
+								<span className="font-mono text-sm font-semibold text-[var(--text)] [overflow-wrap:anywhere]">
 									{status.tunnelUrl}
 								</span>
 							</div>
-							<Button
-								size="sm"
-								variant="secondary"
-								icon={Copy}
-								onClick={async () => {
-									await copyText(status.tunnelUrl!, { label: t("mobile.toastAddressCopied") });
-								}}
-							>
-								{t("mobile.btnCopyLink")}
-							</Button>
+							<div className="flex flex-wrap items-center gap-2">
+								<Button
+									size="sm"
+									variant="primary"
+									icon={QrCode}
+									loading={busy === "pair"}
+									disabled={busy !== null || !running}
+									title={running ? undefined : t("mobile.pairLanTitleStopped")}
+									onClick={() => makePairing("tunnel")}
+								>
+									{t("mobile.btnGenerateTunnelQr")}
+								</Button>
+								<Button
+									size="sm"
+									variant="secondary"
+									icon={Copy}
+									onClick={async () => {
+										await copyText(status.tunnelUrl!, { label: t("mobile.toastAddressCopied") });
+									}}
+								>
+									{t("mobile.btnCopyLink")}
+								</Button>
+							</div>
 						</div>
 					)}
 

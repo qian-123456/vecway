@@ -127,7 +127,7 @@ public final class EndpointManager: @unchecked Sendable {
         store: CredentialStore,
         transport: HTTPTransporting = PinnedTransport(),
         lanProbeTimeout: TimeInterval = 1.5,
-        remoteProbeTimeout: TimeInterval = 5.0
+        remoteProbeTimeout: TimeInterval = 10.0
     ) {
         self.store = store
         self.transport = transport
@@ -197,7 +197,7 @@ public final class EndpointManager: @unchecked Sendable {
 
         for (idx, attempt) in attempts.enumerated() {
             let hasMoreCandidates = idx < attempts.count - 1
-            let timeout: TimeInterval = (attempt.channel == .lanTls && hasMoreCandidates) ? 2.5 : 8.0
+            let timeout: TimeInterval = (attempt.channel == .lanTls && hasMoreCandidates) ? 2.5 : 12.0
             do {
                 let response = try await transport.pair(
                     channel: attempt.channel,
@@ -642,12 +642,20 @@ public final class EndpointManager: @unchecked Sendable {
                 }
                 if let rawV6 = mobile.ipv6Url,
                    let validV6 = try? PairingPayload.validateHttpsEndpoint(rawV6, field: "ipv6Url") {
-                    updatedEndpoints.ipv6 = validV6
+                    let currentIsDomain = updatedEndpoints.ipv6.map { !Self.isIPLiteralEndpoint($0) } ?? false
+                    let incomingIsIP = Self.isIPLiteralEndpoint(validV6)
+                    if !(currentIsDomain && incomingIsIP) {
+                        updatedEndpoints.ipv6 = validV6
+                    }
                 }
             }
             if let rawTunnel = mobile.tunnelUrl,
                let validTunnel = try? PairingPayload.validateHttpsEndpoint(rawTunnel, field: "tunnelUrl") {
-                updatedEndpoints.tunnel = validTunnel
+                let currentIsCustom = updatedEndpoints.tunnel.map { !Self.isTemporaryTryCloudflare($0) } ?? false
+                let incomingIsTemp = Self.isTemporaryTryCloudflare(validTunnel)
+                if !(currentIsCustom && incomingIsTemp) {
+                    updatedEndpoints.tunnel = validTunnel
+                }
             }
 
             guard updatedEndpoints != latest.endpoints else {
@@ -669,7 +677,28 @@ public final class EndpointManager: @unchecked Sendable {
         guard let rawValue else { return nil }
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        return try PairingPayload.validateHttpsEndpoint(trimmed, field: field)
+        return try PairingPayload.normalizeHttpsEndpointInput(trimmed, field: field)
+    }
+
+    private static func isIPLiteralEndpoint(_ urlString: String) -> Bool {
+        guard let host = URLComponents(string: urlString)?.host, !host.isEmpty else {
+            return false
+        }
+        let bare = host.hasPrefix("[") && host.hasSuffix("]")
+            ? String(host.dropFirst().dropLast())
+            : host
+        #if canImport(Network)
+        return IPv4Address(bare) != nil || IPv6Address(bare) != nil
+        #else
+        return bare.contains(":") || bare.split(separator: ".").allSatisfy { Int($0) != nil }
+        #endif
+    }
+
+    private static func isTemporaryTryCloudflare(_ urlString: String) -> Bool {
+        guard let host = URLComponents(string: urlString)?.host?.lowercased() else {
+            return false
+        }
+        return host == "trycloudflare.com" || host.hasSuffix(".trycloudflare.com")
     }
 
     private func buildStatusLocked() -> NativeEndpointStatus {

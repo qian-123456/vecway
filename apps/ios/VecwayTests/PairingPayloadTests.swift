@@ -171,4 +171,58 @@ final class PairingPayloadTests: XCTestCase {
             "CB:DF:57:08 … 64:8A:11:7E"
         )
     }
+
+    func testHttpsDualUseURLWithoutAppFragmentFallsBackToSystemCADomain() throws {
+        let url = "https://omp.example.com/pair?code=DomainCode_1"
+        let payload = try PairingPayload.parse(url)
+        XCTAssertEqual(payload.code, "DomainCode_1")
+        XCTAssertEqual(payload.preferredTarget, .tunnel)
+        XCTAssertEqual(payload.endpoints.tunnel, "https://omp.example.com")
+        XCTAssertNil(payload.endpoints.lanTls)
+        XCTAssertNil(payload.endpoints.ipv6)
+        XCTAssertNil(payload.certSha256)
+        XCTAssertEqual(payload.orderedPairingAttempts().map(\.channel), [.tunnel])
+
+        // Plaintext http:// without `#app=` MUST still be rejected.
+        XCTAssertThrowsError(try PairingPayload.parse("http://omp.example.com/pair?code=DomainCode_1")) { error in
+            XCTAssertEqual(error as? PairingPayloadError, .missingAppPayload)
+        }
+    }
+
+    func testFromDomainInputSupportsBareDomainFullPairURLAndOptionalFingerprint() throws {
+        // 1. Bare Cloudflare domain + manual pairing code -> system-CA tunnel channel
+        let bare = try PairingPayload.fromDomainInput(domainOrURL: "omp.example.com/", code: "CfCode_01")
+        XCTAssertEqual(bare.code, "CfCode_01")
+        XCTAssertEqual(bare.preferredTarget, .tunnel)
+        XCTAssertEqual(bare.endpoints.tunnel, "https://omp.example.com")
+        XCTAssertNil(bare.certSha256)
+
+        // 2. Full https://.../pair?code=... URL pasted into domain field with empty code field
+        let fromUrl = try PairingPayload.fromDomainInput(
+            domainOrURL: "https://omp.example.com:8443/pair?code=Extracted_77",
+            code: "  "
+        )
+        XCTAssertEqual(fromUrl.code, "Extracted_77")
+        XCTAssertEqual(fromUrl.endpoints.tunnel, "https://omp.example.com:8443")
+        XCTAssertEqual(PairingPayload.extractCodeFromInput("https://omp.example.com/pair?code=Extracted_77"), "Extracted_77")
+
+        // 3. Bare DDNS domain:port + optional self-signed fingerprint -> pinned ipv6Tls
+        let ddns = try PairingPayload.fromDomainInput(
+            domainOrURL: "home.example.com:7789",
+            code: "DdnsCode_2",
+            certSha256: validFingerprint
+        )
+        XCTAssertEqual(ddns.preferredTarget, .ipv6)
+        XCTAssertEqual(ddns.endpoints.ipv6, "https://home.example.com:7789")
+        XCTAssertEqual(ddns.certSha256, validFingerprint)
+
+        // 4. Explicit plaintext http:// MUST be rejected
+        XCTAssertThrowsError(try PairingPayload.fromDomainInput(domainOrURL: "http://omp.example.com", code: "Bad_1")) { error in
+            guard case PairingPayloadError.insecureEndpoint(let field, _) = error else {
+                XCTFail("Expected insecureEndpoint, got \(error)")
+                return
+            }
+            XCTAssertEqual(field, "domain")
+        }
+    }
 }

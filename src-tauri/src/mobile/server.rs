@@ -217,6 +217,28 @@ fn origin_matches(expected_auth: &str, expected_scheme: &str, url: &str) -> bool
         && effective_port(actual_port, scheme) == effective_port(exp_port, expected_scheme)
 }
 
+/// True when the request arrived over native TLS or an HTTPS-terminating proxy
+/// (`X-Forwarded-Proto: https` or Cloudflare `CF-Visitor: {"scheme":"https"}`).
+fn is_https_request(headers: &HeaderMap, is_tls: bool) -> bool {
+    if is_tls {
+        return true;
+    }
+    if headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.split(',').next())
+        .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"))
+    {
+        return true;
+    }
+    headers
+        .get("cf-visitor")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|v| v.get("scheme").and_then(|s| s.as_str()).map(str::to_owned))
+        .is_some_and(|s| s.eq_ignore_ascii_case("https"))
+}
+
 pub(crate) fn verify_csrf(headers: &HeaderMap, is_tls: bool) -> Result<(), ApiError> {
     if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
         if site.eq_ignore_ascii_case("cross-site") {
@@ -234,12 +256,7 @@ pub(crate) fn verify_csrf(headers: &HeaderMap, is_tls: bool) -> Result<(), ApiEr
         .map(str::trim);
     // The expected side's scheme comes from the connection itself, not from a
     // spoofable header: TLS here, or a trusted proxy's forwarded proto.
-    let expected_scheme = if is_tls
-        || headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|p| p.eq_ignore_ascii_case("https"))
-    {
+    let expected_scheme = if is_https_request(headers, is_tls) {
         "https"
     } else {
         "http"
@@ -412,11 +429,7 @@ async fn pair<B: Backend>(
             Err(err) => return err.into_response(),
         }
     };
-    let https = tls_ext.is_some()
-        || headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|p| p.eq_ignore_ascii_case("https"));
+    let https = is_https_request(&headers, tls_ext.is_some());
     let return_token = json && q.return_token;
     if return_token && !https {
         return ApiError(

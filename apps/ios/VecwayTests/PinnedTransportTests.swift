@@ -227,4 +227,11 @@ final class PinnedTransportTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "Vecway-iOS/0.2.0 (iPhone)")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
     }
+
+    func testExtractOmpwsTokenFromLegacySetCookieHeader() {
+        let header = "ompws_token=legacy_tok_abc-123_XYZ; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000; Secure"
+        XCTAssertEqual(PinnedTransport.extractOmpwsToken(fromSetCookie: header), "legacy_tok_abc-123_XYZ")
+        XCTAssertNil(PinnedTransport.extractOmpwsToken(fromSetCookie: "other_cookie=123; Path=/"))
+        XCTAssertNil(PinnedTransport.extractOmpwsToken(fromSetCookie: "ompws_token=; Path=/"))
+    }
 }

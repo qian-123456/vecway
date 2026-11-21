@@ -2086,6 +2086,18 @@ async fn pairing_return_token_requires_https_preserves_code_and_supports_bearer_
     let tunnel_paired: Value = serde_json::from_str(&bdy).unwrap();
     assert_eq!(tunnel_paired["device"]["name"].as_str(), Some("iPad"));
 
+    // Cloudflare CF-Visitor: {"scheme":"https"} or multi-hop x-forwarded-proto also permits returnToken: true.
+    let (cf_code, _) = auth::create_pairing(&h.ctx.db.lock(), chrono::Utc::now()).unwrap();
+    let cf_req = Request::post("/pair")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("cf-visitor", r#"{"scheme":"https"}"#)
+        .header(header::USER_AGENT, "Vecway-iOS/0.2.0 (iPhone)")
+        .body(Body::from(
+            json!({"code": cf_code, "returnToken": true}).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(call(&h, cf_req).await.0, StatusCode::OK);
+
     // Returned Bearer token works on GET /api/device, POST /api/sessions/a/prompt, and GET /api/events SSE.
     let bearer = format!("Bearer {token}");
     let dev_req = Request::get("/api/device")

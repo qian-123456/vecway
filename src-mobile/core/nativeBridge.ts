@@ -58,7 +58,7 @@ export interface NativeBridge {
 	httpRequest(req: NativeHttpRequest, signal?: AbortSignal): Promise<NativeHttpResponse>;
 	openSse(url: string, handlers: NativeSseHandlers): () => void;
 	getConnectionStatus(): Promise<NativeEndpointStatus>;
-	openPairScanner(): Promise<{ ok: boolean; error?: string; status?: NativeEndpointStatus }>;
+	openPairScanner(options?: { mode?: "scan" | "domain" }): Promise<{ ok: boolean; error?: string; status?: NativeEndpointStatus }>;
 	updateEndpoints(endpoints: Partial<NativeEndpointStatus["candidates"]>): Promise<NativeEndpointStatus>;
 	reprobeConnection(): Promise<NativeEndpointStatus>;
 	unpair(): Promise<void>;
@@ -102,7 +102,7 @@ export const EMPTY_NATIVE_STATUS: NativeEndpointStatus = {
 export const NATIVE_CHANNEL_LABEL: Record<NativeChannel, string> = {
 	lan_tls: "局域网 TLS",
 	ipv6_tls: "IPv6 TLS",
-	tunnel: "Cloudflare 隧道",
+	tunnel: "Cloudflare / 公网域名",
 };
 
 export function getNativeBridge(): NativeBridge | null {
@@ -239,6 +239,13 @@ export async function blobToBase64(blob: Blob): Promise<string> {
 		reader.onerror = () => reject(reader.error ?? new Error("无法读取二进制数据"));
 		reader.readAsArrayBuffer(blob);
 	});
+}
+
+/** Auto-prefixes `https://` for bare hosts (`omp.example.com`), preserving explicit schemes so `http://` stays rejected. */
+export function normalizeHttpsEndpointInput(raw: string): string {
+	const trimmed = raw.trim().replace(/\/+$/, "");
+	if (!trimmed) return "";
+	return trimmed.includes("://") ? trimmed : `https://${trimmed}`;
 }
 
 /** Strict HTTPS-only validator for native endpoint URLs (hard-rejects plaintext http://). */
