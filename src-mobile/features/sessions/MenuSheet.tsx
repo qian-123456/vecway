@@ -253,14 +253,14 @@ export function MenuSheet({
 				onTouchMove={onTouchMove}
 				onTouchEnd={onTouchEnd}
 				onTouchCancel={resetSwipe}
-				className={`absolute inset-y-0 left-0 flex w-full touch-pan-y flex-col bg-m-bg text-m-text outline-none transition-transform duration-300 ease-m-sheet ${
+				className={`absolute inset-y-0 left-0 flex w-full sm:max-w-[400px] touch-pan-y flex-col border-r border-m-border bg-m-drawer-bg text-m-text shadow-m-pop outline-none transition-transform duration-300 ease-m-sheet ${
 					visible ? "translate-x-0" : "-translate-x-full"
 				}`}
 				style={{ paddingTop: "var(--m-safe-top)", paddingBottom: "calc(var(--m-safe-bottom) + 6px)" }}
 			>
-				<header className="flex h-12 shrink-0 items-center gap-2 px-3">
+				<header className="flex h-13 shrink-0 items-center gap-2 px-3">
 					<AppMark size={24} />
-					<span className="min-w-0 flex-1 text-m-md font-medium whitespace-nowrap">OMP</span>
+					<span className="min-w-0 flex-1 text-m-md font-semibold tracking-[-0.01em] whitespace-nowrap">Vecway</span>
 					<IconButton variant="plain" size="sm" icon={<Search {...I} />} label="搜索会话" onClick={() => go(paths.search())} />
 					<div className="relative">
 						<IconButton variant="plain" size="sm" icon={<Bell {...I} />} label={badge > 0 ? `收件箱，${badge} 项待处理` : "收件箱"} onClick={() => go(paths.inbox())} />
@@ -270,33 +270,32 @@ export function MenuSheet({
 				</header>
 
 				<div className="shrink-0">
-					<div className="flex flex-wrap gap-1 px-3">
+					<div className="flex flex-wrap gap-1.5 px-3 pb-1">
 						<button
 							type="button"
 							onClick={() => {
 								onClose();
 								onNewSession?.();
 							}}
-							className="flex min-h-11 w-full items-center gap-2.5 rounded-m-md bg-m-surface px-3 text-left text-m-md text-m-text transition-colors duration-(--m-dur-fast) active:bg-m-surface-2"
+							className="flex min-h-11 w-full items-center gap-2.5 rounded-m-md border border-m-border bg-m-card px-3.5 text-left text-m-md font-medium text-m-text shadow-m-card transition-colors duration-(--m-dur-fast) active:bg-m-surface"
 						>
-							<SquarePen {...I} size={20} className="shrink-0 text-m-text-2" />
+							<SquarePen {...I} size={19} className="shrink-0 text-m-accent" />
 							<span className="whitespace-nowrap">发起新对话</span>
 						</button>
 						<button
 							type="button"
 							onClick={() => go(paths.schedules())}
-							className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-m-md px-2 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+							className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-m-md border border-m-border/70 bg-m-bg-elev/70 px-2.5 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
 						>
-							<Clock {...I} size={18} className="shrink-0 text-m-text-2" />
+							<Clock {...I} size={17} className="shrink-0 text-m-text-2" />
 							<span className="whitespace-nowrap">自动化</span>
 						</button>
-						<span aria-hidden="true" className="my-auto h-5 w-px shrink-0 bg-m-border" />
 						<button
 							type="button"
 							onClick={() => go(paths.ideas())}
-							className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-m-md px-2 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+							className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-m-md border border-m-border/70 bg-m-bg-elev/70 px-2.5 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
 						>
-							<Lightbulb {...I} size={18} className="shrink-0 text-m-text-2" />
+							<Lightbulb {...I} size={17} className="shrink-0 text-m-text-2" />
 							<span className="whitespace-nowrap">灵感收件箱</span>
 						</button>
 					</div>

@@ -24,15 +24,23 @@
 	--color-m-danger-bg: var(--m-danger-bg);
 	--color-m-warn: var(--m-warn);
 	--color-m-warn-bg: var(--m-warn-bg);
+	--color-m-warn-border: var(--m-warn-border);
 	--color-m-success: var(--m-success);
 	--color-m-success-bg: var(--m-success-bg);
 	--color-m-bubble-user-bg: var(--m-bubble-user-bg);
 	--color-m-bubble-user-text: var(--m-bubble-user-text);
+	--color-m-bubble-user-border: var(--m-bubble-user-border);
+	--color-m-topbar-bg: var(--m-topbar-bg);
+	--color-m-topbar-border: var(--m-topbar-border);
 	--color-m-composer-bg: var(--m-composer-bg);
+	--color-m-composer-border: var(--m-composer-border);
 	--color-m-code-bg: var(--m-code-bg);
+	--color-m-code-hdr: var(--m-code-hdr);
 	--color-m-code-text: var(--m-code-text);
 	--color-m-diff-add: var(--m-diff-add);
 	--color-m-diff-del: var(--m-diff-del);
+	--color-m-drawer-bg: var(--m-drawer-bg);
+	--color-m-drawer-active: var(--m-drawer-active);
 	--color-m-scrim: var(--m-scrim);
 	--radius-m-sm: var(--m-r-sm);
 	--radius-m-md: var(--m-r-md);
@@ -259,45 +267,45 @@ body {
 	border-top: 1px solid var(--m-border);
 }
 
-/* Liquid glass style buttons & panels (液态玻璃风格) */
+/* Subtle translucent topbar surface (Direction A Calm Native) */
+.m-topbar-glass {
+	background-color: var(--m-topbar-bg);
+	border-bottom: 1px solid var(--m-topbar-border);
+	backdrop-filter: blur(16px) saturate(160%);
+	-webkit-backdrop-filter: blur(16px) saturate(160%);
+}
+
+/* Subtle native frosted icon button (adapts to every light/dark theme) */
 .m-glass-btn {
 	isolation: isolate;
-	background-color: color-mix(in oklab, var(--m-surface) 52%, transparent);
-	background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.05) 42%, transparent 62%, rgba(255, 255, 255, 0.08) 100%);
-	backdrop-filter: blur(16px) saturate(180%);
-	-webkit-backdrop-filter: blur(16px) saturate(180%);
-	border: 1px solid rgba(255, 255, 255, 0.16);
-	box-shadow:
-		inset 1px 1px 0.5px 0 rgba(255, 255, 255, 0.45),
-		inset -1px -1px 0.5px 0 rgba(255, 255, 255, 0.12),
-		0 2px 8px -2px rgba(0, 0, 0, 0.3);
-	transition: background-color var(--m-dur-fast) var(--m-ease), transform var(--m-dur-fast) var(--m-ease), box-shadow var(--m-dur-fast) var(--m-ease);
+	background-color: color-mix(in srgb, var(--m-surface) 64%, transparent);
+	backdrop-filter: blur(14px) saturate(150%);
+	-webkit-backdrop-filter: blur(14px) saturate(150%);
+	border: 1px solid var(--m-border);
+	box-shadow: 0 1px 2px rgb(0 0 0 / 0.14);
+	transition: background-color var(--m-dur-fast) var(--m-ease), transform var(--m-dur-fast) var(--m-ease), border-color var(--m-dur-fast) var(--m-ease);
 }
 .m-glass-btn:active {
-	background-color: color-mix(in oklab, var(--m-surface) 75%, transparent);
-	box-shadow:
-		inset 1px 1px 0.5px 0 rgba(255, 255, 255, 0.25),
-		inset -1px -1px 0.5px 0 rgba(255, 255, 255, 0.08),
-		0 1px 4px -1px rgba(0, 0, 0, 0.35);
-	transform: scale(0.96);
+	background-color: var(--m-surface-2);
+	transform: scale(0.95);
 }
 html[data-scheme="light"] .m-glass-btn {
-	background-color: color-mix(in oklab, var(--m-surface) 60%, transparent);
-	background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.75) 0%, rgba(255, 255, 255, 0.35) 42%, transparent 62%, rgba(255, 255, 255, 0.45) 100%);
-	border: 1px solid rgba(0, 0, 0, 0.08);
-	box-shadow:
-		inset 1px 1px 0.5px 0 rgba(255, 255, 255, 0.85),
-		inset -1px -1px 0.5px 0 rgba(0, 0, 0, 0.05),
-		0 2px 6px -2px rgba(0, 0, 0, 0.1);
+	background-color: color-mix(in srgb, var(--m-card) 76%, transparent);
+	border: 1px solid var(--m-border);
+	box-shadow: 0 1px 3px rgb(18 22 33 / 0.06);
 }
 html[data-scheme="light"] .m-glass-btn:active {
-	background-color: color-mix(in oklab, var(--m-surface) 88%, transparent);
-	transform: scale(0.96);
+	background-color: var(--m-surface);
+	transform: scale(0.95);
 }
 @media (prefers-reduced-transparency: reduce) {
+	.m-topbar-glass {
+		background-color: var(--m-bg);
+		backdrop-filter: none;
+		-webkit-backdrop-filter: none;
+	}
 	.m-glass-btn {
 		background-color: var(--m-surface);
-		background-image: none;
 		backdrop-filter: none;
 		-webkit-backdrop-filter: none;
 	}

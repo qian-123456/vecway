@@ -17,11 +17,27 @@ interface AskDraft extends AskAnswer {
 /** Drafts of an ask by tool-call id: survive the card remounting between omp's per-question requests. */
 const askDrafts = new Map<string, (AskDraft | undefined)[]>();
 
-function Card({ icon, label, children }: { icon: ReactNode; label: ReactNode; children: ReactNode }) {
+function Card({
+	icon,
+	label,
+	tone = "default",
+	children,
+}: {
+	icon: ReactNode;
+	label: ReactNode;
+	tone?: "default" | "warn";
+	children: ReactNode;
+}) {
+	const isWarn = tone === "warn";
 	return (
-		<div className="rounded-m-lg bg-m-surface p-4" data-testid="pending-card">
-			<div className="mb-2 flex min-h-6 flex-wrap items-center gap-2 text-m-xs text-m-text-3">
-				<span className="flex shrink-0 text-m-text-2">{icon}</span>
+		<div
+			className={`rounded-m-lg border p-4 shadow-m-card ${
+				isWarn ? "border-m-warn-border bg-m-warn-bg" : "border-m-border bg-m-card"
+			}`}
+			data-testid="pending-card"
+		>
+			<div className={`mb-2 flex min-h-6 flex-wrap items-center gap-2 text-m-xs font-medium ${isWarn ? "text-m-warn" : "text-m-text-3"}`}>
+				<span className={`flex shrink-0 ${isWarn ? "text-m-warn" : "text-m-text-2"}`}>{icon}</span>
 				{label}
 			</div>
 			{children}
@@ -149,10 +165,10 @@ const ApprovalCard = memo(function ApprovalCard({ entry }: { entry: PendingEntry
 	const verticalActions = b.other.some(({ label }) => label.length > 14);
 	const send = (value: string) => run(() => controller.respond(entry, { value }));
 	return (
-		<Card icon={<ShieldCheck size={18} strokeWidth={1.75} />} label="需要你的批准">
-			<div className="m-selectable break-words text-m-md font-medium">{head}</div>
+		<Card tone="warn" icon={<ShieldCheck size={17} strokeWidth={2} />} label="需要你的批准">
+			<div className="m-selectable break-words text-m-md font-medium text-m-text">{head}</div>
 			{detail && (
-				<pre className="m-selectable mt-3 mb-0 whitespace-pre-wrap break-words rounded-m-md bg-m-code-bg p-3 font-m-mono text-m-xs leading-5 text-m-text-2">
+				<pre className="m-selectable mt-2.5 mb-0 whitespace-pre-wrap break-words rounded-m-sm border border-m-border bg-m-card p-3 font-m-mono text-m-xs leading-5 text-m-text-2">
 					{detail}
 				</pre>
 			)}

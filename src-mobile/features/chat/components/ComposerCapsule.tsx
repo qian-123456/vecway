@@ -211,7 +211,7 @@ export function ComposerCapsule({
 	return (
 		<div
 			ref={capsule}
-			className="relative flex flex-col rounded-[22px] bg-m-composer-bg border border-m-border shadow-m-composer transition-colors"
+			className="relative flex flex-col rounded-(--m-composer-radius) border border-m-composer-border bg-m-composer-bg shadow-m-composer transition-[border-color,box-shadow,background-color] duration-(--m-dur-fast) focus-within:border-m-border-strong"
 		>
 			{top != null && <div className="p-2 pb-0">{top}</div>}
 
@@ -339,7 +339,7 @@ export function ComposerCapsule({
 										aria-label={`当前模型：${modelName}，当前思考强度：${thinkName}，点击切换`}
 										onClick={onThinking ?? onModel}
 										disabled={!onThinking && !onModel}
-										className="flex h-8 min-w-0 max-w-[180px] shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium whitespace-nowrap text-m-text hover:bg-m-surface active:bg-m-surface-2 transition-all disabled:cursor-default"
+										className="flex h-8 min-w-0 max-w-[180px] shrink-0 items-center gap-1 rounded-lg bg-m-bg-elev/85 px-2.5 text-xs font-medium whitespace-nowrap text-m-text hover:bg-m-surface active:bg-m-surface-2 transition-all disabled:cursor-default"
 									>
 										<span className="truncate">{modelName}</span>
 										<span className="shrink-0 text-m-text-3 font-normal">· {thinkName}</span>
@@ -356,7 +356,7 @@ export function ComposerCapsule({
 											aria-label={`当前模型：${modelName}，点击切换`}
 											onClick={onModel}
 											disabled={!onModel}
-											className="flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium whitespace-nowrap text-m-text hover:bg-m-surface active:bg-m-surface-2 transition-all disabled:cursor-default"
+											className="flex h-8 shrink-0 items-center gap-1 rounded-lg bg-m-bg-elev/85 px-2.5 text-xs font-medium whitespace-nowrap text-m-text hover:bg-m-surface active:bg-m-surface-2 transition-all disabled:cursor-default"
 										>
 											<span className="max-w-[130px] truncate">{modelName}</span>
 											<ChevronDown size={13} className="shrink-0 text-m-text-3" aria-hidden />
@@ -368,7 +368,7 @@ export function ComposerCapsule({
 											aria-label={`当前思考强度：${thinkName}，点击切换`}
 											onClick={onThinking ?? onModel}
 											disabled={!onThinking && !onModel}
-											className="flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs whitespace-nowrap text-m-text-2 hover:bg-m-surface active:bg-m-surface-2 transition-all disabled:cursor-default"
+											className="flex h-8 shrink-0 items-center gap-1 rounded-lg bg-m-bg-elev/85 px-2.5 text-xs whitespace-nowrap text-m-text-2 hover:bg-m-surface active:bg-m-surface-2 transition-all disabled:cursor-default"
 										>
 											<span>{thinkName}</span>
 											<ChevronDown size={13} className="shrink-0 text-m-text-3" aria-hidden />

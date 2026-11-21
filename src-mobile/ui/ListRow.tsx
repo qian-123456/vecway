@@ -19,7 +19,7 @@ export function ListGroup({
 	return (
 		<section className={`px-4 ${className}`}>
 			{title != null && <h3 className="px-4 pt-5 pb-2 text-m-xs font-medium whitespace-nowrap text-m-text-3">{title}</h3>}
-			<div className="m-list overflow-hidden rounded-m-lg bg-m-card shadow-m-card">{children}</div>
+			<div className="m-list overflow-hidden rounded-m-lg border border-m-border bg-m-card shadow-m-card">{children}</div>
 			{note != null && <p className="px-4 pt-2 text-m-xs break-words text-m-text-3">{note}</p>}
 		</section>
 	);

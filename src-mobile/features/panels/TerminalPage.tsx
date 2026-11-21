@@ -333,7 +333,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 				t.options.theme = c;
 				setBg(c.background);
 			});
-			schemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme"] });
+			schemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-theme"] });
 			setBg(terminalColors().background);
 			cleanup = () => {
 				document.removeEventListener("visibilitychange", onVisible);

@@ -10,13 +10,17 @@ export const PREFS_KEY = "ompm.prefs";
 interface PrefsState {
 	/** `system` follows prefers-color-scheme. */
 	scheme: SchemePref;
+	/** Active colour palette id when resolved scheme is light. */
+	lightTheme: string;
+	/** Active colour palette id when resolved scheme is dark. */
+	darkTheme: string;
 	/** In-page sound when a session needs attention (LAN fallback for web push). */
 	notifySound: boolean;
 	/** Flash document.title when a session needs attention while the page is hidden. */
 	titleFlash: boolean;
 	/** Free-form slice-owned prefs (`usePref("chat.showThinking", true)`), persisted with the rest. */
 	extra: Record<string, PrefValue>;
-	set: (patch: Partial<Pick<PrefsState, "scheme" | "notifySound" | "titleFlash">>) => void;
+	set: (patch: Partial<Pick<PrefsState, "scheme" | "lightTheme" | "darkTheme" | "notifySound" | "titleFlash">>) => void;
 	setExtra: (key: string, value: PrefValue) => void;
 }
 
@@ -24,6 +28,8 @@ export const usePrefs = create<PrefsState>()(
 	persist(
 		(set) => ({
 			scheme: "system",
+			lightTheme: "native-light",
+			darkTheme: "native-dark",
 			notifySound: true,
 			titleFlash: true,
 			extra: {},
@@ -33,7 +39,14 @@ export const usePrefs = create<PrefsState>()(
 		{
 			name: PREFS_KEY,
 			version: 1,
-			partialize: (s) => ({ scheme: s.scheme, notifySound: s.notifySound, titleFlash: s.titleFlash, extra: s.extra }),
+			partialize: (s) => ({
+				scheme: s.scheme,
+				lightTheme: s.lightTheme,
+				darkTheme: s.darkTheme,
+				notifySound: s.notifySound,
+				titleFlash: s.titleFlash,
+				extra: s.extra,
+			}),
 		},
 	),
 );

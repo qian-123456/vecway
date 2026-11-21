@@ -152,6 +152,12 @@ export function HomePage(_props: PageProps) {
 		} finally { submitting.current = false; setSending(false); }
 	};
 
+	const quickPrompts = [
+		"梳理当前仓库的关键结构",
+		"帮我排查一个报错日志",
+		"先制定一个清晰改动计划",
+	] as const;
+
 	return (
 		<div className="relative flex min-h-0 flex-1 flex-col bg-m-bg">
 			<div className="pointer-events-none absolute inset-0" style={{ background: "var(--m-glow)" }} aria-hidden />
@@ -163,11 +169,31 @@ export function HomePage(_props: PageProps) {
 				onMenu={() => setMenuOpen(true)}
 				onNew={() => setNewOpen(true)}
 			/>
-			<div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-5 pb-12 text-center">
-				<AppMark size={40} />
-				<h1 className="text-m-display font-normal text-m-text">今天想做点什么？</h1>
+			<div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 pb-8 text-center">
+				<div className="flex h-14 w-14 items-center justify-center rounded-[18px] border border-m-border bg-m-card shadow-m-card">
+					<AppMark size={38} />
+				</div>
+				<div className="space-y-1.5">
+					<h1 className="text-m-display font-medium tracking-[-0.02em] text-m-text">今天想做点什么？</h1>
+					<p className="text-m-sm text-m-text-3">直接输入开始对话，或从左上角切换历史会话</p>
+				</div>
+				<div className="mt-1 flex max-w-sm flex-wrap items-center justify-center gap-2">
+					{quickPrompts.map((prompt) => (
+						<button
+							key={prompt}
+							type="button"
+							onClick={() => apiRef.current?.set(prompt, true)}
+							className="min-h-9 rounded-m-pill border border-m-border bg-m-card/85 px-3.5 py-1.5 text-m-xs text-m-text-2 shadow-m-card transition-colors duration-(--m-dur-fast) active:bg-m-surface"
+						>
+							{prompt}
+						</button>
+					))}
+				</div>
 			</div>
-			<div className="relative shrink-0 px-4" style={{ paddingBottom: "max(12px, var(--m-safe-bottom))" }}>
+			<div
+				className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-4 pt-2"
+				style={{ paddingBottom: "max(12px, var(--m-safe-bottom))" }}
+			>
 				<ComposerCapsule
 					apiRef={apiRef}
 					placeholder="今天想做点什么？"

@@ -120,20 +120,20 @@ export const ToolCard = memo(function ToolCard({ id, tool, state }: { id: string
 				type="button"
 				onClick={toggle}
 				aria-expanded={open}
-				className="-mx-2 flex min-h-11 w-[calc(100%+16px)] items-start gap-3 rounded-m-md px-2 py-2.5 text-left active:bg-m-surface-hover"
+				className="-mx-1.5 flex min-h-10 w-[calc(100%+12px)] items-start gap-2.5 rounded-m-sm px-2 py-2 text-left transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
 			>
-				<Icon size={18} strokeWidth={1.75} aria-hidden className="mt-0.5 shrink-0 text-m-text-3" />
-				<span className="min-w-0 flex-1 text-m-sm text-m-text-2">
+				<Icon size={16} strokeWidth={1.8} aria-hidden className="mt-0.5 shrink-0 text-m-text-3" />
+				<span className="min-w-0 flex-1 text-m-xs leading-5 text-m-text-2">
 					<span className="font-medium text-m-text">{line.verb}</span>
-					{line.target && <span className="break-words [overflow-wrap:anywhere]"> {line.target}</span>}
+					{line.target && <span className="break-words text-m-text-3 [overflow-wrap:anywhere]"> {line.target}</span>}
 				</span>
 				<span className="mt-0.5 flex shrink-0 items-center">
 					<StateMark state={state} />
 				</span>
-				<ChevronRight size={16} strokeWidth={1.75} aria-hidden className={`mt-0.5 shrink-0 text-m-text-3 transition-transform ${open ? "rotate-90" : ""}`} />
+				<ChevronRight size={15} strokeWidth={1.8} aria-hidden className={`mt-0.5 shrink-0 text-m-text-3 transition-transform ${open ? "rotate-90" : ""}`} />
 			</button>
 			{open && (
-				<div className="mt-1 mb-2 space-y-3 rounded-m-md bg-m-surface p-4">
+				<div className="mt-1 mb-2 space-y-3 rounded-m-md border border-m-border bg-m-card p-3.5 shadow-m-card">
 					<div className="whitespace-nowrap font-m-mono text-m-xs text-m-text-3">{tool.name}</div>
 					{args && (
 						<div>

@@ -174,13 +174,13 @@ export const SessionRow = memo(function SessionRow({ s, depth = 0, current, with
 				<span className={`absolute inset-0 border-l border-(--m-tree-line) ${spineLast ? "rounded-bl-[6px] border-b" : ""}`} />
 				{!spineLast && <span className="absolute left-0 w-2 border-t border-(--m-tree-line)" style={{ top: spineFirst ? "calc(50% + 3px)" : "50%" }} />}
 			</span>}
-			<div className={`relative ml-2 overflow-hidden rounded-m-pill ${gesture.offset ? "bg-m-surface" : ""}`}>
+			<div className={`relative ml-2 overflow-hidden rounded-[14px] ${gesture.offset ? "bg-m-surface" : ""}`}>
 				{gesture.offset > 0 && <span aria-hidden className="pointer-events-none absolute inset-y-0 left-0 flex items-center gap-1 px-3 text-m-xs whitespace-nowrap text-m-accent">
 					{s.unread ? <Check size={16} /> : <Mail size={16} />}{s.unread ? "已读" : "未读"}
 				</span>}
 				{gesture.revealed && !gesture.dragging && (
 					<button type="button" data-action="archive" aria-label={s.archived ? "取消归档" : "归档"} onClick={() => { gesture.close(); void swipe(false); }}
-						className="absolute inset-y-0 right-0 flex min-h-11 w-24 items-center justify-center gap-1 rounded-m-pill bg-m-danger/15 px-2 text-m-xs font-medium whitespace-nowrap text-m-danger">
+						className="absolute inset-y-0 right-0 flex min-h-11 w-24 items-center justify-center gap-1 rounded-[14px] bg-m-danger/15 px-2 text-m-xs font-medium whitespace-nowrap text-m-danger">
 						<Archive size={16} className="shrink-0" />{s.archived ? "取消归档" : "归档"}
 					</button>
 				)}
@@ -191,7 +191,7 @@ export const SessionRow = memo(function SessionRow({ s, depth = 0, current, with
 					onClick={(e) => { if (e.detail > 0 && gesture.consumed() || busy.current) return; if (gesture.revealed) { gesture.close(); return; } if (onOpen) onOpen(s); else nav.push(paths.chat(s.id)); }}
 					{...gesture.handlers}
 					style={{ touchAction: "pan-y", transform: gesture.offset ? `translateX(${gesture.offset}px)` : undefined }}
-					className={`relative flex min-h-11 w-full items-center gap-2 rounded-m-pill px-3 py-2 text-left select-none active:bg-m-surface-hover ${current ? "bg-m-surface font-semibold" : gesture.offset ? "bg-m-bg" : ""}`}
+					className={`relative flex min-h-11 w-full items-center gap-2 rounded-[14px] px-3 py-2 text-left select-none transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover ${current ? "border border-m-border bg-m-drawer-active font-semibold" : gesture.offset ? "bg-m-drawer-bg" : ""}`}
 				>
 					{s.kind === "side" ? <MessageSquare size={14} className="shrink-0 text-m-text-3" aria-label="旁聊" /> : (s.kind === "fork" || s.parentId) ? <GitFork size={14} className="shrink-0 text-m-text-3" aria-label="分支会话" /> : null}
 					{s.pinned && <Pin size={13} className="shrink-0 text-m-text-3" aria-label="已置顶" />}

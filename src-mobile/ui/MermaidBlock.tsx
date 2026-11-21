@@ -23,7 +23,7 @@ function useColorMode(): "dark" | "light" {
 	useEffect(() => {
 		const update = () => setMode(currentMermaidMode());
 		const obs = new MutationObserver(update);
-		obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-mode"] });
+		obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-theme", "data-mode"] });
 		const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
 		mq?.addEventListener("change", update);
 		return () => {

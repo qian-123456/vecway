@@ -96,18 +96,21 @@ function NativeUnpairedScreen() {
 	};
 
 	return (
-		<main className="m-page flex flex-1 flex-col items-center justify-center gap-4 px-8 py-12 text-center">
-			<AppMark size={64} />
-			<h1 className="text-m-lg font-semibold text-m-text">连接 Vecway 桌面端</h1>
-			<p className="max-w-xs text-m-sm break-words text-m-text-3">
+		<main className="m-page relative flex flex-1 flex-col items-center justify-center gap-4 px-8 py-12 text-center">
+			<div className="pointer-events-none absolute inset-0" style={{ background: "var(--m-glow)" }} aria-hidden />
+			<div className="relative flex h-18 w-18 items-center justify-center rounded-[22px] border border-m-border bg-m-card shadow-m-card">
+				<AppMark size={52} />
+			</div>
+			<h1 className="relative text-m-lg font-semibold tracking-[-0.01em] text-m-text">连接 Vecway 桌面端</h1>
+			<p className="relative max-w-xs text-m-sm break-words text-m-text-3">
 				在电脑上打开 Vecway，进入「设置 → 连接与设备」，扫描配对二维码即可建立加密连接。
 			</p>
 			{error && (
-				<p role="alert" className="max-w-xs text-m-sm break-words text-m-danger">
+				<p role="alert" className="relative max-w-xs text-m-sm break-words text-m-danger">
 					{error}
 				</p>
 			)}
-			<div className="mt-2">
+			<div className="relative mt-2">
 				<Button variant="primary" icon={<QrCode size={18} />} busy={scanning} onClick={() => void onPair()}>
 					扫码配对
 				</Button>

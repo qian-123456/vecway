@@ -157,7 +157,7 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 		) : undefined;
 
 	return (
-		<div className="relative shrink-0 px-4 pt-1" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 8px)" }}>
+		<div className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-4 pt-2" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 8px)" }}>
 			{slashQuery !== null && sheet === null && <SlashPopup sessionId={sessionId} query={slashQuery} onPick={pickCommand} />}
 
 			{forkFrom && (

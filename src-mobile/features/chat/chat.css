@@ -7,14 +7,28 @@
 .m-turn-live {
 	content-visibility: visible;
 }
-/* Assistant reply text (Markdown root): the Settings ▸ 外观 size with CJK-friendly leading. */
+/* Assistant reply text (Markdown root): Settings ▸ 外观 size with Direction A reading rhythm. */
 .m-md.m-msg {
 	font-size: var(--m-msg-fs);
-	line-height: calc(var(--m-msg-fs) * 28 / 17);
+	line-height: 1.66;
 	overflow-wrap: anywhere;
 }
 .m-composer-input {
 	field-sizing: content;
 	min-height: 24px;
 	max-height: 140px;
+}
+/* Collapsible tool timeline rail (Direction A) */
+.m-timeline {
+	position: relative;
+	padding-left: 16px;
+}
+.m-timeline::before {
+	content: "";
+	position: absolute;
+	left: 5px;
+	top: 10px;
+	bottom: 12px;
+	width: 1px;
+	background: var(--m-border-strong);
 }
