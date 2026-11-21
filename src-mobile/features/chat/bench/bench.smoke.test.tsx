@@ -43,7 +43,7 @@ describe("chat bench harness", () => {
 		const id = "bench-smoke-session";
 		const controller = new ChatController(id);
 		const items = normalizeTranscript(makeTranscript(150));
-		controller.store.setState({ loaded: true, blocks: buildBlocks(items, {}), transcript: { items, offset: 0, tailId: null, stats: {} } });
+		controller.store.setState({ loaded: true, blocks: buildBlocks(items, {}), transcript: { items, offset: 0, tailId: null, stats: {}, hasMore: false, oldestIndex: 0, loadingOlder: false } });
 		const view = render(
 			<ChatCtx.Provider value={{ controller, openActions: () => {}, openStat: () => {} }}>
 				<MessageList sessionId={id} />

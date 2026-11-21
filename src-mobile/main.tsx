@@ -30,7 +30,6 @@ async function boot() {
 		let active = status.paired && !status.pinMismatch;
 		if (active) {
 			startEvents();
-			void useSessions.getState().refresh().catch(() => {});
 		}
 		subscribeNativeConnectionStatus((next) => {
 			const nextActive = next.paired && !next.pinMismatch;
@@ -41,7 +40,7 @@ async function boot() {
 				if (!next.paired) useConnection.getState().reset();
 			} else if (!wasActive || isUnauthorized()) {
 				useConnection.getState().reset();
-				startEvents();
+				reconnectEvents();
 				void useSessions.getState().refresh().catch(() => {});
 			}
 		});
@@ -63,7 +62,6 @@ async function boot() {
 	initNav();
 	startEvents();
 	startDisplayPrefs();
-	void useSessions.getState().refresh().catch(() => {});
 	createRoot(document.getElementById("root")!).render(
 		<StrictMode>
 			<App paired={paired} />

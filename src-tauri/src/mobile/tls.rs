@@ -211,12 +211,13 @@ fn build_identity(
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let server_config = rustls::ServerConfig::builder_with_provider(provider)
+    let mut server_config = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| format!("TLS 协议版本配置失败: {e}"))?
         .with_no_client_auth()
         .with_single_cert(vec![cert], key)
         .map_err(|e| format!("TLS 证书加载失败: {e}"))?;
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(TlsIdentity {
         server_config: Arc::new(server_config),

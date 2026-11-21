@@ -139,7 +139,7 @@ public enum PairingPayloadError: Error, LocalizedError, Equatable, Sendable {
         case .invalidURL:
             return "配对二维码或链接格式无效"
         case .missingAppPayload:
-            return "二维码缺少独立 App 加密连接参数（请使用支持局域网加密的新版电脑端生成，或改用「域名配对」）"
+            return "电脑端当前版本未开启局域网加密（二维码仅含明文 HTTP）。请启动新版电脑端后再扫，或点下方「用域名或链接配对」"
         case .invalidBase64Payload, .invalidJSONPayload:
             return "配对载荷解析失败，请重新生成二维码"
         case .unsupportedVersion(let version):

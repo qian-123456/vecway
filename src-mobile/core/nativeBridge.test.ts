@@ -14,9 +14,11 @@ import {
 	subscribeNativeConnectionStatus,
 	validateHttpsEndpoint,
 	type NativeBridge,
+	type NativeChannel,
 	type NativeEndpointStatus,
 	type NativeHttpRequest,
 	type NativeHttpResponse,
+	type NativeKeyboardEvent,
 	type NativeSseHandlers,
 } from "./nativeBridge";
 import { EventBus, SseClient, reconnectEvents, startEvents, stopEvents } from "./sse";
@@ -37,7 +39,7 @@ function jsonNativeResponse(body: unknown, status = 200, headers: Record<string,
 function createMockBridge(overrides: Partial<NativeBridge> = {}) {
 	const sseStreams: Array<{ url: string; handlers: NativeSseHandlers; close: ReturnType<typeof vi.fn> }> = [];
 	const statusCallbacks = new Set<(status: NativeEndpointStatus) => void>();
-
+	const keyboardCallbacks = new Set<(ev: NativeKeyboardEvent) => void>();
 	const httpRequest = vi.fn(
 		async (_req: NativeHttpRequest, _signal?: AbortSignal): Promise<NativeHttpResponse> =>
 			jsonNativeResponse({ ok: true }),
@@ -51,18 +53,33 @@ function createMockBridge(overrides: Partial<NativeBridge> = {}) {
 		async (): Promise<NativeEndpointStatus> => ({
 			paired: true,
 			activeChannel: "lan_tls",
+			preferredChannel: null,
 			activeUrl: "https://192.168.1.10:7790",
 			certSha256: "AA:BB:CC:DD",
 			candidates: { lanTls: "https://192.168.1.10:7790" },
 		}),
 	);
 	const openPairScanner = vi.fn(async () => ({ ok: true }));
-	const updateEndpoints = vi.fn(async (endpoints: Partial<NativeEndpointStatus["candidates"]>) => ({
+	const updateEndpoints = vi.fn(
+		async (endpoints: Partial<NativeEndpointStatus["candidates"]> & { certSha256?: string }) => {
+			const { certSha256, ...candidates } = endpoints;
+			return {
+				paired: true,
+				activeChannel: "lan_tls" as const,
+				preferredChannel: null,
+				activeUrl: candidates.lanTls ?? "https://192.168.1.10:7790",
+				certSha256: certSha256 ?? "AA:BB:CC:DD",
+				candidates,
+			};
+		},
+	);
+	const switchChannel = vi.fn(async (channel: NativeChannel | null): Promise<NativeEndpointStatus> => ({
 		paired: true,
-		activeChannel: "lan_tls" as const,
-		activeUrl: endpoints.lanTls ?? "https://192.168.1.10:7790",
+		activeChannel: channel ?? "lan_tls",
+		preferredChannel: channel,
+		activeUrl: channel === "tunnel" ? "https://demo.trycloudflare.com" : "https://192.168.1.10:7790",
 		certSha256: "AA:BB:CC:DD",
-		candidates: { ...endpoints },
+		candidates: { lanTls: "https://192.168.1.10:7790", tunnel: "https://demo.trycloudflare.com" },
 	}));
 	const reprobeConnection = vi.fn(async () => getConnectionStatus());
 	const unpair = vi.fn(async () => {});
@@ -70,6 +87,12 @@ function createMockBridge(overrides: Partial<NativeBridge> = {}) {
 		statusCallbacks.add(cb);
 		return () => {
 			statusCallbacks.delete(cb);
+		};
+	});
+	const onKeyboardChange = vi.fn((cb: (ev: NativeKeyboardEvent) => void) => {
+		keyboardCallbacks.add(cb);
+		return () => {
+			keyboardCallbacks.delete(cb);
 		};
 	});
 
@@ -81,9 +104,11 @@ function createMockBridge(overrides: Partial<NativeBridge> = {}) {
 		getConnectionStatus,
 		openPairScanner,
 		updateEndpoints,
+		switchChannel,
 		reprobeConnection,
 		unpair,
 		onConnectionStatusChange,
+		onKeyboardChange,
 		...overrides,
 	};
 
@@ -93,15 +118,20 @@ function createMockBridge(overrides: Partial<NativeBridge> = {}) {
 		emitStatus: (status: NativeEndpointStatus) => {
 			for (const cb of [...statusCallbacks]) cb(status);
 		},
+		emitKeyboard: (ev: NativeKeyboardEvent) => {
+			for (const cb of [...keyboardCallbacks]) cb(ev);
+		},
 		spies: {
 			httpRequest,
 			openSse,
 			getConnectionStatus,
 			openPairScanner,
 			updateEndpoints,
+			switchChannel,
 			reprobeConnection,
 			unpair,
 			onConnectionStatusChange,
+			onKeyboardChange,
 		},
 	};
 }
@@ -243,6 +273,59 @@ describe("native HTTP transport (api / upload / postRaw)", () => {
 		expect(req.path).toBe("/api/sessions");
 		expect(req.headers?.["content-type"]).toBe("application/json");
 		expect(JSON.parse(utf8Decoder.decode(base64ToBytes(req.bodyBase64!)))).toEqual({ title: "测试会话" });
+	});
+
+	it("uses zero-base64 bodyText fast path for UTF-8 JSON and text responses", async () => {
+		const atobSpy = vi.spyOn(globalThis, "atob");
+		const { bridge, spies } = createMockBridge();
+		spies.httpRequest
+			.mockResolvedValueOnce({
+				status: 200,
+				headers: { "content-type": "application/json; charset=utf-8" },
+				bodyText: JSON.stringify({ ok: true, label: "免 Base64 快速路径" }),
+			})
+			.mockResolvedValueOnce({
+				status: 200,
+				headers: { "content-type": "text/plain; charset=utf-8" },
+				bodyText: "hello plain text",
+			})
+			.mockResolvedValueOnce({
+				status: 204,
+				headers: {},
+				bodyText: "",
+			});
+		window.__VECWAY_NATIVE__ = bridge;
+
+		expect(await api<{ ok: boolean; label: string }>("GET", "/sessions")).toEqual({
+			ok: true,
+			label: "免 Base64 快速路径",
+		});
+		expect(await api<string>("GET", "/health")).toBe("hello plain text");
+		expect(await api("POST", "/device/name", { name: "iPhone" })).toBeNull();
+		expect(atobSpy).not.toHaveBeenCalled();
+	});
+
+	it("exposes preferredChannel, switchChannel, certSha256 updateEndpoints, and onKeyboardChange", async () => {
+		const { bridge, emitKeyboard } = createMockBridge();
+		window.__VECWAY_NATIVE__ = bridge;
+
+		const switched = await bridge.switchChannel?.("tunnel");
+		expect(switched?.preferredChannel).toBe("tunnel");
+		expect(switched?.activeChannel).toBe("tunnel");
+
+		const adopted = await bridge.updateEndpoints({
+			lanTls: "https://192.168.1.20:7790",
+			certSha256: "11:22:33:44",
+		});
+		expect(adopted.certSha256).toBe("11:22:33:44");
+
+		const kbEvents: NativeKeyboardEvent[] = [];
+		const off = bridge.onKeyboardChange?.((ev) => kbEvents.push(ev));
+		emitKeyboard({ height: 336, durationMs: 250 });
+		expect(kbEvents).toEqual([{ height: 336, durationMs: 250 }]);
+		off?.();
+		emitKeyboard({ height: 0, durationMs: 250 });
+		expect(kbEvents).toHaveLength(1);
 	});
 
 	it("delegates upload() and postRaw() binary blobs to bridge.httpRequest", async () => {

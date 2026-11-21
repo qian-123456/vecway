@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 const HOLD_MS = 480;
@@ -19,23 +19,37 @@ function hasSelectionIn(el: HTMLElement): boolean {
  */
 export function useLongPress(onLongPress: () => void) {
 	const timer = useRef<number | null>(null);
+	const settleTimer = useRef<number | null>(null);
 	const start = useRef<{ x: number; y: number } | null>(null);
 	const cb = useRef(onLongPress);
 	cb.current = onLongPress;
+
 	const cancel = () => {
-		window.clearTimeout(timer.current ?? undefined);
-		timer.current = null;
+		if (timer.current !== null) {
+			window.clearTimeout(timer.current);
+			timer.current = null;
+		}
+		if (settleTimer.current !== null) {
+			window.clearTimeout(settleTimer.current);
+			settleTimer.current = null;
+		}
 		start.current = null;
 	};
+
+	useEffect(() => cancel, []);
+
 	return {
 		onPointerDown(e: ReactPointerEvent<HTMLElement>) {
 			if (e.pointerType === "mouse") return;
 			if ((e.target as HTMLElement).closest("a,button,pre,input,textarea,img,[data-no-longpress]")) return;
+			cancel();
 			const el = e.currentTarget;
+			start.current = { x: e.clientX, y: e.clientY };
 			timer.current = window.setTimeout(() => {
 				timer.current = null;
-				setTimeout(() => {
-					if (hasSelectionIn(el)) return;
+				settleTimer.current = window.setTimeout(() => {
+					settleTimer.current = null;
+					if (!start.current || hasSelectionIn(el)) return;
 					if (navigator.vibrate) navigator.vibrate(8);
 					cb.current();
 				}, SELECTION_SETTLE_MS);

@@ -7,7 +7,7 @@ import { useOverlay, usePresence } from "./overlay";
 
 const CLOSE_DISTANCE = 96;
 const CLOSE_VELOCITY = 0.6;
-const EXIT_MS = 320;
+const EXIT_MS = 300;
 
 /**
  * Bottom sheet (docs/MOBILE_DESIGN.md §3).
@@ -39,6 +39,21 @@ export function BottomSheet({
 }) {
 	const { mounted, visible } = usePresence(open, EXIT_MS);
 	useOverlay(open, onClose);
+	const snapshotRef = useRef<{
+		children: ReactNode;
+		title?: ReactNode;
+		subtitle?: ReactNode;
+		footer?: ReactNode;
+	}>({ children, title, subtitle, footer });
+	if (open && children != null && children !== false) {
+		snapshotRef.current = { children, title, subtitle, footer };
+	} else if (!mounted) {
+		snapshotRef.current = { children: null, title: undefined, subtitle: undefined, footer: undefined };
+	}
+	const activeChildren = open ? children : snapshotRef.current.children;
+	const activeTitle = open ? title : (title ?? snapshotRef.current.title);
+	const activeSubtitle = open ? subtitle : (subtitle ?? snapshotRef.current.subtitle);
+	const activeFooter = open ? footer : (footer ?? snapshotRef.current.footer);
 	const sheetRef = useRef<HTMLDivElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const drag = useRef<{
@@ -166,15 +181,15 @@ export function BottomSheet({
 			<div
 				aria-hidden
 				onClick={onClose}
-				className={`absolute inset-0 bg-m-scrim transition-opacity duration-(--m-dur) ease-m ${visible ? "opacity-100" : "opacity-0"}`}
+				className={`absolute inset-0 bg-m-scrim transition-opacity duration-300 ease-m ${visible ? "opacity-100" : "opacity-0"}`}
 			/>
 			<div
 				ref={sheetRef}
 				role="dialog"
 				aria-modal="true"
-				aria-label={typeof title === "string" ? title : undefined}
+				aria-label={typeof activeTitle === "string" ? activeTitle : undefined}
 				tabIndex={-1}
-				className={`absolute inset-x-0 bottom-0 flex flex-col overflow-hidden rounded-t-m-xl bg-m-bg-elev text-m-text outline-none transition-transform duration-(--m-dur-sheet) ease-m-sheet ${visible ? "translate-y-0" : "translate-y-full"} ${className}`}
+				className={`absolute inset-x-0 bottom-0 flex flex-col overflow-hidden rounded-t-m-xl bg-m-bg-elev text-m-text outline-none transition-transform duration-300 ease-m-sheet ${visible ? "translate-y-0" : "translate-y-full"} ${className}`}
 				style={{
 					boxSizing: "border-box",
 					// --m-vh is the visual height; add keyboard inset back for this body-fixed box.
@@ -198,17 +213,17 @@ export function BottomSheet({
 								{headerRight}
 								<IconButton variant="filled" icon={<X size={20} />} label="关闭" onClick={onClose} />
 							</div>
-							{title != null && (
+							{activeTitle != null && (
 								<div className="px-5 pt-1 pb-3">
-									<h2 className="text-m-title font-medium break-words">{title}</h2>
-									{subtitle != null && <div className="mt-1 text-m-sm break-words text-m-text-3">{subtitle}</div>}
+									<h2 className="text-m-title font-medium break-words">{activeTitle}</h2>
+									{activeSubtitle != null && <div className="mt-1 text-m-sm break-words text-m-text-3">{activeSubtitle}</div>}
 								</div>
 							)}
 						</>
-					) : title != null ? (
+					) : activeTitle != null ? (
 						<div className="px-12 pt-3 pb-2 text-center">
-							<h2 className="text-m-md font-semibold break-words">{title}</h2>
-							{subtitle != null && <div className="mt-0.5 text-m-xs break-words text-m-text-3">{subtitle}</div>}
+							<h2 className="text-m-md font-semibold break-words">{activeTitle}</h2>
+							{activeSubtitle != null && <div className="mt-0.5 text-m-xs break-words text-m-text-3">{activeSubtitle}</div>}
 						</div>
 					) : (
 						<div className="h-3" />
@@ -222,8 +237,8 @@ export function BottomSheet({
 					onPointerUp={onUp}
 					onPointerCancel={onUp}
 					onLostPointerCapture={onUp}
-				>{children}</div>
-				{footer != null && <div className="shrink-0 px-4 pt-2 pb-3">{footer}</div>}
+				>{activeChildren}</div>
+				{activeFooter != null && <div className="shrink-0 px-4 pt-2 pb-3">{activeFooter}</div>}
 			</div>
 		</div>,
 		document.body,

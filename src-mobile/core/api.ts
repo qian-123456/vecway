@@ -97,9 +97,11 @@ function nativeResponseToResponse(nativeRes: NativeHttpResponse): Response {
 	}
 	const body = NULL_BODY_STATUSES.has(nativeRes.status)
 		? null
-		: nativeRes.bodyBase64
-			? base64ToBytes(nativeRes.bodyBase64)
-			: null;
+		: nativeRes.bodyText !== undefined
+			? nativeRes.bodyText
+			: nativeRes.bodyBase64
+				? base64ToBytes(nativeRes.bodyBase64)
+				: null;
 	return new Response(body, {
 		status: nativeRes.status,
 		headers: nativeRes.headers,

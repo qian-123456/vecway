@@ -19,6 +19,7 @@ data class StoredCredentials(
     val endpoints: EndpointCandidates,
     val deviceId: String? = null,
     val deviceName: String? = null,
+    val preferredChannel: NativeChannel? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("deviceToken", deviceToken)
@@ -26,18 +27,40 @@ data class StoredCredentials(
         put("endpoints", endpoints.toJson())
         if (deviceId != null) put("deviceId", deviceId)
         if (deviceName != null) put("deviceName", deviceName)
+        if (preferredChannel != null) put("preferredChannel", preferredChannel.wireValue)
     }
 
     companion object {
         fun fromJson(obj: JSONObject): StoredCredentials? {
             val token = obj.optString("deviceToken", "")
             if (token.isBlank()) return null
+            val rawPinned = if (obj.has("pinnedCertSha256") && !obj.isNull("pinnedCertSha256")) {
+                obj.optString("pinnedCertSha256", "").ifBlank { null }
+            } else {
+                null
+            }
+            val rawDeviceId = if (obj.has("deviceId") && !obj.isNull("deviceId")) {
+                obj.optString("deviceId", "").ifBlank { null }
+            } else {
+                null
+            }
+            val rawDeviceName = if (obj.has("deviceName") && !obj.isNull("deviceName")) {
+                obj.optString("deviceName", "").ifBlank { null }
+            } else {
+                null
+            }
+            val rawPreferred = if (obj.has("preferredChannel") && !obj.isNull("preferredChannel")) {
+                obj.optString("preferredChannel", "").ifBlank { null }
+            } else {
+                null
+            }
             return StoredCredentials(
                 deviceToken = token,
-                pinnedCertSha256 = obj.optString("pinnedCertSha256", "").ifBlank { null },
+                pinnedCertSha256 = rawPinned,
                 endpoints = EndpointCandidates.fromJson(obj.optJSONObject("endpoints")),
-                deviceId = obj.optString("deviceId", "").ifBlank { null },
-                deviceName = obj.optString("deviceName", "").ifBlank { null },
+                deviceId = rawDeviceId,
+                deviceName = rawDeviceName,
+                preferredChannel = NativeChannel.fromWire(rawPreferred),
             )
         }
     }

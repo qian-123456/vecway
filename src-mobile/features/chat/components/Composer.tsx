@@ -1,10 +1,11 @@
 import { Camera, FileText, FolderOpen, GitBranch, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, Target, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../../core/api";
 import { baseName } from "../../../core/lib/format";
 import { usePref } from "../../../core/stores/prefs";
 import { useSession } from "../../../core/stores/sessions";
 import { BottomSheet, Chip, IconButton, MenuRow, Spinner, Switch, toast } from "../../../ui";
+import { ActionTile } from "../../../ui/ActionTile";
 import { useChat, useChatUi } from "../ChatContext";
 import { contextTone, formatContextPercent, queueChipText, resolveContextPercent } from "../lib/context";
 import { takeComposerAction } from "../lib/drafts";
@@ -12,31 +13,15 @@ import { BEHAVIOR_HINT, BEHAVIOR_LABEL, type StreamBehavior } from "../lib/promp
 import { commandAction, commandInput, detectSlashQuery, type SlashCmd } from "../lib/slash";
 import { saveUnsent, UNSENT_DEBOUNCE_MS } from "../lib/unsent";
 import { ComposerCapsule, type ComposerApi } from "./ComposerCapsule";
+import { useKeyboardOpen } from "./ComposerToolbar";
 import { ContextSheet } from "./ContextSheet";
 import { GoalSheet, goalLabel } from "./GoalSheet";
-import { PathSheet } from "./PathSheet";
 import { RemoteFilePickerSheet } from "./RemoteFilePickerSheet";
 import { SketchPad } from "./SketchPad";
 import { SlashPopup } from "./SlashSheet";
 import { WorkspacePickerSheet } from "./WorkspacePickerSheet";
 
-type Sheet = "plus" | "goal" | "context" | "path" | "finder" | "workspace" | null;
-
-/** Large square-ish tile of the actions sheet's top row (ChatGPT attachments sheet). */
-export function ActionTile({ icon, label, onClick, disabled }: { icon: ReactNode; label: string; onClick: () => void; disabled?: boolean }) {
-	return (
-		<button
-			type="button"
-			onClick={onClick}
-			disabled={disabled}
-			className="flex h-24 min-w-0 flex-col items-center justify-center gap-2 rounded-m-lg bg-m-card px-1 text-m-xs whitespace-nowrap text-m-text shadow-m-card active:bg-m-surface-2 disabled:opacity-40"
-		>
-			<span className="text-m-text-2">{icon}</span>
-			{label}
-		</button>
-	);
-}
-
+type Sheet = "plus" | "goal" | "context" | "finder" | "workspace" | null;
 const TONE_TEXT = { neutral: "text-m-text-3", warn: "text-m-warn", danger: "text-m-danger" } as const;
 
 export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpenPicker?: () => void }) {
@@ -49,6 +34,7 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 	const treeEdit = useChat((s) => s.treeEdit);
 	const compacting = useChat((s) => s.compacting);
 	const [behavior, setBehavior] = usePref<StreamBehavior>("chat.streamBehavior", "followUp");
+	const kbOpen = useKeyboardOpen();
 	const [slashQuery, setSlashQuery] = useState<string | null>(null);
 	const [sheet, setSheet] = useState<Sheet>(null);
 	const [sketch, setSketch] = useState(false);
@@ -157,7 +143,13 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 		) : undefined;
 
 	return (
-		<div className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-4 pt-2" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 8px)" }}>
+		<div
+			className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3.5 pt-2"
+			style={{
+				paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)",
+				transition: "padding-bottom var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1)",
+			}}
+		>
 			{slashQuery !== null && sheet === null && <SlashPopup sessionId={sessionId} query={slashQuery} onPick={pickCommand} />}
 
 			{forkFrom && (
@@ -181,9 +173,6 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 					<IconButton icon={<X size={18} />} label="取消" onClick={() => void controller.cancelTreeEdit()} />
 				</div>
 			)}
-
-			{/* Bottom toolbar below composer is hidden when on-screen keyboard is open */}
-			{/* (the status row above composer was removed per user request) */}
 
 			<ComposerCapsule
 				apiRef={apiRef}
@@ -230,7 +219,7 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 								aria-label={`发送方式：${BEHAVIOR_LABEL[behavior]}，点击切换`}
 								title={BEHAVIOR_HINT[behavior]}
 								onClick={() => setBehavior(behavior === "followUp" ? "steer" : "followUp")}
-								className="flex min-h-11 shrink-0 items-center px-2 text-m-xs text-m-accent"
+								className="flex h-8 shrink-0 items-center rounded-lg bg-m-accent-soft px-2 text-xs font-medium text-m-accent-soft-text active:opacity-80"
 							>
 								<span>{BEHAVIOR_LABEL[behavior]} ⇄</span>
 							</button>
@@ -294,7 +283,6 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 
 			<GoalSheet open={sheet === "goal"} onClose={close} sessionId={sessionId} goal={goal} onGoal={(g) => controller.patchState({ goal: g })} />
 			<ContextSheet open={sheet === "context"} onClose={close} cstate={cstate} compacting={compacting} controller={controller} />
-			<PathSheet open={sheet === "path"} onClose={close} cwd={cwd} sessionId={sessionId} onSwitchProject={() => setSheet("workspace")} />
 			<RemoteFilePickerSheet
 				open={sheet === "finder"}
 				onClose={close}

@@ -77,26 +77,29 @@ afterEach(() => {
 });
 
 describe("HomePage", () => {
-	it("renders neutral welcome page without user name or 聊天/任务 switch", () => {
+	it("renders a minimal blank home with directory selector and desktop-style composer, without greeting/chips/fake context or eager tree sync", () => {
 		render(<HomePage route={{ name: "home", path: "/", params: {}, query: {} }} />);
 
-		// Neutral greeting exists
-		expect(screen.getByText("今天想做点什么？")).not.toBeNull();
+		// Blank minimal canvas: no duplicate greeting headline, no quick prompts, no fake 0% context
+		expect(screen.queryByRole("heading", { name: "今天想做点什么？" })).toBeNull();
+		expect(screen.queryByText("梳理当前仓库的关键结构")).toBeNull();
+		expect(screen.queryByRole("button", { name: /上下文用量/ })).toBeNull();
 
-		// No user name is displayed
+		// No user name or 聊天/任务 switch
 		expect(screen.queryByText(/用户|User|Admin/i)).toBeNull();
-
-		// No 聊天 / 任务 switch
 		expect(screen.queryByRole("tab", { name: "会话" })).toBeNull();
 		expect(screen.queryByRole("tab", { name: "待办" })).toBeNull();
 		expect(screen.queryByText("聊天/任务")).toBeNull();
 
-		// Pill composer exists with + and mic (when empty)
+		// Desktop-style 2-row composer exists with +, mic, and textarea
 		expect(screen.getByRole("button", { name: "添加" })).not.toBeNull();
 		expect(screen.getByRole("button", { name: "语音输入" })).not.toBeNull();
 		expect(screen.getByPlaceholderText("今天想做点什么？")).not.toBeNull();
-	});
 
+		// Performance: HomePage mount does not eagerly sync session tree or todos
+		expect(apiMock.mock.calls.some((call) => String(call[1]).includes("/left/sessions"))).toBe(false);
+		expect(apiMock.mock.calls.some((call) => String(call[1]).includes("/todos"))).toBe(false);
+	});
 	it("keeps the mic available while typing and activates the draft route with the first prompt queued", async () => {
 		render(<HomePage route={{ name: "home", path: "/", params: {}, query: {} }} />);
 		await typeMessage("帮我编写单元测试");

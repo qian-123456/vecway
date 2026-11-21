@@ -91,10 +91,24 @@ pub fn init(state: AppState) {
 }
 
 fn lan_ip() -> String {
-    match local_ip_address::local_ip() {
-        Ok(ip) if ip.is_ipv4() => ip.to_string(),
-        _ => "127.0.0.1".to_string(),
+    if let Some(v4) = local_ip_address::local_ip().ok().and_then(|ip| match ip {
+        std::net::IpAddr::V4(v4) if !v4.is_loopback() => Some(v4),
+        _ => None,
+    }) {
+        return v4.to_string();
     }
+    if let Some(v4) = local_ip_address::list_afinet_netifas()
+        .ok()
+        .and_then(|ifas| {
+            ifas.into_iter().find_map(|(_, ip)| match ip {
+                std::net::IpAddr::V4(v4) if v4.is_private() => Some(v4),
+                _ => None,
+            })
+        })
+    {
+        return v4.to_string();
+    }
+    "127.0.0.1".to_string()
 }
 
 pub fn status(state: &AppState) -> MobileStatus {
@@ -467,7 +481,8 @@ fn percent_encode_query_value(s: &str) -> String {
 }
 
 fn https_only(url: Option<&str>) -> Option<&str> {
-    url.map(str::trim).filter(|u| u.starts_with("https://"))
+    url.map(|u| u.trim().trim_end_matches('/'))
+        .filter(|u| u.starts_with("https://") && u.len() > "https://".len())
 }
 
 #[derive(serde::Serialize)]

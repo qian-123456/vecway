@@ -2467,3 +2467,363 @@ fn pairing_url_encodes_dual_use_app_fragment_and_deep_link() {
     assert_eq!(plain_only, "http://192.168.1.10:7788/pair?code=PLAIN");
     assert!(no_app.is_none());
 }
+
+async fn call_bytes(
+    h: &Harness,
+    req: Request<Body>,
+) -> (StatusCode, axum::http::HeaderMap, axum::body::Bytes) {
+    let res = server::router(h.ctx.clone()).oneshot(req).await.unwrap();
+    let status = res.status();
+    let headers = res.headers().clone();
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, body)
+}
+
+fn gunzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Read as _;
+    let mut dec = flate2::read::GzDecoder::new(bytes);
+    let mut out = Vec::new();
+    dec.read_to_end(&mut out).expect("valid gzip stream");
+    out
+}
+
+#[tokio::test]
+async fn gzip_compresses_large_json_and_static_js_with_vary_and_skips_q0_and_small() {
+    let h = harness();
+    let cookie = pair(&h).await;
+    let large_text = "vecway mobile gzip payload "
+        .repeat(120)
+        .trim_end()
+        .to_string();
+    let entry = json!({
+        "id": "e1",
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [{ "type": "text", "text": large_text }]
+        }
+    });
+    std::fs::write(&h.ctx.backend.file, format!("{entry}\n")).unwrap();
+
+    // Large JSON API response compresses when client accepts gzip.
+    let req = Request::get("/api/sessions/a/transcript")
+        .header(header::COOKIE, &cookie)
+        .header(header::ACCEPT_ENCODING, "deflate, gzip")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = call_bytes(&h, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_ENCODING], "gzip");
+    assert_eq!(headers[header::VARY], "Accept-Encoding");
+    assert_eq!(headers[header::CONTENT_LENGTH], body.len().to_string());
+    let plain = gunzip(&body);
+    assert!(body.len() < plain.len());
+    let page: Value = serde_json::from_slice(&plain).unwrap();
+    assert_eq!(page["items"][0]["text"].as_str(), Some(large_text.as_str()));
+
+    // `gzip;q=0` explicitly opts out of gzip while retaining Vary.
+    let q0_req = Request::get("/api/sessions/a/transcript")
+        .header(header::COOKIE, &cookie)
+        .header(header::ACCEPT_ENCODING, "gzip;q=0")
+        .body(Body::empty())
+        .unwrap();
+    let (q0_status, q0_headers, q0_body) = call_bytes(&h, q0_req).await;
+    assert_eq!(q0_status, StatusCode::OK);
+    assert!(!q0_headers.contains_key(header::CONTENT_ENCODING));
+    assert_eq!(q0_headers[header::VARY], "Accept-Encoding");
+    let q0_page: Value = serde_json::from_slice(&q0_body).unwrap();
+    assert_eq!(
+        q0_page["items"][0]["text"].as_str(),
+        Some(large_text.as_str())
+    );
+
+    // Small JSON responses (< 1024 bytes) skip gzip while still setting Vary.
+    let small_req = Request::get("/api/device")
+        .header(header::COOKIE, &cookie)
+        .header(header::ACCEPT_ENCODING, "gzip")
+        .body(Body::empty())
+        .unwrap();
+    let (small_status, small_headers, small_body) = call_bytes(&h, small_req).await;
+    assert_eq!(small_status, StatusCode::OK);
+    assert!(!small_headers.contains_key(header::CONTENT_ENCODING));
+    assert_eq!(small_headers[header::VARY], "Accept-Encoding");
+    assert!(small_body.len() < 1024);
+
+    // Static JS compresses via the same gzip middleware; binary assets are untouched.
+    let large_js = "export function mobileChunk() { return 'vecway-mobile'; }\n".repeat(60);
+    let large_js_expected = large_js.clone();
+    let static_app = axum::Router::new()
+        .route(
+            "/static/app.js",
+            axum::routing::get(move || {
+                let js = large_js.clone();
+                async move {
+                    (
+                        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                        js,
+                    )
+                }
+            }),
+        )
+        .route(
+            "/static/logo.png",
+            axum::routing::get(|| async {
+                ([(header::CONTENT_TYPE, "image/png")], vec![0x89u8; 2048])
+            }),
+        )
+        .layer(axum::middleware::from_fn(server::gzip_middleware));
+
+    let js_res = static_app
+        .clone()
+        .oneshot(
+            Request::get("/static/app.js")
+                .header(header::ACCEPT_ENCODING, "br, gzip;q=0.8")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(js_res.status(), StatusCode::OK);
+    assert_eq!(js_res.headers()[header::CONTENT_ENCODING], "gzip");
+    assert_eq!(js_res.headers()[header::VARY], "Accept-Encoding");
+    let js_cl = js_res.headers()[header::CONTENT_LENGTH]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let js_body = js_res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(js_cl, js_body.len().to_string());
+    assert!(js_body.len() < large_js_expected.len());
+    assert_eq!(gunzip(&js_body), large_js_expected.as_bytes());
+
+    let png_res = static_app
+        .oneshot(
+            Request::get("/static/logo.png")
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(png_res.status(), StatusCode::OK);
+    assert!(!png_res.headers().contains_key(header::CONTENT_ENCODING));
+    assert!(!png_res.headers().contains_key(header::VARY));
+    let png_body = png_res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(png_body.len(), 2048);
+}
+
+#[tokio::test]
+async fn gzip_never_compresses_or_buffers_sse_events() {
+    let h = harness();
+    let cookie = pair(&h).await;
+    let req = Request::get("/api/events")
+        .header(header::COOKIE, &cookie)
+        .header(header::ACCEPT_ENCODING, "gzip, deflate")
+        .body(Body::empty())
+        .unwrap();
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        server::router(h.ctx.clone()).oneshot(req),
+    )
+    .await
+    .expect("SSE response must return immediately without body buffering")
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()[header::CONTENT_TYPE], "text/event-stream");
+    assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+    assert!(!res.headers().contains_key(header::VARY));
+
+    let mut body = res.into_body();
+    let _ = h.ctx.backend.bus.send(AppEvent::TodosChanged);
+    let mut text = String::new();
+    while !text.contains("event: todos") {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(3), body.frame())
+            .await
+            .expect("live SSE frame without buffering")
+            .unwrap()
+            .unwrap();
+        if let Ok(data) = frame.into_data() {
+            text.push_str(&String::from_utf8_lossy(&data));
+        }
+    }
+    assert!(text.contains("event: hello"));
+    assert!(text.contains("event: todos"));
+
+    h.shutdown.send(true).unwrap();
+    let end = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while let Some(Ok(_)) = body.frame().await {}
+    })
+    .await;
+    assert!(end.is_ok(), "SSE stream ends cleanly on shutdown");
+}
+
+#[tokio::test]
+async fn transcript_tail_pagination_and_legacy_backwards_compatibility() {
+    let h = harness();
+    let cookie = pair(&h).await;
+
+    let line = |id: &str, role: &str, text: &str| {
+        format!(
+            "{}\n",
+            json!({
+                "id": id,
+                "type": "message",
+                "message": {
+                    "role": role,
+                    "content": [{ "type": "text", "text": text }]
+                }
+            })
+        )
+    };
+    let initial = [
+        line("e0", "user", "msg-0"),
+        line("h1", "developer", "hidden-system"),
+        line("e1", "assistant", "msg-1"),
+        line("e2", "user", "msg-2"),
+        line("e3", "assistant", "msg-3"),
+        line("e4", "user", "msg-4"),
+    ]
+    .concat();
+    std::fs::write(&h.ctx.backend.file, &initial).unwrap();
+    let initial_len = initial.len() as u64;
+
+    let item_ids = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Legacy call without `limit` returns all visible items without pagination metadata.
+    let (s, _, body) = call(&h, get("/api/sessions/a/transcript", Some(&cookie))).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let legacy: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(item_ids(&legacy), vec!["e0", "e1", "e2", "e3", "e4"]);
+    assert_eq!(legacy["nextOffset"].as_u64(), Some(initial_len));
+    assert_eq!(legacy["tailId"].as_str(), Some("e4"));
+    assert!(legacy.get("hasMore").is_none());
+    assert!(legacy.get("oldestIndex").is_none());
+    assert!(legacy.get("totalItems").is_none());
+
+    // Tail window (`?limit=2`) returns the last 2 visible items and keeps EOF `nextOffset`.
+    let (s, _, body) = call(&h, get("/api/sessions/a/transcript?limit=2", Some(&cookie))).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let p1: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(item_ids(&p1), vec!["e3", "e4"]);
+    assert_eq!(p1["hasMore"], json!(true));
+    assert_eq!(p1["oldestIndex"], json!(3));
+    assert_eq!(p1["totalItems"], json!(5));
+    assert_eq!(p1["nextOffset"].as_u64(), Some(initial_len));
+    assert_eq!(p1["tailId"].as_str(), Some("e4"));
+
+    // Load older page (`?before=3&limit=2`).
+    let (s, _, body) = call(
+        &h,
+        get("/api/sessions/a/transcript?before=3&limit=2", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let p2: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(item_ids(&p2), vec!["e1", "e2"]);
+    assert_eq!(p2["hasMore"], json!(true));
+    assert_eq!(p2["oldestIndex"], json!(1));
+    assert_eq!(p2["totalItems"], json!(5));
+
+    // Load final older page (`?before=1&limit=2`).
+    let (s, _, body) = call(
+        &h,
+        get("/api/sessions/a/transcript?before=1&limit=2", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let p3: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(item_ids(&p3), vec!["e0"]);
+    assert_eq!(p3["hasMore"], json!(false));
+    assert_eq!(p3["oldestIndex"], json!(0));
+    assert_eq!(p3["totalItems"], json!(5));
+
+    // `before=0` returns empty page cleanly.
+    let (s, _, body) = call(
+        &h,
+        get("/api/sessions/a/transcript?before=0&limit=2", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let p_empty: Value = serde_json::from_str(&body).unwrap();
+    assert!(item_ids(&p_empty).is_empty());
+    assert_eq!(p_empty["hasMore"], json!(false));
+    assert_eq!(p_empty["oldestIndex"], json!(0));
+    assert_eq!(p_empty["totalItems"], json!(5));
+
+    // Incremental append (`from > 0`) uses EOF `nextOffset` and ignores `limit`.
+    let appended = line("e5", "assistant", "msg-5");
+    std::fs::write(&h.ctx.backend.file, format!("{initial}{appended}")).unwrap();
+    let (s, _, body) = call(
+        &h,
+        get(
+            &format!("/api/sessions/a/transcript?from={initial_len}&tail=e4&limit=2"),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let inc: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(item_ids(&inc), vec!["e5"]);
+    assert_eq!(inc["reset"], json!(false));
+    assert_eq!(inc["tailId"].as_str(), Some("e5"));
+    assert_eq!(
+        inc["nextOffset"].as_u64(),
+        Some(initial_len + appended.len() as u64)
+    );
+    assert!(inc.get("hasMore").is_none());
+}
+
+#[test]
+fn tls_server_config_advertises_h2_and_http11_alpn() {
+    let dir = std::env::temp_dir().join(format!("omp-tls-alpn-{}", uuid::Uuid::new_v4()));
+    let ident = super::tls::ensure_tls_identity_in(&dir, None).unwrap();
+    assert_eq!(
+        ident.server_config.alpn_protocols,
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pairing_url_includes_lan_tls_and_fingerprint_for_tunnel_target_and_trims_slashes() {
+    use crate::contracts::PairingTarget;
+    use base64::Engine as _;
+
+    let fp = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+    let (dual, app) = super::build_pairing_urls(
+        "https://demo.trycloudflare.com/",
+        "TN_CODE",
+        PairingTarget::Tunnel,
+        Some("https://192.168.1.10:7790/"),
+        Some(fp),
+        None,
+        Some("https://demo.trycloudflare.com/"),
+    );
+    let (_, encoded) = dual.split_once("#app=").expect("dual URL has #app=");
+    let payload: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        payload,
+        json!({
+            "v": 1,
+            "t": "tunnel",
+            "lt": "https://192.168.1.10:7790",
+            "fp": fp,
+            "tn": "https://demo.trycloudflare.com"
+        })
+    );
+    let app_url = app.expect("app URL present");
+    assert!(app_url.contains("&lt=https%3A%2F%2F192.168.1.10%3A7790"));
+    assert!(app_url.contains("&fp=AA%3ABB%3ACC"));
+    assert!(app_url.contains("&tn=https%3A%2F%2Fdemo.trycloudflare.com"));
+}

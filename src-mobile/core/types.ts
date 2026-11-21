@@ -99,6 +99,10 @@ export interface TranscriptPage {
 	nextOffset?: number;
 	tailId?: string | null;
 	reset?: boolean;
+	truncated?: boolean;
+	hasMore?: boolean;
+	oldestIndex?: number;
+	totalItems?: number;
 }
 
 export type ItemRole = "user" | "assistant" | "system";

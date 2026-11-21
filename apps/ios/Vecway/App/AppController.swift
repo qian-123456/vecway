@@ -71,6 +71,13 @@ final class AppController: ObservableObject {
         endpointManager.onUnauthorized = { [weak sseBridge] in
             sseBridge?.closeAll()
         }
+        endpointManager.onActiveChannelChanged = { [weak self, weak sseBridge] _, _ in
+            sseBridge?.closeAll()
+            Task { @MainActor [weak self] in
+                guard let self, self.status.pinMismatch == nil else { return }
+                self.bridgeRouter.notifyForegroundResync()
+            }
+        }
 
         statusListenerId = endpointManager.addStatusListener { [weak self] newStatus in
             Task { @MainActor [weak self] in

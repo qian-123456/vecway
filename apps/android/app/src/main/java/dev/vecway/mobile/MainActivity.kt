@@ -230,6 +230,14 @@ class MainActivity : AppCompatActivity() {
         statusUnsubscribe = app.endpointManager.addStatusListener { status ->
             runOnUiThread { applyStatusUpdate(status) }
         }
+        app.endpointManager.onActiveChannelChanged = {
+            app.sseBridge.closeAll()
+            runOnUiThread {
+                if (app.endpointManager.currentStatus().pinMismatch == null) {
+                    bridge.notifyForegroundResync()
+                }
+            }
+        }
         applyStatusUpdate(app.endpointManager.currentStatus())
 
         webView.loadUrl(AppWebViewClient.START_URL)
@@ -273,6 +281,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         statusUnsubscribe?.invoke()
         statusUnsubscribe = null
+        app.endpointManager.onActiveChannelChanged = null
         pendingFileChooserCallback?.onReceiveValue(null)
         pendingFileChooserCallback = null
         pendingScannerResult?.complete(ScannerOutcome(ok = false, error = "页面已关闭"))

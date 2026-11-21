@@ -1,12 +1,14 @@
-import { ChevronRight, ClipboardList, Copy, Download, Ellipsis, RotateCcw } from "lucide-react";
+import { ChevronRight, ClipboardList, Copy, Download, Ellipsis } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import { apiUrl } from "../../../core/api";
 import { copyText } from "../../../core/lib/format";
 import { nav, paths } from "../../../core/nav";
 import { usePrefs } from "../../../core/stores/prefs";
 import type { ImageRef, Item, ToolItem } from "../../../core/types";
-import { Button, IconButton, Markdown, openImage, toast } from "../../../ui";
+import { Button, IconButton, openImage, toast } from "../../../ui";
+import { Markdown } from "../../../ui/Markdown";
 import { useChat, useChatUi, type ChatUi } from "../ChatContext";
+import { statSummary } from "../lib/requestStats";
 import { foldLabel, type Step, type Turn } from "../lib/turns";
 import { StatLine } from "./StatLine";
 import { Thinking } from "./Thinking";
@@ -266,7 +268,7 @@ function PlanCard({ text, sessionId, turnId, running, status }: { text: string; 
 }
 
 export const TurnView = memo(function TurnView({ turn, isLast, sessionId }: { turn: Turn; isLast: boolean; sessionId: string }) {
-	const { openActions, openStat, controller } = useChatUi();
+	const { openActions, openStat } = useChatUi();
 	const live = useChat((s) => (isLast ? s.live : null));
 	const working = useChat((s) => (isLast ? s.working : false));
 	const planMode = useChat((s) => (isLast ? s.cstate?.planMode === true : false));
@@ -324,31 +326,41 @@ export const TurnView = memo(function TurnView({ turn, isLast, sessionId }: { tu
 						</div>
 					)}
 					{(planText || (planMode && answerText && !parts.liveText && !planStatus)) && <PlanCard text={planText || answerText} sessionId={sessionId} turnId={turn.id} running={running} status={cardStatus} />}
-					{answerText && !running && (
-						<div className="-ml-3 mt-1 flex flex-wrap items-center">
-							<IconButton
-								size="sm"
-								icon={<Copy size={18} strokeWidth={1.75} className="text-m-text-3" />}
-								label="复制"
-								onClick={() => void copyAnswer()}
-							/>
-							{isLast && (
-								<IconButton
-									size="sm"
-									icon={<RotateCcw size={18} strokeWidth={1.75} className="text-m-text-3" />}
-									label="重新生成"
-									onClick={() => controller.retry()}
-								/>
-							)}
-							<IconButton
-								size="sm"
-								icon={<Ellipsis size={18} strokeWidth={1.75} className="text-m-text-3" />}
-								label="更多操作"
-								onClick={() => openActions(target)}
-							/>
-							{answerStat && <StatLine stat={answerStat.stat} onOpen={openStat} />}
-						</div>
-					)}
+					{answerText && !running && (() => {
+						const statText = answerStat ? statSummary(answerStat.stat) : "";
+						return (
+							<div className="-ml-1.5 mt-1 flex items-center gap-0.5">
+								<button
+									type="button"
+									aria-label="复制"
+									title="复制"
+									onClick={() => void copyAnswer()}
+									className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-m-text-3 transition-colors active:bg-m-surface-hover active:text-m-text"
+								>
+									<Copy size={16} strokeWidth={1.75} />
+								</button>
+								<button
+									type="button"
+									aria-label="更多操作"
+									title="更多操作"
+									onClick={() => openActions(target)}
+									className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-m-text-3 transition-colors active:bg-m-surface-hover active:text-m-text"
+								>
+									<Ellipsis size={16} strokeWidth={1.75} />
+								</button>
+								{answerStat && statText && (
+									<button
+										type="button"
+										aria-label={`请求详情：${statText}`}
+										onClick={() => openStat(answerStat.stat)}
+										className="ml-auto inline-flex h-8 min-w-0 items-center truncate rounded-md px-2 text-[11px] tabular-nums text-m-text-3 transition-colors active:bg-m-surface-hover"
+									>
+										{statText}
+									</button>
+								)}
+							</div>
+						);
+					})()}
 				</div>
 			)}
 		</div>

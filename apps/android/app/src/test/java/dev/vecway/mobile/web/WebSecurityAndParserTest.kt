@@ -4,6 +4,8 @@ import dev.vecway.mobile.network.NativeEndpointStatus
 import dev.vecway.mobile.network.SSEEvent
 import dev.vecway.mobile.network.SSELineParser
 import dev.vecway.mobile.security.EndpointCandidates
+import dev.vecway.mobile.security.NativeChannel
+import dev.vecway.mobile.security.StoredCredentials
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -59,13 +61,15 @@ class WebSecurityAndParserTest {
 
     @Test
     fun bridgePayloadParserPreservesTriStateEndpointPatchAndEnforcesBodyLimit() {
-        val json = JSONObject("""{"lanTls":"https://192.168.1.2:7790","tunnel":null}""")
+        val json = JSONObject("""{"lanTls":"https://192.168.1.2:7790","tunnel":null,"certSha256":"AA:BB:CC"}""")
         val patch = BridgePayloadParser.parseEndpointPatch(json)
         assertTrue(patch.lanTls.present)
         assertEquals("https://192.168.1.2:7790", patch.lanTls.value)
         assertFalse(patch.ipv6.present)
         assertTrue(patch.tunnel.present)
         assertNull(patch.tunnel.value)
+        assertTrue(patch.certSha256.present)
+        assertEquals("AA:BB:CC", patch.certSha256.value)
 
         val encoded = Base64.getEncoder().encodeToString("hello".toByteArray())
         assertEquals("hello", String(BridgePayloadParser.decodeBodyBase64(encoded)!!))
@@ -83,8 +87,92 @@ class WebSecurityAndParserTest {
         ).toJson()
         assertTrue(statusJson.isNull("activeChannel"))
         assertTrue(statusJson.isNull("activeUrl"))
+        assertTrue(statusJson.isNull("preferredChannel"))
         assertTrue(statusJson.isNull("certSha256"))
         assertTrue(statusJson.isNull("pinMismatch"))
+
+        val preferredStatusJson = NativeEndpointStatus(
+            paired = true,
+            activeChannel = NativeChannel.TUNNEL,
+            activeUrl = "https://omp.example.com",
+            preferredChannel = NativeChannel.TUNNEL,
+            candidates = EndpointCandidates(tunnel = "https://omp.example.com"),
+        ).toJson()
+        assertEquals("tunnel", preferredStatusJson.getString("preferredChannel"))
+    }
+
+    @Test
+    fun storedCredentialsHandlesLegacyAndPreferredChannelSerialization() {
+        val legacyJson = JSONObject(
+            """
+            {
+              "deviceToken": "legacy-tok",
+              "pinnedCertSha256": null,
+              "endpoints": { "tunnel": "https://omp.example.com" }
+            }
+            """.trimIndent(),
+        )
+        val legacy = StoredCredentials.fromJson(legacyJson)!!
+        assertEquals("legacy-tok", legacy.deviceToken)
+        assertNull(legacy.pinnedCertSha256)
+        assertNull(legacy.preferredChannel)
+        assertEquals("https://omp.example.com", legacy.endpoints.tunnel)
+
+        val withPref = legacy.copy(preferredChannel = NativeChannel.IPV6_TLS)
+        val roundTripped = StoredCredentials.fromJson(withPref.toJson())!!
+        assertEquals(NativeChannel.IPV6_TLS, roundTripped.preferredChannel)
+    }
+
+    @Test
+    fun bridgePayloadParserSupportsSwitchChannelAndUtf8BodyTextFastPath() {
+        assertEquals(NativeChannel.LAN_TLS, BridgePayloadParser.parseSwitchChannel(JSONObject("""{"channel":"lan_tls"}""")))
+        assertEquals(NativeChannel.IPV6_TLS, BridgePayloadParser.parseSwitchChannel(JSONObject("""{"channel":"ipv6_tls"}""")))
+        assertEquals(NativeChannel.TUNNEL, BridgePayloadParser.parseSwitchChannel(JSONObject("""{"channel":"tunnel"}""")))
+        assertNull(BridgePayloadParser.parseSwitchChannel(JSONObject("""{"channel":null}""")))
+        assertNull(BridgePayloadParser.parseSwitchChannel(JSONObject("""{"channel":"auto"}""")))
+        assertNull(BridgePayloadParser.parseSwitchChannel(JSONObject("""{}""")))
+
+        try {
+            BridgePayloadParser.parseSwitchChannel(JSONObject("""{"channel":"bluetooth"}"""))
+            fail("Expected IllegalArgumentException for unsupported channel")
+        } catch (_: IllegalArgumentException) {
+            // Expected
+        }
+
+        assertEquals(
+            """{"msg":"你好"}""",
+            BridgePayloadParser.decodeUtf8TextIfApplicable(
+                mapOf("Content-Type" to "application/json; charset=utf-8"),
+                """{"msg":"你好"}""".toByteArray(StandardCharsets.UTF_8),
+            ),
+        )
+        assertEquals(
+            "plain",
+            BridgePayloadParser.decodeUtf8TextIfApplicable(
+                mapOf("content-type" to "text/plain"),
+                "plain".toByteArray(StandardCharsets.UTF_8),
+            ),
+        )
+        assertEquals(
+            "<svg/>",
+            BridgePayloadParser.decodeUtf8TextIfApplicable(
+                mapOf("Content-Type" to "image/svg+xml"),
+                "<svg/>".toByteArray(StandardCharsets.UTF_8),
+            ),
+        )
+        assertNull(
+            BridgePayloadParser.decodeUtf8TextIfApplicable(
+                mapOf("Content-Type" to "application/octet-stream"),
+                byteArrayOf(1, 2, 3),
+            ),
+        )
+        // Invalid UTF-8 bytes must return null so caller falls back to bodyBase64.
+        assertNull(
+            BridgePayloadParser.decodeUtf8TextIfApplicable(
+                mapOf("Content-Type" to "application/json"),
+                byteArrayOf(0xFF.toByte(), 0xFE.toByte()),
+            ),
+        )
     }
 
     @Test

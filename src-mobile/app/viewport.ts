@@ -1,15 +1,84 @@
+import { getNativeBridge } from "../core/nativeBridge";
+
 /**
- * Visual-viewport tracking for the on-screen keyboard.
+ * Single source of truth for viewport and on-screen keyboard state.
  *
- * iOS pans the layout viewport when the keyboard opens. We pin the app to the visual viewport by
- * writing CSS variables (`--m-vh`, `--m-kb`, `--m-vv-top`) — ONLY from visualViewport
- * resize/scroll events, rAF-throttled and skipped when nothing changed. Typing never reaches this
- * code, so keystrokes cause no style recalculation or layout reads.
+ * - Native iOS / Android shell: driven directly by `bridge.onKeyboardChange` (`height`, `durationMs`),
+ *   writing `--m-kb`, `--m-kb-dur`, `--m-vh` (`calc(100dvh - <kb>px)`), `--m-vv-top: 0px`, and
+ *   `data-kb-open` without fighting `visualViewport.offsetTop`.
+ * - Web browsers: rAF-coalesced `visualViewport` resize/scroll fallback (never bare input focus).
  */
+let kbOpen = false;
+const kbListeners = new Set<(open: boolean) => void>();
+
+function setKeyboardOpen(next: boolean, root?: HTMLElement): void {
+	if (root) root.dataset.kbOpen = next ? "1" : "0";
+	if (next === kbOpen) return;
+	kbOpen = next;
+	for (const cb of [...kbListeners]) cb(kbOpen);
+}
+
+export function isKeyboardOpenNow(): boolean {
+	return kbOpen;
+}
+
+export function subscribeKeyboardOpen(cb: (open: boolean) => void): () => void {
+	kbListeners.add(cb);
+	return () => {
+		kbListeners.delete(cb);
+	};
+}
+
 export function installViewportTracking(): () => void {
-	const vv = window.visualViewport;
-	if (!vv) return () => {};
 	const root = document.documentElement;
+	const bridge = getNativeBridge();
+
+	if (bridge?.onKeyboardChange) {
+		let lastKb = -1;
+		let lastDur = -1;
+		root.dataset.kbNative = "1";
+		root.style.setProperty("--m-vv-top", "0px");
+
+		const applyNative = (height: number, durationMs: number) => {
+			const kb = Math.max(0, Math.round(height));
+			const dur = Math.max(0, Math.round(durationMs));
+			if (dur !== lastDur) {
+				root.style.setProperty("--m-kb-dur", `${dur}ms`);
+				lastDur = dur;
+			}
+			if (kb !== lastKb) {
+				root.style.setProperty("--m-kb", `${kb}px`);
+				root.style.setProperty("--m-vh", `calc(100dvh - ${kb}px)`);
+				lastKb = kb;
+			}
+			setKeyboardOpen(kb > 40, root);
+		};
+
+		applyNative(0, 0);
+		const unsub = bridge.onKeyboardChange(({ height, durationMs }) => {
+			applyNative(height, durationMs);
+		});
+
+		return () => {
+			unsub();
+			setKeyboardOpen(false);
+			delete root.dataset.kbNative;
+			delete root.dataset.kbOpen;
+			root.style.removeProperty("--m-vh");
+			root.style.removeProperty("--m-kb");
+			root.style.removeProperty("--m-kb-dur");
+			root.style.removeProperty("--m-vv-top");
+		};
+	}
+
+	const vv = window.visualViewport;
+	if (!vv) {
+		setKeyboardOpen(false, root);
+		return () => {
+			delete root.dataset.kbOpen;
+		};
+	}
+
 	let raf = 0;
 	let lastH = -1;
 	let lastKb = -1;
@@ -32,10 +101,12 @@ export function installViewportTracking(): () => void {
 			root.style.setProperty("--m-vv-top", `${top}px`);
 			lastTop = top;
 		}
+		setKeyboardOpen(kb > 80, root);
 	};
 	const schedule = () => {
 		if (!raf) raf = requestAnimationFrame(apply);
 	};
+	root.style.setProperty("--m-kb-dur", "0ms");
 	vv.addEventListener("resize", schedule);
 	vv.addEventListener("scroll", schedule);
 	apply();
@@ -43,8 +114,11 @@ export function installViewportTracking(): () => void {
 		vv.removeEventListener("resize", schedule);
 		vv.removeEventListener("scroll", schedule);
 		if (raf) cancelAnimationFrame(raf);
+		setKeyboardOpen(false);
+		delete root.dataset.kbOpen;
 		root.style.removeProperty("--m-vh");
 		root.style.removeProperty("--m-kb");
+		root.style.removeProperty("--m-kb-dur");
 		root.style.removeProperty("--m-vv-top");
 	};
 }

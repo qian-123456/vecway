@@ -1,8 +1,8 @@
-import { Check, MessageCircleQuestion, ShieldCheck } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronDown, ChevronRight, MessageCircleQuestion, ShieldCheck } from "lucide-react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import { pendingForm } from "../../../core/pendingUi";
 import type { PendingEntry, PendingOption, ToolItem } from "../../../core/types";
-import { Button, inputCls, toast } from "../../../ui";
+import { BottomSheet, Button, inputCls, toast } from "../../../ui";
 import { useChat, useChatUi } from "../ChatContext";
 import { isBatchApprovable, showApproveAll } from "../lib/approvals";
 import { findOpenAsks, isAnswerSubmittable, matchRequest, type AskAnswer, type AskMatch, type AskQuestion, type AskSpec } from "../lib/askDriver";
@@ -160,6 +160,8 @@ const ApprovalCard = memo(function ApprovalCard({ entry }: { entry: PendingEntry
 	const { busy, failed, run } = useSubmit();
 	const [head, ...rest] = (form.title || "工具请求").split("\n");
 	const detail = [rest.join("\n").trim(), form.message.trim()].filter(Boolean).join("\n\n");
+	const longDetail = detail.length > 180 || detail.split("\n").length > 4;
+	const [detailOpen, setDetailOpen] = useState(!longDetail);
 	const confirmLike = form.method === "confirm";
 	const b = approvalButtons(form.options);
 	const verticalActions = b.other.some(({ label }) => label.length > 14);
@@ -168,12 +170,27 @@ const ApprovalCard = memo(function ApprovalCard({ entry }: { entry: PendingEntry
 		<Card tone="warn" icon={<ShieldCheck size={17} strokeWidth={2} />} label="需要你的批准">
 			<div className="m-selectable break-words text-m-md font-medium text-m-text">{head}</div>
 			{detail && (
-				<pre className="m-selectable mt-2.5 mb-0 whitespace-pre-wrap break-words rounded-m-sm border border-m-border bg-m-card p-3 font-m-mono text-m-xs leading-5 text-m-text-2">
-					{detail}
-				</pre>
+				<div className="mt-2.5">
+					{longDetail && (
+						<button
+							type="button"
+							aria-expanded={detailOpen}
+							onClick={() => setDetailOpen((v) => !v)}
+							className="mb-1.5 inline-flex items-center gap-1 text-m-xs font-medium text-m-text-2 active:opacity-70"
+						>
+							{detailOpen ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+							{detailOpen ? "收起详情" : "查看详情"}
+						</button>
+					)}
+					{detailOpen && (
+						<pre className="m-selectable mb-0 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-m-sm border border-m-border bg-m-card p-3 font-m-mono text-m-xs leading-5 text-m-text-2">
+							{detail}
+						</pre>
+					)}
+				</div>
 			)}
 			{failed && <ErrorLine busy={busy} onRetry={() => void run(failed)} />}
-			<div className={`mt-4 flex gap-2 ${verticalActions ? "flex-col items-stretch [&>button]:w-full" : "flex-wrap justify-end"}`}>
+			<div className={`sticky bottom-0 z-10 -mx-4 mt-4 border-t border-m-border/70 bg-m-warn-bg/95 px-4 pt-3 pb-1 backdrop-blur-sm flex gap-2 ${verticalActions ? "flex-col items-stretch [&>button]:w-full" : "flex-wrap justify-end"}`}>
 				{confirmLike ? (
 					<>
 						<Button disabled={busy} onClick={() => void run(() => controller.respond(entry, { confirmed: false }))}>
@@ -308,7 +325,7 @@ const AskCard = memo(function AskCard({ spec, match, entry }: { spec: AskSpec; m
 				className={`${inputCls} mt-2 bg-m-bg!`}
 			/>
 			{failed && <ErrorLine busy={busy} onRetry={() => submit(answers)} />}
-			<div className="mt-4 flex items-center gap-2">
+			<div className="sticky bottom-0 z-10 -mx-4 mt-4 flex items-center gap-2 border-t border-m-border/70 bg-m-card/95 px-4 pt-3 pb-1 backdrop-blur-sm">
 				<Button variant="ghost" disabled={busy} onClick={skip}>
 					跳过
 				</Button>
@@ -419,7 +436,7 @@ const QuestionCard = memo(function QuestionCard({ entry }: { entry: PendingEntry
 			{form.message && <div className="m-selectable mb-2 whitespace-pre-wrap break-words text-m-sm text-m-text-2">{form.message}</div>}
 			{body}
 			{failed && <ErrorLine busy={busy} onRetry={() => void run(failed)} />}
-			<div className="mt-4 flex items-center justify-end gap-2">
+			<div className="sticky bottom-0 z-10 -mx-4 mt-4 flex items-center justify-end gap-2 border-t border-m-border/70 bg-m-card/95 px-4 pt-3 pb-1 backdrop-blur-sm">
 				<Button disabled={busy} onClick={() => void run(() => controller.respond(entry, { cancelled: true }))}>
 					跳过
 				</Button>
@@ -448,58 +465,134 @@ function useOpenAsks(): AskSpec[] {
 	}, [blocks, live]);
 }
 
+function pendingBannerSummary(pendings: readonly PendingEntry[]): { isApproval: boolean; label: string; summary: string } {
+	const first = pendings[0];
+	const approvals = pendings.filter(isBatchApprovable).length;
+	const isApproval = approvals > 0 && approvals === pendings.length;
+	if (pendings.length > 1) {
+		return {
+			isApproval,
+			label: isApproval ? `待批准 (${pendings.length})` : `待确认 (${pendings.length})`,
+			summary: isApproval ? `${approvals} 个工具请求等待批准` : `${pendings.length} 项待处理请求`,
+		};
+	}
+	const form = pendingForm(first);
+	const firstLine = (form.title || (isApproval ? "工具请求" : "需要你回答")).split("\n")[0].trim();
+	return {
+		isApproval,
+		label: isApproval ? "待确认" : "需要回答",
+		summary: firstLine,
+	};
+}
+
 export function PendingCards() {
 	const { controller } = useChatUi();
 	const pendings = useChat((s) => s.pendings);
 	const asks = useOpenAsks();
-	const containerRef = useRef<HTMLDivElement>(null);
-	useEffect(() => {
-		const viewport = window.visualViewport;
-		if (!viewport) return;
-		let frame: number | null = null;
-		const revealFocused = () => {
-			if (frame !== null) cancelAnimationFrame(frame);
-			frame = requestAnimationFrame(() => {
-				frame = null;
-				const field = document.activeElement;
-				if (field instanceof HTMLElement && field.isConnected && containerRef.current?.contains(field)) {
-					field.scrollIntoView({ block: "nearest", inline: "nearest" });
-				}
-			});
-		};
-		viewport.addEventListener("resize", revealFocused);
-		return () => {
-			viewport.removeEventListener("resize", revealFocused);
-			if (frame !== null) cancelAnimationFrame(frame);
-		};
-	}, []);
+	const pendingKey = pendings.map((p, i) => p.request?.id ?? `idx-${i}`).join("|");
+	const [dismissedKey, setDismissedKey] = useState<string | null>(null);
+	const [quickBusy, setQuickBusy] = useState(false);
+
 	if (!pendings.length) return null;
+
+	const sheetOpen = dismissedKey !== pendingKey;
 	const approvals = pendings.filter(isBatchApprovable).length;
+	const banner = pendingBannerSummary(pendings);
+	const singleSimpleConfirm =
+		!sheetOpen && pendings.length === 1 && isBatchApprovable(pendings[0]) && pendingForm(pendings[0]).method === "confirm";
+
+	const quickRespond = async (confirmed: boolean) => {
+		if (quickBusy) return;
+		setQuickBusy(true);
+		try {
+			await controller.respond(pendings[0], { confirmed });
+		} catch {
+			// Controller already toasted; reopen full sheet so user can inspect or retry.
+			setDismissedKey(null);
+		} finally {
+			setQuickBusy(false);
+		}
+	};
+
 	return (
-		<div
-			ref={containerRef}
-			onFocusCapture={(event) => event.target.scrollIntoView({ block: "nearest", inline: "nearest" })}
-			className="max-h-[50%] shrink-0 space-y-3 overflow-y-auto overscroll-contain px-4 pt-1 pb-2 focus-within:max-h-[calc(var(--m-vh,100dvh)_-_120px)]"
-		>
-			{showApproveAll(pendings) && (
-				<div className="flex flex-wrap items-center gap-2 rounded-m-lg bg-m-surface py-2 pr-2 pl-4">
-					<span className="min-w-0 flex-1 text-m-sm text-m-text-2">{approvals} 个工具请求等待批准</span>
-					<Button size="sm" onClick={() => void controller.approveAll("deny", pendings)}>
-						全部拒绝
-					</Button>
-					<Button size="sm" variant="primary" onClick={() => void controller.approveAll("approve", pendings)}>
-						全部允许
-					</Button>
+		<>
+			{/* Compact bottom action banner above composer so conversation history is never crushed */}
+			<div className="shrink-0 px-3.5 pt-1 pb-1.5">
+				<div
+					className={`flex min-h-11 items-center gap-2 rounded-m-md border px-3 py-1.5 shadow-m-card ${
+						banner.isApproval ? "border-m-warn-border bg-m-warn-bg" : "border-m-border bg-m-card"
+					}`}
+				>
+					<button
+						type="button"
+						onClick={() => setDismissedKey(null)}
+						className="flex min-w-0 flex-1 items-center gap-2 text-left active:opacity-75"
+					>
+						<span className={`flex shrink-0 ${banner.isApproval ? "text-m-warn" : "text-m-accent"}`}>
+							{banner.isApproval ? <ShieldCheck size={17} strokeWidth={2} /> : <MessageCircleQuestion size={17} strokeWidth={2} />}
+						</span>
+						<span className={`shrink-0 text-m-xs font-semibold ${banner.isApproval ? "text-m-warn" : "text-m-accent"}`}>
+							{banner.label}
+						</span>
+						<span className="min-w-0 flex-1 truncate text-m-xs text-m-text-2">· {banner.summary}</span>
+						{!singleSimpleConfirm && (
+							<span className="inline-flex shrink-0 items-center gap-0.5 text-m-xs font-medium text-m-text">
+								{sheetOpen ? "查看" : "处理"}
+								<ChevronRight size={14} aria-hidden />
+							</span>
+						)}
+					</button>
+					{singleSimpleConfirm && (
+						<div className="flex shrink-0 items-center gap-1.5">
+							<button
+								type="button"
+								disabled={quickBusy}
+								onClick={() => void quickRespond(false)}
+								className="rounded-m-pill bg-m-surface px-2.5 py-1 text-m-xs font-medium text-m-text active:bg-m-surface-2 disabled:opacity-40"
+							>
+								拒绝
+							</button>
+							<button
+								type="button"
+								disabled={quickBusy}
+								onClick={() => void quickRespond(true)}
+								className="rounded-m-pill bg-m-text px-2.5 py-1 text-m-xs font-medium text-m-bg active:opacity-85 disabled:opacity-40"
+							>
+								允许
+							</button>
+						</div>
+					)}
 				</div>
-			)}
-			{pendings.map((p, i) => {
-				if (isBatchApprovable(p)) return <ApprovalCard key={p.request?.id ?? i} entry={p} />;
-				for (const spec of asks) {
-					const m = matchRequest(spec, p.request);
-					if (m) return <AskCard key={`ask-${spec.toolCallId}`} spec={spec} match={m} entry={p} />;
-				}
-				return <QuestionCard key={p.request?.id ?? i} entry={p} />;
-			})}
-		</div>
+			</div>
+
+			{/* Focused decision drawer with collapsible details and sticky keyboard-safe action footer */}
+			<BottomSheet
+				open={sheetOpen}
+				onClose={() => setDismissedKey(pendingKey)}
+				title={banner.isApproval ? "待确认操作" : "需要你回答"}
+			>
+				<div className="space-y-3 px-4 pt-1 pb-4">
+					{showApproveAll(pendings) && (
+						<div className="flex flex-wrap items-center gap-2 rounded-m-lg bg-m-surface py-2 pr-2 pl-4">
+							<span className="min-w-0 flex-1 text-m-sm text-m-text-2">{approvals} 个工具请求等待批准</span>
+							<Button size="sm" onClick={() => void controller.approveAll("deny", pendings)}>
+								全部拒绝
+							</Button>
+							<Button size="sm" variant="primary" onClick={() => void controller.approveAll("approve", pendings)}>
+								全部允许
+							</Button>
+						</div>
+					)}
+					{pendings.map((p, i) => {
+						if (isBatchApprovable(p)) return <ApprovalCard key={p.request?.id ?? i} entry={p} />;
+						for (const spec of asks) {
+							const m = matchRequest(spec, p.request);
+							if (m) return <AskCard key={`ask-${spec.toolCallId}`} spec={spec} match={m} entry={p} />;
+						}
+						return <QuestionCard key={p.request?.id ?? i} entry={p} />;
+					})}
+				</div>
+			</BottomSheet>
+		</>
 	);
 }

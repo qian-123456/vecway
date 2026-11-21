@@ -18,6 +18,7 @@ export interface NativePinMismatch {
 export interface NativeEndpointStatus {
 	paired: boolean;
 	activeChannel: NativeChannel | null;
+	preferredChannel?: NativeChannel | null;
 	activeUrl: string | null;
 	certSha256: string | null;
 	candidates: { lanTls?: string; ipv6?: string; tunnel?: string };
@@ -36,7 +37,13 @@ export interface NativeHttpRequest {
 export interface NativeHttpResponse {
 	status: number;
 	headers: Record<string, string>;
-	bodyBase64: string;
+	bodyBase64?: string;
+	bodyText?: string;
+}
+
+export interface NativeKeyboardEvent {
+	height: number;
+	durationMs: number;
 }
 
 export interface NativeSseHandlers {
@@ -59,11 +66,15 @@ export interface NativeBridge {
 	openSse(url: string, handlers: NativeSseHandlers): () => void;
 	getConnectionStatus(): Promise<NativeEndpointStatus>;
 	openPairScanner(options?: { mode?: "scan" | "domain" }): Promise<{ ok: boolean; error?: string; status?: NativeEndpointStatus }>;
-	updateEndpoints(endpoints: Partial<NativeEndpointStatus["candidates"]>): Promise<NativeEndpointStatus>;
+	updateEndpoints(
+		endpoints: Partial<NativeEndpointStatus["candidates"]> & { certSha256?: string },
+	): Promise<NativeEndpointStatus>;
+	switchChannel?(channel: NativeChannel | null): Promise<NativeEndpointStatus>;
 	reprobeConnection(): Promise<NativeEndpointStatus>;
 	unpair(): Promise<void>;
 	onConnectionStatusChange?(cb: (status: NativeEndpointStatus) => void): () => void;
 	onForegroundResync?(cb: () => void): () => void;
+	onKeyboardChange?(cb: (ev: NativeKeyboardEvent) => void): () => void;
 	audio?: {
 		startRecording(): Promise<void>;
 		stopAndTranscribe(): Promise<{ text: string }>;
@@ -93,6 +104,7 @@ export type NativeHapticKind = "light" | "medium" | "heavy" | "success" | "warni
 export const EMPTY_NATIVE_STATUS: NativeEndpointStatus = {
 	paired: false,
 	activeChannel: null,
+	preferredChannel: null,
 	activeUrl: null,
 	certSha256: null,
 	candidates: {},

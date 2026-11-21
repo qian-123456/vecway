@@ -5,9 +5,11 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import dev.vecway.mobile.security.CertificateFingerprint
 import dev.vecway.mobile.security.CredentialStore
 import dev.vecway.mobile.security.EndpointCandidates
 import dev.vecway.mobile.security.NativeChannel
+import dev.vecway.mobile.security.PairingPayloadException
 import dev.vecway.mobile.security.PairingPayload
 import dev.vecway.mobile.security.StoredCredentials
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +27,7 @@ data class NativeEndpointStatus(
     val paired: Boolean,
     val activeChannel: NativeChannel? = null,
     val activeUrl: String? = null,
+    val preferredChannel: NativeChannel? = null,
     val certSha256: String? = null,
     val candidates: EndpointCandidates = EndpointCandidates(),
     val pinMismatch: NativePinMismatch? = null,
@@ -34,6 +37,7 @@ data class NativeEndpointStatus(
         put("paired", paired)
         put("activeChannel", activeChannel?.wireValue ?: JSONObject.NULL)
         put("activeUrl", activeUrl ?: JSONObject.NULL)
+        put("preferredChannel", preferredChannel?.wireValue ?: JSONObject.NULL)
         put("certSha256", certSha256 ?: JSONObject.NULL)
         put("candidates", candidates.toJson())
         put("pinMismatch", pinMismatch?.toJson() ?: JSONObject.NULL)
@@ -47,6 +51,7 @@ data class EndpointUpdatePatch(
     val lanTls: PatchField = PatchField(),
     val ipv6: PatchField = PatchField(),
     val tunnel: PatchField = PatchField(),
+    val certSha256: PatchField = PatchField(),
 )
 
 data class ActiveRoute(
@@ -93,6 +98,9 @@ class EndpointManager(
 
     @Volatile
     var onPinMismatchDetected: ((NativePinMismatch) -> Unit)? = null
+
+    @Volatile
+    var onActiveChannelChanged: (() -> Unit)? = null
 
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -178,15 +186,19 @@ class EndpointManager(
                     deviceName = exchanged.device?.name,
                 )
                 store.save(creds)
-                val status = synchronized(lock) {
+                val (status, changed) = synchronized(lock) {
+                    val didChange = activeChannel != channel || activeUrl != url
                     cachedCredentials = creds
                     activeChannel = channel
                     activeUrl = url
                     pinMismatch = null
                     isUnauthorized = false
-                    snapshotLocked()
+                    snapshotLocked() to didChange
                 }
                 emitStatus(status)
+                if (changed) {
+                    onActiveChannelChanged?.invoke()
+                }
                 scope.launch { syncCandidatesFromSettings() }
                 return status
             } catch (e: TransportException.PinMismatch) {
@@ -205,31 +217,68 @@ class EndpointManager(
         throw lastError ?: TransportException.Unreachable("无法连接到电脑端完成配对")
     }
 
-    /** Probes channels (`lan_tls` first with short 1.5s timeout, then `ipv6_tls` || `tunnel` in parallel). */
+    /** Probes preferred channel first (if set), then `lan_tls`, then `ipv6_tls` || `tunnel` in parallel. */
     suspend fun reprobeConnection(): NativeEndpointStatus {
         val creds = synchronized(lock) { cachedCredentials }
             ?: return currentStatus()
 
-        val lanUrl = creds.endpoints.lanTls
-        if (lanUrl != null) {
-            when (val res = probeChannel(NativeChannel.LAN_TLS, lanUrl, creds, lanProbeTimeoutMs)) {
-                is ProbeOutcome.Reachable -> return activateChannel(res.channel, res.url)
-                is ProbeOutcome.PinMismatch -> return recordPinMismatch(res.mismatch)
-                is ProbeOutcome.Unauthorized -> return recordUnauthorized()
-                is ProbeOutcome.Unreachable -> Unit
+        val blockedStatus = synchronized(lock) {
+            if (pinMismatch != null) {
+                activeChannel = null
+                activeUrl = null
+                snapshotLocked()
+            } else {
+                null
+            }
+        }
+        if (blockedStatus != null) {
+            emitStatus(blockedStatus)
+            return blockedStatus
+        }
+
+        val preferred = creds.preferredChannel
+        if (preferred != null) {
+            val preferredUrl = creds.endpoints.url(preferred)
+            if (preferredUrl != null) {
+                val preferredTimeout = if (preferred == NativeChannel.LAN_TLS) lanProbeTimeoutMs else remoteProbeTimeoutMs
+                when (val res = probeChannel(preferred, preferredUrl, creds, preferredTimeout)) {
+                    is ProbeOutcome.Reachable -> return activateChannel(res.channel, res.url)
+                    is ProbeOutcome.PinMismatch -> return recordPinMismatch(res.mismatch)
+                    is ProbeOutcome.Unauthorized -> return recordUnauthorized()
+                    is ProbeOutcome.Unreachable -> Unit
+                }
+            }
+        }
+
+        if (preferred != NativeChannel.LAN_TLS) {
+            val lanUrl = creds.endpoints.lanTls
+            if (lanUrl != null) {
+                when (val res = probeChannel(NativeChannel.LAN_TLS, lanUrl, creds, lanProbeTimeoutMs)) {
+                    is ProbeOutcome.Reachable -> return activateChannel(res.channel, res.url)
+                    is ProbeOutcome.PinMismatch -> return recordPinMismatch(res.mismatch)
+                    is ProbeOutcome.Unauthorized -> return recordUnauthorized()
+                    is ProbeOutcome.Unreachable -> Unit
+                }
             }
         }
 
         val remote = coroutineScope {
-            val ipv6Deferred = creds.endpoints.ipv6?.let { url ->
-                async { probeChannel(NativeChannel.IPV6_TLS, url, creds, remoteProbeTimeoutMs) }
+            val ipv6Deferred = if (preferred != NativeChannel.IPV6_TLS) {
+                creds.endpoints.ipv6?.let { url ->
+                    async { probeChannel(NativeChannel.IPV6_TLS, url, creds, remoteProbeTimeoutMs) }
+                }
+            } else {
+                null
             }
-            val tunnelDeferred = creds.endpoints.tunnel?.let { url ->
-                async { probeChannel(NativeChannel.TUNNEL, url, creds, remoteProbeTimeoutMs) }
+            val tunnelDeferred = if (preferred != NativeChannel.TUNNEL) {
+                creds.endpoints.tunnel?.let { url ->
+                    async { probeChannel(NativeChannel.TUNNEL, url, creds, remoteProbeTimeoutMs) }
+                }
+            } else {
+                null
             }
             listOfNotNull(ipv6Deferred?.await(), tunnelDeferred?.await())
         }
-
         // Security rule: any PinMismatch hard-blocks immediately (never fall back to another channel).
         remote.filterIsInstance<ProbeOutcome.PinMismatch>().firstOrNull()?.let {
             return recordPinMismatch(it.mismatch)
@@ -346,9 +395,93 @@ class EndpointManager(
         }
     }
 
-    /** Updates manual candidate endpoints (strictly HTTPS-only; never touches `pinnedCertSha256`). */
+    /**
+     * Explicitly switches the preferred connection channel (`null` = auto priority) and probes immediately.
+     */
+    suspend fun switchChannel(preferred: NativeChannel?): NativeEndpointStatus {
+        synchronized(lock) {
+            pinMismatch?.let { throw TransportException.PinMismatch(it) }
+        }
+        val creds = synchronized(lock) { cachedCredentials } ?: throw TransportException.Unpaired()
+
+        if (preferred == null) {
+            val cleared = creds.copy(preferredChannel = null)
+            store.save(cleared)
+            synchronized(lock) {
+                cachedCredentials = cleared
+            }
+            return reprobeConnection()
+        }
+
+        val targetUrl = creds.endpoints.url(preferred)?.takeIf { it.isNotBlank() }
+            ?: throw TransportException.Unreachable("尚未配置${preferred.displayName}地址")
+        if (preferred.requiresCertificatePin && creds.pinnedCertSha256.isNullOrBlank()) {
+            throw TransportException.MissingCertificatePin(preferred)
+        }
+
+        val timeout = if (preferred == NativeChannel.LAN_TLS) lanProbeTimeoutMs else remoteProbeTimeoutMs
+        return when (val outcome = probeChannel(preferred, targetUrl, creds, timeout)) {
+            is ProbeOutcome.Reachable -> {
+                val latest = synchronized(lock) {
+                    pinMismatch?.let { throw TransportException.PinMismatch(it) }
+                    cachedCredentials ?: throw TransportException.Unpaired()
+                }
+                val updated = latest.copy(preferredChannel = preferred)
+                store.save(updated)
+                synchronized(lock) {
+                    cachedCredentials = updated
+                }
+                activateChannel(outcome.channel, outcome.url)
+            }
+
+            is ProbeOutcome.PinMismatch -> {
+                recordPinMismatch(outcome.mismatch)
+                throw TransportException.PinMismatch(outcome.mismatch)
+            }
+
+            is ProbeOutcome.Unauthorized -> {
+                recordUnauthorized()
+                throw TransportException.HttpError(401, "设备凭据已失效，请重新配对")
+            }
+
+            is ProbeOutcome.Unreachable -> {
+                val message = when (preferred) {
+                    NativeChannel.LAN_TLS ->
+                        "无法连接到${preferred.displayName}，请确认手机与电脑在同一 Wi-Fi 且电脑端服务已开启"
+                    NativeChannel.IPV6_TLS ->
+                        "无法连接到${preferred.displayName}，请确认当前网络支持 IPv6 且电脑端服务已开启"
+                    NativeChannel.TUNNEL ->
+                        "无法连接到${preferred.displayName}，请确认网络连接正常且电脑端公网通道已开启"
+                }
+                throw TransportException.Unreachable(message)
+            }
+        }
+    }
+
+    /**
+     * Updates manual candidate endpoints (strictly HTTPS-only; adopts initial `certSha256` only when unpinned
+     * and strictly rejects overwriting an existing pin).
+     */
     suspend fun updateEndpoints(patch: EndpointUpdatePatch): NativeEndpointStatus {
         val current = synchronized(lock) { cachedCredentials } ?: throw TransportException.Unpaired()
+        val rawPin = if (patch.certSha256.present) {
+            patch.certSha256.value?.trim()?.takeIf { it.isNotEmpty() }
+        } else {
+            null
+        }
+        val nextPinnedCertSha256 = if (rawPin != null) {
+            if (CertificateFingerprint.parse(rawPin) == null) {
+                throw PairingPayloadException.InvalidFingerprint()
+            }
+            val existingPin = current.pinnedCertSha256
+            if (existingPin != null && existingPin != rawPin) {
+                throw TransportException.InvalidCertificatePin()
+            }
+            existingPin ?: rawPin
+        } else {
+            current.pinnedCertSha256
+        }
+
         val nextLan = if (patch.lanTls.present) {
             patch.lanTls.value?.trim()?.takeIf { it.isNotEmpty() }?.let {
                 PairingPayload.validateHttpsEndpoint(it, "lanTls")
@@ -374,17 +507,22 @@ class EndpointManager(
         if (nextCandidates.isEmpty) {
             throw TransportException.InvalidUrl("至少需要保留一个有效的 HTTPS 连接地址")
         }
-        if ((nextLan != null || nextIpv6 != null) && current.pinnedCertSha256.isNullOrBlank()) {
+        if ((nextLan != null || nextIpv6 != null) && nextPinnedCertSha256.isNullOrBlank()) {
             throw TransportException.MissingCertificatePin(
                 if (nextLan != null) NativeChannel.LAN_TLS else NativeChannel.IPV6_TLS,
             )
         }
-        val updated = current.copy(endpoints = nextCandidates)
+        val nextPreferredChannel = current.preferredChannel?.takeIf { pref ->
+            nextCandidates.url(pref) != null
+        }
+        val updated = current.copy(
+            pinnedCertSha256 = nextPinnedCertSha256,
+            endpoints = nextCandidates,
+            preferredChannel = nextPreferredChannel,
+        )
         store.save(updated)
         synchronized(lock) {
             cachedCredentials = updated
-            activeChannel = null
-            activeUrl = null
         }
         return reprobeConnection()
     }
@@ -441,22 +579,21 @@ class EndpointManager(
             runCatching { PairingPayload.validateHttpsEndpoint(it, "tunnelUrl") }.getOrNull()
         }
 
-        val merged = EndpointCandidates(
-            lanTls = remoteLan ?: creds.endpoints.lanTls,
-            ipv6 = remoteIpv6 ?: creds.endpoints.ipv6,
-            tunnel = remoteTunnel ?: creds.endpoints.tunnel,
-        )
-        if (merged == creds.endpoints) return
-
-        val updated = creds.copy(endpoints = merged) // pinnedCertSha256 untouched!
-        store.save(updated)
-        val status = synchronized(lock) {
-            if (cachedCredentials?.deviceToken == creds.deviceToken) {
-                cachedCredentials = updated
-            }
-            snapshotLocked()
-        }
-        emitStatus(status)
+        val updatedCredsAndStatus = synchronized(lock) {
+            val latest = cachedCredentials ?: return@synchronized null
+            if (pinMismatch != null || isUnauthorized) return@synchronized null
+            val merged = EndpointCandidates(
+                lanTls = remoteLan ?: latest.endpoints.lanTls,
+                ipv6 = remoteIpv6 ?: latest.endpoints.ipv6,
+                tunnel = remoteTunnel ?: latest.endpoints.tunnel,
+            )
+            if (merged == latest.endpoints) return@synchronized null
+            val updated = latest.copy(endpoints = merged) // pinnedCertSha256 untouched!
+            cachedCredentials = updated
+            updated to snapshotLocked()
+        } ?: return
+        store.save(updatedCredsAndStatus.first)
+        emitStatus(updatedCredsAndStatus.second)
     }
 
     private suspend fun probeChannel(
@@ -490,14 +627,18 @@ class EndpointManager(
     }
 
     private fun activateChannel(channel: NativeChannel, url: String): NativeEndpointStatus {
-        val status = synchronized(lock) {
+        val (status, changed) = synchronized(lock) {
+            val didChange = activeChannel != channel || activeUrl != url
             activeChannel = channel
             activeUrl = url
             pinMismatch = null
             isUnauthorized = false
-            snapshotLocked()
+            snapshotLocked() to didChange
         }
         emitStatus(status)
+        if (changed) {
+            onActiveChannelChanged?.invoke()
+        }
         scope.launch { syncCandidatesFromSettings() }
         return status
     }
@@ -530,8 +671,9 @@ class EndpointManager(
         val creds = cachedCredentials
         return NativeEndpointStatus(
             paired = creds != null,
-            activeChannel = activeChannel,
-            activeUrl = activeUrl,
+            activeChannel = if (pinMismatch == null) activeChannel else null,
+            activeUrl = if (pinMismatch == null) activeUrl else null,
+            preferredChannel = creds?.preferredChannel,
             certSha256 = creds?.pinnedCertSha256,
             candidates = creds?.endpoints ?: EndpointCandidates(),
             pinMismatch = pinMismatch,

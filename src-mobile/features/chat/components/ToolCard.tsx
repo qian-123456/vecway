@@ -15,7 +15,8 @@ import {
 import { memo, useState } from "react";
 import { copyText } from "../../../core/lib/format";
 import type { ToolItem } from "../../../core/types";
-import { Button, DiffView, looksLikeDiff, Markdown, Spinner, toast } from "../../../ui";
+import { Button, DiffView, looksLikeDiff, Spinner, toast } from "../../../ui";
+import { Markdown } from "../../../ui/Markdown";
 import { prettyArgs, toolLine, type ToolKind } from "../lib/turns";
 
 /** Open state survives remounts of the row. */

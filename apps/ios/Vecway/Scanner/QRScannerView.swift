@@ -27,6 +27,9 @@ struct QRScannerView: View {
     @State private var pairingError: String?
     @State private var isPairing: Bool = false
     @State private var showFullFingerprint: Bool = false
+    @State private var lastFailedRawQR: String?
+    @State private var lastFailedScanAt: Date = .distantPast
+    private static let failedScanDebounceInterval: TimeInterval = 2.5
 
     init(
         controller: AppController,
@@ -111,6 +114,8 @@ struct QRScannerView: View {
                 Button {
                     parseError = nil
                     pairingError = nil
+                    lastFailedRawQR = nil
+                    lastFailedScanAt = .distantPast
                     showManualInput = true
                 } label: {
                     Label("用域名或链接配对", systemImage: "globe")
@@ -466,11 +471,20 @@ struct QRScannerView: View {
         guard parsedPayload == nil else { return }
         do {
             let payload = try PairingPayload.parse(raw)
+            lastFailedRawQR = nil
+            lastFailedScanAt = .distantPast
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             parseError = nil
             pairingError = nil
             parsedPayload = payload
         } catch {
+            let now = Date()
+            if raw == lastFailedRawQR && now.timeIntervalSince(lastFailedScanAt) < Self.failedScanDebounceInterval {
+                lastFailedScanAt = now
+                return
+            }
+            lastFailedRawQR = raw
+            lastFailedScanAt = now
             UINotificationFeedbackGenerator().notificationOccurred(.error)
             parseError = error.localizedDescription
         }

@@ -1,5 +1,5 @@
 import type { HighlightResult, HLJSApi, LanguageFn } from "highlight.js";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Options } from "react-markdown";
 
 type PluggableList = NonNullable<Options["rehypePlugins"]>;
@@ -34,8 +34,135 @@ interface HastNode {
 
 const NO_PLUGINS: PluggableList = [];
 
-let loaded: PluggableList | null = null;
-let loading: Promise<PluggableList> | null = null;
+type CanonicalLanguage =
+	| "bash"
+	| "css"
+	| "diff"
+	| "go"
+	| "ini"
+	| "javascript"
+	| "json"
+	| "markdown"
+	| "python"
+	| "rust"
+	| "shell"
+	| "sql"
+	| "typescript"
+	| "xml"
+	| "yaml"
+	| "plaintext";
+
+const LANGUAGE_LOADERS: Record<CanonicalLanguage, () => Promise<{ default: LanguageFn }>> = {
+	bash: () => import("highlight.js/lib/languages/bash"),
+	css: () => import("highlight.js/lib/languages/css"),
+	diff: () => import("highlight.js/lib/languages/diff"),
+	go: () => import("highlight.js/lib/languages/go"),
+	ini: () => import("highlight.js/lib/languages/ini"),
+	javascript: () => import("highlight.js/lib/languages/javascript"),
+	json: () => import("highlight.js/lib/languages/json"),
+	markdown: () => import("highlight.js/lib/languages/markdown"),
+	python: () => import("highlight.js/lib/languages/python"),
+	rust: () => import("highlight.js/lib/languages/rust"),
+	shell: () => import("highlight.js/lib/languages/shell"),
+	sql: () => import("highlight.js/lib/languages/sql"),
+	typescript: () => import("highlight.js/lib/languages/typescript"),
+	xml: () => import("highlight.js/lib/languages/xml"),
+	yaml: () => import("highlight.js/lib/languages/yaml"),
+	plaintext: () => import("highlight.js/lib/languages/plaintext"),
+};
+
+const LANGUAGE_ALIASES: Record<string, CanonicalLanguage> = {
+	bash: "bash",
+	sh: "bash",
+	zsh: "bash",
+	css: "css",
+	diff: "diff",
+	patch: "diff",
+	go: "go",
+	golang: "go",
+	ini: "ini",
+	toml: "ini",
+	javascript: "javascript",
+	js: "javascript",
+	jsx: "javascript",
+	mjs: "javascript",
+	cjs: "javascript",
+	json: "json",
+	markdown: "markdown",
+	md: "markdown",
+	mkdown: "markdown",
+	mkd: "markdown",
+	python: "python",
+	py: "python",
+	gyp: "python",
+	ipython: "python",
+	rust: "rust",
+	rs: "rust",
+	shell: "shell",
+	console: "shell",
+	shellsession: "shell",
+	sql: "sql",
+	typescript: "typescript",
+	ts: "typescript",
+	tsx: "typescript",
+	mts: "typescript",
+	cts: "typescript",
+	xml: "xml",
+	html: "xml",
+	xhtml: "xml",
+	rss: "xml",
+	atom: "xml",
+	xjb: "xml",
+	xsd: "xml",
+	xsl: "xml",
+	plist: "xml",
+	wsf: "xml",
+	svg: "xml",
+	yaml: "yaml",
+	yml: "yaml",
+	plaintext: "plaintext",
+	text: "plaintext",
+	txt: "plaintext",
+};
+
+const LANGUAGE_DEPS: Partial<Record<CanonicalLanguage, readonly CanonicalLanguage[]>> = {
+	shell: ["bash"],
+	markdown: ["xml"],
+};
+
+const FENCE_LANG_RE =
+	/^[^\S\r\n]*(?:>[^\S\r\n]*)*(?:(?:[-+*]|\d+[.)])[^\S\r\n]+)?(?:`{3,}|~{3,})[^\S\r\n]*([^\s`~]+)/gm;
+
+let hljsInstance: HLJSApi | null = null;
+let corePromise: Promise<HLJSApi> | null = null;
+const registered = new Set<CanonicalLanguage>();
+const langPromises = new Map<CanonicalLanguage, Promise<void>>();
+let registryVersion = 0;
+let cachedPluginVersion = -1;
+let cachedPlugins: PluggableList = NO_PLUGINS;
+
+function resolveCanonicalLanguage(raw: string): CanonicalLanguage | null {
+	const normalized = raw.trim().toLowerCase().replace(/^\.+/, "");
+	return LANGUAGE_ALIASES[normalized] ?? null;
+}
+
+/** Lightweight scan for fenced code block languages actually referenced in `text`. */
+export function detectHighlightLanguages(text: string): CanonicalLanguage[] {
+	if (!text || (!text.includes("```") && !text.includes("~~~"))) return [];
+	const found = new Set<CanonicalLanguage>();
+	FENCE_LANG_RE.lastIndex = 0;
+	let match: RegExpExecArray | null;
+	while ((match = FENCE_LANG_RE.exec(text)) !== null) {
+		const lang = resolveCanonicalLanguage(match[1] ?? "");
+		if (!lang) continue;
+		found.add(lang);
+		const deps = LANGUAGE_DEPS[lang];
+		if (deps) {
+			for (const dep of deps) found.add(dep);
+		}
+	}
+	return found.size > 0 ? Array.from(found).sort() : [];
+}
 
 function isHastNode(value: unknown): value is HastNode {
 	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
@@ -130,7 +257,9 @@ function createRehypeHighlightPlugin(hljs: HLJSApi): PluggableList[number] {
 		return (tree: unknown) => {
 			if (!isHastNode(tree)) return;
 			visitCodeBlocks(tree, null, (codeNode) => {
-				const lang = extractLanguage(codeNode);
+				const rawLang = extractLanguage(codeNode);
+				if (!rawLang) return;
+				const lang = hljs.getLanguage(rawLang) ? rawLang : resolveCanonicalLanguage(rawLang);
 				if (!lang || !hljs.getLanguage(lang)) return;
 				const text = extractText(codeNode);
 				let result: HighlightResult;
@@ -154,88 +283,85 @@ function createRehypeHighlightPlugin(hljs: HLJSApi): PluggableList[number] {
 	};
 }
 
-/** Loads highlight.js core and a small set of languages into a separate chunk, once (no lowlight/common). */
-function load(): Promise<PluggableList> {
-	loading ??= (async () => {
-		const [
-			{ default: hljsCore },
-			{ default: bash },
-			{ default: css },
-			{ default: diff },
-			{ default: go },
-			{ default: ini },
-			{ default: javascript },
-			{ default: json },
-			{ default: markdown },
-			{ default: python },
-			{ default: rust },
-			{ default: shell },
-			{ default: sql },
-			{ default: typescript },
-			{ default: xml },
-			{ default: yaml },
-			{ default: plaintext },
-		] = await Promise.all([
-			import("highlight.js/lib/core"),
-			import("highlight.js/lib/languages/bash"),
-			import("highlight.js/lib/languages/css"),
-			import("highlight.js/lib/languages/diff"),
-			import("highlight.js/lib/languages/go"),
-			import("highlight.js/lib/languages/ini"),
-			import("highlight.js/lib/languages/javascript"),
-			import("highlight.js/lib/languages/json"),
-			import("highlight.js/lib/languages/markdown"),
-			import("highlight.js/lib/languages/python"),
-			import("highlight.js/lib/languages/rust"),
-			import("highlight.js/lib/languages/shell"),
-			import("highlight.js/lib/languages/sql"),
-			import("highlight.js/lib/languages/typescript"),
-			import("highlight.js/lib/languages/xml"),
-			import("highlight.js/lib/languages/yaml"),
-			import("highlight.js/lib/languages/plaintext"),
-		]);
-		const hljs = hljsCore.newInstance();
-		const languages: ReadonlyArray<readonly [string, LanguageFn]> = [
-			["bash", bash],
-			["css", css],
-			["diff", diff],
-			["go", go],
-			["ini", ini],
-			["javascript", javascript],
-			["json", json],
-			["markdown", markdown],
-			["python", python],
-			["rust", rust],
-			["shell", shell],
-			["sql", sql],
-			["typescript", typescript],
-			["xml", xml],
-			["yaml", yaml],
-			["plaintext", plaintext],
-		];
-		for (const [name, grammar] of languages) {
-			hljs.registerLanguage(name, grammar);
+function currentPlugins(): PluggableList {
+	if (!hljsInstance) return NO_PLUGINS;
+	if (cachedPluginVersion !== registryVersion) {
+		cachedPlugins = [createRehypeHighlightPlugin(hljsInstance)];
+		cachedPluginVersion = registryVersion;
+	}
+	return cachedPlugins;
+}
+
+function ensureCore(): Promise<HLJSApi> {
+	if (hljsInstance) return Promise.resolve(hljsInstance);
+	corePromise ??= import("highlight.js/lib/core")
+		.then(({ default: hljsCore }) => {
+			hljsInstance = hljsCore.newInstance();
+			return hljsInstance;
+		})
+		.catch((err) => {
+			corePromise = null;
+			throw err;
+		});
+	return corePromise;
+}
+
+/** Loads highlight.js core + only the specific language grammar(s) needed by the rendered block. */
+async function loadLanguages(langs: readonly CanonicalLanguage[]): Promise<PluggableList> {
+	if (langs.length === 0) return NO_PLUGINS;
+	const hljs = await ensureCore();
+	const pending: Promise<void>[] = [];
+	for (const lang of langs) {
+		if (registered.has(lang)) continue;
+		let job = langPromises.get(lang);
+		if (!job) {
+			job = LANGUAGE_LOADERS[lang]()
+				.then(({ default: grammar }) => {
+					if (!registered.has(lang)) {
+						hljs.registerLanguage(lang, grammar);
+						registered.add(lang);
+						registryVersion++;
+					}
+				})
+				.finally(() => {
+					langPromises.delete(lang);
+				});
+			langPromises.set(lang, job);
 		}
-		const plugins: PluggableList = [createRehypeHighlightPlugin(hljs)];
-		loaded = plugins;
-		return plugins;
-	})().catch((err) => {
-		loading = null;
-		throw err;
-	});
-	return loading;
+		pending.push(job);
+	}
+	if (pending.length > 0) await Promise.all(pending);
+	return currentPlugins();
+}
+
+function allReady(langs: readonly CanonicalLanguage[]): boolean {
+	if (!hljsInstance || langs.length === 0) return false;
+	for (const lang of langs) {
+		if (!registered.has(lang)) return false;
+	}
+	return true;
 }
 
 /**
- * Returns a stable rehype plugin list: empty until highlighting is enabled and loaded,
- * then the module-level highlight plugin list (same identity for every caller).
+ * Returns a stable rehype highlight plugin list on demand:
+ * - Loads ZERO chunks when disabled or when `text` contains no fenced code block with a supported language.
+ * - Loads only highlight.js core + the specific grammar(s) present in `text`.
  */
-export function useHighlightPlugins(enabled: boolean): PluggableList {
-	const [plugins, setPlugins] = useState<PluggableList>(loaded ?? NO_PLUGINS);
+export function useHighlightPlugins(enabled: boolean, text = ""): PluggableList {
+	const langs = useMemo(() => (enabled ? detectHighlightLanguages(text) : []), [enabled, text]);
+	const langsKey = langs.join(",");
+	const readyNow = enabled && langs.length > 0 && allReady(langs);
+	const [plugins, setPlugins] = useState<PluggableList>(() => (readyNow ? currentPlugins() : NO_PLUGINS));
+
 	useEffect(() => {
-		if (!enabled || loaded) return;
+		if (!enabled || !langsKey) return;
+		const needed = langsKey.split(",") as CanonicalLanguage[];
+		if (allReady(needed)) {
+			setPlugins(currentPlugins());
+			return;
+		}
 		let alive = true;
-		void load()
+		void loadLanguages(needed)
 			.then((p) => {
 				if (alive) setPlugins(p);
 			})
@@ -243,6 +369,8 @@ export function useHighlightPlugins(enabled: boolean): PluggableList {
 		return () => {
 			alive = false;
 		};
-	}, [enabled]);
-	return enabled ? (loaded ?? plugins) : NO_PLUGINS;
+	}, [enabled, langsKey]);
+
+	if (!enabled || langs.length === 0) return NO_PLUGINS;
+	return readyNow ? currentPlugins() : plugins;
 }

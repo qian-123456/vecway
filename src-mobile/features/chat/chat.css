@@ -13,11 +13,6 @@
 	line-height: 1.66;
 	overflow-wrap: anywhere;
 }
-.m-composer-input {
-	field-sizing: content;
-	min-height: 24px;
-	max-height: 140px;
-}
 /* Collapsible tool timeline rail (Direction A) */
 .m-timeline {
 	position: relative;

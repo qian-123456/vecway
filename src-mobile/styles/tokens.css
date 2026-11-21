@@ -57,6 +57,7 @@
 	/* Written by app/viewport.ts (only on viewport resize/scroll): visual viewport height / keyboard inset. */
 	--m-vh: 100dvh;
 	--m-kb: 0px;
+	--m-kb-dur: 0ms;
 
 	--m-assistant-bg: transparent;
 	/* Desktop session-tree parity, resolved against the current scheme. */
@@ -138,7 +139,7 @@ html[data-scheme="light"] {
 	--m-border-strong: rgb(20 20 26 / 0.16);
 	--m-text: #17191f;
 	--m-text-2: #4b505c;
-	--m-text-3: #767c8a;
+	--m-text-3: #5d6370;
 	--m-accent: #2563eb;
 	--m-accent-text: #ffffff;
 	--m-accent-soft: color-mix(in srgb, var(--m-accent) 13%, var(--m-card));
@@ -185,7 +186,7 @@ html[data-scheme="light"][data-theme="pure-light"] {
 	--m-card: #ffffff;
 	--m-text: #1f2328;
 	--m-text-2: #525b66;
-	--m-text-3: #7d8692;
+	--m-text-3: #5e6773;
 	--m-accent: #0969da;
 	--m-accent-text: #ffffff;
 	--m-bubble-user-bg: #e7f1ff;
@@ -200,7 +201,7 @@ html[data-scheme="light"][data-theme="warm-sand"] {
 	--m-card: #ffffff;
 	--m-text: #2b2823;
 	--m-text-2: #5d574e;
-	--m-text-3: #878073;
+	--m-text-3: #666055;
 	--m-accent: #b03e22;
 	--m-accent-text: #ffffff;
 	--m-bubble-user-bg: #f4e6df;
@@ -214,8 +215,8 @@ html[data-scheme="light"][data-theme="sakura"] {
 	--m-surface-2: #e4d1d8;
 	--m-card: #fffdfe;
 	--m-text: #3a222b;
-	--m-text-2: #6d4f5b;
-	--m-text-3: #997986;
+	--m-text-2: #60434f;
+	--m-text-3: #755764;
 	--m-accent: #c93b6b;
 	--m-accent-text: #ffffff;
 	--m-bubble-user-bg: #f8e1ea;
@@ -229,8 +230,8 @@ html[data-scheme="light"][data-theme="glacier"] {
 	--m-surface-2: #cfe1ee;
 	--m-card: #fcfeff;
 	--m-text: #1b3242;
-	--m-text-2: #4b677c;
-	--m-text-3: #7b96aa;
+	--m-text-2: #3e596e;
+	--m-text-3: #506c81;
 	--m-accent: #0d94bd;
 	--m-accent-text: #ffffff;
 	--m-bubble-user-bg: #def0f8;
@@ -244,8 +245,8 @@ html[data-scheme="light"][data-theme="lavender"] {
 	--m-surface-2: #d8ceec;
 	--m-card: #fdfcff;
 	--m-text: #38304f;
-	--m-text-2: #62587e;
-	--m-text-3: #8f86ab;
+	--m-text-2: #554b70;
+	--m-text-3: #685e85;
 	--m-accent: #7c5cd6;
 	--m-accent-text: #ffffff;
 	--m-bubble-user-bg: #eae2fa;
@@ -259,8 +260,8 @@ html[data-scheme="light"][data-theme="catppuccin-latte"] {
 	--m-surface-2: #ccd0da;
 	--m-card: #f9fafc;
 	--m-text: #4c4f69;
-	--m-text-2: #65687e;
-	--m-text-3: #8c8fa1;
+	--m-text-2: #53566d;
+	--m-text-3: #5f6278;
 	--m-accent: #1e66f5;
 	--m-accent-text: #ffffff;
 	--m-danger: #d20f39;
@@ -277,8 +278,8 @@ html[data-scheme="light"][data-theme="everforest-light"] {
 	--m-surface-2: #ded7bb;
 	--m-card: #fffdf5;
 	--m-text: #434f55;
-	--m-text-2: #606f75;
-	--m-text-3: #87948c;
+	--m-text-2: #4f5e64;
+	--m-text-3: #596862;
 	--m-accent: #5f7c2b;
 	--m-accent-text: #ffffff;
 	--m-bubble-user-bg: #e7efda;

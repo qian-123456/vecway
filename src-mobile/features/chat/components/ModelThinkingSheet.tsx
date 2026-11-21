@@ -1,5 +1,5 @@
 import { Check, ChevronLeft, Search, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage } from "../../../core/api";
 import { BottomSheet, Button, EmptyState, IconButton, ListGroup, ListRow, Segmented, Spinner, toast } from "../../../ui";
 import {
@@ -40,24 +40,28 @@ export function ModelThinkingSheet({
 	const [q, setQ] = useState("");
 	const [provider, setProvider] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
-
+	const initializedProvider = useRef(false);
 	const models = data?.models ?? [];
 	const current = data?.current ?? null;
 	const groups = useMemo(() => groupByProvider(models), [models]);
 	const curOpt = data ? currentModelOpt(data.models, data.current) : null;
 
 	useEffect(() => {
-		if (open) setQ("");
+		if (open) {
+			setQ("");
+		} else {
+			initializedProvider.current = false;
+		}
 	}, [open]);
 
-	// Each load starts inside the current model's provider (the usual switch is a sibling model).
+	// Initialize provider view once per open so subsequent model/thinking patches keep user's navigation stable.
 	useEffect(() => {
-		if (!data) return;
+		if (!open || !data || initializedProvider.current) return;
+		initializedProvider.current = true;
 		const cur = currentModelOpt(data.models, data.current);
 		const only = groupByProvider(data.models);
 		setProvider(cur?.provider ?? (only.length === 1 ? only[0].provider : null));
-	}, [data]);
-
+	}, [open, data]);
 	const searching = q.trim() !== "";
 	const results = useMemo(() => (searching ? filterModels(models, q) : []), [models, q, searching]);
 	const activeModels = groups.find((g) => g.provider === provider)?.models ?? null;
@@ -71,8 +75,8 @@ export function ModelThinkingSheet({
 		setBusy(true);
 		try {
 			const r = await source.setModel(m);
+			patch({ ...r, current: r.current ?? { provider: m.provider, id: m.id } });
 			onFacts({ ...r, model: `${m.provider}/${m.id}` });
-			onClose();
 		} catch (e) {
 			toast(`切换模型失败：${errorMessage(e)}`, { kind: "error" });
 		} finally {
@@ -214,12 +218,19 @@ export function ModelThinkingSheet({
 			title="模型"
 			subtitle={curOpt ? modelLabel(curOpt) : current ? `${current.provider ? `${current.provider}/` : ""}${current.id}` : undefined}
 			fullHeight
-			headerRight={!searching && activeModels && groups.length > 1 ? (
-				<Button variant="ghost" onClick={() => setProvider(null)} className="mr-auto gap-1 whitespace-nowrap text-m-accent">
-					<ChevronLeft size={22} aria-hidden />
-					全部供应商
-				</Button>
-			) : undefined}
+			headerRight={
+				<>
+					{!searching && activeModels && groups.length > 1 && (
+						<Button variant="ghost" onClick={() => setProvider(null)} className="mr-auto gap-1 whitespace-nowrap text-m-accent">
+							<ChevronLeft size={22} aria-hidden />
+							全部供应商
+						</Button>
+					)}
+					<Button variant="accent" size="sm" onClick={onClose} className="whitespace-nowrap">
+						完成
+					</Button>
+				</>
+			}
 		>
 			{body}
 		</BottomSheet>

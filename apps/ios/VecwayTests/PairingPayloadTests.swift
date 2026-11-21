@@ -183,9 +183,12 @@ final class PairingPayloadTests: XCTestCase {
         XCTAssertNil(payload.certSha256)
         XCTAssertEqual(payload.orderedPairingAttempts().map(\.channel), [.tunnel])
 
-        // Plaintext http:// without `#app=` MUST still be rejected.
+        // Plaintext http:// without `#app=` MUST still be rejected with clear guidance.
         XCTAssertThrowsError(try PairingPayload.parse("http://omp.example.com/pair?code=DomainCode_1")) { error in
             XCTAssertEqual(error as? PairingPayloadError, .missingAppPayload)
+            let description = error.localizedDescription
+            XCTAssertTrue(description.contains("局域网加密"), "Unexpected description: \(description)")
+            XCTAssertTrue(description.contains("用域名或链接配对"), "Unexpected description: \(description)")
         }
     }
 

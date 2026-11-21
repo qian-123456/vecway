@@ -86,49 +86,100 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendable 
             return
         }
 
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir),
-              !isDir.boolValue else {
-            if relativePath == "index.html" {
-                deliverMissingBundlePage(to: urlSchemeTask, url: url)
-            } else {
-                deliverImmediate(
-                    to: urlSchemeTask,
-                    url: url,
-                    status: 404,
-                    headers: ["Content-Type": "text/plain; charset=utf-8"],
-                    body: Data("Not Found".utf8)
-                )
-            }
-            return
-        }
-
-        guard let data = try? Data(contentsOf: candidate) else {
-            deliverImmediate(
-                to: urlSchemeTask,
-                url: url,
-                status: 500,
-                headers: ["Content-Type": "text/plain; charset=utf-8"],
-                body: Data("Failed to read bundled asset".utf8)
-            )
-            return
-        }
-
         let mime = Self.mimeType(for: candidate.pathExtension)
         let cacheControl = relativePath.hasPrefix("assets/")
             ? "public, max-age=31536000, immutable"
             : "no-cache"
-        deliverImmediate(
-            to: urlSchemeTask,
-            url: url,
-            status: 200,
-            headers: [
+        let isIndex = relativePath == "index.html"
+
+        let task = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            if Task.isCancelled {
+                await MainActor.run { self.removeTask(taskID) }
+                return
+            }
+
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir) && !isDir.boolValue
+            if Task.isCancelled {
+                await MainActor.run { self.removeTask(taskID) }
+                return
+            }
+
+            guard exists else {
+                if isIndex {
+                    let payload = Self.missingBundleResponsePayload()
+                    await MainActor.run {
+                        self.deliverResponse(
+                            to: urlSchemeTask,
+                            taskID: taskID,
+                            url: url,
+                            status: payload.status,
+                            headers: payload.headers,
+                            body: payload.body,
+                            registerCheck: true
+                        )
+                    }
+                } else {
+                    await MainActor.run {
+                        self.deliverResponse(
+                            to: urlSchemeTask,
+                            taskID: taskID,
+                            url: url,
+                            status: 404,
+                            headers: ["Content-Type": "text/plain; charset=utf-8"],
+                            body: Data("Not Found".utf8),
+                            registerCheck: true
+                        )
+                    }
+                }
+                return
+            }
+
+            let data: Data
+            do {
+                data = try Data(contentsOf: candidate, options: .mappedIfSafe)
+            } catch {
+                await MainActor.run {
+                    self.deliverResponse(
+                        to: urlSchemeTask,
+                        taskID: taskID,
+                        url: url,
+                        status: 500,
+                        headers: ["Content-Type": "text/plain; charset=utf-8"],
+                        body: Data("Failed to read bundled asset".utf8),
+                        registerCheck: true
+                    )
+                }
+                return
+            }
+
+            if Task.isCancelled {
+                await MainActor.run { self.removeTask(taskID) }
+                return
+            }
+
+            let headers: [String: String] = [
                 "Content-Type": mime,
                 "Content-Length": String(data.count),
                 "Cache-Control": cacheControl,
-            ],
-            body: data
-        )
+            ]
+            await MainActor.run {
+                self.deliverResponse(
+                    to: urlSchemeTask,
+                    taskID: taskID,
+                    url: url,
+                    status: 200,
+                    headers: headers,
+                    body: data,
+                    registerCheck: true
+                )
+            }
+        }
+
+        lock.lock()
+        activeTasks[taskID] = task
+        lock.unlock()
     }
 
     // MARK: - Authenticated GET /api/* Forwarding (e.g. <img> media)
@@ -297,7 +348,7 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendable 
         lock.unlock()
     }
 
-    private func deliverMissingBundlePage(to urlSchemeTask: WKURLSchemeTask, url: URL) {
+    nonisolated private static func missingBundleResponsePayload() -> (status: Int, headers: [String: String], body: Data) {
         let html = """
         <!doctype html>
         <html lang="zh-CN">
@@ -326,9 +377,7 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendable 
         </html>
         """
         let data = Data(html.utf8)
-        deliverImmediate(
-            to: urlSchemeTask,
-            url: url,
+        return (
             status: 200,
             headers: [
                 "Content-Type": "text/html; charset=utf-8",
@@ -336,6 +385,17 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, @unchecked Sendable 
                 "Cache-Control": "no-cache",
             ],
             body: data
+        )
+    }
+
+    private func deliverMissingBundlePage(to urlSchemeTask: WKURLSchemeTask, url: URL) {
+        let payload = Self.missingBundleResponsePayload()
+        deliverImmediate(
+            to: urlSchemeTask,
+            url: url,
+            status: payload.status,
+            headers: payload.headers,
+            body: payload.body
         )
     }
 

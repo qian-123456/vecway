@@ -8,17 +8,20 @@ public struct StoredCredentials: Codable, Equatable, Sendable {
     public var pinnedCertSha256: String?
     public var endpoints: EndpointCandidates
     public var preferredTarget: String?
+    public var preferredChannel: NativeChannel?
 
     public init(
         deviceToken: String,
         pinnedCertSha256: String?,
         endpoints: EndpointCandidates,
-        preferredTarget: String? = nil
+        preferredTarget: String? = nil,
+        preferredChannel: NativeChannel? = nil
     ) {
         self.deviceToken = deviceToken
         self.pinnedCertSha256 = pinnedCertSha256
         self.endpoints = endpoints
         self.preferredTarget = preferredTarget
+        self.preferredChannel = preferredChannel
     }
 }
 

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	bytesToBase64,
 	type NativeBridge,
+	type NativeChannel,
 	type NativeEndpointStatus,
 } from "../../../core/nativeBridge";
 import { stopEvents } from "../../../core/sse";
@@ -56,11 +57,31 @@ describe("ConnectionSheet native mode", () => {
 	function installBridge(initialStatus: NativeEndpointStatus) {
 		let current = initialStatus;
 		const getConnectionStatus = vi.fn(async () => current);
-		const updateEndpoints = vi.fn(async (endpoints: Partial<NativeEndpointStatus["candidates"]>) => {
+		const updateEndpoints = vi.fn(async (endpoints: Partial<NativeEndpointStatus["candidates"]> & { certSha256?: string }) => {
+			const { certSha256, ...candidatePatch } = endpoints;
 			current = {
 				...current,
-				activeUrl: endpoints.lanTls || current.activeUrl,
-				candidates: { ...current.candidates, ...endpoints },
+				activeUrl: candidatePatch.lanTls || current.activeUrl,
+				certSha256: current.certSha256 ?? certSha256 ?? null,
+				candidates: { ...current.candidates, ...candidatePatch },
+			};
+			return current;
+		});
+		const switchChannel = vi.fn(async (channel: NativeChannel | null) => {
+			const nextChannel: NativeChannel | null =
+				channel ?? (current.candidates.lanTls && current.certSha256 ? "lan_tls" : current.candidates.tunnel ? "tunnel" : null);
+			current = {
+				...current,
+				preferredChannel: channel,
+				activeChannel: nextChannel,
+				activeUrl:
+					nextChannel === "lan_tls"
+						? current.candidates.lanTls ?? current.activeUrl
+						: nextChannel === "tunnel"
+							? current.candidates.tunnel ?? current.activeUrl
+							: nextChannel === "ipv6_tls"
+								? current.candidates.ipv6 ?? current.activeUrl
+								: null,
 			};
 			return current;
 		});
@@ -87,10 +108,11 @@ describe("ConnectionSheet native mode", () => {
 			openPairScanner,
 			updateEndpoints,
 			reprobeConnection,
+			switchChannel,
 			unpair,
 		};
 		window.__VECWAY_NATIVE__ = bridge;
-		return { bridge, getConnectionStatus, updateEndpoints, reprobeConnection, openPairScanner, unpair };
+		return { bridge, getConnectionStatus, updateEndpoints, switchChannel, reprobeConnection, openPairScanner, unpair };
 	}
 
 	it("hides location.origin (vecway://app) and shows active channel, active URL, and full cert fingerprint", async () => {
@@ -181,5 +203,62 @@ describe("ConnectionSheet native mode", () => {
 		fireEvent.click(within(confirmDialog).getByRole("button", { name: "解除配对" }));
 		await waitFor(() => expect(unpair).toHaveBeenCalledTimes(1));
 		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it("switches between tunnel, LAN, and auto channels without rescanning", async () => {
+		const { switchChannel } = installBridge({
+			paired: true,
+			activeChannel: "tunnel",
+			preferredChannel: "tunnel",
+			activeUrl: "https://omp.example.com",
+			certSha256: FULL_FINGERPRINT,
+			candidates: {
+				lanTls: "https://192.168.1.10:7790",
+				tunnel: "https://omp.example.com",
+			},
+		});
+
+		render(<ConnectionSheet open onClose={() => {}} />);
+		const lanRadio = await screen.findByRole("radio", { name: "局域网直连" });
+		fireEvent.click(lanRadio);
+		await waitFor(() => expect(switchChannel).toHaveBeenCalledWith("lan_tls"));
+		expect(await screen.findByText("局域网 TLS")).toBeDefined();
+
+		fireEvent.click(screen.getByRole("radio", { name: "自动优选" }));
+		await waitFor(() => expect(switchChannel).toHaveBeenCalledWith(null));
+	});
+
+	it("offers one-tap LAN adoption for domain-paired users and unlocks manual LAN+cert entry", async () => {
+		const { updateEndpoints, switchChannel } = installBridge({
+			paired: true,
+			activeChannel: "tunnel",
+			preferredChannel: null,
+			activeUrl: "https://omp.example.com",
+			certSha256: null,
+			candidates: { tunnel: "https://omp.example.com" },
+		});
+
+		render(
+			<ConnectionSheet
+				open
+				onClose={() => {}}
+				mobile={{ lanTlsUrl: "https://192.168.1.10:7790", certSha256: FULL_FINGERPRINT }}
+			/>,
+		);
+
+		// LAN input and optional SHA-256 fingerprint input are unlocked (never forcing QR rescan)
+		const lanInput = (await screen.findByLabelText("局域网 TLS 地址")) as HTMLInputElement;
+		expect(lanInput.disabled).toBe(false);
+		expect(screen.getByLabelText("局域网证书指纹 (SHA-256，可选)")).toBeDefined();
+
+		// One-tap trust & switch adopts the desktop LAN TLS endpoint and cert fingerprint
+		fireEvent.click(screen.getByRole("button", { name: "信任并切换至局域网直连" }));
+		await waitFor(() =>
+			expect(updateEndpoints).toHaveBeenCalledWith({
+				lanTls: "https://192.168.1.10:7790",
+				certSha256: FULL_FINGERPRINT,
+			}),
+		);
+		await waitFor(() => expect(switchChannel).toHaveBeenCalledWith("lan_tls"));
 	});
 });

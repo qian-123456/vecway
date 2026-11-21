@@ -8,6 +8,7 @@
 
 use std::borrow::Cow;
 
+use axum::body::Body;
 use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 
@@ -51,6 +52,13 @@ fn mime_of(path: &str) -> &'static str {
     }
 }
 
+fn cow_to_body(body: Cow<'static, [u8]>) -> Body {
+    match body {
+        Cow::Borrowed(bytes) => Body::from(bytes),
+        Cow::Owned(vec) => Body::from(vec),
+    }
+}
+
 fn reply(
     mime: &'static str,
     cache: &'static str,
@@ -63,7 +71,7 @@ fn reply(
             (header::CACHE_CONTROL, cache),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
-        body.into_owned(),
+        cow_to_body(body),
     )
         .into_response();
     for (k, v) in extra {
@@ -213,5 +221,34 @@ mod tests {
             "application/json; charset=utf-8"
         );
         assert_eq!(mime_of("noext"), "application/octet-stream");
+    }
+
+    #[tokio::test]
+    async fn borrowed_static_assets_are_zero_copy_and_owned_assets_work() {
+        use http_body_util::BodyExt as _;
+
+        static STATIC_JS: &[u8] = b"console.log('zero-copy-check');";
+        let res = static_from("assets/zero-copy.js", |_| Some(Cow::Borrowed(STATIC_JS)));
+        assert_eq!(res.status(), StatusCode::OK);
+        let frame = res
+            .into_body()
+            .frame()
+            .await
+            .expect("body frame")
+            .expect("ok frame");
+        let data = frame.into_data().expect("data frame");
+        assert_eq!(&data[..], STATIC_JS);
+        assert_eq!(
+            data.as_ptr(),
+            STATIC_JS.as_ptr(),
+            "Cow::Borrowed must reuse the static slice without copying"
+        );
+
+        let owned_res = static_from("assets/owned.js", |_| {
+            Some(Cow::Owned(b"console.log('owned');".to_vec()))
+        });
+        assert_eq!(owned_res.status(), StatusCode::OK);
+        let owned_bytes = owned_res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&owned_bytes[..], b"console.log('owned');");
     }
 }

@@ -8,6 +8,7 @@ public struct NativeEndpointStatus: Codable, Equatable, Sendable {
     public let paired: Bool
     public let activeChannel: NativeChannel?
     public let activeUrl: String?
+    public let preferredChannel: NativeChannel?
     public let certSha256: String?
     public let candidates: EndpointCandidates
     public let pinMismatch: NativePinMismatch?
@@ -16,6 +17,7 @@ public struct NativeEndpointStatus: Codable, Equatable, Sendable {
         paired: Bool,
         activeChannel: NativeChannel? = nil,
         activeUrl: String? = nil,
+        preferredChannel: NativeChannel? = nil,
         certSha256: String? = nil,
         candidates: EndpointCandidates = EndpointCandidates(),
         pinMismatch: NativePinMismatch? = nil
@@ -23,6 +25,7 @@ public struct NativeEndpointStatus: Codable, Equatable, Sendable {
         self.paired = paired
         self.activeChannel = activeChannel
         self.activeUrl = activeUrl
+        self.preferredChannel = preferredChannel
         self.certSha256 = certSha256
         self.candidates = candidates
         self.pinMismatch = pinMismatch
@@ -32,6 +35,7 @@ public struct NativeEndpointStatus: Codable, Equatable, Sendable {
         case paired
         case activeChannel
         case activeUrl
+        case preferredChannel
         case certSha256
         case candidates
         case pinMismatch
@@ -50,6 +54,11 @@ public struct NativeEndpointStatus: Codable, Equatable, Sendable {
             try container.encode(activeUrl, forKey: .activeUrl)
         } else {
             try container.encodeNil(forKey: .activeUrl)
+        }
+        if let preferredChannel {
+            try container.encode(preferredChannel, forKey: .preferredChannel)
+        } else {
+            try container.encodeNil(forKey: .preferredChannel)
         }
         if let certSha256 {
             try container.encode(certSha256, forKey: .certSha256)
@@ -71,11 +80,18 @@ public struct EndpointUpdatePatch: Equatable, Sendable {
     public var lanTls: String??
     public var ipv6: String??
     public var tunnel: String??
+    public var certSha256: String?
 
-    public init(lanTls: String?? = nil, ipv6: String?? = nil, tunnel: String?? = nil) {
+    public init(
+        lanTls: String?? = nil,
+        ipv6: String?? = nil,
+        tunnel: String?? = nil,
+        certSha256: String? = nil
+    ) {
         self.lanTls = lanTls
         self.ipv6 = ipv6
         self.tunnel = tunnel
+        self.certSha256 = certSha256
     }
 }
 
@@ -116,6 +132,7 @@ public final class EndpointManager: @unchecked Sendable {
     public var onWillUnpair: (@Sendable () -> Void)?
     public var onUnauthorized: (@Sendable () -> Void)?
     public var onPinMismatchDetected: (@Sendable (NativePinMismatch) -> Void)?
+    public var onActiveChannelChanged: (@Sendable (_ channel: NativeChannel?, _ url: String?) -> Void)?
 
     #if canImport(Network)
     private var pathMonitor: NWPathMonitor?
@@ -241,16 +258,20 @@ public final class EndpointManager: @unchecked Sendable {
         try store.save(newCredentials)
         transport.invalidateSessions()
 
-        let status: NativeEndpointStatus = lock.withLock {
+        let (status, changed): (NativeEndpointStatus, Bool) = lock.withLock {
+            let didChange = activeChannel != matched.channel || activeUrl != matched.url
             cachedCredentials = newCredentials
             activeChannel = matched.channel
             activeUrl = matched.url
             pinMismatch = nil
             isUnauthorized = false
-            return buildStatusLocked()
+            return (buildStatusLocked(), didChange)
         }
 
         notifyListeners(status)
+        if changed {
+            onActiveChannelChanged?(matched.channel, matched.url)
+        }
 
         // Best-effort refresh of latest endpoint candidates after trusted pairing (NEVER touches certSha256).
         await syncCandidatesFromSettings(
@@ -285,6 +306,20 @@ public final class EndpointManager: @unchecked Sendable {
             throw TransportError.unpaired
         }
 
+        if let rawPin = patch.certSha256?.trimmingCharacters(in: .whitespacesAndNewlines), !rawPin.isEmpty {
+            guard CertificateFingerprint.parse(rawPin) != nil else {
+                throw PairingPayloadError.invalidFingerprint
+            }
+            if let existingPin = creds.pinnedCertSha256 {
+                // SECURITY: NEVER silently rotate or overwrite an already-pinned certificate fingerprint.
+                guard existingPin == rawPin else {
+                    throw TransportError.invalidCertificatePin
+                }
+            } else {
+                creds.pinnedCertSha256 = rawPin
+            }
+        }
+
         var updated = creds.endpoints
 
         if let lanPatch = patch.lanTls {
@@ -304,6 +339,10 @@ public final class EndpointManager: @unchecked Sendable {
             throw TransportError.missingCertificatePin(updated.lanTls != nil ? .lanTls : .ipv6Tls)
         }
 
+        if let pref = creds.preferredChannel, updated.url(for: pref) == nil {
+            creds.preferredChannel = nil
+        }
+
         creds.endpoints = updated
         try store.save(creds)
 
@@ -312,6 +351,76 @@ public final class EndpointManager: @unchecked Sendable {
         }
 
         return await reprobeConnection()
+    }
+
+    /// Explicitly switches the preferred connection channel (`nil` = auto priority) and probes immediately.
+    public func switchChannel(_ preferred: NativeChannel?) async throws -> NativeEndpointStatus {
+        if let mismatch = lock.withLock({ pinMismatch }) {
+            throw TransportError.pinMismatch(mismatch)
+        }
+
+        guard var creds = currentCredentials() else {
+            throw TransportError.unpaired
+        }
+
+        guard let target = preferred else {
+            creds.preferredChannel = nil
+            try store.save(creds)
+            lock.withLock {
+                cachedCredentials = creds
+            }
+            return await reprobeConnection()
+        }
+
+        guard let targetUrl = creds.endpoints.url(for: target), !targetUrl.isEmpty else {
+            throw TransportError.unreachable("尚未配置\(target.displayName)地址")
+        }
+        if target.requiresCertificatePin && creds.pinnedCertSha256 == nil {
+            throw TransportError.missingCertificatePin(target)
+        }
+
+        let timeout = target == .lanTls ? lanProbeTimeout : remoteProbeTimeout
+        let outcome = await probeSingle(
+            channel: target,
+            url: targetUrl,
+            credentials: creds,
+            timeout: timeout
+        )
+        switch outcome {
+        case .reachable(let ch, let url):
+            guard var latest = currentCredentials() else {
+                throw TransportError.unpaired
+            }
+            if let mismatch = lock.withLock({ pinMismatch }) {
+                throw TransportError.pinMismatch(mismatch)
+            }
+            latest.preferredChannel = target
+            try store.save(latest)
+            lock.withLock {
+                cachedCredentials = latest
+            }
+            return await finalizeConnectedChannel(channel: ch, url: url, credentials: latest)
+
+        case .pinMismatch(let mismatch):
+            recordPinMismatch(mismatch)
+            throw TransportError.pinMismatch(mismatch)
+
+        case .unauthorized:
+            markUnauthorized()
+            throw TransportError.httpError(status: 401, message: "设备凭据已失效，请重新配对")
+
+        case .unreachable:
+            let message: String
+            switch target {
+            case .lanTls:
+                message = "无法连接到\(target.displayName)，请确认手机与电脑在同一 Wi-Fi 且电脑端服务已开启"
+            case .ipv6Tls:
+                message = "无法连接到\(target.displayName)，请确认当前网络支持 IPv6 且电脑端服务已开启"
+            case .tunnel:
+                message = "无法连接到\(target.displayName)，请确认网络连接正常且电脑端公网通道已开启"
+            }
+            throw TransportError.unreachable(message)
+        }
     }
 
     // MARK: - Channel Probing & Candidate Sync
@@ -340,8 +449,32 @@ public final class EndpointManager: @unchecked Sendable {
             return blockedStatus
         }
 
-        // Step 1: Fast-probe LAN TLS first (default 1.5s timeout).
-        if let lanUrl = creds.endpoints.lanTls {
+        // Step 0: If the user selected a preferred channel, probe it first.
+        let preferred = creds.preferredChannel
+        if let preferred, let preferredUrl = creds.endpoints.url(for: preferred) {
+            let preferredTimeout = preferred == .lanTls ? lanProbeTimeout : remoteProbeTimeout
+            let outcome = await probeSingle(
+                channel: preferred,
+                url: preferredUrl,
+                credentials: creds,
+                timeout: preferredTimeout
+            )
+            switch outcome {
+            case .reachable(let ch, let url):
+                return await finalizeConnectedChannel(channel: ch, url: url, credentials: creds)
+            case .pinMismatch(let mismatch):
+                recordPinMismatch(mismatch)
+                return currentStatus()
+            case .unauthorized:
+                markUnauthorized()
+                return currentStatus()
+            case .unreachable:
+                break
+            }
+        }
+
+        // Step 1: Fast-probe LAN TLS first (default 1.5s timeout), unless already probed above.
+        if preferred != .lanTls, let lanUrl = creds.endpoints.lanTls {
             let lanOutcome = await probeSingle(
                 channel: .lanTls,
                 url: lanUrl,
@@ -362,12 +495,12 @@ public final class EndpointManager: @unchecked Sendable {
             }
         }
 
-        // Step 2: Parallel-probe IPv6 TLS and Cloudflare Tunnel (default 5s timeout).
+        // Step 2: Parallel-probe remaining remote channels (IPv6 TLS and Cloudflare Tunnel).
         var remoteTargets: [(NativeChannel, String)] = []
-        if let ipv6Url = creds.endpoints.ipv6 {
+        if preferred != .ipv6Tls, let ipv6Url = creds.endpoints.ipv6 {
             remoteTargets.append((.ipv6Tls, ipv6Url))
         }
-        if let tunnelUrl = creds.endpoints.tunnel {
+        if preferred != .tunnel, let tunnelUrl = creds.endpoints.tunnel {
             remoteTargets.append((.tunnel, tunnelUrl))
         }
 
@@ -593,13 +726,17 @@ public final class EndpointManager: @unchecked Sendable {
         url: String,
         credentials: StoredCredentials
     ) async -> NativeEndpointStatus {
-        let status: NativeEndpointStatus = lock.withLock {
+        let (status, changed): (NativeEndpointStatus, Bool) = lock.withLock {
+            let didChange = activeChannel != channel || activeUrl != url
             activeChannel = channel
             activeUrl = url
             isUnauthorized = false
-            return buildStatusLocked()
+            return (buildStatusLocked(), didChange)
         }
         notifyListeners(status)
+        if changed {
+            onActiveChannelChanged?(channel, url)
+        }
 
         await syncCandidatesFromSettings(channel: channel, baseURL: url, credentials: credentials)
         return currentStatus()
@@ -707,6 +844,7 @@ public final class EndpointManager: @unchecked Sendable {
                 paired: false,
                 activeChannel: nil,
                 activeUrl: nil,
+                preferredChannel: nil,
                 certSha256: nil,
                 candidates: EndpointCandidates(),
                 pinMismatch: pinMismatch
@@ -716,6 +854,7 @@ public final class EndpointManager: @unchecked Sendable {
             paired: true,
             activeChannel: pinMismatch == nil ? activeChannel : nil,
             activeUrl: pinMismatch == nil ? activeUrl : nil,
+            preferredChannel: creds.preferredChannel,
             certSha256: creds.pinnedCertSha256,
             candidates: creds.endpoints,
             pinMismatch: pinMismatch

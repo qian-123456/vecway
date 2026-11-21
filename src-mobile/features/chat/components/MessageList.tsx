@@ -1,6 +1,7 @@
 import { ArrowDown, MessageSquare } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { Button, EmptyState, Markdown, PullToRefresh } from "../../../ui";
+import { Button, EmptyState } from "../../../ui";
+import { Markdown } from "../../../ui/Markdown";
 import { useChat, useChatUi } from "../ChatContext";
 import type { Item } from "../../../core/types";
 import type { Block, Step, Turn } from "../lib/turns";
@@ -145,6 +146,8 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 	const hasLive = useChat((s) => s.live !== null);
 	const hasSegments = useChat((s) => s.segments.length > 0);
 	const delivery = useChat((s) => s.delivery);
+	const hasMoreServer = useChat((s) => Boolean(s.transcript.hasMore));
+	const loadingOlder = useChat((s) => Boolean(s.transcript.loadingOlder));
 	const [limit, setLimit] = useState(WINDOW_STEP);
 	const scrollRef = useRef<HTMLDivElement | null>(null);
 	const contentRef = useRef<HTMLDivElement | null>(null);
@@ -155,7 +158,7 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 	const [hasUnread, setHasUnread] = useState(false);
 	const prepend = useRef<{ height: number; top: number } | null>(null);
 	const previousBlockCount = useRef(blocks.length);
-
+	const prevTailId = useRef<string | null>(null);
 	const scrollToEnd = useCallback(() => {
 		const sc = scrollRef.current;
 		if (!sc) return;
@@ -224,13 +227,12 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 		// Only a real scroll event may re-enable following.
 		lastCH.current = sc.clientHeight;
 		setShowJump(sc.scrollHeight - sc.scrollTop - sc.clientHeight >= NEAR_BOTTOM_PX);
-	}, [limit]);
+	}, [limit, blocks.length]);
 
 	const jump = () => {
 		stick.current = true;
 		scrollToEnd();
 	};
-
 	const markUnread = useCallback(() => setHasUnread(true), []);
 	const lastBlock = blocks[blocks.length - 1];
 	// Retained segments always render as their own rows after the persisted turns: the live row
@@ -245,9 +247,41 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 	);
 	const hidden = blocks.length - shown.length;
 	const empty = loaded && blocks.length === 0 && optimistic.length === 0 && localOut.length === 0;
+	const lastTailKey = lastBlock
+		? `${lastBlock.id}:${lastBlock.type === "turn" ? `${lastBlock.steps.length}:${lastBlock.answer?.text.length ?? 0}` : lastBlock.text.length}`
+		: null;
+
 	useEffect(() => {
-		if (loaded && !stick.current) setHasUnread(true);
-	}, [loaded, lastBlock, optimistic, localOut]);
+		const prev = prevTailId.current;
+		prevTailId.current = lastTailKey;
+		if (loaded && !stick.current && (prev !== lastTailKey || optimistic.length > 0 || localOut.length > 0)) {
+			setHasUnread(true);
+		}
+	}, [loaded, lastTailKey, optimistic, localOut]);
+
+	const handleLoadOlder = () => {
+		const sc = scrollRef.current;
+		if (!sc || loadingOlder) return;
+		if (hidden > 0) {
+			if (prepend.current) return;
+			prepend.current = { height: sc.scrollHeight, top: sc.scrollTop };
+			stick.current = false;
+			setLimit((n) => n + WINDOW_STEP);
+			return;
+		}
+		if (hasMoreServer) {
+			prepend.current = { height: sc.scrollHeight, top: sc.scrollTop };
+			stick.current = false;
+			const beforeLen = blocks.length;
+			void controller.loadOlder().finally(() => {
+				if (controller.store.getState().blocks.length === beforeLen) {
+					prepend.current = null;
+				}
+			});
+		}
+	};
+
+	const showLoadOlder = hidden > 0 || hasMoreServer;
 
 	return (
 		<div className="relative flex min-h-0 flex-1 flex-col">
@@ -269,21 +303,16 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 					</div>
 				</section>
 			)}
-			<PullToRefresh ref={scrollRef} onRefresh={() => controller.refresh()} className="[overflow-anchor:none]">
+			<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]">
 				<div ref={contentRef} className="pt-1 pb-4">
-					{hidden > 0 && (
-						<div data-pull-refresh-ignore className="flex justify-center py-3">
-							<Button
-								size="sm"
-								onClick={() => {
-									const sc = scrollRef.current;
-									if (!sc || prepend.current) return;
-									prepend.current = { height: sc.scrollHeight, top: sc.scrollTop };
-									stick.current = false;
-									setLimit((n) => n + WINDOW_STEP);
-								}}
-							>
-								加载更早的 {Math.min(hidden, WINDOW_STEP)} 轮
+					{showLoadOlder && (
+						<div className="flex justify-center py-3">
+							<Button size="sm" busy={loadingOlder} onClick={handleLoadOlder}>
+								{hidden > 0
+									? `加载更早的 ${Math.min(hidden, WINDOW_STEP)} 轮`
+									: loadingOlder
+										? "加载中..."
+										: "加载更早的记录"}
 							</Button>
 						</div>
 					)}
@@ -311,7 +340,7 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 					))}
 					{empty && !syntheticLive && <EmptyState icon={<MessageSquare size={24} strokeWidth={1.75} />} title="还没有消息" hint="在下方发送消息，开始这段对话" />}
 				</div>
-			</PullToRefresh>
+			</div>
 			<button
 				type="button"
 				onClick={jump}

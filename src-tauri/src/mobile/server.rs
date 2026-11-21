@@ -2,17 +2,20 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::io::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Body;
+use axum::body::{Body, HttpBody as _};
 use axum::extract::{Form, FromRequest, Path, Query, Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use futures_util::stream::{self, Stream, StreamExt as _};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
@@ -145,6 +148,127 @@ pub fn router<B: Backend>(ctx: Arc<Ctx<B>>) -> Router {
         .route("/sw.js", get(service_worker))
         .nest("/api", api)
         .with_state(ctx)
+        .layer(middleware::from_fn(gzip_middleware))
+}
+
+/// Minimum payload size in bytes before applying gzip compression.
+const GZIP_MIN_BYTES: usize = 1024;
+
+/// True when `Accept-Encoding` advertises `gzip` with a positive quality value.
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    for raw in headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+    {
+        for item in raw.split(',') {
+            let mut parts = item.split(';');
+            let coding = parts.next().map_or("", str::trim);
+            if !coding.eq_ignore_ascii_case("gzip") {
+                continue;
+            }
+            let mut allowed = true;
+            for param in parts {
+                let Some((k, v)) = param.split_once('=') else {
+                    continue;
+                };
+                if k.trim().eq_ignore_ascii_case("q")
+                    && !v.trim().parse::<f32>().is_ok_and(|q| q > 0.0)
+                {
+                    allowed = false;
+                    break;
+                }
+            }
+            if allowed {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True for finite text/JSON/JS/CSS/SVG/manifest payloads; explicitly excludes SSE.
+fn is_compressible_content_type(headers: &HeaderMap) -> bool {
+    let Some(ct) = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let mime = ct.split(';').next().map_or("", str::trim);
+    if mime.eq_ignore_ascii_case("text/event-stream") {
+        return false;
+    }
+    mime.eq_ignore_ascii_case("text/html")
+        || mime.eq_ignore_ascii_case("text/css")
+        || mime.eq_ignore_ascii_case("text/javascript")
+        || mime.eq_ignore_ascii_case("application/javascript")
+        || mime.eq_ignore_ascii_case("application/json")
+        || mime.eq_ignore_ascii_case("image/svg+xml")
+        || mime.eq_ignore_ascii_case("application/manifest+json")
+        || mime.eq_ignore_ascii_case("text/plain")
+}
+
+fn append_vary_accept_encoding(headers: &mut HeaderMap) {
+    let already_present = headers
+        .get_all(header::VARY)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|s| s.split(','))
+        .map(str::trim)
+        .any(|token| token == "*" || token.eq_ignore_ascii_case("accept-encoding"));
+    if !already_present {
+        headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    }
+}
+
+pub(crate) async fn gzip_middleware(req: Request, next: Next) -> Response {
+    let client_accepts_gzip = accepts_gzip(req.headers());
+    let is_head = req.method() == axum::http::Method::HEAD;
+    let mut res = next.run(req).await;
+
+    if !is_compressible_content_type(res.headers()) {
+        return res;
+    }
+
+    append_vary_accept_encoding(res.headers_mut());
+
+    if is_head || !client_accepts_gzip || res.headers().contains_key(header::CONTENT_ENCODING) {
+        return res;
+    }
+
+    if res
+        .body()
+        .size_hint()
+        .exact()
+        .is_some_and(|n| n < GZIP_MIN_BYTES as u64)
+    {
+        return res;
+    }
+
+    let (mut parts, body) = res.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
+        return Response::from_parts(parts, Body::empty());
+    };
+    if bytes.len() < GZIP_MIN_BYTES {
+        return Response::from_parts(parts, Body::from(bytes));
+    }
+
+    let mut encoder = GzEncoder::new(Vec::with_capacity(bytes.len() / 2), Compression::fast());
+    if encoder.write_all(&bytes).is_err() {
+        return Response::from_parts(parts, Body::from(bytes));
+    }
+    let Ok(compressed) = encoder.finish() else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+
+    parts
+        .headers
+        .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    parts
+        .headers
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(compressed.len()));
+    Response::from_parts(parts, Body::from(compressed))
 }
 
 async fn static_asset(Path(path): Path<String>) -> Response {
@@ -764,6 +888,23 @@ struct TranscriptQuery {
     from: Option<u64>,
     /// `tailId` of the previous page (see `read_page`).
     tail: Option<String>,
+    /// Optional tail-window size (clamped to 1..=500); applies only when `from == 0`.
+    limit: Option<usize>,
+    /// Optional exclusive upper index into visible items for loading older pages.
+    before: Option<usize>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptResponse {
+    #[serde(flatten)]
+    page: crate::contracts::TranscriptPage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    has_more: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oldest_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_items: Option<usize>,
 }
 
 /// Cap on tool output / tool arguments sent to the phone; the desktop keeps the full text.
@@ -782,7 +923,7 @@ async fn transcript<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Path(id): Path<String>,
     Query(q): Query<TranscriptQuery>,
-) -> ApiResult<Value> {
+) -> ApiResult<TranscriptResponse> {
     validate_id(&id)?;
     let meta = find_session(&ctx, &id).await?;
     let file = std::path::PathBuf::from(&meta.file);
@@ -803,14 +944,28 @@ async fn transcript<B: Backend>(
     .map_err(|e| bad_gateway(format!("读取记录失败: {e}")))?;
     let mut page = page;
     page.items.retain(|i| !i.hidden);
+    let (has_more, oldest_index, total_items) = match (from, q.limit) {
+        (0, Some(raw_limit)) => {
+            let limit = raw_limit.clamp(1, 500);
+            let total = page.items.len();
+            let end = q.before.map_or(total, |b| b.min(total));
+            let start = end.saturating_sub(limit);
+            page.items.truncate(end);
+            if start > 0 {
+                page.items.drain(..start);
+            }
+            (Some(start > 0), Some(start), Some(total))
+        }
+        _ => (None, None, None),
+    };
     for item in &mut page.items {
         if let Some(r) = item.tool_result.as_mut() {
             cap_chars(&mut r.text, MOBILE_TOOL_TEXT_CAP);
             r.details = None;
         }
         for c in &mut item.tool_calls {
-            if c.args.to_string().chars().count() > MOBILE_TOOL_TEXT_CAP {
-                let mut s = c.args.to_string();
+            let mut s = c.args.to_string();
+            if s.chars().count() > MOBILE_TOOL_TEXT_CAP {
                 cap_chars(&mut s, MOBILE_TOOL_TEXT_CAP);
                 c.args = Value::String(s);
             }
@@ -818,7 +973,12 @@ async fn transcript<B: Backend>(
         // usage/duration/ttft/completedAt are kept: the phone renders the same
         // per-request stats line as the desktop.
     }
-    Ok(Json(json!(page)))
+    Ok(Json(TranscriptResponse {
+        page,
+        has_more,
+        oldest_index,
+        total_items,
+    }))
 }
 
 /// Frame types the phone page renders (omp wire events, payloads passed
@@ -998,14 +1158,16 @@ fn app_service(router: Router) -> AppService {
     router.map_request(into_body as fn(Request<Incoming>) -> Request<Body>)
 }
 
-/// hyper builder shared by both listeners: request-header timeout and the
-/// timer it needs, so a silent client cannot hold a connection forever.
+/// hyper builder shared by both listeners: HTTP/1 header timeout and HTTP/2
+/// timer, so a silent client cannot hold a connection forever while TLS
+/// clients negotiating ALPN `h2` speak HTTP/2 seamlessly.
 fn conn_builder() -> auto::Builder<TokioExecutor> {
     let mut builder = auto::Builder::new(TokioExecutor::new());
     builder
         .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(HEADER_READ_TIMEOUT);
+    builder.http2().timer(TokioTimer::new());
     builder
 }
 

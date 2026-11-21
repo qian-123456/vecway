@@ -566,6 +566,9 @@ public final class PinnedTransport: HTTPTransporting, @unchecked Sendable {
         for (key, value) in sanitized {
             request.setValue(value, forHTTPHeaderField: key)
         }
+        if request.value(forHTTPHeaderField: "Accept-Encoding") == nil {
+            request.setValue("gzip, deflate", forHTTPHeaderField: "Accept-Encoding")
+        }
         return request
     }
 
@@ -638,10 +641,18 @@ public final class PinnedTransport: HTTPTransporting, @unchecked Sendable {
             guard let http = rawResponse as? HTTPURLResponse else {
                 throw TransportError.invalidResponse
             }
+            let hasContentEncoding = http.allHeaderFields.contains { key, _ in
+                String(describing: key).lowercased() == "content-encoding"
+            }
+            let isHead = request.httpMethod?.uppercased() == "HEAD"
             var responseHeaders: [String: String] = [:]
             for (k, v) in http.allHeaderFields {
                 let keyStr = String(describing: k)
-                if !preserveSetCookie && keyStr.lowercased() == "set-cookie" {
+                let lower = keyStr.lowercased()
+                if !preserveSetCookie && lower == "set-cookie" {
+                    continue
+                }
+                if hasContentEncoding && !isHead && (lower == "content-encoding" || lower == "content-length") {
                     continue
                 }
                 responseHeaders[keyStr] = String(describing: v)

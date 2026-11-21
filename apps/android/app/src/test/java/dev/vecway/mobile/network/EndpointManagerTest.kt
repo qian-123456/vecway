@@ -16,6 +16,7 @@ import org.junit.Assert.fail
 import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class EndpointManagerTest {
@@ -266,5 +267,201 @@ class EndpointManagerTest {
         }
         assertEquals("https://192.168.1.10:7790", store.load()!!.endpoints.lanTls)
         assertEquals(fpExpected, store.load()!!.pinnedCertSha256)
+    }
+
+    @Test
+    fun switchChannelPersistsPreferenceAndFiresActiveChannelChangedOnlyOnActualChange() = runBlocking {
+        val store = InMemoryCredentialStore(
+            StoredCredentials(
+                deviceToken = "tok-switch",
+                pinnedCertSha256 = fpExpected,
+                endpoints = EndpointCandidates(
+                    lanTls = "https://192.168.1.10:7790",
+                    ipv6 = "https://home.example.com:7789",
+                    tunnel = "https://demo.trycloudflare.com",
+                ),
+            ),
+        )
+        val transport = FakeTransport { _, _, _, _, _ ->
+            TransportResponse(200, emptyMap(), """{"ok":true}""".toByteArray())
+        }
+        val manager = EndpointManager(store = store, transport = transport)
+        val channelChangeCount = AtomicInteger(0)
+        manager.onActiveChannelChanged = { channelChangeCount.incrementAndGet() }
+
+        // Initial auto reprobe picks LAN_TLS -> fires onActiveChannelChanged once.
+        val initial = manager.reprobeConnection()
+        assertEquals(NativeChannel.LAN_TLS, initial.activeChannel)
+        assertNull(initial.preferredChannel)
+        assertEquals(1, channelChangeCount.get())
+
+        // Reprobing again when already on LAN_TLS must NOT fire onActiveChannelChanged.
+        manager.reprobeConnection()
+        assertEquals(1, channelChangeCount.get())
+
+        // Switch explicitly to TUNNEL -> persists preference and fires callback.
+        val switched = manager.switchChannel(NativeChannel.TUNNEL)
+        assertEquals(NativeChannel.TUNNEL, switched.activeChannel)
+        assertEquals("https://demo.trycloudflare.com", switched.activeUrl)
+        assertEquals(NativeChannel.TUNNEL, switched.preferredChannel)
+        assertEquals(NativeChannel.TUNNEL, store.load()!!.preferredChannel)
+        assertEquals(2, channelChangeCount.get())
+
+        // Subsequent reprobeConnection probes preferred channel (TUNNEL) first without touching LAN.
+        transport.visitedChannels.clear()
+        val reprobed = manager.reprobeConnection()
+        assertEquals(NativeChannel.TUNNEL, reprobed.activeChannel)
+        assertEquals(NativeChannel.TUNNEL, reprobed.preferredChannel)
+        assertEquals(listOf(NativeChannel.TUNNEL), transport.visitedChannels.distinct())
+        // Channel/URL stayed TUNNEL -> callback must NOT fire redundantly.
+        assertEquals(2, channelChangeCount.get())
+
+        // Switch back to Auto (null) -> clears preferredChannel and activates LAN_TLS.
+        val autoStatus = manager.switchChannel(null)
+        assertEquals(NativeChannel.LAN_TLS, autoStatus.activeChannel)
+        assertNull(autoStatus.preferredChannel)
+        assertNull(store.load()!!.preferredChannel)
+        assertEquals(3, channelChangeCount.get())
+    }
+
+    @Test
+    fun switchChannelThrowsUnreachableWithChineseGuidanceAndPreservesPreviousState() = runBlocking {
+        val store = InMemoryCredentialStore(
+            StoredCredentials(
+                deviceToken = "tok-unreach",
+                pinnedCertSha256 = fpExpected,
+                endpoints = EndpointCandidates(
+                    lanTls = "https://192.168.1.10:7790",
+                    tunnel = "https://demo.trycloudflare.com",
+                ),
+            ),
+        )
+        val transport = FakeTransport { _, channel, _, _, _ ->
+            if (channel == NativeChannel.LAN_TLS) {
+                throw TransportException.Unreachable("not on wifi")
+            }
+            TransportResponse(200, emptyMap(), """{"ok":true}""".toByteArray())
+        }
+        val manager = EndpointManager(store = store, transport = transport)
+
+        val initial = manager.reprobeConnection()
+        assertEquals(NativeChannel.TUNNEL, initial.activeChannel)
+
+        try {
+            manager.switchChannel(NativeChannel.LAN_TLS)
+            fail("Expected TransportException.Unreachable for offline LAN")
+        } catch (e: TransportException.Unreachable) {
+            assertTrue(e.message!!.contains("局域网 TLS"))
+        }
+        assertEquals(NativeChannel.TUNNEL, manager.currentStatus().activeChannel)
+        assertNull(store.load()!!.preferredChannel)
+
+        try {
+            manager.switchChannel(NativeChannel.IPV6_TLS)
+            fail("Expected TransportException.Unreachable for unconfigured IPv6")
+        } catch (e: TransportException.Unreachable) {
+            assertTrue(e.message!!.contains("尚未配置"))
+        }
+    }
+
+    @Test
+    fun reprobeConnectionProbesPreferredFirstThenFallsBackWithoutDuplicateProbes() = runBlocking {
+        val store = InMemoryCredentialStore(
+            StoredCredentials(
+                deviceToken = "tok-pref-fallback",
+                pinnedCertSha256 = fpExpected,
+                endpoints = EndpointCandidates(
+                    lanTls = "https://192.168.1.10:7790",
+                    ipv6 = "https://home.example.com:7789",
+                    tunnel = "https://demo.trycloudflare.com",
+                ),
+                preferredChannel = NativeChannel.TUNNEL,
+            ),
+        )
+        val transport = FakeTransport { _, channel, _, path, _ ->
+            if (channel == NativeChannel.TUNNEL && path == "/api/left/device") {
+                throw TransportException.Unreachable("tunnel offline")
+            }
+            if (channel == NativeChannel.LAN_TLS && path == "/api/left/device") {
+                throw TransportException.Unreachable("lan offline")
+            }
+            TransportResponse(200, emptyMap(), """{"ok":true}""".toByteArray())
+        }
+        val manager = EndpointManager(store = store, transport = transport)
+        val status = manager.reprobeConnection()
+
+        assertEquals(NativeChannel.IPV6_TLS, status.activeChannel)
+        assertEquals(NativeChannel.TUNNEL, status.preferredChannel)
+        // TUNNEL was probed once (preferred), then LAN_TLS, then IPV6_TLS (without re-probing TUNNEL).
+        assertEquals(
+            listOf(NativeChannel.TUNNEL, NativeChannel.LAN_TLS, NativeChannel.IPV6_TLS),
+            transport.visitedChannels.take(3),
+        )
+        assertEquals(1, transport.visitedChannels.count { it == NativeChannel.TUNNEL })
+    }
+
+    @Test
+    fun updateEndpointsAdoptsInitialCertSha256WhenUnpinnedAndRejectsOverwrite() = runBlocking {
+        val store = InMemoryCredentialStore(
+            StoredCredentials(
+                deviceToken = "tok-domain",
+                pinnedCertSha256 = null,
+                endpoints = EndpointCandidates(tunnel = "https://omp.example.com"),
+                preferredChannel = NativeChannel.TUNNEL,
+            ),
+        )
+        val transport = FakeTransport { _, _, _, _, _ ->
+            TransportResponse(200, emptyMap(), """{"ok":true}""".toByteArray())
+        }
+        val manager = EndpointManager(store = store, transport = transport)
+
+        // Malformed fingerprint must fail cleanly without modifying store.
+        try {
+            manager.updateEndpoints(
+                EndpointUpdatePatch(
+                    lanTls = PatchField(present = true, value = "https://192.168.1.10:7790"),
+                    certSha256 = PatchField(present = true, value = "bad-fp"),
+                ),
+            )
+            fail("Expected InvalidFingerprint")
+        } catch (_: PairingPayloadException.InvalidFingerprint) {
+            // Expected
+        }
+        assertNull(store.load()!!.pinnedCertSha256)
+
+        // Initial adoption when unpinned succeeds.
+        val adopted = manager.updateEndpoints(
+            EndpointUpdatePatch(
+                lanTls = PatchField(present = true, value = "https://192.168.1.10:7790"),
+                certSha256 = PatchField(present = true, value = fpExpected),
+            ),
+        )
+        assertEquals(fpExpected, adopted.certSha256)
+        assertEquals(fpExpected, store.load()!!.pinnedCertSha256)
+        assertEquals("https://192.168.1.10:7790", adopted.candidates.lanTls)
+        assertEquals(NativeChannel.TUNNEL, adopted.preferredChannel)
+
+        // Attempting to overwrite an existing pin with a different value MUST be strictly rejected.
+        try {
+            manager.updateEndpoints(
+                EndpointUpdatePatch(
+                    lanTls = PatchField(present = true, value = "https://192.168.1.99:7790"),
+                    certSha256 = PatchField(present = true, value = fpAttacker),
+                ),
+            )
+            fail("Expected InvalidCertificatePin when attempting to overwrite existing pin")
+        } catch (_: TransportException.InvalidCertificatePin) {
+            // Expected
+        }
+        assertEquals(fpExpected, store.load()!!.pinnedCertSha256)
+        assertEquals("https://192.168.1.10:7790", store.load()!!.endpoints.lanTls)
+
+        // Clearing the endpoint targeted by preferredChannel resets preferredChannel to null.
+        val clearedTunnel = manager.updateEndpoints(
+            EndpointUpdatePatch(tunnel = PatchField(present = true, value = null)),
+        )
+        assertNull(clearedTunnel.preferredChannel)
+        assertNull(store.load()!!.preferredChannel)
+        assertEquals(NativeChannel.LAN_TLS, clearedTunnel.activeChannel)
     }
 }

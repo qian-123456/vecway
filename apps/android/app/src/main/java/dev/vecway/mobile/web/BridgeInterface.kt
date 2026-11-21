@@ -19,6 +19,7 @@ import dev.vecway.mobile.network.SSEBridge
 import dev.vecway.mobile.network.SSEStreamListener
 import dev.vecway.mobile.network.TransportException
 import dev.vecway.mobile.push.NativePushManager
+import dev.vecway.mobile.security.NativeChannel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +29,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.Base64
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 
 data class ScannerOutcome(
@@ -57,7 +62,43 @@ object BridgePayloadParser {
             lanTls = extract("lanTls"),
             ipv6 = extract("ipv6"),
             tunnel = extract("tunnel"),
+            certSha256 = extract("certSha256"),
         )
+    }
+
+    fun parseSwitchChannel(payload: JSONObject?): NativeChannel? {
+        if (payload == null || !payload.has("channel") || payload.isNull("channel")) {
+            return null
+        }
+        val raw = payload.opt("channel") as? String
+            ?: throw IllegalArgumentException("无效的通道切换参数")
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty() || trimmed == "auto") return null
+        return NativeChannel.fromWire(trimmed)
+            ?: throw IllegalArgumentException("不支持的通道类型：$trimmed")
+    }
+
+    fun isTextContentType(headers: Map<String, String>): Boolean {
+        val raw = headers.entries.firstOrNull { it.key.equals("content-type", ignoreCase = true) }?.value
+            ?: return false
+        val mediaType = raw.substringBefore(';').trim().lowercase()
+        return mediaType.startsWith("text/") ||
+            mediaType == "application/json" ||
+            mediaType.endsWith("+json") ||
+            mediaType.endsWith("+xml")
+    }
+
+    fun decodeUtf8TextIfApplicable(headers: Map<String, String>, body: ByteArray): String? {
+        if (!isTextContentType(headers)) return null
+        return try {
+            StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(body))
+                .toString()
+        } catch (_: CharacterCodingException) {
+            null
+        }
     }
 
     fun decodeBodyBase64(bodyBase64: String?): ByteArray? {
@@ -281,6 +322,11 @@ class BridgeInterface(
                 }
             }
 
+            "switchChannel" -> {
+                if (callId == null) return
+                handleSwitchChannel(callId, payload)
+            }
+
             "reprobeConnection" -> {
                 if (callId == null) return
                 scope.launch {
@@ -405,7 +451,12 @@ class BridgeInterface(
                 val resJson = JSONObject().apply {
                     put("status", response.status)
                     put("headers", headersJson)
-                    put("bodyBase64", Base64.getEncoder().encodeToString(response.body))
+                    val bodyText = BridgePayloadParser.decodeUtf8TextIfApplicable(response.headers, response.body)
+                    if (bodyText != null) {
+                        put("bodyText", bodyText)
+                    } else {
+                        put("bodyBase64", Base64.getEncoder().encodeToString(response.body))
+                    }
                 }
                 replyOk(callId, resJson)
             } catch (_: CancellationException) {
@@ -419,6 +470,23 @@ class BridgeInterface(
             }
         }
         activeHttpJobs[reqId] = job
+    }
+
+    private fun handleSwitchChannel(callId: String, payload: JSONObject) {
+        val targetChannel = try {
+            BridgePayloadParser.parseSwitchChannel(payload)
+        } catch (e: IllegalArgumentException) {
+            replyError(callId, e.message ?: "无效的通道切换参数")
+            return
+        }
+        scope.launch {
+            try {
+                val status = endpointManager.switchChannel(targetChannel)
+                replyOk(callId, status.toJson())
+            } catch (t: Throwable) {
+                replyError(callId, t.message ?: "切换连接通道失败")
+            }
+        }
     }
 
     private fun handleSseOpen(streamId: String, path: String) {
@@ -769,6 +837,9 @@ class BridgeInterface(
                     },
                     updateEndpoints: function (endpoints) {
                       return callNative("updateEndpoints", { endpoints: endpoints || {} });
+                    },
+                    switchChannel: function (channel) {
+                      return callNative("switchChannel", { channel: channel == null ? null : String(channel) });
                     },
                     reprobeConnection: function () {
                       return callNative("reprobeConnection");

@@ -19,18 +19,18 @@ import {
 	inputCls,
 	ListGroup,
 	ListRow,
-	Markdown,
 	PageHeader,
 	PullToRefresh,
 	toast,
 } from "../../ui";
+import { ActionTile } from "../../ui/ActionTile";
+import { Markdown } from "../../ui/Markdown";
 import { loadUnsent, saveUnsent } from "../chat/lib/unsent";
 import { LoadGate, Loading } from "./PanelState";
 import { useLayer, useLoad, useResync } from "./hooks";
 import type { Attachment } from "../chat/chatStore";
 import { ComposerCapsule } from "../chat/components/ComposerCapsule";
 import type { ComposerApi } from "../chat/components/ComposerCapsule";
-import { ActionTile } from "../chat/components/Composer";
 import { attachmentBlocker, buildPrompt } from "../chat/lib/prompt";
 import { WorkspacePanelBar } from "./WorkspacePanelBar";
 import { Images } from "../chat/components/TurnView";

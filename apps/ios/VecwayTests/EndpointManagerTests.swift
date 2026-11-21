@@ -405,6 +405,7 @@ final class EndpointManagerTests: XCTestCase {
             paired: false,
             activeChannel: nil,
             activeUrl: nil,
+            preferredChannel: nil,
             certSha256: nil,
             candidates: EndpointCandidates(),
             pinMismatch: nil
@@ -415,9 +416,23 @@ final class EndpointManagerTests: XCTestCase {
         XCTAssertEqual(json["paired"] as? Bool, false)
         XCTAssertTrue(json["activeChannel"] is NSNull)
         XCTAssertTrue(json["activeUrl"] is NSNull)
+        XCTAssertTrue(json["preferredChannel"] is NSNull)
         XCTAssertTrue(json["certSha256"] is NSNull)
         XCTAssertTrue(json["pinMismatch"] is NSNull)
         XCTAssertNotNil(json["candidates"] as? [String: Any])
+
+        let pinnedPref = NativeEndpointStatus(
+            paired: true,
+            activeChannel: .tunnel,
+            activeUrl: "https://omp.example.com",
+            preferredChannel: .tunnel,
+            certSha256: nil,
+            candidates: EndpointCandidates(tunnel: "https://omp.example.com"),
+            pinMismatch: nil
+        )
+        let prefData = try JSONEncoder().encode(pinnedPref)
+        let prefJson = try XCTUnwrap(try JSONSerialization.jsonObject(with: prefData) as? [String: Any])
+        XCTAssertEqual(prefJson["preferredChannel"] as? String, "tunnel")
     }
 
     func testUpdateEndpointsNormalizesBareDomainAndPreservesCustomDomainsOnSync() async throws {
@@ -445,5 +460,236 @@ final class EndpointManagerTests: XCTestCase {
         // Custom DDNS domain is not overwritten by raw IPv6 literal, and custom CF domain is not overwritten by trycloudflare.
         XCTAssertEqual(updated.candidates.ipv6, "https://home.example.com:7789")
         XCTAssertEqual(updated.candidates.tunnel, "https://omp.example.com")
+    }
+
+    func testStoredCredentialsDecodesLegacyPayloadWithoutPreferredChannel() throws {
+        let legacyJSON = """
+        {
+          "deviceToken": "legacy-token",
+          "pinnedCertSha256": null,
+          "endpoints": { "tunnel": "https://omp.example.com" },
+          "preferredTarget": "tunnel"
+        }
+        """
+        let decoded = try JSONDecoder().decode(StoredCredentials.self, from: Data(legacyJSON.utf8))
+        XCTAssertEqual(decoded.deviceToken, "legacy-token")
+        XCTAssertNil(decoded.pinnedCertSha256)
+        XCTAssertEqual(decoded.endpoints.tunnel, "https://omp.example.com")
+        XCTAssertNil(decoded.preferredChannel)
+    }
+
+    func testSwitchChannelPersistsPreferenceProbesTargetAndFiresActiveChannelCallback() async throws {
+        let store = makeSeededStore()
+        let mock = MockHTTPTransport()
+        let manager = EndpointManager(store: store, transport: mock, lanProbeTimeout: 0.5, remoteProbeTimeout: 1.0)
+
+        final class ChannelChangeRecorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var events: [(NativeChannel?, String?)] = []
+            func record(_ channel: NativeChannel?, _ url: String?) {
+                lock.lock()
+                events.append((channel, url))
+                lock.unlock()
+            }
+            func snapshot() -> [(NativeChannel?, String?)] {
+                lock.lock()
+                defer { lock.unlock() }
+                return events
+            }
+        }
+        let recorder = ChannelChangeRecorder()
+        manager.onActiveChannelChanged = { ch, url in
+            recorder.record(ch, url)
+        }
+
+        mock.setSendHandler { _, _, path, _ in
+            if path == "/api/device" { return Self.okJSON(["id": "dev1"]) }
+            return Self.okJSON([:])
+        }
+
+        // Initial auto reprobe selects LAN TLS.
+        let initial = await manager.reprobeConnection()
+        XCTAssertEqual(initial.activeChannel, .lanTls)
+        XCTAssertNil(initial.preferredChannel)
+        XCTAssertEqual(recorder.snapshot().count, 1)
+        XCTAssertEqual(recorder.snapshot().last?.0, .lanTls)
+
+        // Explicitly switch to Tunnel -> probes Tunnel, persists preference, fires callback.
+        let switchedToTunnel = try await manager.switchChannel(.tunnel)
+        XCTAssertEqual(switchedToTunnel.activeChannel, .tunnel)
+        XCTAssertEqual(switchedToTunnel.activeUrl, "https://demo.trycloudflare.com")
+        XCTAssertEqual(switchedToTunnel.preferredChannel, .tunnel)
+        XCTAssertEqual(try store.load()?.preferredChannel, .tunnel)
+        XCTAssertEqual(recorder.snapshot().count, 2)
+        XCTAssertEqual(recorder.snapshot().last?.0, .tunnel)
+        XCTAssertEqual(recorder.snapshot().last?.1, "https://demo.trycloudflare.com")
+
+        // Subsequent reprobeConnection respects persisted preferredChannel (.tunnel) even when LAN is healthy.
+        mock.clearRecordedRequests()
+        let reprobedTunnel = await manager.reprobeConnection()
+        XCTAssertEqual(reprobedTunnel.activeChannel, .tunnel)
+        XCTAssertEqual(reprobedTunnel.preferredChannel, .tunnel)
+        let deviceProbeChannels = mock.snapshotRequests().filter { $0.path == "/api/device" }.map(\.channel)
+        XCTAssertEqual(deviceProbeChannels, [.tunnel])
+        // Channel did not change, so callback MUST NOT fire redundantly.
+        XCTAssertEqual(recorder.snapshot().count, 2)
+
+        // Switch explicitly back to LAN TLS.
+        let switchedToLan = try await manager.switchChannel(.lanTls)
+        XCTAssertEqual(switchedToLan.activeChannel, .lanTls)
+        XCTAssertEqual(switchedToLan.activeUrl, "https://192.168.1.10:7790")
+        XCTAssertEqual(switchedToLan.preferredChannel, .lanTls)
+        XCTAssertEqual(try store.load()?.preferredChannel, .lanTls)
+        XCTAssertEqual(recorder.snapshot().count, 3)
+        XCTAssertEqual(recorder.snapshot().last?.0, .lanTls)
+
+        // Switch back to Auto (`nil`) -> clears preferredChannel and reprobes auto priority.
+        let switchedToAuto = try await manager.switchChannel(nil)
+        XCTAssertEqual(switchedToAuto.activeChannel, .lanTls)
+        XCTAssertNil(switchedToAuto.preferredChannel)
+        XCTAssertNil(try store.load()?.preferredChannel)
+    }
+
+    func testSwitchChannelThrowsWhenUnreachableOrUnconfiguredAndKeepsPreviousChannel() async throws {
+        let store = makeSeededStore(ipv6: nil)
+        let mock = MockHTTPTransport()
+        let manager = EndpointManager(store: store, transport: mock, lanProbeTimeout: 0.5, remoteProbeTimeout: 1.0)
+
+        mock.setSendHandler { channel, _, path, _ in
+            if channel == .lanTls {
+                throw TransportError.unreachable("not on home wifi")
+            }
+            if path == "/api/device" { return Self.okJSON(["id": "dev1"]) }
+            return Self.okJSON([:])
+        }
+
+        // Auto connects via Tunnel while LAN is unreachable.
+        let initial = await manager.reprobeConnection()
+        XCTAssertEqual(initial.activeChannel, .tunnel)
+
+        // Attempting to switch to unreachable LAN throws and preserves Tunnel state.
+        do {
+            _ = try await manager.switchChannel(.lanTls)
+            XCTFail("Expected unreachable error when switching to offline LAN")
+        } catch let error as TransportError {
+            guard case .unreachable(let msg) = error else {
+                XCTFail("Expected unreachable, got \(error)")
+                return
+            }
+            XCTAssertTrue(msg.contains("局域网 TLS"), "Unexpected message: \(msg)")
+        }
+        XCTAssertEqual(manager.currentStatus().activeChannel, .tunnel)
+        XCTAssertNil(try store.load()?.preferredChannel)
+
+        // Attempting to switch to unconfigured IPv6 channel throws clear error.
+        do {
+            _ = try await manager.switchChannel(.ipv6Tls)
+            XCTFail("Expected unreachable error for unconfigured channel")
+        } catch let error as TransportError {
+            guard case .unreachable(let msg) = error else {
+                XCTFail("Expected unreachable, got \(error)")
+                return
+            }
+            XCTAssertTrue(msg.contains("尚未配置"), "Unexpected message: \(msg)")
+        }
+    }
+
+    func testReprobeFallsBackWhenPreferredChannelIsUnreachable() async throws {
+        let store = InMemoryCredentialStore(
+            initial: StoredCredentials(
+                deviceToken: "device-token-secret",
+                pinnedCertSha256: trustedFP,
+                endpoints: EndpointCandidates(
+                    lanTls: "https://192.168.1.10:7790",
+                    ipv6: nil,
+                    tunnel: "https://demo.trycloudflare.com"
+                ),
+                preferredTarget: "tunnel",
+                preferredChannel: .tunnel
+            )
+        )
+        let mock = MockHTTPTransport()
+        mock.setSendHandler { channel, _, path, _ in
+            if channel == .tunnel {
+                throw TransportError.unreachable("tunnel down")
+            }
+            if path == "/api/device" { return Self.okJSON(["id": "dev1"]) }
+            return Self.okJSON([:])
+        }
+
+        let manager = EndpointManager(store: store, transport: mock, lanProbeTimeout: 0.5, remoteProbeTimeout: 1.0)
+        let status = await manager.reprobeConnection()
+
+        // Probed preferred channel (.tunnel) first, then cleanly fell back to .lanTls.
+        let deviceProbes = mock.snapshotRequests().filter { $0.path == "/api/device" }.map(\.channel)
+        XCTAssertEqual(deviceProbes, [.tunnel, .lanTls])
+        XCTAssertEqual(status.activeChannel, .lanTls)
+        XCTAssertEqual(status.preferredChannel, .tunnel)
+    }
+
+    func testUpdateEndpointsAdoptsCertSha256OnlyWhenNilAndStrictlyRejectsOverwrite() async throws {
+        // Domain-paired credentials start with nil pinnedCertSha256 and only a CA-verified tunnel URL.
+        let store = InMemoryCredentialStore(
+            initial: StoredCredentials(
+                deviceToken: "domain-device-token",
+                pinnedCertSha256: nil,
+                endpoints: EndpointCandidates(lanTls: nil, ipv6: nil, tunnel: "https://omp.example.com"),
+                preferredTarget: "tunnel"
+            )
+        )
+        let mock = MockHTTPTransport()
+        mock.setSendHandler { _, _, path, _ in
+            if path == "/api/device" { return Self.okJSON(["id": "dev1"]) }
+            return Self.okJSON([:])
+        }
+        let manager = EndpointManager(store: store, transport: mock, lanProbeTimeout: 0.5, remoteProbeTimeout: 1.0)
+
+        // Adding lanTls without a certificate fingerprint MUST fail with missingCertificatePin.
+        do {
+            _ = try await manager.updateEndpoints(EndpointUpdatePatch(lanTls: .some("https://192.168.1.10:7790")))
+            XCTFail("Expected missingCertificatePin error")
+        } catch let error as TransportError {
+            XCTAssertEqual(error, .missingCertificatePin(.lanTls))
+        }
+        XCTAssertNil(try store.load()?.pinnedCertSha256)
+
+        // Malformed fingerprint MUST fail with invalidFingerprint and leave store untouched.
+        do {
+            _ = try await manager.updateEndpoints(
+                EndpointUpdatePatch(lanTls: .some("https://192.168.1.10:7790"), certSha256: "not-a-valid-fp")
+            )
+            XCTFail("Expected invalidFingerprint error")
+        } catch let error as PairingPayloadError {
+            XCTAssertEqual(error, .invalidFingerprint)
+        }
+        XCTAssertNil(try store.load()?.pinnedCertSha256)
+
+        // Initial pin adoption when pinnedCertSha256 == nil MUST succeed.
+        let adopted = try await manager.updateEndpoints(
+            EndpointUpdatePatch(lanTls: .some("https://192.168.1.10:7790"), certSha256: trustedFP)
+        )
+        XCTAssertEqual(adopted.certSha256, trustedFP)
+        XCTAssertEqual(adopted.candidates.lanTls, "https://192.168.1.10:7790")
+        XCTAssertEqual(adopted.activeChannel, .lanTls)
+        XCTAssertEqual(try store.load()?.pinnedCertSha256, trustedFP)
+
+        // SECURITY INVARIANT: Attempting to mutate an existing non-nil pin MUST throw invalidCertificatePin.
+        do {
+            _ = try await manager.updateEndpoints(
+                EndpointUpdatePatch(lanTls: .some("https://192.168.1.99:7790"), certSha256: attackerFP)
+            )
+            XCTFail("Expected invalidCertificatePin error when mutating existing pin")
+        } catch let error as TransportError {
+            XCTAssertEqual(error, .invalidCertificatePin)
+        }
+        XCTAssertEqual(try store.load()?.pinnedCertSha256, trustedFP)
+        XCTAssertEqual(try store.load()?.endpoints.lanTls, "https://192.168.1.10:7790")
+
+        // Passing the exact same existing fingerprint remains idempotent.
+        let idempotent = try await manager.updateEndpoints(
+            EndpointUpdatePatch(lanTls: .some("https://192.168.1.50:7790"), certSha256: trustedFP)
+        )
+        XCTAssertEqual(idempotent.certSha256, trustedFP)
+        XCTAssertEqual(idempotent.candidates.lanTls, "https://192.168.1.50:7790")
     }
 }

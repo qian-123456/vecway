@@ -73,6 +73,15 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
         ])
     }
 
+    func notifyKeyboard(height: Double, durationMs: Int) {
+        let safeHeight = height.isFinite ? max(0.0, height) : 0.0
+        dispatchToJS([
+            "type": "keyboard",
+            "height": safeHeight,
+            "durationMs": max(0, durationMs),
+        ])
+    }
+
     // MARK: - WKScriptMessageHandler
 
     func userContentController(
@@ -145,6 +154,10 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
             let rawEndpoints = payload["endpoints"] as? [String: Any] ?? [:]
             handleUpdateEndpoints(callId: callId, raw: rawEndpoints)
 
+
+        case "switchChannel":
+            guard let callId else { return }
+            handleSwitchChannel(callId: callId, payload: payload)
         case "reprobeConnection":
             guard let callId else { return }
             Task {
@@ -270,11 +283,17 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
                     self.replyError(callId: callId, message: "Aborted", name: "AbortError")
                     return
                 }
-                self.replyOK(callId: callId, value: [
+                var replyPayload: [String: Any] = [
                     "status": response.status,
                     "headers": response.headers,
-                    "bodyBase64": response.body.base64EncodedString(),
-                ])
+                ]
+                if Self.isTextContentType(headers: response.headers),
+                   let text = String(data: response.body, encoding: .utf8) {
+                    replyPayload["bodyText"] = text
+                } else {
+                    replyPayload["bodyBase64"] = response.body.base64EncodedString()
+                }
+                self.replyOK(callId: callId, value: replyPayload)
             } catch is CancellationError {
                 self.replyError(callId: callId, message: "Aborted", name: "AbortError")
             } catch let error as TransportError {
@@ -382,10 +401,12 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
             return nil
         }
 
+        let certSha256 = raw["certSha256"] as? String
         let patch = EndpointUpdatePatch(
             lanTls: extractPatch(key: "lanTls"),
             ipv6: extractPatch(key: "ipv6"),
-            tunnel: extractPatch(key: "tunnel")
+            tunnel: extractPatch(key: "tunnel"),
+            certSha256: certSha256
         )
 
         Task {
@@ -396,6 +417,48 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
                 replyError(callId: callId, message: error.localizedDescription)
             }
         }
+    }
+
+    private func handleSwitchChannel(callId: String, payload: [String: Any]) {
+        let targetChannel: NativeChannel?
+        if let rawChannel = payload["channel"] as? String {
+            let trimmed = rawChannel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == "auto" {
+                targetChannel = nil
+            } else if let parsed = NativeChannel(rawValue: trimmed) {
+                targetChannel = parsed
+            } else {
+                replyError(callId: callId, message: "不支持的通道类型：\(trimmed)")
+                return
+            }
+        } else if payload["channel"] == nil || payload["channel"] is NSNull {
+            targetChannel = nil
+        } else {
+            replyError(callId: callId, message: "无效的通道切换参数")
+            return
+        }
+
+        Task {
+            do {
+                let status = try await endpointManager.switchChannel(targetChannel)
+                replyOK(callId: callId, value: encodeToJSONObject(status) ?? [:])
+            } catch {
+                replyError(callId: callId, message: error.localizedDescription)
+            }
+        }
+    }
+
+    private static func isTextContentType(headers: [String: String]) -> Bool {
+        guard let raw = headers.first(where: { $0.key.lowercased() == "content-type" })?.value else {
+            return false
+        }
+        let mediaType = raw.split(separator: ";", maxSplits: 1).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        return mediaType.hasPrefix("text/")
+            || mediaType == "application/json"
+            || mediaType.hasSuffix("+json")
+            || mediaType.hasSuffix("+xml")
     }
 
     private func handleHaptic(_ payload: [String: Any]) {
@@ -468,17 +531,14 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
     }
 
     private func dispatchToJS(_ object: [String: Any]) {
-        guard let webView,
-              let data = try? JSONSerialization.data(withJSONObject: object, options: []),
-              var json = String(data: data, encoding: .utf8) else {
-            return
-        }
-        // Escape Unicode line separators that can break JS literal evaluation.
-        json = json
-            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
-        let script = "window.__VECWAY_NATIVE_DISPATCH__ && window.__VECWAY_NATIVE_DISPATCH__(\(json));"
-        webView.evaluateJavaScript(script, completionHandler: nil)
+        guard let webView else { return }
+        webView.callAsyncJavaScript(
+            "window.__VECWAY_NATIVE_DISPATCH__ && window.__VECWAY_NATIVE_DISPATCH__(payload);",
+            arguments: ["payload": object],
+            in: nil,
+            in: .page,
+            completionHandler: nil
+        )
     }
 
     private func encodeToJSONObject<T: Encodable>(_ value: T) -> Any? {
@@ -503,6 +563,8 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
           var sseStreams = new Map();
           var statusListeners = new Set();
           var foregroundListeners = new Set();
+          var keyboardListeners = new Set();
+          var lastKeyboard = { height: 0, durationMs: 0 };
 
           function post(msg) {
             var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[handlerName];
@@ -608,6 +670,16 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
                 foregroundListeners.forEach(function (cb) {
                   try { cb(); } catch (_) {}
                 });
+                return;
+              }
+              if (msg.type === "keyboard") {
+                lastKeyboard = {
+                  height: typeof msg.height === "number" ? msg.height : 0,
+                  durationMs: typeof msg.durationMs === "number" ? msg.durationMs : 0
+                };
+                keyboardListeners.forEach(function (cb) {
+                  try { cb(lastKeyboard); } catch (_) {}
+                });
               }
             },
             writable: false,
@@ -651,6 +723,9 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
             updateEndpoints: function (endpoints) {
               return callNative("updateEndpoints", { endpoints: endpoints || {} });
             },
+            switchChannel: function (channel) {
+              return callNative("switchChannel", { channel: channel === undefined ? null : channel });
+            },
             reprobeConnection: function () {
               return callNative("reprobeConnection");
             },
@@ -666,6 +741,14 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
               if (typeof cb !== "function") return function () {};
               foregroundListeners.add(cb);
               return function () { foregroundListeners.delete(cb); };
+            },
+            onKeyboardChange: function (cb) {
+              if (typeof cb !== "function") return function () {};
+              keyboardListeners.add(cb);
+              if (lastKeyboard.height > 0) {
+                try { cb(lastKeyboard); } catch (_) {}
+              }
+              return function () { keyboardListeners.delete(cb); };
             },
             audio: Object.freeze({
               startRecording: function () { return callNative("audioStart"); },

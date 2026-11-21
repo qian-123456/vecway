@@ -17,7 +17,7 @@ import type { TranscriptPage } from "../../core/types";
 import { events } from "../../core/sse";
 import { useSessions } from "../../core/stores/sessions";
 import { ChatController } from "./chatStore";
-import { LIVE_SNAPSHOT_KEY, loadLiveEntry, saveLiveMain } from "./lib/liveSnapshot";
+import { LIVE_SNAPSHOT_KEY, LIVE_SNAPSHOT_THROTTLE_MS, loadLiveEntry, saveLiveMain } from "./lib/liveSnapshot";
 import { loadUnsent, saveUnsent } from "./lib/unsent";
 import { nav } from "../../core/nav";
 
@@ -681,7 +681,7 @@ describe("stream lifecycle ordering", () => {
 		rpc(textFrame("first"));
 		await rafTick();
 		expect(loadLiveEntry(ID)?.main?.text).toBe("first");
-		now += 650;
+		now += LIVE_SNAPSHOT_THROTTLE_MS + 50;
 		rpc(textFrame("later"));
 		await rafTick();
 		expect(loadLiveEntry(ID)?.main?.text).toBe("later");
@@ -883,5 +883,109 @@ describe("refresh and detached response ownership", () => {
 			if (hidden) Object.defineProperty(document, "hidden", hidden);
 			else Reflect.deleteProperty(document, "hidden");
 		}
+	});
+});
+
+describe("tail pagination & slim hot path", () => {
+	it("requests initial tail with limit=120, prepends older pages via loadOlder(), and preserves tail cursors", async () => {
+		transcriptPages = [
+			{
+				items: [
+					{ id: "u2", kind: "user", text: "recent question" },
+					{ id: "a2", kind: "assistant", text: "recent answer" },
+				],
+				nextOffset: 4096,
+				tailId: "a2",
+				hasMore: true,
+				oldestIndex: 20,
+				totalItems: 140,
+			},
+			{
+				items: [
+					{ id: "u1", kind: "user", text: "older question" },
+					{ id: "a1", kind: "assistant", text: "older answer" },
+				],
+				nextOffset: 4096,
+				tailId: "a2",
+				hasMore: false,
+				oldestIndex: 0,
+				totalItems: 140,
+			},
+		];
+		const c = makeController();
+		await rafTick();
+
+		const calls = apiMock.mock.calls.filter(([, path]) => String(path).includes("/transcript?"));
+		expect(calls[0]?.[1]).toBe(`/sessions/${ID}/transcript?from=0&limit=120`);
+		expect(c.state.transcript.hasMore).toBe(true);
+		expect(c.state.transcript.oldestIndex).toBe(20);
+		expect(c.state.transcript.loadingOlder).toBe(false);
+		expect(c.state.transcript.items.map((i) => i.id)).toEqual(["u2", "a2"]);
+
+		await c.loadOlder();
+		const afterCalls = apiMock.mock.calls.filter(([, path]) => String(path).includes("/transcript?"));
+		expect(afterCalls[1]?.[1]).toBe(`/sessions/${ID}/transcript?from=0&before=20&limit=120`);
+		expect(c.state.transcript.items.map((i) => i.id)).toEqual(["u1", "a1", "u2", "a2"]);
+		expect(c.state.transcript.offset).toBe(4096);
+		expect(c.state.transcript.tailId).toBe("a2");
+		expect(c.state.transcript.hasMore).toBe(false);
+		expect(c.state.transcript.oldestIndex).toBe(0);
+		expect(c.state.transcript.loadingOlder).toBe(false);
+
+		// No-op when hasMore is false.
+		await c.loadOlder();
+		expect(apiMock.mock.calls.filter(([, path]) => String(path).includes("/transcript?"))).toHaveLength(2);
+		c.dispose();
+	});
+
+	it("does not eagerly fetch slash-commands on mount and skips boot hello resync when reconnect is false", async () => {
+		transcriptPages = [{ items: [{ id: "u1", kind: "user", text: "hi" }], nextOffset: 100, tailId: "u1" }];
+		const c = makeController();
+		await rafTick();
+
+		expect(apiMock.mock.calls.some(([, path]) => String(path).includes("/slash-commands"))).toBe(false);
+		const transcriptCountBefore = apiMock.mock.calls.filter(([, path]) => String(path).includes("/transcript?")).length;
+		events.emit("hello", { reconnect: false });
+		await settle();
+		expect(apiMock.mock.calls.filter(([, path]) => String(path).includes("/transcript?"))).toHaveLength(transcriptCountBefore);
+
+		events.emit("hello", { reconnect: true });
+		await settle();
+		expect(apiMock.mock.calls.filter(([, path]) => String(path).includes("/transcript?")).length).toBeGreaterThan(
+			transcriptCountBefore,
+		);
+		c.dispose();
+	});
+
+	it("skips GET /tree when an incremental transcript poll fails or has zero changes after initial load", async () => {
+		let treeCalls = 0;
+		transcriptPages = [
+			{ items: [{ id: "u1", kind: "user", text: "first" }], nextOffset: 120, tailId: "u1" },
+			{ items: [], nextOffset: 120, tailId: "u1" },
+		];
+		apiMock.mockImplementation(async (method: string, path: string) => {
+			if (path.endsWith("/tree")) {
+				treeCalls++;
+				return { leafId: "u1" };
+			}
+			return routeApi(method, path);
+		});
+		const c = makeController();
+		await rafTick();
+		expect(treeCalls).toBe(1);
+
+		// Unchanged incremental poll must not re-fetch /tree.
+		await c.fetchTranscript();
+		await rafTick();
+		expect(treeCalls).toBe(1);
+
+		// Failed transcript fetch must not fetch /tree.
+		apiMock.mockImplementationOnce(async () => {
+			throw new Error("network down");
+		});
+		await c.fetchTranscript();
+		await rafTick();
+		expect(treeCalls).toBe(1);
+		c.dispose();
 	});
 });
