@@ -1,8 +1,23 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from "vitest";
-import { useUi } from "./ui";
-import { useFilePreview } from "./filePreview";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as IpcModule from "../lib/ipc";
 
+const h = vi.hoisted(() => ({
+	validatePath: vi.fn(async (_path: string) => ({ exists: false, isDir: false, size: 0 })),
+	listWorkspaceFiles: vi.fn(async (_root: string) => [] as string[]),
+}));
+
+vi.mock("../lib/ipc", async (original) => ({
+	...(await original<typeof IpcModule>()),
+	validatePath: h.validatePath,
+	listWorkspaceFiles: h.listWorkspaceFiles,
+}));
+
+import { useUi } from "./ui";
+import { useExplorer } from "./explorer";
+import { openFileLink, useFilePreview } from "./filePreview";
+import { useToasts } from "../lib/toast";
+import { tNow } from "./language";
 describe("useFilePreview", () => {
 	beforeEach(() => {
 		localStorage.clear();
@@ -59,5 +74,84 @@ describe("useFilePreview", () => {
 		const s = useFilePreview.getState();
 		expect(s.tabs.map((t) => t.path)).toEqual(["/a/x.ts"]);
 		expect(s.activePath).toBe("/a/x.ts");
+	});
+});
+
+describe("openFileLink directory routing and security guard", () => {
+	beforeEach(() => {
+		localStorage.clear();
+		vi.clearAllMocks();
+		useFilePreview.setState({ tabs: [], activePath: null });
+		useExplorer.setState({
+			workspaceId: null,
+			customRootPath: null,
+			pendingRevealPath: null,
+			revealNonce: 0,
+		});
+		useUi.setState({ rightTab: null, openRightTabs: [], rightOpen: false });
+		useToasts.setState({ items: [] });
+	});
+
+	it("routes workspace-relative and home directory links to File Explorer", async () => {
+		const dirs: Record<string, true> = {
+			"/project/.cache": true,
+			"/project/docs/statecharts": true,
+			"/Users/me/.omp/agent/managed-skills": true,
+		};
+		h.validatePath.mockImplementation(async (p: string) => ({
+			exists: Boolean(dirs[p]),
+			isDir: Boolean(dirs[p]),
+			size: 0,
+		}));
+
+		await openFileLink(".cache/", { cwd: "/project", home: "/Users/me" });
+		expect(useExplorer.getState().pendingRevealPath).toBe("/project/.cache");
+		expect(useExplorer.getState().revealNonce).toBe(1);
+		expect(useUi.getState().rightTab).toBe("explorer");
+		expect(useUi.getState().rightOpen).toBe(true);
+		expect(useFilePreview.getState().tabs).toEqual([]);
+
+		await openFileLink("docs/statecharts/", { cwd: "/project", home: "/Users/me" });
+		expect(useExplorer.getState().pendingRevealPath).toBe("/project/docs/statecharts");
+		expect(useExplorer.getState().revealNonce).toBe(2);
+
+		await openFileLink("~/.omp/agent/managed-skills/", { cwd: "/project", home: "/Users/me" });
+		expect(useExplorer.getState().pendingRevealPath).toBe("/Users/me/.omp/agent/managed-skills");
+		expect(useExplorer.getState().revealNonce).toBe(3);
+		expect(useToasts.getState().items).toEqual([]);
+	});
+
+	it("still blocks binary and non-previewable files (.app, .command, .bin)", async () => {
+		h.validatePath.mockImplementation(async (p: string) => ({
+			exists: true,
+			isDir: p.endsWith(".app"),
+			size: p.endsWith(".app") ? 0 : 100,
+		}));
+
+		for (const blocked of [
+			"/Applications/Evil.app",
+			"/Users/me/run.command",
+			"/project/tool.bin",
+		]) {
+			await openFileLink(blocked, { cwd: "/project", home: "/Users/me" });
+		}
+
+		expect(useFilePreview.getState().tabs).toEqual([]);
+		expect(useExplorer.getState().pendingRevealPath).toBeNull();
+		expect(useUi.getState().rightTab).toBeNull();
+		const toasts = useToasts.getState().items;
+		expect(toasts).toHaveLength(3);
+		expect(toasts[0]).toMatchObject({
+			kind: "error",
+			text: tNow("shell.blockedPreviewNonTextOrImage", { name: "Evil.app" }),
+		});
+		expect(toasts[1]).toMatchObject({
+			kind: "error",
+			text: tNow("shell.blockedPreviewNonTextOrImage", { name: "run.command" }),
+		});
+		expect(toasts[2]).toMatchObject({
+			kind: "error",
+			text: tNow("shell.blockedPreviewNonTextOrImage", { name: "tool.bin" }),
+		});
 	});
 });

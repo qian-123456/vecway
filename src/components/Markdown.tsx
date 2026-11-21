@@ -24,7 +24,7 @@ import { toast } from "../lib/toast";
 import { useSessions } from "../stores/sessions";
 import { openFileLink } from "../stores/filePreview";
 import { useHomeDir } from "../lib/hooks";
-import { decodeFilePath, looksLikeFilePath } from "../lib/fileLinks";
+import { decodeFilePath, looksLikeDirPath, looksLikeFilePath } from "../lib/fileLinks";
 import { useSettings } from "../features/settings/store";
 import { FILE_LINK_TAG, rehypeFilePathLinks } from "../features/chat/rehypeFilePathLinks";
 import { MarkdownSecretChip } from "../features/privacy/SecretChip";
@@ -298,7 +298,10 @@ function MarkdownLink({
 				await openFileLink(href, { cwd, home, sessionId });
 			} else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) {
 				await openUrl(href);
-			} else if (looksLikeFilePath(href, { allowRelative: true, allowBare: true })) {
+			} else if (
+				looksLikeFilePath(href, { allowRelative: true, allowBare: true }) ||
+				looksLikeDirPath(href, { allowRelative: true })
+			) {
 				await openFileLink(href, { cwd, home, sessionId });
 			} else {
 				// A relative non-file href has nowhere safe to go: never hand an

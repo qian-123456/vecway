@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as IpcModule from "../../lib/ipc";
 
 const h = vi.hoisted(() => ({
-	fsReadDir: vi.fn(async () => [
+	fsReadDir: vi.fn(async (_path: string) => [
 		{ name: "chart.png", path: "/project/chart.png", isDir: false },
 		{ name: "chart.mmd", path: "/project/chart.mmd", isDir: false },
 		{ name: "notes.md", path: "/project/notes.md", isDir: false },
@@ -45,8 +45,20 @@ import { tNow } from "../../stores/language";
 describe("file tree preview routing", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		h.fsReadDir.mockImplementation(async (_path: string) => [
+			{ name: "chart.png", path: "/project/chart.png", isDir: false },
+			{ name: "chart.mmd", path: "/project/chart.mmd", isDir: false },
+			{ name: "notes.md", path: "/project/notes.md", isDir: false },
+			{ name: "index.ts", path: "/project/index.ts", isDir: false },
+			{ name: "archive.zip", path: "/project/archive.zip", isDir: false },
+		]);
 		useSessions.setState({ workspaces: [{ id: "project", name: "Project", path: "/project", kind: "project", mode: "code" }] } as never);
-		useExplorer.setState({ workspaceId: "project" });
+		useExplorer.setState({
+			workspaceId: "project",
+			customRootPath: null,
+			pendingRevealPath: null,
+			revealNonce: 0,
+		});
 		useFilePreview.setState({ tabs: [], activePath: null });
 		useUi.setState({ centerView: "session", selectedSessionId: null, docPath: null, rightTab: null });
 		useToasts.setState({ items: [] });
@@ -110,5 +122,68 @@ describe("file tree preview routing", () => {
 		expect(openDocSpy).not.toHaveBeenCalled();
 		expect(useUi.getState().centerView).toBe("session");
 		openDocSpy.mockRestore();
+	});
+
+	it("expands and reveals a directory inside the current workspace", async () => {
+		const tree: Record<string, Array<{ name: string; path: string; isDir: boolean }>> = {
+			"/project": [
+				{ name: ".cache", path: "/project/.cache", isDir: true },
+				{ name: "docs", path: "/project/docs", isDir: true },
+			],
+			"/project/docs": [
+				{ name: "statecharts", path: "/project/docs/statecharts", isDir: true },
+			],
+			"/project/docs/statecharts": [
+				{ name: "flow.mmd", path: "/project/docs/statecharts/flow.mmd", isDir: false },
+			],
+		};
+		h.fsReadDir.mockImplementation(async (p: string) => tree[p] ?? []);
+
+		const { container } = render(<FileExplorer />);
+		await screen.findByText("docs");
+
+		act(() => {
+			useExplorer.getState().openDirectory("/project/docs/statecharts/");
+		});
+
+		await screen.findByText("flow.mmd");
+		const targetNode = container.querySelector<HTMLElement>(
+			'[data-tree-path="/project/docs/statecharts"]',
+		);
+		expect(targetNode).not.toBeNull();
+		expect(targetNode?.getAttribute("aria-expanded")).toBe("true");
+		expect(targetNode?.getAttribute("aria-selected")).toBe("true");
+		expect(useExplorer.getState().customRootPath).toBeNull();
+	});
+
+	it("temporarily roots at an external directory and returns to workspace on clear", async () => {
+		const externalDir = "/Users/me/.omp/agent/managed-skills";
+		const tree: Record<string, Array<{ name: string; path: string; isDir: boolean }>> = {
+			"/project": [
+				{ name: "notes.md", path: "/project/notes.md", isDir: false },
+			],
+			[externalDir]: [
+				{ name: "skill-a", path: `${externalDir}/skill-a`, isDir: true },
+				{ name: "README.md", path: `${externalDir}/README.md`, isDir: false },
+			],
+		};
+		h.fsReadDir.mockImplementation(async (p: string) => tree[p] ?? []);
+
+		render(<FileExplorer />);
+		await screen.findByText("notes.md");
+
+		act(() => {
+			useExplorer.getState().openDirectory(`${externalDir}/`);
+		});
+
+		await screen.findByText("skill-a");
+		expect(screen.getByText("README.md")).toBeTruthy();
+		expect(useExplorer.getState().customRootPath).toBe(externalDir);
+		expect(screen.getByText("~/.omp/agent/managed-skills")).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: tNow("explorer.backToWorkspace") }));
+
+		await waitFor(() => expect(useExplorer.getState().customRootPath).toBeNull());
+		await screen.findByText("notes.md");
 	});
 });

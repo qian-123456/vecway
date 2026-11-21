@@ -32,6 +32,7 @@ export default defineMessages({
 		switchWorkspace: "切换工作区",
 		workspaceCardTip: "{name}\n{path}\n(右键在访达中显示{switchHint})",
 		switchHint: "，点击切换工作区",
+		backToWorkspace: "返回项目目录",
 	},
 	"en-US": {
 		copiedRelativePath: "Relative path copied",
@@ -64,5 +65,6 @@ export default defineMessages({
 		switchWorkspace: "Switch workspace",
 		workspaceCardTip: "{name}\n{path}\n(Right-click to reveal in Finder{switchHint})",
 		switchHint: ", click to switch workspace",
+		backToWorkspace: "Back to workspace",
 	},
 });

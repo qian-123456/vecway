@@ -1187,12 +1187,12 @@ type CenterView =
 type RightTab = "explorer" | "sidechat" | "heatmap" | "git" | "services" | "terminal" | "plan" | "files";
 interface UiState {
   centerView: CenterView; selectedSessionId: string | null; docPath: string | null;
-  rightTab: RightTab | null; openRightTabs: RightTab[]; rightOpen: boolean;  // Chrome-style open tabs; remembered per session (ompws:right-by-session), a never-opened session starts closed with no tabs
+  rightTab: RightTab | null; openRightTabs: RightTab[]; rightOpen: boolean; rightMaximized: boolean;  // Chrome-style open tabs; remembered per session (ompws:right-by-session), a never-opened session starts closed with no tabs; rightMaximized is transient
   sessionViewMode: Record<string, "chat" | "terminal">;
   modal: { name: string; props: Record<string, unknown> } | null;
   selectSession(id: string | null): void; openDoc(path: string): void; setCenter(v: CenterView): void;
   setRightTab(t: RightTab | null): void;  // opens (appends) + activates, never replaces
-  closeRightTab(t: RightTab): void;  // activates right neighbour, else left, else null (empty state) toggleRight(): void; setSessionViewMode(id: string, m: "chat" | "terminal"): void;
+  closeRightTab(t: RightTab): void;  // activates right neighbour, else left, else null (empty state); toggleRight(): void; toggleRightMaximized(): void; setRightMaximized(v: boolean): void; setSessionViewMode(id: string, m: "chat" | "terminal"): void;
   openModal(name: string, props?: Record<string, unknown>): void; closeModal(): void;
 }
 ```
@@ -1307,14 +1307,7 @@ containment, and sessions in deleted worktree dirs group under a default-collaps
   `agent_end` settles catalog status and RPC/frontend streaming when `isTerminal != false` or `awaitingAsyncWork == true`; the latter is idle until a background result wakes the agent. Other non-terminal ends keep the run active. `turn_end` has no terminal flag and does not settle a run. Idle ends clear the previous turn's live request/tool activity so the next `agent_start` cannot replay it; background children remain separately observable.
 - Approval verified shape: `{"type":"extension_ui_request","id":"…","method":"select","title":"Allow tool: bash\nCommand: echo hi","options":["Approve","Deny"]}`
   → respond `{"type":"extension_ui_response","id":"…","value":"Approve"}`.
-- Modern `ask` (OMP 18.22.0) takes one HTML form. RPC has no whole-form surface, so OMP walks the fields through
-  `select` / `input` / `editor`; it owns form parsing, required-field validation, defaults, and cancellation. The app never renders raw form HTML.
-  `PendingUiCard` preserves multiline context, option descriptions, radio `initialIndex`, and checkbox `checkedIndices` / `markableCount`.
-  Each click sends the exact raw option string; checkbox toggles, Other text, and Done advance only when OMP emits the next request.
-  Text starts from `prefill` / `value` / legacy defaults, but an intentional empty edit is sent unchanged. Drafts are scoped to the request identity.
-  Questions expose cancellation, and an answered form returns control to the agent. Tool results render `details.answers` question/answer pairs and option notes.
-  Historical question-array calls still use `askDriver` / `AskPanel`: local question navigation and a final submit replay the older select/editor protocol.
-  Requests that do not match that historical schema use `PendingUiCard`, without translating form controls into a second client-side schema.
+- Modern `ask` takes an HTML `<form>` (and historical calls take `{ questions }`). Both are parsed by `askDriver` and rendered in `AskPanel` (docked in place of the bottom `Composer`, which stays hidden while any pending UI / ask dialog is active): local `上一步`/`下一步`/`提交` navigation (no auto-advance on click), numbered `1`–`9` keyboard selection, per-option inline notes, and replay over OMP's `select`/`input`/`editor` field-by-field RPC frames (or direct `method: "form"` one-shot submission). Unmatched extension UI requests fall back to `PendingUiCard` (preserving raw option strings, multiline context, radio/checkbox markers, and `prefill`/`value` defaults).
 - Idle suspend: settlement schedules a countdown, with a 60 s fallback sweep. Unretained sessions without activity for `idle_suspend_minutes` undergo the dispatch-serialized authoritative idle checks described in §8.2 before shutdown and setting `session_meta.suspended=1`; `rpc_ensure_live` clears it.
 - Side chat: parent must have `fork_depth < 3`. Label = parent label + "." + (count of existing children + 1). `create` starts
   `StartOpts{cwd: parent cwd, parent_session_id, label, fork_file}` (all tools stay enabled; the boundary text

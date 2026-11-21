@@ -6,9 +6,11 @@ describe("useUi right panel", () => {
 	beforeEach(() => {
 		localStorage.clear();
 		useUi.setState({
+			centerView: "session",
 			rightOpen: true,
 			rightTab: null,
 			openRightTabs: [],
+			rightMaximized: false,
 		});
 	});
 
@@ -47,5 +49,71 @@ describe("useUi right panel", () => {
 			open: false,
 			tabs: ["terminal"],
 		});
+	});
+
+	it("toggles and sets rightMaximized transiently without persisting", () => {
+		useUi.getState().setRightTab("files");
+		expect(useUi.getState().rightMaximized).toBe(false);
+
+		useUi.getState().toggleRightMaximized();
+		expect(useUi.getState().rightMaximized).toBe(true);
+
+		useUi.getState().toggleRightMaximized();
+		expect(useUi.getState().rightMaximized).toBe(false);
+
+		useUi.getState().setRightMaximized(true);
+		expect(useUi.getState().rightMaximized).toBe(true);
+		expect(localStorage.getItem("ompws:right-by-session") ?? "").not.toContain("rightMaximized");
+
+		useUi.getState().setRightMaximized(false);
+		expect(useUi.getState().rightMaximized).toBe(false);
+	});
+
+	it("resets rightMaximized when the right panel closes", () => {
+		useUi.getState().setRightTab("files");
+		useUi.getState().setRightMaximized(true);
+		useUi.getState().setRightOpen(false);
+		expect(useUi.getState().rightMaximized).toBe(false);
+
+		useUi.getState().setRightOpen(true);
+		useUi.getState().setRightMaximized(true);
+		useUi.getState().toggleRight();
+		expect(useUi.getState().rightOpen).toBe(false);
+		expect(useUi.getState().rightMaximized).toBe(false);
+	});
+
+	it("resets rightMaximized when closing the last right tab, but keeps it if another tab stays active", () => {
+		useUi.getState().setRightTab("git");
+		useUi.getState().setRightTab("files");
+		useUi.getState().setRightMaximized(true);
+
+		useUi.getState().closeRightTab("files");
+		expect(useUi.getState().rightOpen).toBe(true);
+		expect(useUi.getState().rightTab).toBe("git");
+		expect(useUi.getState().rightMaximized).toBe(true);
+
+		useUi.getState().closeRightTab("git");
+		expect(useUi.getState().rightOpen).toBe(false);
+		expect(useUi.getState().rightTab).toBeNull();
+		expect(useUi.getState().rightMaximized).toBe(false);
+	});
+
+	it("resets rightMaximized when opening settings or switching to views without a right panel", () => {
+		useUi.getState().setRightTab("files");
+		useUi.getState().setRightMaximized(true);
+		useUi.getState().openSettings("general");
+		expect(useUi.getState().rightMaximized).toBe(false);
+
+		useUi.getState().setCenter("session");
+		useUi.getState().setRightMaximized(true);
+		useUi.getState().setCenter("doc");
+		expect(useUi.getState().rightMaximized).toBe(true);
+
+		for (const view of ["home", "inbox", "schedules", "skills", "settings"] as const) {
+			useUi.getState().setCenter("session");
+			useUi.getState().setRightMaximized(true);
+			useUi.getState().setCenter(view);
+			expect(useUi.getState().rightMaximized).toBe(false);
+		}
 	});
 });

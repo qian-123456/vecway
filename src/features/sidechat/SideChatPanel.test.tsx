@@ -380,6 +380,36 @@ describe("SideChatPanel blank new chat", () => {
 		render(<SideChatPanel />);
 		expect((input() as HTMLTextAreaElement).value).toBe("草稿内容");
 	});
+
+	it("keeps the bottom toolbar on a single line with truncating model picker and compact thinking chip", () => {
+		render(<SideChatPanel />);
+		const addBtn = screen.getByRole("button", { name: "添加" });
+		const toolbar = addBtn.parentElement!;
+		expect(toolbar.className).toContain("flex-nowrap");
+		expect(toolbar.className).not.toContain("flex-wrap");
+		expect(addBtn.className).toContain("shrink-0");
+
+		const middle = addBtn.nextElementSibling as HTMLElement;
+		expect(middle.className).toContain("flex-nowrap");
+		expect(middle.className).toContain("min-w-0");
+
+		const modelWrapper = middle.firstElementChild as HTMLElement;
+		expect(modelWrapper.className).toContain("min-w-0");
+		expect(modelWrapper.className).toContain("shrink");
+		expect(modelWrapper.className).not.toContain("shrink-0");
+
+		const modelBtn = modelWrapper.querySelector("button")!;
+		expect(modelBtn.querySelector("span")!.className).toContain("truncate");
+
+		const thinkingEl = modelWrapper.nextElementSibling as HTMLElement;
+		expect(thinkingEl.className).toContain("shrink-0");
+		const thinkingControl = thinkingEl.querySelector("button") ?? thinkingEl;
+		expect(thinkingControl.className).toContain("whitespace-nowrap");
+
+		fireEvent.click(modelBtn);
+		const popover = screen.getByTestId("model-menu").parentElement!;
+		expect(popover.className).toContain("w-[min(420px,calc(100vw-24px))]");
+	});
 });
 
 describe("SideChatPanel existing side chats", () => {

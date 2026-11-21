@@ -88,7 +88,13 @@ function RightPanelBody({ tab }: { tab: RightTab }) {
 	}
 }
 
-export const RightAside = React.memo(function RightAside({ width }: { width?: number }) {
+export const RightAside = React.memo(function RightAside({
+	width,
+	maximized = false,
+}: {
+	width?: number;
+	maximized?: boolean;
+}) {
 	const rightTab = useUi((s) => s.rightTab);
 	const storedRightWidth = useUi((s) => s.rightWidth);
 	const rightWidth = width ?? storedRightWidth;
@@ -97,8 +103,12 @@ export const RightAside = React.memo(function RightAside({ width }: { width?: nu
 
 	return (
 		<aside
-			style={{ width: rightWidth }}
-			className="@container flex shrink-0 flex-col overflow-hidden vibrancy-chrome"
+			style={maximized ? undefined : { width: rightWidth }}
+			className={
+				maximized
+					? "@container flex min-w-0 flex-1 flex-col overflow-hidden vibrancy-chrome"
+					: "@container flex shrink-0 flex-col overflow-hidden vibrancy-chrome"
+			}
 		>
 			{rightTab ? (
 				<>

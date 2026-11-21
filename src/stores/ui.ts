@@ -56,6 +56,15 @@ const RIGHT_TABS: readonly RightTab[] = [
 	"files",
 ];
 
+/** Center views where entering the view exits right-panel maximize mode. */
+const CENTERS_RESETTING_RIGHT_MAXIMIZE: Partial<Record<CenterView, true>> = {
+	home: true,
+	inbox: true,
+	schedules: true,
+	skills: true,
+	settings: true,
+};
+
 /** Right-panel state of one session. */
 interface RightPanelState {
 	open: boolean;
@@ -219,6 +228,8 @@ export interface UiState {
 	/** Open right-panel tabs in display order (Chrome-style); `rightTab` is the active one. */
 	openRightTabs: RightTab[];
 	rightOpen: boolean;
+	/** Transient full-width right-panel expansion (never persisted). */
+	rightMaximized: boolean;
 	rightWidth: number;
 	/** Height (px) of the Git panel's worktree list above the detail-pane divider. */
 	gitListHeight: number;
@@ -256,6 +267,8 @@ export interface UiState {
 	closeRightTab(t: RightTab): void;
 	toggleRight(): void;
 	setRightOpen(open: boolean): void;
+	toggleRightMaximized(): void;
+	setRightMaximized(maximized: boolean): void;
 	setRightWidth(w: number): void;
 	setGitListHeight(h: number): void;
 	setDiffViewMode(m: "unified" | "split"): void;
@@ -280,6 +293,7 @@ export const useUi = create<UiState>((set) => ({
 	rightTab: initialRight.active,
 	openRightTabs: initialRight.tabs,
 	rightOpen: initialRight.open,
+	rightMaximized: false,
 	rightWidth: readNumber(STORAGE_KEYS.rightWidth, 360, MIN_RIGHT_WIDTH, MAX_RIGHT_WIDTH),
 	gitListHeight: readNumber(STORAGE_KEYS.gitListHeight, 220, 80, 2000),
 	diffViewMode: readDiffViewMode(),
@@ -314,6 +328,7 @@ export const useUi = create<UiState>((set) => ({
 			highlightId: null,
 			lastSessionId: null,
 			centerView: s.centerView === "settings" ? s.centerView : "home",
+			rightMaximized: false,
 		}));
 	},
 	setSelectedIds: (ids) =>
@@ -350,6 +365,7 @@ export const useUi = create<UiState>((set) => ({
 						: s.previousCenterView
 					: s.previousCenterView,
 			centerView: v,
+			...(CENTERS_RESETTING_RIGHT_MAXIMIZE[v] ? { rightMaximized: false } : {}),
 		})),
 	openSettings: (section, opts) =>
 		set((s) => ({
@@ -360,6 +376,7 @@ export const useUi = create<UiState>((set) => ({
 			settingsFocus: opts?.focusKey ?? null,
 			settingsRequest: s.settingsRequest + 1,
 			settingsPending: true,
+			rightMaximized: false,
 		})),
 	closeSettings: () =>
 		set((s) => {
@@ -376,7 +393,7 @@ export const useUi = create<UiState>((set) => ({
 		set((s) => {
 			if (!t) {
 				persistRight(s.rightOpen, s.openRightTabs, null);
-				return { rightTab: null };
+				return { rightTab: null, rightMaximized: false };
 			}
 			const openRightTabs = s.openRightTabs.includes(t) ? s.openRightTabs : [...s.openRightTabs, t];
 			persistRight(true, openRightTabs, t);
@@ -392,7 +409,12 @@ export const useUi = create<UiState>((set) => ({
 			// Closing the last tab collapses the whole panel instead of leaving the empty picker.
 			const rightOpen = openRightTabs.length === 0 ? false : s.rightOpen;
 			persistRight(rightOpen, openRightTabs, rightTab);
-			return { openRightTabs, rightTab, rightOpen };
+			return {
+				openRightTabs,
+				rightTab,
+				rightOpen,
+				...(!rightOpen || rightTab === null ? { rightMaximized: false } : {}),
+			};
 		}),
 	toggleRight: () =>
 		set((s) => {
@@ -400,13 +422,15 @@ export const useUi = create<UiState>((set) => ({
 			persistRight(next, s.openRightTabs, s.rightTab);
 			// Re-opening restores the last active tab; the "打开标签页" picker
 			// only shows when there is no active tab.
-			return { rightOpen: next };
+			return next ? { rightOpen: true } : { rightOpen: false, rightMaximized: false };
 		}),
 	setRightOpen: (open) =>
 		set((s) => {
 			persistRight(open, s.openRightTabs, s.rightTab);
-			return { rightOpen: open };
+			return open ? { rightOpen: true } : { rightOpen: false, rightMaximized: false };
 		}),
+	toggleRightMaximized: () => set((s) => ({ rightMaximized: !s.rightMaximized })),
+	setRightMaximized: (maximized) => set({ rightMaximized: maximized }),
 	setRightWidth: (w) => {
 		const clamped = Math.min(MAX_RIGHT_WIDTH, Math.max(MIN_RIGHT_WIDTH, w));
 		writeStorage(STORAGE_KEYS.rightWidth, clamped);
@@ -473,5 +497,10 @@ useUi.subscribe((s, prev) => {
 		return;
 	}
 	const next = rightBySession.get(nextKey) ?? defaultRightMemo();
-	useUi.setState({ rightOpen: next.open, openRightTabs: next.tabs, rightTab: next.active });
+	useUi.setState({
+		rightOpen: next.open,
+		openRightTabs: next.tabs,
+		rightTab: next.active,
+		...(!next.open || next.active === null ? { rightMaximized: false } : {}),
+	});
 });

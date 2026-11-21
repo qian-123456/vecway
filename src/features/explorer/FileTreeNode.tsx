@@ -103,6 +103,7 @@ export function FileTreeNode({
 			<div
 				role="treeitem"
 				tabIndex={0}
+				data-tree-path={entry.path}
 				aria-expanded={entry.isDir ? isExpanded : undefined}
 				aria-selected={isSelected}
 				onClick={handleClick}

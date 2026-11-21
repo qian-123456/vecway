@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import {
+	FolderOpen,
 	FolderUp,
 	Loader2,
 	RefreshCw,
@@ -10,14 +11,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DirEntry } from "../../lib/contracts";
 import { resolveActiveSessionTarget } from "../../lib/activeSessionTarget";
 import { canPreviewFile } from "../../lib/fileLinks";
-import { basename } from "../../lib/paths";
+import { basename, isInside, shortPath, trimTrailingSlash } from "../../lib/paths";
 import { usePendingSession } from "../sessions/pendingSession";
 import { fsReadDir, listWorkspaceFiles } from "../../lib/ipc";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { EmptyState } from "../../components/EmptyState";
 import { SearchInput } from "../../components/SearchInput";
 import { toast } from "../../lib/toast";
-import { isComposing } from "../../lib/hooks";
+import { isComposing, useHomeDir } from "../../lib/hooks";
 import { useExplorer } from "../../stores/explorer";
 import { useFilePreview } from "../../stores/filePreview";
 import { useSessions } from "../../stores/sessions";
@@ -47,6 +48,12 @@ export function FileExplorer() {
 	});
 	const manualWorkspaceId = useExplorer((s) => s.workspaceId);
 	const setManualWorkspaceId = useExplorer((s) => s.setWorkspaceId);
+	const customRootPath = useExplorer((s) => s.customRootPath);
+	const pendingRevealPath = useExplorer((s) => s.pendingRevealPath);
+	const revealNonce = useExplorer((s) => s.revealNonce);
+	const setCustomRootPath = useExplorer((s) => s.setCustomRootPath);
+	const clearCustomRoot = useExplorer((s) => s.clearCustomRoot);
+	const home = useHomeDir();
 
 	const currentWorkspace = useMemo(() => {
 		if (workspaces.length === 0) return null;
@@ -62,6 +69,8 @@ export function FileExplorer() {
 		return { ...found, path: activeTarget.cwd };
 	}, [workspaces, manualWorkspaceId, activeTarget.workspaceId, activeTarget.cwd]);
 
+	const effectiveRootPath = customRootPath ?? currentWorkspace?.path ?? null;
+
 	// Tree state
 	const [rootEntries, setRootEntries] = useState<DirEntry[]>([]);
 	const [childrenMap, setChildrenMap] = useState<Record<string, DirEntry[]>>({});
@@ -69,8 +78,9 @@ export function FileExplorer() {
 	const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
 	const [selectedPath, setSelectedPath] = useState<string | null>(activePreviewPath);
 	const [isRootLoading, setIsRootLoading] = useState(false);
-	const rootPathRef = useRef(currentWorkspace?.path);
-	rootPathRef.current = currentWorkspace?.path;
+	const rootPathRef = useRef(effectiveRootPath);
+	rootPathRef.current = effectiveRootPath;
+	const [pendingScrollPath, setPendingScrollPath] = useState<string | null>(null);
 
 	// Search state
 	const [searchOpen, setSearchOpen] = useState(false);
@@ -114,43 +124,43 @@ export function FileExplorer() {
 		}
 	}, []);
 
-	// Refresh root directory and reload expanded directories in current workspace
+	// Refresh root directory and reload expanded directories under the effective root
 	const refreshRoot = useCallback(async () => {
-		if (!currentWorkspace?.path) {
+		if (!effectiveRootPath) {
 			setRootEntries([]);
 			return;
 		}
 		setIsRootLoading(true);
 		try {
-			const entries = await fsReadDir(currentWorkspace.path);
-			if (rootPathRef.current !== currentWorkspace.path) return;
+			const entries = await fsReadDir(effectiveRootPath);
+			if (rootPathRef.current !== effectiveRootPath) return;
 			setRootEntries(entries);
 			// Also reload currently expanded directories
 			for (const expPath of expandedPaths) {
-				if (expPath.startsWith(currentWorkspace.path)) {
+				if (isInside(expPath, effectiveRootPath)) {
 					loadDir(expPath).catch(() => {});
 				}
 			}
 		} catch (err) {
-			if (rootPathRef.current !== currentWorkspace.path) return;
+			if (rootPathRef.current !== effectiveRootPath) return;
 			toast.error(t("explorer.loadWorkspaceFilesFailed", { error: String(err) }));
 			setRootEntries([]);
 		} finally {
-			if (rootPathRef.current === currentWorkspace.path) setIsRootLoading(false);
+			if (rootPathRef.current === effectiveRootPath) setIsRootLoading(false);
 		}
-	}, [currentWorkspace?.path, expandedPaths, loadDir]);
+	}, [effectiveRootPath, expandedPaths, loadDir]);
 
-	// Reset tree expansion and cache on workspace change, then load new root
+	// Reset tree expansion and cache on root change, then load new root
 	useEffect(() => {
 		let cancelled = false;
 		setExpandedPaths(new Set());
 		setChildrenMap({});
-		if (!currentWorkspace?.path) {
+		if (!effectiveRootPath) {
 			setRootEntries([]);
 			return;
 		}
 		setIsRootLoading(true);
-		fsReadDir(currentWorkspace.path)
+		fsReadDir(effectiveRootPath)
 			.then((entries) => {
 				if (cancelled) return;
 				setRootEntries(entries);
@@ -165,7 +175,104 @@ export function FileExplorer() {
 				setIsRootLoading(false);
 			});
 		return () => { cancelled = true; };
-	}, [currentWorkspace?.path]);
+	}, [effectiveRootPath]);
+
+	// Reveal/expand a directory requested from chat links or external callers
+	useEffect(() => {
+		if (!pendingRevealPath) return;
+		const target = pendingRevealPath;
+		const nonce = revealNonce;
+		const wsRoot = currentWorkspace?.path
+			? (trimTrailingSlash(currentWorkspace.path) || "/")
+			: null;
+		const insideWorkspace = !!wsRoot && isInside(target, wsRoot);
+
+		setSearchQuery("");
+
+		if (!insideWorkspace) {
+			setCustomRootPath(target);
+			setSelectedPath(target);
+			useExplorer.setState((s) => (s.revealNonce === nonce ? { pendingRevealPath: null } : s));
+			return;
+		}
+
+		// If a temporary custom root is active, clear it first and let the next render
+		// reset the tree to the workspace root before expanding the target path.
+		if (customRootPath !== null) {
+			clearCustomRoot();
+			return;
+		}
+
+		let cancelled = false;
+		const rel =
+			target === wsRoot
+				? ""
+				: wsRoot === "/"
+					? target.slice(1)
+					: target.slice(wsRoot.length + 1);
+		const segments = rel ? rel.split("/").filter(Boolean) : [];
+		const dirsToExpand: string[] = [];
+		let acc = wsRoot;
+		for (const seg of segments) {
+			acc = acc === "/" ? `/${seg}` : `${acc}/${seg}`;
+			dirsToExpand.push(acc);
+		}
+
+		setSelectedPath(target);
+		if (dirsToExpand.length > 0) {
+			setExpandedPaths((prev) => {
+				const next = new Set(prev);
+				for (const dir of dirsToExpand) next.add(dir);
+				return next;
+			});
+			setPendingScrollPath(target);
+		}
+
+		void (async () => {
+			const loaded: Record<string, DirEntry[]> = {};
+			await Promise.all(
+				dirsToExpand.map(async (dir) => {
+					try {
+						loaded[dir] = await fsReadDir(dir);
+					} catch (err) {
+						if (!cancelled) {
+							toast.error(t("explorer.readDirFailed", { error: String(err) }));
+						}
+					}
+				}),
+			);
+			if (cancelled) return;
+			if (Object.keys(loaded).length > 0) {
+				setChildrenMap((prev) => ({ ...prev, ...loaded }));
+			}
+			useExplorer.setState((s) => (s.revealNonce === nonce ? { pendingRevealPath: null } : s));
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [
+		pendingRevealPath,
+		revealNonce,
+		customRootPath,
+		currentWorkspace?.path,
+		setCustomRootPath,
+		clearCustomRoot,
+	]);
+
+	// Scroll the revealed directory node into view once it renders in the tree
+	useEffect(() => {
+		if (!pendingScrollPath) return;
+		const container = panelRef.current;
+		if (!container) return;
+		for (const el of container.querySelectorAll<HTMLElement>("[data-tree-path]")) {
+			if (el.dataset.treePath === pendingScrollPath) {
+				el.scrollIntoView?.({ block: "nearest" });
+				setPendingScrollPath(null);
+				return;
+			}
+		}
+	}, [pendingScrollPath, rootEntries, childrenMap, expandedPaths]);
 
 	// Toggle folder expand/collapse
 	const handleToggleExpand = useCallback(
@@ -195,17 +302,17 @@ export function FileExplorer() {
 	const handleOpenFile = (path: string) => {
 		setSelectedPath(path);
 		if (canPreviewFile(path)) {
-			useFilePreview.getState().openFile(path, { cwd: currentWorkspace?.path ?? null });
+			useFilePreview.getState().openFile(path, { cwd: effectiveRootPath ?? null });
 		} else {
 			toast.error(t("shell.blockedPreviewNonTextOrImage", { name: basename(path) }));
 		}
 	};
 
-	// Reveal current workspace root in Finder
+	// Reveal current effective root in Finder
 	const handleRevealInFinder = async () => {
-		if (!currentWorkspace?.path) return;
+		if (!effectiveRootPath) return;
 		try {
-			await revealItemInDir(currentWorkspace.path);
+			await revealItemInDir(effectiveRootPath);
 		} catch (err) {
 			toast.error(t("explorer.openInFinderFailed", { error: String(err) }));
 		}
@@ -215,7 +322,7 @@ export function FileExplorer() {
 	useEffect(() => {
 		let cancelled = false;
 		const q = searchQuery.trim();
-		if (!q || !currentWorkspace?.path) {
+		if (!q || !effectiveRootPath) {
 			setSearchResults([]);
 			return;
 		}
@@ -223,7 +330,7 @@ export function FileExplorer() {
 		const timer = setTimeout(async () => {
 			setIsSearchingFiles(true);
 			try {
-				const allFiles = await listWorkspaceFiles(currentWorkspace.path);
+				const allFiles = await listWorkspaceFiles(effectiveRootPath);
 				if (cancelled) return;
 				const lowerQ = q.toLowerCase();
 				const matched = allFiles.filter((rel) =>
@@ -237,7 +344,7 @@ export function FileExplorer() {
 			}
 		}, 150);
 		return () => { cancelled = true; clearTimeout(timer); };
-	}, [searchQuery, currentWorkspace?.path]);
+	}, [searchQuery, effectiveRootPath]);
 
 	return (
 		<div ref={panelRef} tabIndex={-1} data-slash-panel="" className="flex h-full flex-col bg-transparent text-neutral-300 text-xs select-none outline-none">
@@ -337,6 +444,26 @@ export function FileExplorer() {
 				onSelectWorkspace={(ws) => setManualWorkspaceId(ws.id)}
 			/>
 
+			{/* Temporary external directory root bar */}
+			{customRootPath && (
+				<div className="mx-2 mb-1 flex items-center gap-1.5 rounded-lg hairline bg-[var(--well-bg)] px-2 py-1 text-[11px]">
+					<FolderOpen size={12} className="shrink-0 text-[var(--accent)]" />
+					<span
+						className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-neutral-200"
+						title={customRootPath}
+					>
+						{shortPath(customRootPath, home)}
+					</span>
+					<button
+						type="button"
+						onClick={clearCustomRoot}
+						className="shrink-0 whitespace-nowrap rounded border border-[var(--line)] bg-[var(--bg-panel)] px-1.5 py-0.5 text-[10.5px] font-medium text-neutral-200 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-100 active:scale-95"
+					>
+						{t("explorer.backToWorkspace")}
+					</button>
+				</div>
+			)}
+
 			{/* Tree or Search Results Container */}
 			<div className="flex-1 overflow-y-auto px-0.5 py-0.5 focus:outline-none">
 				{/* Search Results Mode */}
@@ -353,8 +480,8 @@ export function FileExplorer() {
 						) : (
 							<>
 								{searchResults.slice(0, searchLimit).map((rel) => {
-									const full = currentWorkspace
-										? `${currentWorkspace.path}/${rel}`
+									const full = effectiveRootPath
+										? `${effectiveRootPath}/${rel}`
 										: rel;
 									const fileName = rel.split("/").pop() || rel;
 									const isSelected = selectedPath === full;
@@ -405,14 +532,14 @@ export function FileExplorer() {
 								<span>{t("explorer.loadingDirectory")}</span>
 							</div>
 						) : rootEntries.length === 0 ? (
-							<EmptyState title={t("explorer.noFilesInWorkspace")} />
+							<EmptyState title={customRootPath ? t("explorer.emptyDirectory") : t("explorer.noFilesInWorkspace")} />
 						) : (
 							rootEntries.map((entry) => (
 								<FileTreeNode
 									key={entry.path}
 									entry={entry}
 									depth={0}
-									rootPath={currentWorkspace?.path || ""}
+									rootPath={effectiveRootPath || ""}
 									expandedPaths={expandedPaths}
 									selectedPath={selectedPath}
 									onToggleExpand={handleToggleExpand}

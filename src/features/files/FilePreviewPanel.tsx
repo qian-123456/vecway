@@ -7,10 +7,10 @@
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { ExternalLink, FileText, FolderOpen, RefreshCw, Save } from "lucide-react";
+import { ExternalLink, FileText, FolderOpen, Maximize2, Minimize2, RefreshCw, Save } from "lucide-react";
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import { importImageFile } from "../../lib/ipc";
-import { errMsg } from "../../lib/dialogs";
+import { copyText, errMsg } from "../../lib/dialogs";
 import { basename, shortPath } from "../../lib/paths";
 import { useHomeDir } from "../../lib/hooks";
 import { toast } from "../../lib/toast";
@@ -33,27 +33,66 @@ function ExternalActions({ path, isHtml }: { path: string; isHtml?: boolean }) {
 	const run = (fn: () => Promise<void>, what: string) => {
 		void fn().catch((e: unknown) => toast.error(t("files.actionFailed", { action: what, error: errMsg(e) })));
 	};
+	const openLabel = isHtml ? t("files.openInBrowser") : t("files.systemOpen");
 	return (
 		<>
 			<button
 				type="button"
 				onClick={() => run(() => openPath(path), t("files.actionOpen"))}
-				title={t("files.openWithSystemDefault")}
-				className="flex items-center gap-1 rounded-lg px-2 py-1 text-neutral-300 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+				title={isHtml ? t("files.openInBrowser") : t("files.openWithSystemDefault")}
+				aria-label={openLabel}
+				className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-neutral-300 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 			>
-				<ExternalLink size={13} />
-				{isHtml ? t("files.openInBrowser") : t("files.systemOpen")}
+				<ExternalLink size={13} className="shrink-0" />
+				<span className="hidden @[440px]:inline">{openLabel}</span>
 			</button>
 			<button
 				type="button"
 				onClick={() => run(() => revealItemInDir(path), t("files.actionReveal"))}
 				title={t("files.actionReveal")}
-				className="flex items-center gap-1 rounded-lg px-2 py-1 text-neutral-300 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+				aria-label={t("files.finder")}
+				className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-neutral-300 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 			>
-				<FolderOpen size={13} />
-				{t("files.finder")}
+				<FolderOpen size={13} className="shrink-0" />
+				<span className="hidden @[440px]:inline">{t("files.finder")}</span>
 			</button>
 		</>
+	);
+}
+
+function PathCopyButton({ path, displayPath }: { path: string; displayPath: string }) {
+	const { t } = useT();
+	return (
+		<button
+			type="button"
+			onClick={() =>
+				void copyText(path, { label: t("files.copiedPath") }).catch((e: unknown) =>
+					toast.error(errMsg(e)),
+				)
+			}
+			title={path}
+			className="min-w-0 flex-1 truncate rounded px-1 py-0.5 text-left font-mono text-[11px] text-[var(--text-40)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+		>
+			{displayPath}
+		</button>
+	);
+}
+
+function MaximizeToggleButton() {
+	const { t } = useT();
+	const rightMaximized = useUi((s) => s.rightMaximized);
+	const toggleRightMaximized = useUi((s) => s.toggleRightMaximized);
+	const label = rightMaximized ? t("rightPanel.restorePanel") : t("rightPanel.maximizePanel");
+	return (
+		<button
+			type="button"
+			onClick={toggleRightMaximized}
+			title={label}
+			aria-label={label}
+			className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-neutral-300 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+		>
+			{rightMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+		</button>
 	);
 }
 
@@ -79,8 +118,12 @@ function ImageBody({ path }: { path: string }) {
 	}, [home, path, resolved]);
 	return (
 		<div className="flex h-full min-h-0 flex-col">
-			<div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[var(--border-divider)] px-3 py-1.5 text-[11px]">
-				<ExternalActions path={resolved} />
+			<div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--border-divider)] px-2.5 py-1 text-[11px]">
+				<PathCopyButton path={resolved} displayPath={shortPath(resolved, home)} />
+				<div className="flex shrink-0 items-center gap-0.5">
+					<MaximizeToggleButton />
+					<ExternalActions path={resolved} />
+				</div>
 			</div>
 			<div className="min-h-0 flex-1 overflow-auto p-3">
 				{path.startsWith("~/") && !home ? (
@@ -144,24 +187,8 @@ function TextBody({ tab }: { tab: FileTab }) {
 
 	return (
 		<div className="flex h-full min-h-0 flex-col">
-			<div className="shrink-0 border-b border-[var(--border-divider)] px-3 py-2">
-				<div className="flex items-start gap-2">
-					<FileText size={14} className="mt-0.5 shrink-0 text-neutral-400" />
-					<div className="min-w-0 flex-1">
-						<div className="flex flex-wrap items-center gap-2">
-							<span className="font-medium text-xs text-[var(--text)]">{basename(tab.path)}</span>
-							{dirty && (
-								<span className="whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-400">
-									{t("files.unsaved")}
-								</span>
-							)}
-						</div>
-						<div className="mt-0.5 break-all font-mono text-[10px] leading-4 text-[var(--text-40)]" title={tab.path}>
-							{shortPath(tab.path, home)}
-						</div>
-					</div>
-				</div>
-				<div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+			<div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--border-divider)] px-2.5 py-1 text-[11px]">
+				<div className="flex shrink-0 items-center gap-1.5">
 					<Segmented
 						size="sm"
 						aria-label={t("files.viewMode")}
@@ -172,26 +199,43 @@ function TextBody({ tab }: { tab: FileTab }) {
 							{ value: "edit", label: t("files.tabEdit") },
 						]}
 					/>
-					<span className="flex-1" />
+					{dirty && (
+						<span className="shrink-0 whitespace-nowrap rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
+							{t("files.unsaved")}
+						</span>
+					)}
+				</div>
+				<PathCopyButton path={tab.path} displayPath={shortPath(tab.path, home)} />
+				<div className="flex shrink-0 items-center gap-0.5">
 					<button
 						type="button"
 						title={t("files.saveShortcut")}
+						aria-label={t("common.save")}
 						disabled={!dirty || saving}
 						onClick={() => void buffer.save()}
-						className="flex items-center gap-1 rounded-lg px-2 py-1 text-neutral-300 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40"
+						className={
+							dirty || tab.mode === "edit"
+								? `flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 transition-colors disabled:opacity-40 ${
+										dirty && !saving
+											? "bg-[#0A84FF]/15 text-sky-300 hover:bg-[#0A84FF]/25"
+											: "text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+									}`
+								: "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-neutral-300 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40"
+						}
 					>
-						<Save size={13} />
-						{t("common.save")}
+						<Save size={13} className="shrink-0" />
+						{(dirty || tab.mode === "edit") && <span>{t("common.save")}</span>}
 					</button>
 					<button
 						type="button"
 						title={t("files.reloadFromDisk")}
+						aria-label={t("editor.reload")}
 						onClick={() => void buffer.reload()}
-						className="flex items-center gap-1 rounded-lg px-2 py-1 text-neutral-300 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+						className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-neutral-300 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
 					>
 						<RefreshCw size={13} />
-						{t("editor.reload")}
 					</button>
+					<MaximizeToggleButton />
 					<ExternalActions path={tab.path} isHtml={isHtml} />
 				</div>
 			</div>
