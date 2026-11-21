@@ -37,7 +37,7 @@ use crate::paths;
 use crate::state::AppState;
 
 /// Bump to drop and rebuild the index file after a schema/extraction change.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 1000;
 const MAX_TOKENS: usize = 8;
@@ -45,10 +45,18 @@ const MAX_TOKENS: usize = 8;
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 /// Lines larger than this are skipped outright (pasted binaries etc.).
 const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
+/// Prefix bytes hashed in full for small/medium files; larger files sample fixed windows.
+const PREFIX_FULL_CAP: u64 = 16 * 1024;
+const PREFIX_SAMPLE_LEN: usize = 4096;
+/// Maximum recent entries scanned for short (1-2 char) queries that bypass FTS5.
+const SHORT_QUERY_SCAN_CAP: usize = 20_000;
 const SNIPPET_CHARS: usize = 160;
 const SNIPPET_LEAD_CHARS: usize = 40;
 const EMIT_INTERVAL: Duration = Duration::from_millis(250);
 const DEBOUNCE: Duration = Duration::from_millis(1000);
+/// Maximum wait from the first pending watcher event before flushing to FTS,
+/// preventing starvation during continuous streaming across sessions.
+const MAX_DEBOUNCE_WAIT: Duration = Duration::from_secs(5);
 
 const ROLE_USER: i64 = 0;
 const ROLE_ASSISTANT: i64 = 1;
@@ -174,21 +182,7 @@ fn run(db: &Path, dir: &Path, rx: mpsc::Receiver<Msg>, emit: &dyn Fn(&SearchInde
     finish(emit);
     loop {
         let Ok(first) = rx.recv() else { return };
-        let mut rescan = false;
-        let mut pending: HashSet<PathBuf> = HashSet::new();
-        let mut absorb = |m: Msg| match m {
-            Msg::Rescan => rescan = true,
-            Msg::Paths(p) => pending.extend(p),
-        };
-        absorb(first);
-        // Debounce bursts: wait until the stream is quiet for DEBOUNCE.
-        loop {
-            match rx.recv_timeout(DEBOUNCE) {
-                Ok(m) => absorb(m),
-                Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-        }
+        let (rescan, pending) = collect_debounced_batch(&rx, first, DEBOUNCE, MAX_DEBOUNCE_WAIT);
         let res = if rescan {
             sync_all(&mut conn, dir, emit)
         } else {
@@ -199,6 +193,36 @@ fn run(db: &Path, dir: &Path, rx: mpsc::Receiver<Msg>, emit: &dyn Fn(&SearchInde
         }
         finish(emit);
     }
+}
+
+/// Debounce incoming file-change bursts until the stream is quiet for `debounce`,
+/// capped at `max_wait` from the first pending event so continuous writes cannot
+/// starve FTS commits indefinitely.
+fn collect_debounced_batch(
+    rx: &mpsc::Receiver<Msg>,
+    first: Msg,
+    debounce: Duration,
+    max_wait: Duration,
+) -> (bool, HashSet<PathBuf>) {
+    let mut rescan = false;
+    let mut pending: HashSet<PathBuf> = HashSet::new();
+    let mut absorb = |m: Msg| match m {
+        Msg::Rescan => rescan = true,
+        Msg::Paths(p) => pending.extend(p),
+    };
+    absorb(first);
+    let deadline = Instant::now() + max_wait;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(debounce.min(remaining)) {
+            Ok(m) => absorb(m),
+            Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    (rescan, pending)
 }
 
 fn finish(emit: &dyn Fn(&SearchIndexStatus)) {
@@ -257,7 +281,8 @@ fn try_open_rw(path: &Path) -> rusqlite::Result<Connection> {
             mtime_ns INTEGER NOT NULL,
             indexed_bytes INTEGER NOT NULL DEFAULT 0,
             tail_len INTEGER NOT NULL DEFAULT 0,
-            tail_hash INTEGER NOT NULL DEFAULT 0
+            tail_hash INTEGER NOT NULL DEFAULT 0,
+            prefix_hash INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS entries (
             id INTEGER PRIMARY KEY,
@@ -269,6 +294,7 @@ fn try_open_rw(path: &Path) -> rusqlite::Result<Connection> {
             text TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS entries_file ON entries(file_id);
+        CREATE INDEX IF NOT EXISTS entries_ts ON entries(ts DESC);
         CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
             text, content='entries', content_rowid='id', tokenize='trigram'
         );
@@ -296,6 +322,7 @@ struct FileRow {
     indexed_bytes: i64,
     tail_len: i64,
     tail_hash: i64,
+    prefix_hash: i64,
 }
 
 fn mtime_ns(t: std::time::SystemTime) -> i64 {
@@ -305,7 +332,8 @@ fn mtime_ns(t: std::time::SystemTime) -> i64 {
 
 fn file_row(conn: &Connection, path: &str) -> rusqlite::Result<Option<FileRow>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, size, mtime_ns, indexed_bytes, tail_len, tail_hash FROM files WHERE path = ?1",
+        "SELECT id, size, mtime_ns, indexed_bytes, tail_len, tail_hash, prefix_hash
+         FROM files WHERE path = ?1",
     )?;
     let mut rows = stmt.query([path])?;
     Ok(match rows.next()? {
@@ -316,6 +344,7 @@ fn file_row(conn: &Connection, path: &str) -> rusqlite::Result<Option<FileRow>> 
             indexed_bytes: r.get(3)?,
             tail_len: r.get(4)?,
             tail_hash: r.get(5)?,
+            prefix_hash: r.get(6)?,
         }),
         None => None,
     })
@@ -420,18 +449,57 @@ fn purge_path(conn: &Connection, path: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+fn fnv1a_update(h: &mut u64, bytes: &[u8]) {
+    for b in bytes {
+        *h ^= u64::from(*b);
+        *h = h.wrapping_mul(FNV_PRIME);
+    }
+}
+
 /// FNV-1a: stable across runs/toolchains (the hash is persisted).
 fn fnv1a(bytes: &[u8]) -> i64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in bytes {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
+    let mut h = FNV_OFFSET;
+    fnv1a_update(&mut h, bytes);
     h as i64
 }
 
-/// True when the bytes ending at `row.indexed_bytes` are still the line that was
-/// last indexed (so appended bytes can be parsed in isolation).
+/// Fingerprint the already-indexed prefix `[0..indexed_bytes)`: hashes the full
+/// prefix for files up to `PREFIX_FULL_CAP`, or three 4 KiB windows (start/header,
+/// 1/3, and 2/3) for larger files so in-place edits earlier in the file are detected.
+fn prefix_fingerprint(f: &mut File, indexed_bytes: u64) -> std::io::Result<i64> {
+    if indexed_bytes == 0 {
+        return Ok(0);
+    }
+    let mut h = FNV_OFFSET;
+    fnv1a_update(&mut h, &indexed_bytes.to_le_bytes());
+    if indexed_bytes <= PREFIX_FULL_CAP {
+        f.seek(SeekFrom::Start(0))?;
+        let mut buf = vec![0u8; indexed_bytes as usize];
+        f.read_exact(&mut buf)?;
+        fnv1a_update(&mut h, &buf);
+    } else {
+        let max_off = indexed_bytes - PREFIX_SAMPLE_LEN as u64;
+        let offsets = [
+            0,
+            (indexed_bytes / 3).min(max_off),
+            ((indexed_bytes / 3) * 2).min(max_off),
+        ];
+        let mut buf = [0u8; PREFIX_SAMPLE_LEN];
+        for off in offsets {
+            f.seek(SeekFrom::Start(off))?;
+            f.read_exact(&mut buf)?;
+            fnv1a_update(&mut h, &buf);
+        }
+    }
+    Ok(h as i64)
+}
+
+/// True when both the last indexed line ending at `row.indexed_bytes` AND the
+/// header/prefix fingerprint match what was indexed (so appended bytes can be
+/// parsed in isolation without leaving stale hits from earlier edits).
 fn prefix_unchanged(f: &mut File, row: &FileRow) -> std::io::Result<bool> {
     if row.indexed_bytes <= 0 || row.tail_len < 0 || row.tail_len + 1 > row.indexed_bytes {
         return Ok(false);
@@ -441,7 +509,10 @@ fn prefix_unchanged(f: &mut File, row: &FileRow) -> std::io::Result<bool> {
     f.seek(SeekFrom::Start(start))?;
     let mut buf = vec![0u8; len + 1];
     f.read_exact(&mut buf)?;
-    Ok(buf[len] == b'\n' && fnv1a(&buf[..len]) == row.tail_hash)
+    if buf[len] != b'\n' || fnv1a(&buf[..len]) != row.tail_hash {
+        return Ok(false);
+    }
+    Ok(prefix_fingerprint(f, row.indexed_bytes as u64)? == row.prefix_hash)
 }
 
 struct Extracted {
@@ -542,13 +613,18 @@ fn index_file(conn: &mut Connection, path: &Path) -> Result<(), String> {
 
     let mut indexed_bytes = start as i64;
     let mut tail = (0i64, 0i64);
+    let mut prefix_hash = 0i64;
     if let (true, Some(row)) = (start > 0, &prior) {
         tail = (row.tail_len, row.tail_hash);
+        prefix_hash = row.prefix_hash;
     }
+    let mut have_last = false;
     if !session_id.is_empty() {
         f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
-        let mut reader =
-            BufReader::with_capacity(256 * 1024, f.take((size as u64).saturating_sub(start)));
+        let mut reader = BufReader::with_capacity(
+            256 * 1024,
+            (&mut f).take((size as u64).saturating_sub(start)),
+        );
         let mut line: Vec<u8> = Vec::new();
         let mut last_line: Vec<u8> = Vec::new();
         let mut insert = tx
@@ -557,7 +633,6 @@ fn index_file(conn: &mut Connection, path: &Path) -> Result<(), String> {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .map_err(err)?;
-        let mut have_last = false;
         loop {
             line.clear();
             let n = reader
@@ -589,9 +664,15 @@ fn index_file(conn: &mut Connection, path: &Path) -> Result<(), String> {
     } else {
         indexed_bytes = 0;
     }
+    if indexed_bytes > 0 && (have_last || start == 0) {
+        prefix_hash =
+            prefix_fingerprint(&mut f, indexed_bytes as u64).map_err(|e| e.to_string())?;
+    } else if indexed_bytes == 0 {
+        prefix_hash = 0;
+    }
     tx.execute(
         "UPDATE files SET session_id = ?2, size = ?3, mtime_ns = ?4, indexed_bytes = ?5,
-                tail_len = ?6, tail_hash = ?7 WHERE id = ?1",
+                tail_len = ?6, tail_hash = ?7, prefix_hash = ?8 WHERE id = ?1",
         params![
             file_id,
             session_id,
@@ -599,7 +680,8 @@ fn index_file(conn: &mut Connection, path: &Path) -> Result<(), String> {
             mtime,
             indexed_bytes,
             tail.0,
-            tail.1
+            tail.1,
+            prefix_hash
         ],
     )
     .map_err(err)?;
@@ -685,7 +767,27 @@ fn like_pattern(tok: &str) -> String {
     p
 }
 
+fn short_query_match_cap(limit: usize) -> usize {
+    limit.saturating_mul(20).clamp(500, 4_000)
+}
+
 fn search_db(db: &Path, query: &str, limit: usize) -> Result<Vec<SessionSearchHit>, String> {
+    search_db_bounded(
+        db,
+        query,
+        limit,
+        SHORT_QUERY_SCAN_CAP,
+        short_query_match_cap(limit),
+    )
+}
+
+fn search_db_bounded(
+    db: &Path,
+    query: &str,
+    limit: usize,
+    short_scan_cap: usize,
+    short_match_cap: usize,
+) -> Result<Vec<SessionSearchHit>, String> {
     let tokens = tokenize(query.trim());
     if tokens.is_empty() || !db.exists() {
         return Ok(Vec::new());
@@ -699,10 +801,16 @@ fn search_db(db: &Path, query: &str, limit: usize) -> Result<Vec<SessionSearchHi
     let phrase = tokens.join(" ");
 
     let long: Vec<&String> = tokens.iter().filter(|t| t.chars().count() >= 3).collect();
+    let short_only = long.is_empty();
+    let all_like_safe = tokens.iter().all(|t| like_safe(t));
     let mut args: Vec<String> = Vec::new();
     let mut sql = String::from("SELECT e.session_id, e.entry_id, e.role, e.ts, e.text FROM ");
-    if long.is_empty() {
-        sql.push_str("entries e WHERE 1=1");
+    if short_only {
+        // Short 1-2 char queries bypass FTS5 trigram lookup; bound the scan to
+        // the newest `short_scan_cap` entries so they cannot scan the whole DB.
+        sql.push_str(&format!(
+            "(SELECT session_id, entry_id, role, ts, text FROM entries ORDER BY ts DESC LIMIT {short_scan_cap}) e WHERE 1=1"
+        ));
     } else {
         let m = long
             .iter()
@@ -721,10 +829,14 @@ fn search_db(db: &Path, query: &str, limit: usize) -> Result<Vec<SessionSearchHi
         args.push(like_pattern(t));
         sql.push_str(&format!(" AND e.text LIKE ?{} ESCAPE '\\'", args.len()));
     }
+    if short_only && all_like_safe {
+        sql.push_str(&format!(" LIMIT {short_match_cap}"));
+    }
 
     let mut stmt = conn.prepare(&sql).map_err(err)?;
     let mut rows = stmt.query(params_from_iter(args.iter())).map_err(err)?;
     let mut best: HashMap<String, Best> = HashMap::new();
+    let mut matched_rows = 0usize;
     while let Some(r) = rows.next().map_err(err)? {
         let text_ref = r.get_ref(4).map_err(err)?;
         let Ok(text) = text_ref.as_str() else {
@@ -734,6 +846,7 @@ fn search_db(db: &Path, query: &str, limit: usize) -> Result<Vec<SessionSearchHi
         let Some(score) = relevance(&folded, &tokens, &phrase) else {
             continue;
         };
+        matched_rows += 1;
         let session_id: String = r.get(0).map_err(err)?;
         let ts: String = r.get(3).map_err(err)?;
         match best.get_mut(&session_id) {
@@ -761,8 +874,10 @@ fn search_db(db: &Path, query: &str, limit: usize) -> Result<Vec<SessionSearchHi
                 );
             }
         }
+        if short_only && matched_rows >= short_match_cap {
+            break;
+        }
     }
-
     let mut ranked: Vec<(String, Best)> = best.into_iter().collect();
     ranked.sort_by(|a, b| {
         b.1.score
@@ -1180,5 +1295,86 @@ mod tests {
     #[test]
     fn like_pattern_escapes_wildcards() {
         assert_eq!(like_pattern("a%b_c\\"), "%a\\%b\\_c\\\\%");
+    }
+
+    #[test]
+    fn earlier_edit_with_unchanged_tail_triggers_reindex() {
+        let fx = Fx::new("prefix");
+        let tail_line = user("u2", "2026-01-01T00:00:02Z", "constant tail line");
+        fx.write(
+            "a",
+            &(header("sa") + &user("u1", "2026-01-01T00:00:01Z", "alpha old message") + &tail_line),
+        );
+        let mut conn = fx.sync();
+        assert_eq!(fx.q("alpha old").len(), 1);
+
+        // Same-length in-place edit to u1, keeping tail_line at the exact same byte
+        // offset and appending u3 so size grows and tail_hash alone would falsely match.
+        let appended = user("u3", "2026-01-01T00:00:03Z", "appended follow-up");
+        fx.write(
+            "a",
+            &(header("sa")
+                + &user("u1", "2026-01-01T00:00:01Z", "gamma new message")
+                + &tail_line
+                + &appended),
+        );
+        fx.sync_with(&mut conn);
+        assert!(
+            fx.q("alpha old").is_empty(),
+            "stale hit from earlier edited line must be purged"
+        );
+        assert_eq!(fx.q("gamma new").len(), 1);
+        assert_eq!(fx.q("appended").len(), 1);
+    }
+
+    #[test]
+    fn short_query_respects_scan_and_match_bounds() {
+        let fx = Fx::new("short-bounds");
+        for i in 0..20 {
+            fx.write(
+                &format!("s{i:02}"),
+                &(header(&format!("id{i:02}"))
+                    + &user("u", &format!("2026-01-01T00:00:{i:02}Z"), "性能优化")),
+            );
+        }
+        fx.sync();
+        // Bounded scan inspects only the 6 newest entries.
+        let r = search_db_bounded(&fx.db, "优", 50, 6, 500).unwrap();
+        assert_eq!(r.len(), 6);
+        assert_eq!(r[0].session_id, "id19");
+        assert_eq!(r[5].session_id, "id14");
+
+        // Bounded match cap stops after 4 matches even when scan cap is larger.
+        let r = search_db_bounded(&fx.db, "优", 50, 100, 4).unwrap();
+        assert_eq!(r.len(), 4);
+        assert_eq!(r[0].session_id, "id19");
+    }
+
+    #[test]
+    fn debounce_flushes_at_max_wait_under_continuous_writes() {
+        let (tx, rx) = mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            for i in 0..30 {
+                let _ = tx.send(Msg::Paths(vec![PathBuf::from(format!("/s/{i}.jsonl"))]));
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        });
+        let first = rx.recv().unwrap();
+        let start = Instant::now();
+        let (rescan, pending) = collect_debounced_batch(
+            &rx,
+            first,
+            Duration::from_millis(60),
+            Duration::from_millis(120),
+        );
+        let elapsed = start.elapsed();
+        assert!(!rescan);
+        assert!(pending.len() >= 2);
+        // Must flush near max_wait rather than waiting for all 30 events (~450ms).
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "debounce starved for {elapsed:?}"
+        );
+        let _ = producer.join();
     }
 }

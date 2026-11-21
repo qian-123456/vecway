@@ -1,8 +1,9 @@
 /**
  * OMP status-report extension for Vecway (docs/ARCHITECTURE.md §8).
- * Installed at startup to ~/.vecway/extension/vecway-status.ts.
+ * Installed at startup to `<data_dir>/extension/vecway-status.ts`
+ * (`OMPWS_DATA_DIR`, falling back to `~/.vecway`).
  *
- * Writes ~/.vecway/status/<sessionId>.json atomically (tmp + rename):
+ * Writes `<data_dir>/status/<sessionId>.json` atomically (tmp + rename):
  *   { sessionId, sessionFile, pid, state, updatedAt }
  * state: "working" | "idle" | "awaiting_approval" | "exited".
  *
@@ -34,7 +35,10 @@ interface ExtensionApiLike {
 const PROCESS_STARTED_AT = call(() => execFileSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], {
 	encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 1_000,
 }).trim());
-const STATUS_DIR = join(homedir(), ".vecway", "status");
+function statusDir(): string {
+	const override = process.env.OMPWS_DATA_DIR?.trim();
+	return join(override ? override : join(homedir(), ".vecway"), "status");
+}
 
 function call<T>(fn: (() => T) | undefined): T | undefined {
 	try {
@@ -59,8 +63,9 @@ function writeStatus(id: string, file: string | undefined, state: StatusState): 
 	try {
 		// Session ids are uuid-like; refuse anything that could escape the dir.
 		if (!/^[A-Za-z0-9._-]+$/.test(id)) return;
-		mkdirSync(STATUS_DIR, { recursive: true });
-		const target = join(STATUS_DIR, `${id}.json`);
+		const dir = statusDir();
+		mkdirSync(dir, { recursive: true });
+		const target = join(dir, `${id}.json`);
 		const tmp = `${target}.${process.pid}.tmp`;
 		const body = {
 			sessionId: id,

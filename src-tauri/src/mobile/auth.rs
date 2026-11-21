@@ -3,19 +3,28 @@
 use crate::contracts::MobileDevice;
 use base64::Engine as _;
 use chrono::{DateTime, Duration, Utc};
+use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::sync::LazyLock;
+use std::time::Instant;
 use tokio::sync::broadcast;
+
+/// Minimum interval between SQLite `last_seen_at` writes for the same device.
+const LAST_SEEN_THROTTLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+static LAST_SEEN_WRITTEN: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 static REVOCATIONS: LazyLock<broadcast::Sender<String>> =
     LazyLock::new(|| broadcast::channel(256).0);
-
 pub fn subscribe_revocations() -> broadcast::Receiver<String> {
     REVOCATIONS.subscribe()
 }
 
 pub fn notify_revoked(token_hash: &str) {
+    LAST_SEEN_WRITTEN.lock().remove(token_hash);
     super::push::clear_presence(token_hash);
     let _ = REVOCATIONS.send(token_hash.to_owned());
 }
@@ -227,6 +236,7 @@ pub fn redeem(
 }
 
 /// True when the token belongs to a paired device; touches `last_seen_at`.
+#[cfg(test)]
 pub fn verify(conn: &Connection, token: &str, now: DateTime<Utc>) -> bool {
     if token.is_empty() {
         return false;
@@ -237,6 +247,53 @@ pub fn verify(conn: &Connection, token: &str, now: DateTime<Utc>) -> bool {
     )
     .map(|n| n > 0)
     .unwrap_or(false)
+}
+
+/// Authenticate `token`, returning the paired device id in a single read query.
+/// Updates `last_seen_at` in SQLite at most once per 60 seconds per device
+/// (tracked in memory) so frequent GETs and SSE ticks avoid write-lock contention.
+pub fn authenticate(conn: &Connection, token: &str, now: DateTime<Utc>) -> Option<String> {
+    authenticate_with_cache(conn, token, now, &LAST_SEEN_WRITTEN, Instant::now())
+}
+
+fn authenticate_with_cache(
+    conn: &Connection,
+    token: &str,
+    now: DateTime<Utc>,
+    cache: &Mutex<HashMap<String, Instant>>,
+    tick: Instant,
+) -> Option<String> {
+    if token.is_empty() {
+        return None;
+    }
+    let hash = hash_token(token);
+    let id: String = conn
+        .query_row(
+            "SELECT id FROM mobile_devices WHERE token_hash = ?1",
+            [&hash],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+
+    let should_write = {
+        let mut map = cache.lock();
+        match map.get(&hash) {
+            Some(&prev) if tick.saturating_duration_since(prev) < LAST_SEEN_THROTTLE => false,
+            _ => {
+                map.insert(hash.clone(), tick);
+                true
+            }
+        }
+    };
+    if should_write {
+        let _ = conn.execute(
+            "UPDATE mobile_devices SET last_seen_at = ?2 WHERE token_hash = ?1",
+            params![hash, now.to_rfc3339()],
+        );
+    }
+    Some(id)
 }
 
 /// True when the token belongs to a paired device, without updating `last_seen_at`.
@@ -497,5 +554,61 @@ mod tests {
         );
         assert_eq!(token_from_headers(&h).as_deref(), Some("xyz"));
         assert!(token_from_headers(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn authenticate_throttles_last_seen_sqlite_writes() {
+        let db = test_db();
+        let t0 = Utc::now();
+        let (code, _) = create_pairing(&db, t0).unwrap();
+        let token = redeem(&db, &code, "phone", t0).unwrap().unwrap();
+        let cache: Mutex<HashMap<String, Instant>> = Mutex::new(HashMap::new());
+        let base = Instant::now();
+
+        let last_seen = |conn: &Connection| -> Option<String> {
+            conn.query_row(
+                "SELECT last_seen_at FROM mobile_devices WHERE token_hash = ?1",
+                [hash_token(&token)],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        // First call records last_seen_at.
+        let t1 = t0 + Duration::seconds(5);
+        let id = authenticate_with_cache(&db, &token, t1, &cache, base).unwrap();
+        assert!(!id.is_empty());
+        assert_eq!(last_seen(&db).as_deref(), Some(t1.to_rfc3339().as_str()));
+
+        // Within 60s, authenticate succeeds without issuing another SQLite UPDATE.
+        let t2 = t1 + Duration::seconds(30);
+        assert_eq!(
+            authenticate_with_cache(
+                &db,
+                &token,
+                t2,
+                &cache,
+                base + std::time::Duration::from_secs(30)
+            ),
+            Some(id.clone())
+        );
+        assert_eq!(last_seen(&db).as_deref(), Some(t1.to_rfc3339().as_str()));
+
+        // Once 60s elapse, last_seen_at is persisted again.
+        let t3 = t1 + Duration::seconds(61);
+        assert_eq!(
+            authenticate_with_cache(
+                &db,
+                &token,
+                t3,
+                &cache,
+                base + std::time::Duration::from_secs(61)
+            ),
+            Some(id)
+        );
+        assert_eq!(last_seen(&db).as_deref(), Some(t3.to_rfc3339().as_str()));
+
+        // Invalid token returns None.
+        assert!(authenticate_with_cache(&db, "bogus", t3, &cache, base).is_none());
     }
 }

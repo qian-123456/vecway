@@ -2,15 +2,15 @@
 //! model triggers (`read` toolCall with `path":"skill://NAME`) and user
 //! triggers (`/skill:NAME` prompts), aggregated into a `SkillUsageReport`.
 
+use chrono::{DateTime, SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use chrono::{DateTime, SecondsFormat, Utc};
-use serde::{Deserialize, Serialize};
 
 use crate::contracts::{SkillUsage, SkillUsageReport};
 
@@ -51,7 +51,31 @@ struct PersistedCacheRef<'a> {
 }
 
 static FILE_CACHE: OnceLock<Mutex<FileCache>> = OnceLock::new();
+static WARMED_UP_DAYS: AtomicU32 = AtomicU32::new(0);
 
+/// Delay before running startup cache warm-up so it does not contend with
+/// initial catalog load and window startup.
+const WARM_UP_DELAY: Duration = Duration::from_secs(5);
+
+#[cfg(target_os = "macos")]
+fn set_background_priority() {
+    // PRIO_DARWIN_THREAD (3) / PRIO_DARWIN_BG (0x1000): background QoS for this thread only.
+    // SAFETY: plain syscall without pointer arguments.
+    unsafe {
+        libc::setpriority(3, 0, 0x1000);
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn set_background_priority() {
+    // SAFETY: plain syscall without pointer arguments; on Linux `who = 0` is the calling thread.
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+    }
+}
+
+#[cfg(not(unix))]
+fn set_background_priority() {}
 fn cache_path() -> PathBuf {
     crate::paths::data_dir().join("skills-usage-cache.json")
 }
@@ -367,7 +391,16 @@ fn ms_to_iso(ms: i64) -> Option<String> {
 
 /// Scans all session files under `base` and aggregates per-skill usage over
 /// the last `days` days. File-level results are cached by (size, mtime).
+#[cfg(test)]
 fn scan_sessions(base: &Path, days: u32, cache: &mut FileCache) -> (SkillUsageReport, bool) {
+    scan_sessions_with_workers(base, days, cache, None)
+}
+fn scan_sessions_with_workers(
+    base: &Path,
+    days: u32,
+    cache: &mut FileCache,
+    max_workers: Option<usize>,
+) -> (SkillUsageReport, bool) {
     let now = SystemTime::now();
     let cutoff = now
         .checked_sub(Duration::from_secs(days as u64 * 86_400))
@@ -422,6 +455,7 @@ fn scan_sessions(base: &Path, days: u32, cache: &mut FileCache) -> (SkillUsageRe
         let workers = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
+            .min(max_workers.unwrap_or(usize::MAX).max(1))
             .min(misses.len());
         let next = std::sync::atomic::AtomicUsize::new(0);
         let scanned: Mutex<Vec<(usize, Triggers, u64)>> = Mutex::new(Vec::new());
@@ -496,22 +530,31 @@ fn scan_sessions(base: &Path, days: u32, cache: &mut FileCache) -> (SkillUsageRe
 /// Runs a scan against the process-wide cache (loaded from / saved to disk).
 /// The lock is held for the whole scan so concurrent callers (startup warm-up
 /// and the page request) share one pass instead of duplicating it.
-fn scan_with_global_cache(base: &Path, days: u32) -> SkillUsageReport {
+fn scan_with_global_cache(base: &Path, days: u32, max_workers: Option<usize>) -> SkillUsageReport {
     let mut cache = lock_cache();
-    let (report, changed) = scan_sessions(base, days, &mut cache);
+    let (report, changed) = scan_sessions_with_workers(base, days, &mut cache, max_workers);
     if changed {
         save_cache(&cache);
     }
+    WARMED_UP_DAYS.fetch_max(days, Ordering::Relaxed);
     report
 }
 
-/// Pre-fills the persistent cache in the background so the first visit to the
-/// Skills page does not wait for a cold scan.
+/// Pre-fills the persistent cache in the background after a short startup
+/// deferral and at background priority so it does not contend with initial
+/// catalog load.
 pub fn warm_up(days: u32) {
-    std::thread::spawn(move || {
-        let base = crate::paths::agent_dir().join("sessions");
-        let _ = scan_with_global_cache(&base, days);
-    });
+    let _ = std::thread::Builder::new()
+        .name("skills-usage-warmup".into())
+        .spawn(move || {
+            std::thread::sleep(WARM_UP_DELAY);
+            if WARMED_UP_DAYS.load(Ordering::Relaxed) >= days {
+                return;
+            }
+            set_background_priority();
+            let base = crate::paths::agent_dir().join("sessions");
+            let _ = scan_with_global_cache(&base, days, Some(2));
+        });
 }
 
 /// Tauri command `skills_usage`: per-skill trigger counts over `days` days.
@@ -519,7 +562,7 @@ pub fn warm_up(days: u32) {
 pub async fn skills_usage(days: u32) -> Result<SkillUsageReport, String> {
     let base = crate::paths::agent_dir().join("sessions");
 
-    let report = tokio::task::spawn_blocking(move || scan_with_global_cache(&base, days))
+    let report = tokio::task::spawn_blocking(move || scan_with_global_cache(&base, days, None))
         .await
         .map_err(|e| format!("技能用量扫描失败：{e}"))?;
     Ok(report)

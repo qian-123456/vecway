@@ -1,10 +1,11 @@
 //! Agent-aware shell init for drawer terminals (docs/ARCHITECTURE.md §7).
 //!
 //! `term_open` spawns the user's login shell through generated rc files under
-//! `~/.vecway/`: zsh gets `ZDOTDIR` pointed at `zdot/` (whose shims
-//! forward to the real `~/.zsh*`), bash gets `--rcfile bashrc`. Both end by
-//! sourcing `terminal-init.*`, which installs `omp`/`claude`/`codex` aliases
-//! that resume the session recorded in `~/.vecway/current-session`.
+//! `<data_dir>/` (`OMPWS_DATA_DIR`, falling back to `~/.vecway/`): zsh gets
+//! `ZDOTDIR` pointed at `zdot/` (whose shims forward to the real `~/.zsh*`),
+//! bash gets `--rcfile bashrc`. Both end by sourcing `terminal-init.*`, which
+//! installs `omp`/`claude`/`codex` aliases that resume the session recorded in
+//! `<data_dir>/current-session`.
 //! Session terminals (`term_open_session`) bypass all of this: they run
 //! `omp --resume <file>` directly.
 
@@ -21,12 +22,40 @@ fn bashrc_path() -> PathBuf {
     paths::data_dir().join("bashrc")
 }
 
-/// Shared POSIX init (both `terminal-init.zsh` and `terminal-init.bash`).
+/// Single-quote a path for POSIX shells (`zsh` and `bash`).
+fn shell_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+const FALLBACK_DATA_DIR_PLACEHOLDER: &str = "__OMPWS_FALLBACK_DATA_DIR__";
+
+/// Shell expression for the fallback data dir when `OMPWS_DATA_DIR` is unset.
+/// For the default `~/.vecway` dir we keep `"$HOME/.vecway"` so it stays
+/// portable across `HOME`; for isolated dirs we bake the shell-quoted path so
+/// drawer shells stay isolated even if user dotfiles strip `OMPWS_DATA_DIR`.
+fn fallback_data_dir_expr(dir: Option<&Path>) -> String {
+    match dir {
+        Some(d) if d != paths::default_data_dir() => shell_quote(&d.to_string_lossy()),
+        _ => "\"$HOME/.vecway\"".to_string(),
+    }
+}
+
+/// Shared POSIX init template (both `terminal-init.zsh` and `terminal-init.bash`).
 ///
 /// Wrappers are *aliases to functions*, not bare functions: `\omp` and
 /// `command omp` then still reach the real binary, and the wrappers never
 /// apply inside user scripts or subshells.
-const TERMINAL_INIT: &str = r#"# Vecway terminal init — generated file; manual edits are overwritten.
+const TERMINAL_INIT_TEMPLATE: &str = r#"# Vecway terminal init — generated file; manual edits are overwritten.
 #
 # Bare `omp`/`claude`/`codex` continue the session the app has selected;
 # anything else passes through unchanged (`omp list`, `omp -p ...`,
@@ -43,9 +72,11 @@ _ompws_omp() {
             esac
         fi
     else
+        _ompws_dir="${OMPWS_DATA_DIR-}"
+        [ -n "$_ompws_dir" ] || _ompws_dir=__OMPWS_FALLBACK_DATA_DIR__
         _ompws_f=""
-        [ -f "$HOME/.vecway/current-session" ] && \
-            _ompws_f="$(<"$HOME/.vecway/current-session")"
+        [ -f "$_ompws_dir/current-session" ] && \
+            _ompws_f="$(<"$_ompws_dir/current-session")"
     fi
     # Only resume when the recorded transcript still exists.
     if [ -z "$_ompws_f" ] || [ ! -f "$_ompws_f" ]; then
@@ -92,17 +123,35 @@ alias codex=_ompws_codex
 /// `zdot/.zshrc`: real `~/.zshrc` first, then the agent-aware init. ZDOTDIR is
 /// unset afterwards so nested zsh sessions (and `.zlogin` lookup) fall back to
 /// the user's home directory.
-const ZDOT_ZSHRC: &str = r#"# Vecway ZDOTDIR shim — generated; loads the real ~/.zshrc first.
+const ZDOT_ZSHRC_TEMPLATE: &str = r#"# Vecway ZDOTDIR shim — generated; loads the real ~/.zshrc first.
 [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"
-[ -f "$HOME/.vecway/terminal-init.zsh" ] && source "$HOME/.vecway/terminal-init.zsh"
+_ompws_dir="${OMPWS_DATA_DIR-}"
+[ -n "$_ompws_dir" ] || _ompws_dir=__OMPWS_FALLBACK_DATA_DIR__
+[ -f "$_ompws_dir/terminal-init.zsh" ] && source "$_ompws_dir/terminal-init.zsh"
+unset _ompws_dir
 unset ZDOTDIR
 "#;
 
 /// `bashrc` used via `bash --rcfile`: real `~/.bashrc` first, then the init.
-const BASHRC: &str = r#"# Vecway bashrc — generated; loads the real ~/.bashrc first.
+const BASHRC_TEMPLATE: &str = r#"# Vecway bashrc — generated; loads the real ~/.bashrc first.
 [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"
-[ -f "$HOME/.vecway/terminal-init.bash" ] && source "$HOME/.vecway/terminal-init.bash"
+_ompws_dir="${OMPWS_DATA_DIR-}"
+[ -n "$_ompws_dir" ] || _ompws_dir=__OMPWS_FALLBACK_DATA_DIR__
+[ -f "$_ompws_dir/terminal-init.bash" ] && source "$_ompws_dir/terminal-init.bash"
+unset _ompws_dir
 "#;
+
+fn render_terminal_init(dir: Option<&Path>) -> String {
+    TERMINAL_INIT_TEMPLATE.replace(FALLBACK_DATA_DIR_PLACEHOLDER, &fallback_data_dir_expr(dir))
+}
+
+fn render_zdot_zshrc(dir: Option<&Path>) -> String {
+    ZDOT_ZSHRC_TEMPLATE.replace(FALLBACK_DATA_DIR_PLACEHOLDER, &fallback_data_dir_expr(dir))
+}
+
+fn render_bashrc(dir: Option<&Path>) -> String {
+    BASHRC_TEMPLATE.replace(FALLBACK_DATA_DIR_PLACEHOLDER, &fallback_data_dir_expr(dir))
+}
 
 /// `zdot/.zshenv`/`.zprofile`/`.zlogin` shim: ZDOTDIR shadows the user's real
 /// dotfiles, so each stub forwards to it.
@@ -129,14 +178,17 @@ fn ensure_init_files_in(dir: &Path) -> Result<(), String> {
     for name in [".zshenv", ".zprofile", ".zlogin"] {
         write_if_changed(&zdot.join(name), user_file_shim(name).as_bytes())?;
     }
-    write_if_changed(&zdot.join(".zshrc"), ZDOT_ZSHRC.as_bytes())?;
-    write_if_changed(&dir.join("terminal-init.zsh"), TERMINAL_INIT.as_bytes())?;
-    write_if_changed(&dir.join("terminal-init.bash"), TERMINAL_INIT.as_bytes())?;
-    write_if_changed(&dir.join("bashrc"), BASHRC.as_bytes())?;
+    let zshrc = render_zdot_zshrc(Some(dir));
+    let init = render_terminal_init(Some(dir));
+    let bashrc = render_bashrc(Some(dir));
+    write_if_changed(&zdot.join(".zshrc"), zshrc.as_bytes())?;
+    write_if_changed(&dir.join("terminal-init.zsh"), init.as_bytes())?;
+    write_if_changed(&dir.join("terminal-init.bash"), init.as_bytes())?;
+    write_if_changed(&dir.join("bashrc"), bashrc.as_bytes())?;
     Ok(())
 }
 
-/// Materialize the generated init files under `~/.omp-workspace/` (idempotent).
+/// Materialize the generated init files under `paths::data_dir()` (idempotent).
 /// Called at app start and again on each drawer spawn so the files survive
 /// deletion while the app is running.
 pub fn ensure_shell_init_files() -> Result<(), String> {
@@ -187,39 +239,34 @@ pub fn drawer_spawn(command: &[String], session_file: Option<&str>) -> Option<Dr
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
+    let mut env = vec![(
+        "OMP_WORKSPACE_SESSION_FILE".to_string(),
+        session_file.unwrap_or("").to_string(),
+    )];
+    if !paths::is_default_data_dir() {
+        env.push((
+            "OMPWS_DATA_DIR".to_string(),
+            paths::data_dir().to_string_lossy().to_string(),
+        ));
+    }
     match name {
-        "zsh" => Some((
-            vec![shell, "-l".to_string()],
-            vec![
-                (
-                    "ZDOTDIR".to_string(),
-                    zdot_dir().to_string_lossy().to_string(),
-                ),
-                (
-                    "OMP_WORKSPACE_SESSION_FILE".to_string(),
-                    session_file.unwrap_or("").to_string(),
-                ),
-            ],
-        )),
+        "zsh" => {
+            env.push((
+                "ZDOTDIR".to_string(),
+                zdot_dir().to_string_lossy().to_string(),
+            ));
+            Some((vec![shell, "-l".to_string()], env))
+        }
         "bash" => Some((
             vec![
                 shell,
                 "--rcfile".to_string(),
                 bashrc_path().to_string_lossy().to_string(),
             ],
-            vec![(
-                "OMP_WORKSPACE_SESSION_FILE".to_string(),
-                session_file.unwrap_or("").to_string(),
-            )],
+            env,
         )),
         // Unknown shell: fall back to `$SHELL -l` with no init injection.
-        _ => Some((
-            vec![shell, "-l".to_string()],
-            vec![(
-                "OMP_WORKSPACE_SESSION_FILE".to_string(),
-                session_file.unwrap_or("").to_string(),
-            )],
-        )),
+        _ => Some((vec![shell, "-l".to_string()], env)),
     }
 }
 
@@ -244,20 +291,17 @@ mod tests {
         let b = dir.join("b.jsonl");
         std::fs::write(&a, "{}").unwrap();
         std::fs::write(&b, "{}").unwrap();
-        std::fs::write(
-            home.join(".vecway/current-session"),
-            b.to_str().unwrap(),
-        )
-        .unwrap();
+        std::fs::write(home.join(".vecway/current-session"), b.to_str().unwrap()).unwrap();
         let init = dir.join("init");
-        std::fs::write(&init, TERMINAL_INIT).unwrap();
+        std::fs::write(&init, render_terminal_init(None)).unwrap();
         let run = |binding: Option<&str>| {
             let mut cmd = Command::new("/bin/bash");
             cmd.arg("-c")
                 .arg("source \"$INIT\"; _ompws_omp")
                 .env("HOME", &home)
                 .env("PATH", &bin)
-                .env("INIT", &init);
+                .env("INIT", &init)
+                .env_remove("OMPWS_DATA_DIR");
             match binding {
                 Some(value) => {
                     cmd.env("OMP_WORKSPACE_SESSION_FILE", value);
@@ -283,6 +327,7 @@ mod tests {
             .env("HOME", &home)
             .env("PATH", &bin)
             .env("INIT", &init)
+            .env_remove("OMPWS_DATA_DIR")
             .env("OMP_WORKSPACE_SESSION_FILE", &missing)
             .output()
             .unwrap();
@@ -332,5 +377,89 @@ mod tests {
         // Clearing twice is fine.
         write_current_session_in(&dir, None).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shell_quote_escapes_spaces_quotes_and_expansions() {
+        assert_eq!(shell_quote("/tmp/simple"), "'/tmp/simple'");
+        assert_eq!(
+            shell_quote("/tmp/it's $HOME `id`"),
+            "'/tmp/it'\\''s $HOME `id`'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn isolated_data_dir_init_uses_own_rc_and_current_session() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let base = std::env::temp_dir().join(format!("ompws-iso-{}", uuid::Uuid::new_v4()));
+        let home = base.join("home");
+        let bin = base.join("bin");
+        let iso1 = base.join("iso dir 'one'");
+        let iso2 = base.join("iso dir 'two'");
+        std::fs::create_dir_all(home.join(".vecway")).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&iso1).unwrap();
+        std::fs::create_dir_all(&iso2).unwrap();
+
+        let executable = bin.join("omp");
+        std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let default_sess = base.join("default.jsonl");
+        let iso1_sess = base.join("iso1.jsonl");
+        let iso2_sess = base.join("iso2.jsonl");
+        for f in [&default_sess, &iso1_sess, &iso2_sess] {
+            std::fs::write(f, "{}").unwrap();
+        }
+        write_current_session_in(&home.join(".vecway"), default_sess.to_str()).unwrap();
+        write_current_session_in(&iso1, iso1_sess.to_str()).unwrap();
+        write_current_session_in(&iso2, iso2_sess.to_str()).unwrap();
+
+        ensure_init_files_in(&iso1).unwrap();
+        ensure_init_files_in(&iso2).unwrap();
+
+        let zshrc = std::fs::read_to_string(iso1.join("zdot").join(".zshrc")).unwrap();
+        assert!(zshrc.contains("OMPWS_DATA_DIR"));
+        assert!(!zshrc.contains("$HOME/.vecway"));
+
+        let run_bashrc = |rc: &Path, env_data_dir: Option<&Path>| {
+            let mut cmd = Command::new("/bin/bash");
+            cmd.arg("-c")
+                .arg("source \"$RC\"; _ompws_omp")
+                .env("HOME", &home)
+                .env("PATH", &bin)
+                .env("RC", rc)
+                .env_remove("OMP_WORKSPACE_SESSION_FILE");
+            match env_data_dir {
+                Some(d) => {
+                    cmd.env("OMPWS_DATA_DIR", d);
+                }
+                None => {
+                    cmd.env_remove("OMPWS_DATA_DIR");
+                }
+            }
+            let output = cmd.output().unwrap();
+            assert!(
+                output.status.success(),
+                "bash failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+
+        // Baked isolated fallback works even if OMPWS_DATA_DIR is unset.
+        assert_eq!(
+            run_bashrc(&iso1.join("bashrc"), None),
+            format!("--resume\n{}\n", iso1_sess.display())
+        );
+        // Explicit OMPWS_DATA_DIR overrides the baked path cleanly.
+        assert_eq!(
+            run_bashrc(&iso1.join("bashrc"), Some(&iso2)),
+            format!("--resume\n{}\n", iso2_sess.display())
+        );
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

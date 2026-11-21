@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
+const LSOF_TIMEOUT: Duration = Duration::from_secs(5);
+const PS_TIMEOUT: Duration = Duration::from_secs(3);
 use serde_json::Value;
 
 /// An omp process holding a session file open.
@@ -75,17 +78,14 @@ pub fn parse_lsof_writers(out: &str, sessions_dir: &str) -> HashMap<String, Hold
     map
 }
 
-/// Query writable omp session descriptors. Errors / missing lsof yield an empty map.
+/// Query writable omp session descriptors with a bounded timeout.
+/// Errors / timeout / missing lsof yield an empty map.
 pub fn lsof_holders(sessions_dir: &Path) -> HashMap<String, Holder> {
-    let out = Command::new("/usr/sbin/lsof")
-        .args(["-w", "-n", "-P", "-c", "omp", "-F", "pRfan"])
-        .env("PATH", "/usr/sbin:/usr/bin:/bin:/sbin")
-        .output();
-    match out {
-        Ok(o) => parse_lsof_writers(
-            &String::from_utf8_lossy(&o.stdout),
-            &sessions_dir.to_string_lossy(),
-        ),
+    let mut cmd = Command::new(crate::services::scan::lsof_bin());
+    cmd.args(["-w", "-n", "-P", "-c", "omp", "-F", "pRfan"])
+        .env("PATH", "/usr/sbin:/usr/bin:/bin:/sbin");
+    match crate::git::cmd::run(cmd, LSOF_TIMEOUT) {
+        Ok(o) => parse_lsof_writers(&o.text(), &sessions_dir.to_string_lossy()),
         Err(e) => {
             tracing::debug!("lsof failed: {e}");
             HashMap::new()
@@ -168,13 +168,12 @@ pub(crate) fn process_birth(pid: u32) -> Option<String> {
     if !pid_alive(pid) {
         return None;
     }
-    let out = Command::new("/bin/ps")
-        .args(["-p", &pid.to_string(), "-o", "lstart="])
-        .env("LC_ALL", "C")
-        .output()
-        .ok()?;
-    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !token.is_empty()).then_some(token)
+    let mut cmd = Command::new("/bin/ps");
+    cmd.args(["-p", &pid.to_string(), "-o", "lstart="])
+        .env("LC_ALL", "C");
+    let out = crate::git::cmd::run(cmd, PS_TIMEOUT).ok()?;
+    let token = out.text().trim().to_string();
+    (out.ok() && !token.is_empty()).then_some(token)
 }
 
 /// Combine lsof holders and live status files into `file -> external pid`,

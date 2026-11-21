@@ -56,6 +56,8 @@ const RULE_TYPE = "vecway.autocommit-rule";
 const LEGACY_RULE_TYPE = "omp-workspace.autocommit-rule";
 const NOTICE_TYPE = "vecway.turn-undo-notice";
 const KEEP_TURNS = 50;
+const MAX_REPO_CHECKPOINT_REFS = 300;
+const MAX_UNDONE_REFS = 100;
 const CAP_COMMITS = 50;
 const GIT_TIMEOUT_MS = 20_000;
 const GIT_MAX_BUFFER = 16 * 1024 * 1024;
@@ -136,6 +138,28 @@ export default function ompWorkspaceCheckpoints(pi: ExtensionApiLike): void {
 		}
 	};
 
+	const gitWithInput = (
+		cwd: string,
+		args: string[],
+		input: string,
+		env?: Record<string, string>,
+	): string | null => {
+		try {
+			return execFileSync("git", args, {
+				cwd,
+				input,
+				env: { ...process.env, ...env },
+				timeout: GIT_TIMEOUT_MS,
+				maxBuffer: GIT_MAX_BUFFER,
+				encoding: "utf8",
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+		} catch (e) {
+			note(`git ${args[0] ?? "?"} failed: ${String(e).slice(0, 200)}`);
+			return null;
+		}
+	};
+
 	const guard = (ctx: ContextLike | undefined): { cwd: string } | null => {
 		// Only the top-level session may snapshot: registries are process-wide
 		// and factories are rebound into subagent runners.
@@ -202,6 +226,17 @@ export default function ompWorkspaceCheckpoints(pi: ExtensionApiLike): void {
 		git(cwd, ["update-ref", "-d", ref]);
 	};
 
+	const deleteRefs = (cwd: string, refs: string[]): void => {
+		if (refs.length === 0) return;
+		if (refs.length === 1) {
+			deleteRef(cwd, refs[0]);
+			return;
+		}
+		const stdin = refs.map((ref) => `delete ${ref}\n`).join("");
+		if (gitWithInput(cwd, ["update-ref", "--stdin"], stdin) === null) {
+			for (const ref of refs) deleteRef(cwd, ref);
+		}
+	};
 	const cleanupTurn = (turn: TurnState): void => {
 		const base = `refs/omp/turns/${turn.sid}/${turn.turnId}`;
 		deleteRef(turn.cwd, `${base}/before`);
@@ -323,21 +358,156 @@ export default function ompWorkspaceCheckpoints(pi: ExtensionApiLike): void {
 		}
 	};
 
-	/** Expire snapshot refs only: undone markers are durable history state. */
-	const pruneTurns = (cwd: string, sid: string): void => {
-		const refs = listRefs(cwd, `turns/${sid}/`);
-		const byTurn = new Map<string, string[]>();
-		for (const ref of refs) {
-			const m = ref.match(/^refs\/omp\/turns\/[^/]+\/([^/]+)\/(before|after)$/);
-			if (!m) continue;
-			const arr = byTurn.get(m[1]) ?? [];
-			arr.push(ref);
-			byTurn.set(m[1], arr);
+	/**
+	 * Enforce three bounded retention ceilings in one pass:
+	 * 1. Per-session cap (`KEEP_TURNS` = 50 turns = 100 refs) for `currentSid`.
+	 * 2. Repo-wide total checkpoint ref ceiling (`MAX_REPO_CHECKPOINT_REFS` = 300),
+	 *    pruning oldest sessions' turns first so inactive sessions don't accumulate forever.
+	 * 3. Repo-wide undo marker ceiling (`MAX_UNDONE_REFS` = 100), pruning oldest
+	 *    snapshot-pruned undone markers first so ancient commits can be reclaimed by `git gc`.
+	 */
+	const pruneTurns = (cwd: string, currentSid: string): void => {
+		const out = git(cwd, [
+			"for-each-ref",
+			"--format=%(refname)\t%(committerdate:unix)",
+			"refs/omp/",
+		]);
+		if (!out) return;
+
+		const turnRefs = new Map<
+			string,
+			Map<string, { refs: string[]; maxTs: number }>
+		>();
+		const undoneRefs: {
+			ref: string;
+			sid: string;
+			turnId: string;
+			ts: number;
+		}[] = [];
+
+		for (const line of out.split("\n")) {
+			if (!line) continue;
+			const tab = line.indexOf("\t");
+			const ref = tab >= 0 ? line.slice(0, tab) : line;
+			const ts = tab >= 0 ? Number(line.slice(tab + 1)) || 0 : 0;
+			const turnMatch = ref.match(
+				/^refs\/omp\/turns\/([^/]+)\/([^/]+)\/(before|after)$/,
+			);
+			if (turnMatch) {
+				const [, sid, turnId] = turnMatch;
+				let sessionTurns = turnRefs.get(sid);
+				if (!sessionTurns) {
+					sessionTurns = new Map();
+					turnRefs.set(sid, sessionTurns);
+				}
+				let entry = sessionTurns.get(turnId);
+				if (!entry) {
+					entry = { refs: [], maxTs: ts };
+					sessionTurns.set(turnId, entry);
+				}
+				entry.refs.push(ref);
+				if (ts > entry.maxTs) entry.maxTs = ts;
+				continue;
+			}
+			const undoneMatch = ref.match(/^refs\/omp\/undone\/([^/]+)\/([^/]+)$/);
+			if (undoneMatch) {
+				undoneRefs.push({
+					ref,
+					sid: undoneMatch[1],
+					turnId: undoneMatch[2],
+					ts,
+				});
+			}
 		}
-		const turnIds = [...byTurn.keys()].sort((a, b) => turnNum(b) - turnNum(a));
-		for (const turnId of turnIds.slice(KEEP_TURNS)) {
-			for (const ref of byTurn.get(turnId) ?? []) deleteRef(cwd, ref);
+
+		const toDelete = new Set<string>();
+
+		// 1. Per-session cap for the current session.
+		const currentSession = turnRefs.get(currentSid);
+		if (currentSession) {
+			const turnIds = [...currentSession.keys()].sort(
+				(a, b) => turnNum(b) - turnNum(a) || b.localeCompare(a),
+			);
+			for (const turnId of turnIds.slice(KEEP_TURNS)) {
+				for (const ref of currentSession.get(turnId)?.refs ?? [])
+					toDelete.add(ref);
+				currentSession.delete(turnId);
+			}
+			if (currentSession.size === 0) turnRefs.delete(currentSid);
 		}
+
+		// 2. Repo-wide total checkpoint ref ceiling across all sessions, pruning
+		// oldest sessions' turns first.
+		let totalTurnRefs = 0;
+		for (const sessionTurns of turnRefs.values()) {
+			for (const entry of sessionTurns.values()) {
+				totalTurnRefs += entry.refs.length;
+			}
+		}
+		if (totalTurnRefs > MAX_REPO_CHECKPOINT_REFS) {
+			const sessions = [...turnRefs.entries()]
+				.map(([sid, sessionTurns]) => {
+					let maxTurn = 0;
+					let maxTs = 0;
+					for (const [turnId, entry] of sessionTurns) {
+						const n = turnNum(turnId);
+						if (n > maxTurn) maxTurn = n;
+						if (entry.maxTs > maxTs) maxTs = entry.maxTs;
+					}
+					return { sid, sessionTurns, maxTurn, maxTs };
+				})
+				.sort(
+					(a, b) =>
+						Number(a.sid === currentSid) - Number(b.sid === currentSid) ||
+						a.maxTurn - b.maxTurn ||
+						a.maxTs - b.maxTs ||
+						a.sid.localeCompare(b.sid),
+				);
+			for (const { sid, sessionTurns } of sessions) {
+				if (totalTurnRefs <= MAX_REPO_CHECKPOINT_REFS) break;
+				const oldestTurns = [...sessionTurns.entries()].sort(
+					([aId, a], [bId, b]) =>
+						turnNum(aId) - turnNum(bId) ||
+						a.maxTs - b.maxTs ||
+						aId.localeCompare(bId),
+				);
+				for (const [turnId, entry] of oldestTurns) {
+					if (totalTurnRefs <= MAX_REPO_CHECKPOINT_REFS) break;
+					for (const ref of entry.refs) toDelete.add(ref);
+					totalTurnRefs -= entry.refs.length;
+					sessionTurns.delete(turnId);
+				}
+				if (sessionTurns.size === 0) turnRefs.delete(sid);
+			}
+		}
+
+		// 3. Repo-wide undo marker ceiling: prune oldest snapshot-pruned markers
+		// first so ancient commits are unpinned for `git gc`.
+		if (undoneRefs.length > MAX_UNDONE_REFS) {
+			undoneRefs.sort((a, b) => {
+				const aLiveTurn = Number(turnRefs.get(a.sid)?.has(a.turnId) ?? false);
+				const bLiveTurn = Number(turnRefs.get(b.sid)?.has(b.turnId) ?? false);
+				const aLiveSess = Number((turnRefs.get(a.sid)?.size ?? 0) > 0);
+				const bLiveSess = Number((turnRefs.get(b.sid)?.size ?? 0) > 0);
+				return (
+					aLiveTurn - bLiveTurn ||
+					aLiveSess - bLiveSess ||
+					turnNum(a.turnId) - turnNum(b.turnId) ||
+					a.ts - b.ts ||
+					a.ref.localeCompare(b.ref)
+				);
+			});
+			const excess = undoneRefs.length - MAX_UNDONE_REFS;
+			for (const u of undoneRefs.slice(0, excess)) {
+				toDelete.add(u.ref);
+				const activeSnaps = turnRefs.get(u.sid)?.get(u.turnId);
+				if (activeSnaps) {
+					for (const ref of activeSnaps.refs) toDelete.add(ref);
+				}
+			}
+		}
+
+		deleteRefs(cwd, [...toDelete]);
 	};
 
 	/** Undo notices pending for this session (undone refs lacking a notified entry). */

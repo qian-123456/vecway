@@ -63,6 +63,14 @@ pub struct DiscoveryCtx {
     pub project_dir: Option<PathBuf>,
 }
 
+/// Pre-loaded YAML roots already parsed by the caller, so discovery avoids
+/// re-reading and re-parsing the same user/project `config.yml` files.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LoadedConfigs<'a> {
+    pub user_yaml: Option<&'a YamlValue>,
+    pub project_yaml: Option<&'a YamlValue>,
+}
+
 /// One agent definition, reduced to what model-role resolution reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredAgent {
@@ -76,9 +84,24 @@ pub struct DiscoveredAgent {
 
 /// Discovers every agent visible from `ctx`, in omp's precedence, one entry per name.
 /// Never fails: unreadable config, registries, and files are logged or skipped, as omp does.
+#[cfg(test)]
 pub fn discover_agents(ctx: &DiscoveryCtx) -> Vec<DiscoveredAgent> {
+    let config = ConfigFiles::read(&ctx.agent_dir, ctx.project_dir.as_deref());
+    discover_agents_with(ctx, config)
+}
+
+/// Same as [`discover_agents`], reusing YAML roots already read and parsed by
+/// the caller instead of reading the same config files from disk a second time.
+pub fn discover_agents_with_configs(
+    ctx: &DiscoveryCtx,
+    loaded: LoadedConfigs<'_>,
+) -> Vec<DiscoveredAgent> {
+    let config = ConfigFiles::from_loaded(loaded);
+    discover_agents_with(ctx, config)
+}
+
+fn discover_agents_with(ctx: &DiscoveryCtx, mut config: ConfigFiles) -> Vec<DiscoveredAgent> {
     let cwd = ctx.project_dir.as_deref();
-    let mut config = ConfigFiles::read(&ctx.agent_dir, cwd);
     let disabled = provider_ids(config.pick(ConfigKey::DisabledProviders), cwd, &ctx.home);
     let enabled = provider_ids(config.pick(ConfigKey::EnabledProviders), cwd, &ctx.home);
     let extensions = config.pick(ConfigKey::Extensions);
@@ -215,8 +238,10 @@ struct ParsedAgent {
 }
 
 /// Global config file names, in omp's precedence: `config.yml` first, then `config.yaml`.
+#[cfg(test)]
 const GLOBAL_CONFIG_NAMES: [&str; 2] = ["config.yml", "config.yaml"];
 /// Project config file, read from `.omp/`.
+#[cfg(test)]
 const PROJECT_CONFIG_NAME: &str = "config.yml";
 
 /// One config value omp reads as a list. Any other value is ignored, as omp ignores it.
@@ -305,6 +330,7 @@ struct ConfigFiles {
 }
 
 impl ConfigFiles {
+    #[cfg(test)]
     fn read(agent_dir: &Path, project_dir: Option<&Path>) -> Self {
         let project_yaml = project_dir
             .map(|dir| dir.join(".omp"))
@@ -315,6 +341,13 @@ impl ConfigFiles {
         ConfigFiles {
             project_yaml,
             user_yaml,
+        }
+    }
+
+    fn from_loaded(loaded: LoadedConfigs<'_>) -> Self {
+        ConfigFiles {
+            project_yaml: loaded.project_yaml.and_then(config_keys_from_value),
+            user_yaml: loaded.user_yaml.and_then(config_keys_from_value),
         }
     }
 
@@ -333,6 +366,7 @@ impl ConfigFiles {
 }
 
 /// The first readable file among `names` in `dir`, with its path and text.
+#[cfg(test)]
 fn first_file(dir: &Path, names: &[&str]) -> Option<(PathBuf, String)> {
     names.iter().find_map(|name| {
         let path = dir.join(name);
@@ -341,6 +375,7 @@ fn first_file(dir: &Path, names: &[&str]) -> Option<(PathBuf, String)> {
 }
 
 /// Keys of a YAML config file. A file that does not parse is logged by path and yields nothing.
+#[cfg(test)]
 fn parse_yaml(path: &Path, text: &str) -> Option<ConfigKeys> {
     match serde_yaml_ng::from_str::<ConfigKeys>(text) {
         Ok(keys) => Some(keys),
@@ -349,6 +384,20 @@ fn parse_yaml(path: &Path, text: &str) -> Option<ConfigKeys> {
             None
         }
     }
+}
+
+/// Extract only discovery's three list keys from an already-parsed YAML root.
+fn config_keys_from_value(root: &YamlValue) -> Option<ConfigKeys> {
+    let map = root.as_mapping()?;
+    let pick_list = |key: &str| -> Option<Lenient<Vec<Item>>> {
+        let value = map.get(key)?;
+        serde_yaml_ng::from_value::<Lenient<Vec<Item>>>(value.clone()).ok()
+    };
+    Some(ConfigKeys {
+        extensions: pick_list("extensions"),
+        enabled_providers: pick_list("enabledProviders"),
+        disabled_providers: pick_list("disabledProviders"),
+    })
 }
 
 /// Non-empty string entries of an `extensions` list, as omp's `readExtensionsArray` keeps them.
@@ -1198,5 +1247,40 @@ mod tests {
         let fixture = extension_fixture("disabledProviders:\n  - omp-plugins\n");
         let agents = discover_agents(&fixture.ctx);
         assert!(!agents.iter().any(|agent| agent.name == AGENT_NAME));
+    }
+
+    #[test]
+    fn discover_agents_with_configs_reuses_preloaded_yaml_without_disk_reread() {
+        let fixture = extension_fixture("");
+        let project_cfg = fixture
+            .ctx
+            .project_dir
+            .as_ref()
+            .unwrap()
+            .join(".omp/config.yml");
+        let raw = fs::read_to_string(&project_cfg).unwrap();
+        let parsed: YamlValue = serde_yaml_ng::from_str(&raw).unwrap();
+        // Remove the on-disk config to prove pre-loaded roots are used directly.
+        fs::remove_file(&project_cfg).unwrap();
+        let agents = discover_agents_with_configs(
+            &fixture.ctx,
+            LoadedConfigs {
+                user_yaml: None,
+                project_yaml: Some(&parsed),
+            },
+        );
+        assert!(agents.iter().any(|agent| agent.name == AGENT_NAME));
+
+        let disabled_root: YamlValue =
+            serde_yaml_ng::from_str(&format!("{raw}\ndisabledProviders:\n  - omp-plugins\n"))
+                .unwrap();
+        let filtered = discover_agents_with_configs(
+            &fixture.ctx,
+            LoadedConfigs {
+                user_yaml: None,
+                project_yaml: Some(&disabled_root),
+            },
+        );
+        assert!(!filtered.iter().any(|agent| agent.name == AGENT_NAME));
     }
 }

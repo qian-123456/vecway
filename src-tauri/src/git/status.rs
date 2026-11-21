@@ -49,31 +49,40 @@ fn classify(x: char, y: char) -> &'static str {
     "M"
 }
 
-/// Parse the `## ...` header line of `status -b`.
-fn parse_branch(header: &str) -> Option<String> {
-    let h = header.strip_prefix("## ")?;
+/// Parse the `## ...` header line of `status -b`, returning `(branch, unborn)`.
+fn parse_branch_meta(header: &str) -> (Option<String>, bool) {
+    let Some(h) = header.strip_prefix("## ") else {
+        return (None, false);
+    };
     if let Some(rest) = h.strip_prefix("No commits yet on ") {
-        return Some(rest.trim().to_string());
+        return (Some(rest.trim().to_string()), true);
     }
     if let Some(rest) = h.strip_prefix("Initial commit on ") {
-        return Some(rest.trim().to_string());
+        return (Some(rest.trim().to_string()), true);
     }
     if h.starts_with("HEAD (no branch)") {
-        return None;
+        return (None, false);
     }
     let name = h.split("...").next().unwrap_or(h);
     let name = name.split(' ').next().unwrap_or(name);
-    (!name.is_empty()).then(|| name.to_string())
+    ((!name.is_empty()).then(|| name.to_string()), false)
 }
 
-/// Parse `git status --porcelain=v1 -z -b` output.
-pub fn parse_porcelain(raw: &[u8]) -> Status {
+#[cfg(test)]
+fn parse_branch(header: &str) -> Option<String> {
+    parse_branch_meta(header).0
+}
+
+fn parse_porcelain_with_meta(raw: &[u8]) -> (Status, bool) {
     let text = String::from_utf8_lossy(raw);
     let mut fields = text.split('\0').filter(|f| !f.is_empty());
     let mut status = Status::default();
+    let mut unborn = false;
     while let Some(field) = fields.next() {
         if field.starts_with("## ") {
-            status.branch = parse_branch(field);
+            let (branch, is_unborn) = parse_branch_meta(field);
+            status.branch = branch;
+            unborn = is_unborn;
             continue;
         }
         if field.len() < 4 {
@@ -93,7 +102,13 @@ pub fn parse_porcelain(raw: &[u8]) -> Status {
             status: classify(x, y).to_string(),
         });
     }
-    status
+    (status, unborn)
+}
+
+/// Parse `git status --porcelain=v1 -z -b` output.
+#[cfg(test)]
+pub fn parse_porcelain(raw: &[u8]) -> Status {
+    parse_porcelain_with_meta(raw).0
 }
 
 /// Parse `git diff --numstat -z` output into path → (added, deleted).
@@ -142,12 +157,16 @@ fn count_lines(path: &Path) -> u32 {
     (n + usize::from(trailing)) as u32
 }
 
+fn status_with_meta(dir: &Path, all_untracked: bool) -> Option<(Status, bool)> {
+    let u = if all_untracked { "-uall" } else { "-unormal" };
+    let out = git(dir, &["status", "--porcelain=v1", "-z", "-b", u]).ok()?;
+    out.ok().then(|| parse_porcelain_with_meta(&out.stdout))
+}
+
 /// `git status` for a directory; None when it is not a repository.
 /// `all_untracked` lists files inside untracked dirs (slower).
 pub fn status(dir: &Path, all_untracked: bool) -> Option<Status> {
-    let u = if all_untracked { "-uall" } else { "-unormal" };
-    let out = git(dir, &["status", "--porcelain=v1", "-z", "-b", u]).ok()?;
-    out.ok().then(|| parse_porcelain(&out.stdout))
+    status_with_meta(dir, all_untracked).map(|(st, _)| st)
 }
 
 /// Whether HEAD resolves to a commit.
@@ -171,16 +190,31 @@ pub fn summary(dir: &Path) -> GitSummary {
     if !dir.is_dir() {
         return GitSummary::default();
     }
-    let Some(st) = status(dir, true) else {
+    let Some((st, unborn)) = status_with_meta(dir, true) else {
         return GitSummary::default();
     };
-    let base = diff_base(dir);
-    let numstat = git_ok(dir, &["diff", "--numstat", "-z", base])
-        .map(|s| parse_numstat(s.as_bytes()))
-        .unwrap_or_default();
-    let root = git_ok(dir, &["rev-parse", "--show-toplevel"])
-        .map(|s| std::path::PathBuf::from(s.trim()))
-        .unwrap_or_else(|_| dir.to_path_buf());
+    let has_tracked_changes = st.entries.iter().any(|e| e.status != "??");
+    let numstat = if has_tracked_changes {
+        let base = if unborn { EMPTY_TREE } else { "HEAD" };
+        git_ok(dir, &["diff", "--numstat", "-z", base])
+            .map(|s| parse_numstat(s.as_bytes()))
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+    let has_untracked = st.entries.iter().any(|e| e.status == "??");
+    let root = if has_untracked {
+        super::repo_info_cached(dir)
+            .map(|i| i.toplevel)
+            .or_else(|| {
+                git_ok(dir, &["rev-parse", "--show-toplevel"])
+                    .ok()
+                    .map(|s| std::path::PathBuf::from(s.trim()))
+            })
+            .unwrap_or_else(|| dir.to_path_buf())
+    } else {
+        dir.to_path_buf()
+    };
     let mut untracked_counted = 0usize;
     let has_uncommitted = !st.entries.is_empty();
     let files = st

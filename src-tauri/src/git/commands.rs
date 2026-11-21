@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tauri::Emitter;
 
-use super::{badge, base_sync, checkpoints_ext, history, repo_root, status, tm, turns, worktree};
+use super::{badge, base_sync, checkpoints_ext, history, status, tm, turns, worktree};
 use crate::contracts::{
     BaseSyncResult, BranchInfo, GitBadge, GitHistory, GitSummary, MergePreview, PrUrlInfo, TmRun,
     TurnCheckpoint, TurnUndoResult, WorktreeInfo,
@@ -91,17 +91,11 @@ pub async fn git_repo_root(
 ) -> Result<Option<String>, String> {
     blocking(move || {
         let path = crate::services::files::resolve(&cwd)?;
-        let probe = super::cmd::git(&path, &["rev-parse", "--is-inside-work-tree"])?;
-        if !probe.ok() {
-            let error = probe.err_msg();
-            if error.contains("not a git repository") {
-                return Ok(None);
-            }
-            return Err(error);
+        if !path.is_dir() {
+            return Err(format!("directory does not exist: {}", path.display()));
         }
-        repo_root(&path)
-            .map(Some)
-            .ok_or_else(|| format!("failed to resolve Git repository: {}", path.display()))
+        super::repo_info_cached_result(&path)
+            .map(|opt| opt.map(|info| info.main_root().to_string_lossy().into_owned()))
     })
     .await
 }
@@ -151,7 +145,7 @@ pub async fn git_list_worktrees(
 ) -> Result<Vec<WorktreeInfo>, String> {
     let sessions = session_cwds(&state).await;
     blocking(move || {
-        let root = worktree::repo_info(&PathBuf::from(&repo))
+        let root = super::repo_info_cached(&PathBuf::from(&repo))
             .map(|i| i.main_root())
             .ok_or("不是 git 仓库")?;
         worktree::list(&root, &sessions)
@@ -991,6 +985,7 @@ pub(super) fn create_project_dir_internal(
             let _ = std::fs::remove_dir(&target);
             return Err(format!("初始化 Git 仓库失败：{e}"));
         }
+        super::invalidate_cache(&target);
     }
     Ok(target
         .canonicalize()
@@ -1036,6 +1031,7 @@ pub(super) fn git_clone_repo_internal(
     if !out.ok() {
         return Err(out.err_msg());
     }
+    super::invalidate_cache(&target);
     Ok(target
         .canonicalize()
         .unwrap_or(target)

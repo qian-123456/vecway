@@ -25,12 +25,22 @@ CREATE TABLE mobile_devices(token_hash TEXT PRIMARY KEY, name TEXT, created_at T
 CREATE TABLE pairing_codes(code TEXT PRIMARY KEY, expires_at TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0);
 ";
 
+/// Apply standard SQLite connection pragmas (WAL, NORMAL sync, memory temp store,
+/// 16 MiB page cache, foreign keys, 5s busy timeout).
+pub(crate) fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    conn.pragma_update(None, "cache_size", -16000)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
 /// Open (creating if needed) the app database and run pending migrations.
 pub fn open() -> rusqlite::Result<Connection> {
     let conn = Connection::open(paths::db_path())?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
+    configure_connection(&conn)?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -102,7 +112,6 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              );
              CREATE INDEX idx_schedule_runs_schedule_id ON schedule_runs(schedule_id, started_at DESC);",
         )?;
-        conn.pragma_update(None, "user_version", 3)?;
     }
     // v4: backlog items remember their project directory.
     if version < 4 {
@@ -446,7 +455,9 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                 |r| r.get(0),
             )?;
             if !exists {
-                tx.execute_batch("ALTER TABLE schedules ADD COLUMN overlapPolicy TEXT NOT NULL DEFAULT 'skip';")?;
+                tx.execute_batch(
+                    "ALTER TABLE schedules ADD COLUMN overlapPolicy TEXT NOT NULL DEFAULT 'skip';",
+                )?;
             }
             let has_owner: bool = tx.query_row(
                 "SELECT COUNT(*) > 0 FROM pragma_table_info('schedule_runs') WHERE name = 'owner_pid'",
@@ -457,14 +468,22 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                 tx.execute_batch("ALTER TABLE schedule_runs ADD COLUMN owner_pid INTEGER;")?;
             }
             for (column, ddl) in [
-                ("resume_attempt", "ALTER TABLE schedule_runs ADD COLUMN resume_attempt TEXT;"),
-                ("resume_owner_pid", "ALTER TABLE schedule_runs ADD COLUMN resume_owner_pid INTEGER;"),
+                (
+                    "resume_attempt",
+                    "ALTER TABLE schedule_runs ADD COLUMN resume_attempt TEXT;",
+                ),
+                (
+                    "resume_owner_pid",
+                    "ALTER TABLE schedule_runs ADD COLUMN resume_owner_pid INTEGER;",
+                ),
             ] {
                 let exists: bool = tx.query_row(
                     &format!("SELECT COUNT(*) > 0 FROM pragma_table_info('schedule_runs') WHERE name = '{column}'"),
                     [], |r| r.get(0),
                 )?;
-                if !exists { tx.execute_batch(ddl)?; }
+                if !exists {
+                    tx.execute_batch(ddl)?;
+                }
             }
             tx.execute_batch(
                 "CREATE TABLE IF NOT EXISTS schedule_pending (
@@ -528,8 +547,14 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             )?;
             if has_workspaces {
                 for (col, ddl) in [
-                    ("dir_dev", "ALTER TABLE workspaces ADD COLUMN dir_dev INTEGER;"),
-                    ("dir_ino", "ALTER TABLE workspaces ADD COLUMN dir_ino INTEGER;"),
+                    (
+                        "dir_dev",
+                        "ALTER TABLE workspaces ADD COLUMN dir_dev INTEGER;",
+                    ),
+                    (
+                        "dir_ino",
+                        "ALTER TABLE workspaces ADD COLUMN dir_ino INTEGER;",
+                    ),
                 ] {
                     let exists: bool = tx.query_row(
                         "SELECT COUNT(*) > 0 FROM pragma_table_info('workspaces') WHERE name = ?1",
@@ -551,6 +576,47 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                  );
                  CREATE INDEX IF NOT EXISTS idx_workspace_aliases_ws ON workspace_aliases(workspace_id);",
             )?;
+            Ok(())
+        })?;
+    }
+    // v30: indexes for O(log N) `MAX(seq)` on `session_meta`, startup recovery
+    // `WHERE status = 'running'` on `schedule_runs`, per-schedule latest-run
+    // lookups, and enabled/due schedule filtering.
+    if version < 30 {
+        step_with(conn, 30, |tx| {
+            for (table, col, ddl) in [
+                (
+                    "session_meta",
+                    "seq",
+                    "CREATE INDEX IF NOT EXISTS idx_session_meta_seq ON session_meta(seq);",
+                ),
+                (
+                    "schedule_runs",
+                    "status",
+                    "CREATE INDEX IF NOT EXISTS idx_schedule_runs_status ON schedule_runs(status);",
+                ),
+                (
+                    "schedule_runs",
+                    "started_at",
+                    "CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule_id ON schedule_runs(schedule_id, started_at DESC);",
+                ),
+                (
+                    "schedules",
+                    "next_run_at",
+                    "CREATE INDEX IF NOT EXISTS idx_schedules_enabled_next ON schedules(enabled, next_run_at);",
+                ),
+            ] {
+                let has_col: bool = tx.query_row(
+                    &format!(
+                        "SELECT COUNT(*) > 0 FROM pragma_table_info('{table}') WHERE name = ?1"
+                    ),
+                    [col],
+                    |r| r.get(0),
+                )?;
+                if has_col {
+                    tx.execute_batch(ddl)?;
+                }
+            }
             Ok(())
         })?;
     }
@@ -586,18 +652,27 @@ pub fn load_settings(conn: &Connection) -> Settings {
 
 /// Read the authoritative preference inside the same transaction as a claim.
 /// Decode only this field rather than cloning every application setting.
-pub fn load_automation_overlap_policy(conn: &Connection) -> crate::contracts::AutomationOverlapPolicy {
+pub fn load_automation_overlap_policy(
+    conn: &Connection,
+) -> crate::contracts::AutomationOverlapPolicy {
     #[derive(serde::Deserialize, Default)]
     #[serde(rename_all = "camelCase")]
     struct Policy {
         #[serde(default)]
         automation_overlap_policy: crate::contracts::AutomationOverlapPolicy,
     }
-    let stored: Option<String> = conn.query_row(
-        "SELECT value FROM settings WHERE key = 'settings'", [], |row| row.get(0),
-    ).ok();
-    stored.as_deref().and_then(|json| serde_json::from_str::<Policy>(json).ok())
-        .unwrap_or_default().automation_overlap_policy
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'settings'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    stored
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Policy>(json).ok())
+        .unwrap_or_default()
+        .automation_overlap_policy
 }
 
 /// Persist Settings into the single-row `settings` table.
@@ -660,11 +735,25 @@ mod tests {
             [], |r| r.get(0),
         ).unwrap();
         assert!(!has_policy);
-        assert_eq!(load_settings(&conn).automation_overlap_policy, crate::contracts::AutomationOverlapPolicy::Skip);
-        let owner: Option<u32> = conn.query_row("SELECT owner_pid FROM schedule_runs WHERE id = 'old-run'", [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            load_settings(&conn).automation_overlap_policy,
+            crate::contracts::AutomationOverlapPolicy::Skip
+        );
+        let owner: Option<u32> = conn
+            .query_row(
+                "SELECT owner_pid FROM schedule_runs WHERE id = 'old-run'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(owner, None);
         conn.execute("INSERT INTO schedule_pending(schedule_id, scheduled_at, reason) VALUES('old', 't', 'waiting')", []).unwrap();
-        assert_eq!(conn.query_row("SELECT count(*) FROM schedule_pending", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM schedule_pending", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -683,12 +772,31 @@ mod tests {
         ).unwrap();
         conn.pragma_update(None, "user_version", 26).unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(load_settings(&conn).automation_overlap_policy, AutomationOverlapPolicy::Skip);
-        assert_eq!(load_automation_overlap_policy(&conn), AutomationOverlapPolicy::Skip);
-        let pending: Vec<String> = conn.prepare("SELECT scheduled_at FROM schedule_pending ORDER BY id")
-            .unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(
+            load_settings(&conn).automation_overlap_policy,
+            AutomationOverlapPolicy::Skip
+        );
+        assert_eq!(
+            load_automation_overlap_policy(&conn),
+            AutomationOverlapPolicy::Skip
+        );
+        let pending: Vec<String> = conn
+            .prepare("SELECT scheduled_at FROM schedule_pending ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(pending, ["first", "second"]);
-        assert_eq!(conn.query_row("SELECT status FROM schedule_runs WHERE id = 'running'", [], |r| r.get::<_, String>(0)).unwrap(), "running");
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM schedule_runs WHERE id = 'running'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "running"
+        );
         let has_policy: bool = conn.query_row(
             "SELECT COUNT(*) > 0 FROM pragma_table_info('schedules') WHERE name = 'overlapPolicy'",
             [], |r| r.get(0),
@@ -697,7 +805,12 @@ mod tests {
         // The removal is idempotent even if only the schema version is rewound.
         conn.pragma_update(None, "user_version", 26).unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("SELECT count(*) FROM schedule_pending", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM schedule_pending", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 
     #[test]
@@ -706,12 +819,29 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         let mut legacy = serde_json::to_value(Settings::default()).unwrap();
-        legacy.as_object_mut().unwrap().remove("automationOverlapPolicy");
-        conn.execute("INSERT INTO settings(key, value) VALUES('settings', ?1)", [legacy.to_string()]).unwrap();
-        assert_eq!(load_settings(&conn).automation_overlap_policy, AutomationOverlapPolicy::Skip);
-        assert_eq!(load_automation_overlap_policy(&conn), AutomationOverlapPolicy::Skip);
-        for policy in [AutomationOverlapPolicy::Skip, AutomationOverlapPolicy::Coalesce,
-            AutomationOverlapPolicy::Queue, AutomationOverlapPolicy::Parallel] {
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("automationOverlapPolicy");
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES('settings', ?1)",
+            [legacy.to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            load_settings(&conn).automation_overlap_policy,
+            AutomationOverlapPolicy::Skip
+        );
+        assert_eq!(
+            load_automation_overlap_policy(&conn),
+            AutomationOverlapPolicy::Skip
+        );
+        for policy in [
+            AutomationOverlapPolicy::Skip,
+            AutomationOverlapPolicy::Coalesce,
+            AutomationOverlapPolicy::Queue,
+            AutomationOverlapPolicy::Parallel,
+        ] {
             let mut settings = load_settings(&conn);
             settings.automation_overlap_policy = policy;
             settings.doctor_model = "preserve-this-model".into();
@@ -738,7 +868,8 @@ mod tests {
         )
         .unwrap();
         create_v9_schedule_fixture(&conn);
-        conn.execute_batch("ALTER TABLE schedules ADD COLUMN mode TEXT NOT NULL DEFAULT 'code';").unwrap();
+        conn.execute_batch("ALTER TABLE schedules ADD COLUMN mode TEXT NOT NULL DEFAULT 'code';")
+            .unwrap();
         conn.pragma_update(None, "user_version", 23).unwrap();
         migrate(&conn).unwrap();
 
@@ -832,7 +963,7 @@ mod tests {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 29);
+        assert_eq!(version, 30);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(session_meta)")
             .unwrap()
@@ -855,7 +986,7 @@ mod tests {
         let v3: u32 = fresh
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v3, 29);
+        assert_eq!(v3, 30);
     }
 
     #[test]
@@ -865,7 +996,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 29);
+        assert_eq!(v, 30);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('schedules', 'schedule_runs')",
@@ -892,7 +1023,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 29);
+        assert_eq!(v, 30);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(schedules)")
             .unwrap()
@@ -967,7 +1098,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 29);
+        assert_eq!(v, 30);
         // Pre-existing row inherits the documented defaults.
         let (notify, new_chat): (String, i64) = conn
             .query_row(
@@ -1068,7 +1199,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 29);
+        assert_eq!(v, 30);
         // Pre-existing row: NULL cap, zero runs.
         let (max_runs, runs_done): (Option<i64>, i64) = conn
             .query_row(
@@ -1129,7 +1260,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 29);
+        assert_eq!(v, 30);
         let schedule_mode: String = conn
             .query_row("SELECT mode FROM schedules WHERE id='scheduled'", [], |r| {
                 r.get(0)
@@ -1280,7 +1411,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 29);
+        assert_eq!(v, 30);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(model_replace_log)")
             .unwrap()
@@ -1628,8 +1759,110 @@ mod backlog_v19_tests {
             .unwrap();
         assert!(has_dev && has_ino && has_aliases);
         let path: String = conn
-            .query_row("SELECT path FROM workspaces WHERE id = 'w1'", [], |r| r.get(0))
+            .query_row("SELECT path FROM workspaces WHERE id = 'w1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(path, "/repo/a");
+    }
+
+    #[test]
+    fn migrate_v30_adds_performance_indexes_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_session_meta_seq;
+             DROP INDEX IF EXISTS idx_schedule_runs_status;
+             DROP INDEX IF EXISTS idx_schedule_runs_schedule_id;
+             DROP INDEX IF EXISTS idx_schedules_enabled_next;",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 29).unwrap();
+
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 30);
+
+        for idx in [
+            "idx_session_meta_seq",
+            "idx_schedule_runs_status",
+            "idx_schedule_runs_schedule_id",
+            "idx_schedules_enabled_next",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [idx],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing expected index {idx}");
+        }
+
+        let seq_plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT COALESCE(MAX(seq), 0) + 1 FROM session_meta",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(
+            seq_plan.contains("idx_session_meta_seq"),
+            "expected MAX(seq) to use idx_session_meta_seq, got: {seq_plan}"
+        );
+
+        let recovery_plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id, owner_pid FROM schedule_runs WHERE status = 'running'",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(
+            recovery_plan.contains("idx_schedule_runs_status"),
+            "expected recovery query to use idx_schedule_runs_status, got: {recovery_plan}"
+        );
+    }
+
+    #[test]
+    fn configure_connection_sets_wal_pragmas() {
+        let path =
+            std::env::temp_dir().join(format!("vecway-db-pragma-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = Connection::open(&path).unwrap();
+            configure_connection(&conn).unwrap();
+            let journal_mode: String = conn
+                .pragma_query_value(None, "journal_mode", |r| r.get(0))
+                .unwrap();
+            let synchronous: i64 = conn
+                .pragma_query_value(None, "synchronous", |r| r.get(0))
+                .unwrap();
+            let temp_store: i64 = conn
+                .pragma_query_value(None, "temp_store", |r| r.get(0))
+                .unwrap();
+            let cache_size: i64 = conn
+                .pragma_query_value(None, "cache_size", |r| r.get(0))
+                .unwrap();
+            let foreign_keys: i64 = conn
+                .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+                .unwrap();
+            let busy_timeout: i64 = conn
+                .pragma_query_value(None, "busy_timeout", |r| r.get(0))
+                .unwrap();
+
+            assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+            assert_eq!(synchronous, 1, "NORMAL = 1");
+            assert_eq!(temp_store, 2, "MEMORY = 2");
+            assert_eq!(cache_size, -16000);
+            assert_eq!(foreign_keys, 1);
+            assert_eq!(busy_timeout, 5000);
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 }

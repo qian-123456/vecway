@@ -22,16 +22,16 @@ pub async fn get_transcript(
 ) -> Result<TranscriptPage, String> {
     let file = crate::catalog::file_of(&session_id)
         .ok_or_else(|| format!("session not found: {session_id}"))?;
-    // Live sessions flush the transcript on the first message; before that the
-    // destined file doesn't exist. Mirror the zero-byte case: empty page.
-    if !file.exists() {
-        return Ok(TranscriptPage {
-            session_id,
-            ..Default::default()
-        });
-    }
     let sid = session_id.clone();
     tokio::task::spawn_blocking(move || {
+        // Live sessions flush the transcript on the first message; before that the
+        // destined file doesn't exist. Mirror the zero-byte case: empty page.
+        if !file.exists() {
+            return Ok(TranscriptPage {
+                session_id: sid,
+                ..Default::default()
+            });
+        }
         transcript::read_page(&file, &sid, from_offset.unwrap_or(0), tail_id.as_deref())
             .map_err(|e| format!("read transcript {sid}: {e}"))
     })
@@ -47,9 +47,14 @@ pub async fn update_session_meta(
 ) -> Result<SessionMeta, String> {
     {
         let _mutation = crate::catalog::session_mutation_lock().lock().await;
-        let db = state.db.lock();
-        store::apply_patch(&db, &session_id, &patch)
-            .map_err(|e| format!("apply_patch {session_id}: {e}"))?;
+        let st = state.inner().clone();
+        let sid = session_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let db = st.db.lock();
+            store::apply_patch(&db, &sid, &patch).map_err(|e| format!("apply_patch {sid}: {e}"))
+        })
+        .await
+        .map_err(|e| format!("apply_patch {session_id}: {e}"))??;
     }
     crate::catalog::recompute_async(&state, Some(vec![session_id.clone()])).await;
     crate::catalog::get(&state, &session_id)
@@ -66,9 +71,14 @@ pub async fn mark_seen(
         .await
         .is_some_and(|m| m.status == SessionStatus::Review);
     let accepted = {
-        let db = state.db.lock();
-        store::mark_seen(&db, &session_id, review_status)
-            .map_err(|e| format!("mark_seen {session_id}: {e}"))?
+        let st = state.inner().clone();
+        let sid = session_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let db = st.db.lock();
+            store::mark_seen(&db, &sid, review_status).map_err(|e| format!("mark_seen {sid}: {e}"))
+        })
+        .await
+        .map_err(|e| format!("mark_seen {session_id}: {e}"))??
     };
     if accepted {
         state.emit(crate::state::AppEvent::SessionAccepted {
@@ -123,56 +133,60 @@ pub async fn list_workspace_files(
         ".worktrees",
     ];
 
-    let root = std::path::PathBuf::from(&cwd);
-    if !root.is_dir() {
-        return Err(format!("not a directory: {cwd}"));
-    }
-
-    let mut out: Vec<String> = Vec::new();
-    let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root.clone(), 0)];
-
-    while let Some((dir, depth)) = stack.pop() {
-        if out.len() >= MAX_FILES || depth > MAX_DEPTH {
-            break;
+    tokio::task::spawn_blocking(move || {
+        let root = std::path::PathBuf::from(&cwd);
+        if !root.is_dir() {
+            return Err(format!("not a directory: {cwd}"));
         }
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            if out.len() >= MAX_FILES {
+
+        let mut out: Vec<String> = Vec::new();
+        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(root.clone(), 0)];
+
+        while let Some((dir, depth)) = stack.pop() {
+            if out.len() >= MAX_FILES || depth > MAX_DEPTH {
                 break;
             }
-            let name = entry.file_name();
-            let name = match name.to_str() {
-                Some(n) => n,
-                None => continue,
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => continue,
             };
-            // Hidden files/dirs at root are skipped below (depth == 0 check);
-            // deeper dot-paths like .github/workflows are kept.
-            let path = entry.path();
-            let is_dir = path.is_dir();
-            if is_dir {
-                if SKIP.contains(&name) {
-                    continue;
+            for entry in entries.flatten() {
+                if out.len() >= MAX_FILES {
+                    break;
                 }
-                stack.push((path, depth + 1));
-            } else {
-                if name.starts_with('.') && depth == 0 {
-                    continue;
-                }
-                if let Ok(rel) = path.strip_prefix(&root) {
-                    if let Some(rel_str) = rel.to_str() {
-                        out.push(rel_str.to_string());
+                let name = entry.file_name();
+                let name = match name.to_str() {
+                    Some(n) => n,
+                    None => continue,
+                };
+                // Hidden files/dirs at root are skipped below (depth == 0 check);
+                // deeper dot-paths like .github/workflows are kept.
+                let path = entry.path();
+                let is_dir = path.is_dir();
+                if is_dir {
+                    if SKIP.contains(&name) {
+                        continue;
+                    }
+                    stack.push((path, depth + 1));
+                } else {
+                    if name.starts_with('.') && depth == 0 {
+                        continue;
+                    }
+                    if let Ok(rel) = path.strip_prefix(&root) {
+                        if let Some(rel_str) = rel.to_str() {
+                            out.push(rel_str.to_string());
+                        }
                     }
                 }
             }
         }
-    }
 
-    out.sort();
-    out.truncate(MAX_FILES);
-    Ok(out)
+        out.sort();
+        out.truncate(MAX_FILES);
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("list_workspace_files: {e}"))?
 }
 
 #[tauri::command]
@@ -182,9 +196,14 @@ pub async fn accept_session(
     archive: bool,
 ) -> Result<(), String> {
     {
-        let db = state.db.lock();
-        store::accept(&db, &session_id, archive)
-            .map_err(|e| format!("accept_session {session_id}: {e}"))?;
+        let st = state.inner().clone();
+        let sid = session_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let db = st.db.lock();
+            store::accept(&db, &sid, archive).map_err(|e| format!("accept_session {sid}: {e}"))
+        })
+        .await
+        .map_err(|e| format!("accept_session {session_id}: {e}"))??;
     }
     state.emit(crate::state::AppEvent::SessionAccepted {
         session_id: session_id.clone(),
@@ -198,9 +217,8 @@ pub async fn list_workspaces(state: tauri::State<'_, AppState>) -> Result<Vec<Wo
     let (list, relocations) = tokio::task::spawn_blocking({
         let st = state.inner().clone();
         move || {
-            let db = st.db.lock();
-            let relocations = store::reconcile_workspaces(&db);
-            let list = store::list_workspaces(&db);
+            let relocations = store::reconcile_workspaces_unlocked(&st.db);
+            let list = store::list_workspaces_unlocked(&st.db);
             (list, relocations)
         }
     })
@@ -224,8 +242,13 @@ pub async fn list_workspaces(state: tauri::State<'_, AppState>) -> Result<Vec<Wo
 #[tauri::command]
 pub async fn remove_workspace(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
     {
-        let db = state.db.lock();
-        store::remove_workspace(&db, &id).map_err(|e| format!("remove_workspace: {e}"))?;
+        let st = state.inner().clone();
+        tokio::task::spawn_blocking(move || {
+            let db = st.db.lock();
+            store::remove_workspace(&db, &id).map_err(|e| format!("remove_workspace: {e}"))
+        })
+        .await
+        .map_err(|e| format!("remove_workspace: {e}"))??;
     }
     crate::catalog::recompute_async(&state, None).await;
     Ok(())
@@ -236,8 +259,13 @@ pub async fn reorder_workspaces(
     state: tauri::State<'_, AppState>,
     ids: Vec<String>,
 ) -> Result<(), String> {
-    let db = state.db.lock();
-    store::reorder_workspaces(&db, &ids).map_err(|e| format!("reorder_workspaces: {e}"))
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let db = st.db.lock();
+        store::reorder_workspaces(&db, &ids).map_err(|e| format!("reorder_workspaces: {e}"))
+    })
+    .await
+    .map_err(|e| format!("reorder_workspaces: {e}"))?
 }
 /// Add `path` as a project workspace of `mode` (default code). The 通用对话
 /// (`chat`) space has no project directories. If an existing workspace's
@@ -255,10 +283,7 @@ pub async fn add_workspace(
     }
     let (ws, relocated) = tokio::task::spawn_blocking({
         let st = state.inner().clone();
-        move || {
-            let db = st.db.lock();
-            store::add_workspace_with_reconcile(&db, &path, mode)
-        }
+        move || store::add_workspace_with_reconcile_unlocked(&st.db, &path, mode)
     })
     .await
     .map_err(|e| format!("add_workspace: {e}"))?
@@ -283,16 +308,21 @@ pub async fn relocate_workspace(
     id: String,
     new_path: String,
 ) -> Result<Workspace, String> {
-    let clean = store::normalize_path(&new_path);
-    if !std::path::Path::new(&clean).is_dir() {
-        return Err(format!("所选目录不存在: {clean}"));
-    }
     let _mutation = crate::catalog::session_mutation_lock().lock().await;
-    let outcome = {
-        let db = state.db.lock();
-        store::relocate_workspace_tx(&db, &id, &clean)
-            .map_err(|e| format!("relocate_workspace: {e}"))?
-    };
+    let st = state.inner().clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let clean = store::normalize_path(&new_path);
+        let dir_path = std::path::Path::new(&clean);
+        if !dir_path.is_dir() {
+            return Err(format!("所选目录不存在: {clean}"));
+        }
+        let dir_id = super::fs_id::read_dir_identity(dir_path);
+        let db = st.db.lock();
+        store::relocate_workspace_tx_preprobed(&db, &id, &clean, dir_id, false)
+            .map_err(|e| format!("relocate_workspace: {e}"))
+    })
+    .await
+    .map_err(|e| format!("relocate_workspace: {e}"))??;
     let ws = outcome.workspace.clone();
     let st = state.inner().clone();
     let _ = tokio::task::spawn_blocking(move || {
@@ -307,8 +337,13 @@ pub async fn relocate_workspace(
 pub async fn list_session_groups(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<SessionGroup>, String> {
-    let db = state.db.lock();
-    store::list_session_groups(&db).map_err(|e| format!("list_session_groups: {e}"))
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let db = st.db.lock();
+        store::list_session_groups(&db).map_err(|e| format!("list_session_groups: {e}"))
+    })
+    .await
+    .map_err(|e| format!("list_session_groups: {e}"))?
 }
 
 #[tauri::command]
@@ -320,10 +355,13 @@ pub async fn create_session_group(
     if mode != SpaceMode::Chat {
         return Err("分组只能创建在通用对话中".to_string());
     }
-    let group = {
-        let db = state.db.lock();
-        store::create_session_group(&db, mode, &name)?
-    };
+    let st = state.inner().clone();
+    let group = tokio::task::spawn_blocking(move || {
+        let db = st.db.lock();
+        store::create_session_group(&db, mode, &name)
+    })
+    .await
+    .map_err(|e| format!("create_session_group: {e}"))??;
     emit_groups_changed(&state);
     Ok(group)
 }
@@ -334,10 +372,13 @@ pub async fn rename_session_group(
     id: String,
     name: String,
 ) -> Result<SessionGroup, String> {
-    let group = {
-        let db = state.db.lock();
-        store::rename_session_group(&db, &id, &name)?
-    };
+    let st = state.inner().clone();
+    let group = tokio::task::spawn_blocking(move || {
+        let db = st.db.lock();
+        store::rename_session_group(&db, &id, &name)
+    })
+    .await
+    .map_err(|e| format!("rename_session_group: {e}"))??;
     emit_groups_changed(&state);
     Ok(group)
 }
@@ -348,10 +389,13 @@ pub async fn delete_session_group(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    {
-        let db = state.db.lock();
-        store::delete_session_group(&db, &id)?;
-    }
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let db = st.db.lock();
+        store::delete_session_group(&db, &id)
+    })
+    .await
+    .map_err(|e| format!("delete_session_group: {e}"))??;
     emit_groups_changed(&state);
     crate::catalog::recompute_async(&state, None).await;
     Ok(())
@@ -362,11 +406,13 @@ pub async fn reorder_session_groups(
     state: tauri::State<'_, AppState>,
     ids: Vec<String>,
 ) -> Result<(), String> {
-    {
-        let db = state.db.lock();
-        store::reorder_session_groups(&db, &ids)
-            .map_err(|e| format!("reorder_session_groups: {e}"))?;
-    }
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let db = st.db.lock();
+        store::reorder_session_groups(&db, &ids).map_err(|e| format!("reorder_session_groups: {e}"))
+    })
+    .await
+    .map_err(|e| format!("reorder_session_groups: {e}"))??;
     emit_groups_changed(&state);
     Ok(())
 }
@@ -380,43 +426,59 @@ pub async fn set_session_group(
     session_id: String,
     group_id: Option<String>,
 ) -> Result<(), String> {
-    if let Some(gid) = group_id.as_deref() {
-        let group = {
-            let db = state.db.lock();
-            store::get_session_group(&db, gid)
+    if let Some(gid) = group_id.clone() {
+        let st = state.inner().clone();
+        let group = tokio::task::spawn_blocking(move || {
+            let db = st.db.lock();
+            store::get_session_group(&db, &gid)
                 .map_err(|e| e.to_string())?
-                .ok_or_else(|| "分组不存在".to_string())?
-        };
+                .ok_or_else(|| "分组不存在".to_string())
+        })
+        .await
+        .map_err(|e| format!("set_session_group: {e}"))??;
         // Session mode: stored row wins; for sessions not yet written to disk
         // (e.g. freshly started draft), check the live RPC process cwd or the
         // stored mode. Chat mode sessions always belong to the global workspace.
         let (session_mode, workspace_id) = match crate::catalog::get(&state, &session_id).await {
             Some(m) => (m.mode, m.workspace_id),
             None => {
-                let db = state.db.lock();
-                let row = store::load_meta_row(&db, &session_id);
-                let live_handle = crate::rpc::get_handle(&session_id);
-                let live_cwd = live_handle.as_ref().map(|h| h.cwd.clone());
-                let cwd = live_cwd.as_deref().or(row.cwd_override.as_deref());
-                let global_dir = crate::paths::global_dir().to_string_lossy().to_string();
-                let mode = match cwd {
-                    Some(c) if super::scan::path_within(c, &global_dir) => SpaceMode::Chat,
-                    _ => row.mode,
-                };
-                let workspace_id = if mode == SpaceMode::Chat {
-                    Some(crate::contracts::GLOBAL_WORKSPACE_ID.to_string())
-                } else {
-                    row.workspace_id
-                };
-                (mode, workspace_id)
+                let st = state.inner().clone();
+                let sid = session_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    let db = st.db.lock();
+                    let row = store::load_meta_row(&db, &sid);
+                    drop(db);
+                    let live_handle = crate::rpc::get_handle(&sid);
+                    let live_cwd = live_handle.as_ref().map(|h| h.cwd.clone());
+                    let cwd = live_cwd.as_deref().or(row.cwd_override.as_deref());
+                    let global_dir = crate::paths::global_dir().to_string_lossy().to_string();
+                    let mode = match cwd {
+                        Some(c) if super::scan::path_within(c, &global_dir) => SpaceMode::Chat,
+                        _ => row.mode,
+                    };
+                    let workspace_id = if mode == SpaceMode::Chat {
+                        Some(crate::contracts::GLOBAL_WORKSPACE_ID.to_string())
+                    } else {
+                        row.workspace_id
+                    };
+                    (mode, workspace_id)
+                })
+                .await
+                .map_err(|e| format!("set_session_group: {e}"))?
             }
         };
         validate_group_assignment(&group, session_mode, workspace_id.as_deref())?;
     }
     {
-        let db = state.db.lock();
-        store::set_session_group(&db, &session_id, group_id.as_deref())
-            .map_err(|e| format!("set_session_group: {e}"))?;
+        let st = state.inner().clone();
+        let sid = session_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let db = st.db.lock();
+            store::set_session_group(&db, &sid, group_id.as_deref())
+                .map_err(|e| format!("set_session_group: {e}"))
+        })
+        .await
+        .map_err(|e| format!("set_session_group: {e}"))??;
     }
     emit_groups_changed(&state);
     crate::catalog::recompute_async(&state, Some(vec![session_id])).await;
@@ -485,13 +547,18 @@ pub async fn session_snapshot(
     _state: tauri::State<'_, AppState>,
     session_id: String,
 ) -> Result<SessionSnapshot, String> {
-    let Some(file) = crate::catalog::file_of(&session_id).filter(|f| f.exists()) else {
+    let Some(file) = crate::catalog::file_of(&session_id) else {
         return Ok(SessionSnapshot::default());
     };
-    tokio::task::spawn_blocking(move || transcript::session_snapshot(&file))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("read snapshot {session_id}: {e}"))
+    let sid = session_id.clone();
+    tokio::task::spawn_blocking(move || {
+        if !file.exists() {
+            return Ok(SessionSnapshot::default());
+        }
+        transcript::session_snapshot(&file).map_err(|e| format!("read snapshot {sid}: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

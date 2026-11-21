@@ -63,9 +63,6 @@
 //! - `POST /sessions/{id}/thinking` `{level}` → `{ok: true, …same facts as GET}`; same resume rules,
 //!   `set_thinking_level`.
 
-use std::path::{Path as FsPath, PathBuf};
-use std::sync::Arc;
-
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
@@ -74,6 +71,9 @@ use axum::{Json, Router};
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::io::Write as _;
+use std::path::{Path as FsPath, PathBuf};
+use std::sync::{Arc, Mutex};
 use tauri::Manager as _;
 
 use crate::contracts::SessionMeta;
@@ -85,11 +85,18 @@ type ApiResult<T> = Result<Json<T>, ApiError>;
 
 /// Raw-body upload cap.
 const MAX_UPLOAD: usize = 20 * 1024 * 1024;
+/// Maximum number of uploaded files stored per session.
+const MAX_SESSION_UPLOAD_FILES: usize = 64;
+/// Maximum cumulative upload bytes stored per session.
+const MAX_SESSION_UPLOAD_BYTES: u64 = 200 * 1024 * 1024;
 /// Prompt body cap (base64 images inline).
 const MAX_PROMPT_BODY: usize = 30 * 1024 * 1024;
 /// Longest stored file name in bytes (before any collision prefix).
 const MAX_NAME_BYTES: usize = 120;
+const ALREADY_PROCESSING_MSG: &str = "会话正在处理上一条消息，请稍后重试";
 
+/// Serializes session upload quota checks and atomic file creation.
+static UPLOAD_LOCK: Mutex<()> = Mutex::new(());
 pub fn routes<B: Backend>() -> Router<Arc<Ctx<B>>> {
     Router::new()
         .route(
@@ -133,6 +140,18 @@ fn bad_request(msg: impl Into<String>) -> ApiError {
 
 fn bad_gateway(msg: String) -> ApiError {
     err(StatusCode::BAD_GATEWAY, msg)
+}
+
+fn is_already_processing(msg: &str) -> bool {
+    msg.to_ascii_lowercase().contains("already processing") || msg == ALREADY_PROCESSING_MSG
+}
+
+fn prompt_rpc_error(msg: String) -> ApiError {
+    if is_already_processing(&msg) {
+        err(StatusCode::CONFLICT, ALREADY_PROCESSING_MSG)
+    } else {
+        bad_gateway(msg)
+    }
 }
 
 fn check_id(id: &str) -> Result<(), ApiError> {
@@ -234,7 +253,7 @@ pub(crate) async fn send_prompt_ex<B: Backend>(
             ctx.backend
                 .deliver_prompt(&real, d)
                 .await
-                .map_err(bad_gateway)
+                .map_err(prompt_rpc_error)
         }
     })
     .await?;
@@ -245,7 +264,7 @@ pub(crate) async fn send_prompt_ex<B: Backend>(
         .backend
         .deliver_prompt(id, delivery(super::draft::Selection::default()))
         .await
-        .map_err(bad_gateway)?;
+        .map_err(prompt_rpc_error)?;
     Ok((None, streaming))
 }
 
@@ -296,9 +315,28 @@ async fn send_prompt_live(
     live(state, id).await?;
     let streaming = crate::rpc::get_handle(id)
         .is_some_and(|h| h.streaming.load(std::sync::atomic::Ordering::SeqCst));
+    let no_images = images.is_empty();
     let cmd = crate::rpc::prompt_command(message, images, behavior);
-    rpc_cmd(state, id, cmd).await.map_err(bad_gateway)?;
-    Ok(streaming)
+    match rpc_cmd(state, id, cmd).await {
+        Ok(_) => Ok(streaming),
+        Err(e) if is_already_processing(&e) => {
+            // Reconcile stale local streaming state with omp.
+            let _ = rpc_cmd(state, id, json!({"type": "get_state"})).await;
+            if no_images {
+                let retry_cmd = crate::rpc::prompt_command(
+                    message,
+                    Vec::new(),
+                    Some(behavior.unwrap_or("followUp")),
+                );
+                return rpc_cmd(state, id, retry_cmd)
+                    .await
+                    .map(|_| true)
+                    .map_err(prompt_rpc_error);
+            }
+            Err(prompt_rpc_error(e))
+        }
+        Err(e) => Err(prompt_rpc_error(e)),
+    }
 }
 
 // ------------------------------------------------------------ pure helpers
@@ -350,6 +388,7 @@ pub(crate) struct ImageIn {
 /// Validate images and convert to omp `ImageContent` blocks.
 pub(crate) fn build_images(images: &[ImageIn]) -> Result<Vec<Value>, ApiError> {
     let mut out = Vec::with_capacity(images.len());
+    let mut total_decoded: usize = 0;
     for img in images {
         let mime = img.mime.trim().to_ascii_lowercase();
         let mime = if mime == "image/jpg" {
@@ -364,14 +403,23 @@ pub(crate) fn build_images(images: &[ImageIn]) -> Result<Vec<Value>, ApiError> {
             return Err(bad_request("不支持的图片格式（仅 png/jpeg/gif/webp）"));
         }
         let data = img.data.trim();
-        if data.is_empty()
-            || base64::engine::general_purpose::STANDARD
-                .decode(data)
-                .is_err()
-        {
+        if data.is_empty() {
             return Err(bad_request("图片数据不是有效的 base64"));
         }
-        out.push(json!({"type": "image", "data": data, "mimeType": mime}));
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|_| bad_request("图片数据不是有效的 base64"))?;
+        total_decoded = total_decoded.saturating_add(decoded.len());
+        if decoded.is_empty() || decoded.len() > MAX_UPLOAD || total_decoded > MAX_PROMPT_BODY {
+            return Err(bad_request("图片为空或超过上传上限"));
+        }
+        let Some(sniffed) = super::media::sniff(&decoded) else {
+            return Err(bad_request("不支持的图片格式（仅 png/jpeg/gif/webp）"));
+        };
+        if sniffed != mime.as_str() {
+            return Err(bad_request("图片内容与声明的格式不符"));
+        }
+        out.push(json!({"type": "image", "data": data, "mimeType": sniffed}));
     }
     Ok(out)
 }
@@ -677,14 +725,114 @@ fn validate_uploaded_image_paths(
     Ok(paths)
 }
 
-/// First free path for `name` in `dir`; adds a random prefix on collision.
-fn unique_path(dir: &FsPath, name: &str) -> PathBuf {
-    let first = dir.join(name);
-    if !first.exists() {
-        return first;
+/// Count regular files and total bytes already stored in a session upload dir.
+fn dir_upload_usage(dir: &FsPath) -> Result<(usize, u64), ApiError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(e) => {
+            return Err(err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("读取上传目录失败：{e}"),
+            ));
+        }
+    };
+    let mut count = 0usize;
+    let mut total_bytes = 0u64;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if let Ok(meta) = entry.path().symlink_metadata() {
+            if meta.is_file() {
+                count += 1;
+                total_bytes = total_bytes.saturating_add(meta.len());
+            }
+        }
     }
-    let rand = &uuid::Uuid::new_v4().simple().to_string()[..8];
-    dir.join(format!("{rand}-{name}"))
+    Ok((count, total_bytes))
+}
+
+/// Atomically create a unique file in `dir` using `create_new(true)` (`O_EXCL`)
+/// and mode `0600` on Unix so concurrent uploads or symlinks never overwrite.
+fn create_unique_file(dir: &FsPath, name: &str, bytes: &[u8]) -> Result<PathBuf, ApiError> {
+    for attempt in 0..16 {
+        let candidate = if attempt == 0 {
+            dir.join(name)
+        } else {
+            let rand = &uuid::Uuid::new_v4().simple().to_string()[..8];
+            dir.join(format!("{rand}-{name}"))
+        };
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        match opts.open(&candidate) {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(bytes) {
+                    let _ = std::fs::remove_file(&candidate);
+                    return Err(err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("保存文件失败：{e}"),
+                    ));
+                }
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("保存文件失败：{e}"),
+                ));
+            }
+        }
+    }
+    Err(err(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "保存文件失败：无法分配唯一文件名",
+    ))
+}
+
+/// Enforce per-session file-count and cumulative-byte quotas and atomically
+/// store one uploaded file with private `0600` permissions.
+fn save_upload_to_dir(
+    dir: &FsPath,
+    name: &str,
+    bytes: &[u8],
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<PathBuf, ApiError> {
+    let _guard = UPLOAD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::fs::create_dir_all(dir).map_err(|e| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("创建目录失败：{e}"),
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let (count, total_bytes) = dir_upload_usage(dir)?;
+    if count >= max_files {
+        return Err(err(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("当前会话上传文件数已达上限（最多 {max_files} 个）"),
+        ));
+    }
+    if total_bytes.saturating_add(bytes.len() as u64) > max_bytes {
+        return Err(err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "当前会话上传总大小已达上限",
+        ));
+    }
+    create_unique_file(dir, name, bytes)
 }
 
 async fn upload<B: Backend>(
@@ -698,23 +846,28 @@ async fn upload<B: Backend>(
     check_upload_size(body.len())?;
     let name = sanitize_filename(q.name.as_deref().unwrap_or(""));
     let dir = uploads_dir(state, &id);
-    tokio::fs::create_dir_all(&dir).await.map_err(|e| {
-        err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("创建目录失败：{e}"),
+    let size = body.len();
+    let name_for_save = name.clone();
+    let path = tokio::task::spawn_blocking(move || {
+        save_upload_to_dir(
+            &dir,
+            &name_for_save,
+            &body,
+            MAX_SESSION_UPLOAD_FILES,
+            MAX_SESSION_UPLOAD_BYTES,
         )
-    })?;
-    let path = unique_path(&dir, &name);
-    tokio::fs::write(&path, &body).await.map_err(|e| {
+    })
+    .await
+    .map_err(|e| {
         err(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("保存文件失败：{e}"),
         )
-    })?;
+    })??;
     Ok(Json(json!({
         "path": path.to_string_lossy(),
         "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name),
-        "size": body.len(),
+        "size": size,
     })))
 }
 
@@ -2455,30 +2608,96 @@ mod tests {
     }
 
     #[test]
-    fn unique_path_avoids_overwrite() {
+    fn save_upload_atomic_unique_mode_and_cumulative_caps() {
         let dir = std::env::temp_dir().join(format!("chat-up-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = unique_path(&dir, "f.txt");
+        let a = save_upload_to_dir(&dir, "f.txt", b"hello", 3, 12).unwrap();
         assert_eq!(a, dir.join("f.txt"));
-        std::fs::write(&a, b"x").unwrap();
-        let b = unique_path(&dir, "f.txt");
+        assert_eq!(std::fs::read(&a).unwrap(), b"hello");
+
+        // Collision creates a distinct prefixed file without overwriting `a`.
+        let b = save_upload_to_dir(&dir, "f.txt", b"world", 3, 12).unwrap();
         assert_ne!(a, b);
         assert!(b.file_name().unwrap().to_string_lossy().ends_with("-f.txt"));
+        assert_eq!(std::fs::read(&a).unwrap(), b"hello");
+        assert_eq!(std::fs::read(&b).unwrap(), b"world");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&a).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        // Exceeding cumulative byte cap (10 + 5 > 12) fails with 413.
+        let byte_err = save_upload_to_dir(&dir, "c.txt", b"12345", 3, 12).unwrap_err();
+        assert_eq!(byte_err.0, StatusCode::PAYLOAD_TOO_LARGE);
+
+        // Fitting within byte cap succeeds (10 + 2 <= 12), reaching 3 files.
+        let _c = save_upload_to_dir(&dir, "c.txt", b"ok", 3, 12).unwrap();
+
+        // Exceeding cumulative file count cap (3 >= 3) fails with 429.
+        let count_err = save_upload_to_dir(&dir, "d.txt", b"x", 3, 100).unwrap_err();
+        assert_eq!(count_err.0, StatusCode::TOO_MANY_REQUESTS);
+
+        // Atomic create_new never follows a pre-existing symlink.
+        #[cfg(unix)]
+        {
+            let outside = dir
+                .parent()
+                .unwrap()
+                .join(format!("chat-up-out-{}", uuid::Uuid::new_v4()));
+            std::fs::write(&outside, b"secret").unwrap();
+            let link = dir.join("link.txt");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            let created = save_upload_to_dir(&dir, "link.txt", b"new", 10, 100).unwrap();
+            assert_ne!(created, link);
+            assert_eq!(std::fs::read(&outside).unwrap(), b"secret");
+            let _ = std::fs::remove_file(&outside);
+        }
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn images_validated() {
+        let jpeg_b64 = base64::engine::general_purpose::STANDARD
+            .encode([0xFFu8, 0xD8, 0xFF, 0xE0, 0x00, 0x10]);
+        let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
         let ok = ImageIn {
             mime: "image/JPG".into(),
-            data: "aGk=".into(),
+            data: jpeg_b64.clone(),
         };
         let v = build_images(&[ok]).ok().unwrap();
         assert_eq!(v[0]["mimeType"], "image/jpeg");
         assert_eq!(v[0]["type"], "image");
+
+        let ok_png = ImageIn {
+            mime: "image/png".into(),
+            data: png_b64.into(),
+        };
+        assert_eq!(
+            build_images(&[ok_png]).ok().unwrap()[0]["mimeType"],
+            "image/png"
+        );
+
+        // Non-image bytes claiming an image MIME are rejected by magic-byte sniffing.
+        let fake_bytes = ImageIn {
+            mime: "image/jpeg".into(),
+            data: "aGk=".into(),
+        };
+        assert!(build_images(&[fake_bytes]).is_err());
+
+        // Valid PNG bytes claiming image/jpeg are rejected on MIME mismatch.
+        let mismatch = ImageIn {
+            mime: "image/jpeg".into(),
+            data: png_b64.into(),
+        };
+        assert!(build_images(&[mismatch]).is_err());
+
         let bad_mime = ImageIn {
             mime: "text/html".into(),
-            data: "aGk=".into(),
+            data: jpeg_b64,
         };
         assert!(build_images(&[bad_mime]).is_err());
         let bad_data = ImageIn {
@@ -2491,6 +2710,19 @@ mod tests {
             data: " ".into(),
         };
         assert!(build_images(&[empty]).is_err());
+    }
+
+    #[test]
+    fn already_processing_maps_to_conflict() {
+        assert!(is_already_processing(
+            "Agent is ALREADY PROCESSING a request"
+        ));
+        assert!(!is_already_processing("connection reset"));
+        let conflict = prompt_rpc_error("Agent is already processing".into());
+        assert_eq!(conflict.0, StatusCode::CONFLICT);
+        assert_eq!(conflict.1, ALREADY_PROCESSING_MSG);
+        let gateway = prompt_rpc_error("upstream crashed".into());
+        assert_eq!(gateway.0, StatusCode::BAD_GATEWAY);
     }
 
     #[test]

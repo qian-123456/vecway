@@ -90,7 +90,7 @@
 //! archive confirmation (UI must confirm), skill trash/read/usage stats and per-source
 //! toggles, schedule run-detail/transcripts.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
@@ -140,9 +140,18 @@ pub fn routes<B: Backend>() -> Router<Arc<Ctx<B>>> {
         .route("/left/schedules/{id}/enabled", post(schedules_enabled::<B>))
         .route("/left/schedules/{id}/run", post(schedules_run::<B>))
         .route("/left/schedules/{id}/runs", get(schedules_runs::<B>))
-        .route("/left/schedules/{id}/runs/{run_id}/release-awaiting", post(schedules_release_awaiting::<B>))
-        .route("/left/schedules/{id}/awaiting", get(schedules_awaiting::<B>))
-        .route("/left/schedules/{id}/runs/{run_id}/resume-awaiting", post(schedules_resume_awaiting::<B>))
+        .route(
+            "/left/schedules/{id}/runs/{run_id}/release-awaiting",
+            post(schedules_release_awaiting::<B>),
+        )
+        .route(
+            "/left/schedules/{id}/awaiting",
+            get(schedules_awaiting::<B>),
+        )
+        .route(
+            "/left/schedules/{id}/runs/{run_id}/resume-awaiting",
+            post(schedules_resume_awaiting::<B>),
+        )
         .route("/left/skills", get(skills_list::<B>))
         .route("/left/skills/content", get(skill_content::<B>))
         .route("/left/skills/toggle", post(skill_toggle::<B>))
@@ -254,11 +263,28 @@ fn session_ts(s: &SessionMeta) -> i64 {
 }
 
 fn sort_recent(list: &mut [SessionMeta]) {
-    list.sort_by(|a, b| {
-        session_ts(b)
-            .cmp(&session_ts(a))
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    if list.len() <= 1 {
+        return;
+    }
+    // Pre-parse each RFC3339 timestamp once instead of inside every comparator call.
+    let mut order: Vec<(i64, usize)> = list
+        .iter()
+        .enumerate()
+        .map(|(idx, s)| (session_ts(s), idx))
+        .collect();
+    order.sort_by(|&(ta, ia), &(tb, ib)| tb.cmp(&ta).then_with(|| list[ia].id.cmp(&list[ib].id)));
+    // Permute `list` in-place in O(n) without cloning SessionMeta.
+    let mut target_of = vec![0usize; list.len()];
+    for (dst, &(_, src)) in order.iter().enumerate() {
+        target_of[src] = dst;
+    }
+    for i in 0..list.len() {
+        while target_of[i] != i {
+            let dst = target_of[i];
+            list.swap(i, dst);
+            target_of.swap(i, dst);
+        }
+    }
 }
 
 fn is_busy_status(s: SessionStatus) -> bool {
@@ -440,16 +466,20 @@ fn build_subgroups(sessions: &[&SessionMeta], wts: Option<&[Wt]>) -> Vec<Subgrou
         .collect();
     live.sort_by_key(|(w, _, _)| std::cmp::Reverse(w.path.len()));
 
+    let mut session_to_wt: HashMap<&str, &str> = HashMap::new();
+    for w in wts_slice {
+        for id in &w.session_ids {
+            session_to_wt.entry(id.as_str()).or_insert(w.path.as_str());
+        }
+    }
     let mut wt_items: HashMap<&str, Vec<SessionMeta>> = HashMap::new();
     let mut buckets: Vec<Bucket> = Vec::new();
+    let mut bucket_index: HashMap<String, usize> = HashMap::new();
 
     'sessions: for s in sessions {
-        // 1. explicit session id attachment
-        if let Some(w) = wts_slice
-            .iter()
-            .find(|w| w.session_ids.iter().any(|id| id == &s.id))
-        {
-            wt_items.entry(&w.path).or_default().push((*s).clone());
+        // 1. explicit session id attachment (O(1) lookup)
+        if let Some(&wt_path) = session_to_wt.get(s.id.as_str()) {
+            wt_items.entry(wt_path).or_default().push((*s).clone());
             continue;
         }
         // 2. deepest cwd containment
@@ -499,16 +529,19 @@ fn build_subgroups(sessions: &[&SessionMeta], wts: Option<&[Wt]>) -> Vec<Subgrou
                     false,
                 )
             };
-        match buckets.iter_mut().find(|b| b.key == key) {
-            Some(b) => b.items.push((*s).clone()),
-            None => buckets.push(Bucket {
+        if let Some(&idx) = bucket_index.get(&key) {
+            buckets[idx].items.push((*s).clone());
+        } else {
+            let idx = buckets.len();
+            bucket_index.insert(key.clone(), idx);
+            buckets.push(Bucket {
                 key,
                 kind,
                 label,
                 deleted,
                 is_main,
                 items: vec![(*s).clone()],
-            }),
+            });
         }
     }
 
@@ -584,13 +617,6 @@ fn build_tree(
     }
     sort_recent(&mut archived);
 
-    let mut pinned: Vec<SessionMeta> = visible
-        .iter()
-        .filter(|s| s.pinned)
-        .map(|s| (*s).clone())
-        .collect();
-    sort_recent(&mut pinned);
-
     let mode_ws: Vec<&Workspace> = workspaces.iter().filter(|w| w.mode == mode).collect();
     let global_ws = mode_ws
         .iter()
@@ -603,15 +629,52 @@ fn build_tree(
         .collect();
     project_ws.sort_by(|a, b| a.sort.cmp(&b.sort).then_with(|| a.name.cmp(&b.name)));
 
-    let make_group = |ws: &Workspace, is_global: bool| -> WorkspaceGroup {
-        let in_ws = |s: &&&SessionMeta| s.workspace_id.as_deref() == Some(ws.id.as_str());
-        let items: Vec<&SessionMeta> = visible
-            .iter()
-            .filter(in_ws)
-            .filter(|s| !s.pinned)
-            .copied()
-            .collect();
-        let pinned_count = visible.iter().filter(in_ws).filter(|s| s.pinned).count();
+    let known_ws: HashSet<&str> = mode_ws.iter().map(|w| w.id.as_str()).collect();
+    let is_deleted_wt = |s: &SessionMeta| {
+        s.git
+            .as_ref()
+            .is_none_or(|g| g.worktree.is_none() && g.branch.is_none())
+            && infer_worktree_name(&s.cwd).is_some()
+    };
+
+    // Single-pass index: partition visible sessions into pinned, per-workspace
+    // buckets, deleted worktrees, and unassigned roots in O(sessions + workspaces).
+    let mut pinned: Vec<SessionMeta> = Vec::new();
+    let mut ws_items: HashMap<&str, Vec<&SessionMeta>> = HashMap::with_capacity(mode_ws.len());
+    let mut ws_pinned: HashMap<&str, usize> = HashMap::with_capacity(mode_ws.len());
+    let mut deleted_sessions: Vec<SessionMeta> = Vec::new();
+    let mut unassigned_by_root: HashMap<String, (i64, Vec<SessionMeta>)> = HashMap::new();
+
+    for &s in &visible {
+        let ws_id = s.workspace_id.as_deref().filter(|id| known_ws.contains(id));
+        if s.pinned {
+            pinned.push(s.clone());
+            if let Some(id) = ws_id {
+                *ws_pinned.entry(id).or_insert(0) += 1;
+            }
+            continue;
+        }
+        if let Some(id) = ws_id {
+            ws_items.entry(id).or_default().push(s);
+        } else if is_deleted_wt(s) {
+            deleted_sessions.push(s.clone());
+        } else {
+            let root = s.repo_root.clone().unwrap_or_else(|| s.cwd.clone());
+            let ts = session_ts(s);
+            unassigned_by_root
+                .entry(root)
+                .and_modify(|(newest, items)| {
+                    *newest = (*newest).max(ts);
+                    items.push(s.clone());
+                })
+                .or_insert_with(|| (ts, vec![s.clone()]));
+        }
+    }
+    sort_recent(&mut pinned);
+
+    let mut make_group = |ws: &Workspace, is_global: bool| -> WorkspaceGroup {
+        let items = ws_items.remove(ws.id.as_str()).unwrap_or_default();
+        let pinned_count = ws_pinned.get(ws.id.as_str()).copied().unwrap_or(0);
         let subs = build_subgroups(&items, wts.get(&ws.id).map(Vec::as_slice));
         let (deleted_subgroups, subgroups): (Vec<_>, Vec<_>) =
             subs.into_iter().partition(|s| s.deleted);
@@ -629,36 +692,10 @@ fn build_tree(
     let workspace_groups: Vec<WorkspaceGroup> =
         project_ws.iter().map(|w| make_group(w, false)).collect();
 
-    let known: Vec<&str> = mode_ws.iter().map(|w| w.id.as_str()).collect();
-    let is_deleted_wt = |s: &SessionMeta| {
-        s.git
-            .as_ref()
-            .is_none_or(|g| g.worktree.is_none() && g.branch.is_none())
-            && infer_worktree_name(&s.cwd).is_some()
-    };
-    let mut deleted_sessions: Vec<SessionMeta> = Vec::new();
-    let mut unassigned_map: Vec<(String, i64, Vec<SessionMeta>)> = Vec::new();
-    for s in visible.iter().filter(|s| {
-        !s.pinned
-            && !s
-                .workspace_id
-                .as_deref()
-                .is_some_and(|id| known.contains(&id))
-    }) {
-        if is_deleted_wt(s) {
-            deleted_sessions.push((*s).clone());
-            continue;
-        }
-        let root = s.repo_root.clone().unwrap_or_else(|| s.cwd.clone());
-        let ts = session_ts(s);
-        match unassigned_map.iter_mut().find(|(k, _, _)| *k == root) {
-            Some((_, newest, items)) => {
-                *newest = (*newest).max(ts);
-                items.push((*s).clone());
-            }
-            None => unassigned_map.push((root, ts, vec![(*s).clone()])),
-        }
-    }
+    let mut unassigned_map: Vec<(String, i64, Vec<SessionMeta>)> = unassigned_by_root
+        .into_iter()
+        .map(|(root, (newest, items))| (root, newest, items))
+        .collect();
     sort_recent(&mut deleted_sessions);
     unassigned_map.sort_by_key(|(_, newest, _)| std::cmp::Reverse(*newest));
     let unassigned_groups: Vec<UnassignedGroup> = unassigned_map
@@ -694,16 +731,49 @@ fn build_tree(
     }
 }
 
-/// Live worktrees of the repo at `path`, or `None` when it is not a git repo.
-fn list_worktrees_blocking(path: &str, pairs: &[(String, String)]) -> Option<Vec<Wt>> {
+/// Lightweight worktree listing (path + branch only, no `git status` or `rev-list`).
+fn list_worktree_entries_blocking(path: &str) -> Option<Vec<(PathBuf, Option<String>)>> {
     let root = crate::git::worktree::repo_info(FsPath::new(path))?.main_root();
-    let list = crate::git::worktree::list(&root, pairs).ok()?;
+    let entries = crate::git::worktree::list_entries(&root).ok()?;
     Some(
-        list.into_iter()
-            .map(|w| Wt {
-                path: w.path,
-                branch: w.branch,
-                session_ids: w.session_ids,
+        entries
+            .into_iter()
+            .filter(|e| !e.bare)
+            .map(|e| {
+                let canon =
+                    std::fs::canonicalize(&e.path).unwrap_or_else(|_| PathBuf::from(&e.path));
+                (canon, e.branch)
+            })
+            .collect(),
+    )
+}
+
+/// Live worktrees of the repo at `path` with canonicalized session attachment,
+/// avoiding expensive per-worktree `git status` / `rev-list` subprocesses.
+fn list_worktrees_blocking(path: &str, canon_sessions: &[(String, PathBuf)]) -> Option<Vec<Wt>> {
+    let entries = list_worktree_entries_blocking(path)?;
+    let all_paths: Vec<&PathBuf> = entries.iter().map(|(p, _)| p).collect();
+    let mut by_wt: Vec<Vec<String>> = vec![Vec::new(); entries.len()];
+    for (id, scwd) in canon_sessions {
+        // Deepest worktree containing `scwd` wins.
+        let best = all_paths
+            .iter()
+            .enumerate()
+            .filter(|(_, wp)| scwd.starts_with(wp))
+            .max_by_key(|(_, wp)| wp.components().count())
+            .map(|(idx, _)| idx);
+        if let Some(idx) = best {
+            by_wt[idx].push(id.clone());
+        }
+    }
+    Some(
+        entries
+            .into_iter()
+            .zip(by_wt)
+            .map(|((p, branch), session_ids)| Wt {
+                path: p.to_string_lossy().into_owned(),
+                branch,
+                session_ids,
             })
             .collect(),
     )
@@ -729,25 +799,51 @@ async fn session_tree<B: Backend>(
             store::list_session_groups(&db).map_err(internal)?,
         )
     };
-    let pairs: Arc<Vec<(String, String)>> = Arc::new(
-        metas
-            .iter()
-            .map(|s| (s.id.clone(), s.cwd.clone()))
-            .collect(),
-    );
-    let handles: Vec<_> = workspaces
+    let target_ws: Vec<(String, String)> = workspaces
         .iter()
         .filter(|w| w.mode == mode && w.kind != WorkspaceKind::Global)
-        .map(|w| {
-            let (id, path, pairs) = (w.id.clone(), w.path.clone(), pairs.clone());
-            let h = tokio::task::spawn_blocking(move || list_worktrees_blocking(&path, &pairs));
-            (id, h)
-        })
+        .map(|w| (w.id.clone(), w.path.clone()))
         .collect();
     let mut wts: HashMap<String, Vec<Wt>> = HashMap::new();
-    for (id, h) in handles {
-        if let Ok(Some(list)) = h.await {
-            wts.insert(id, list);
+    if !target_ws.is_empty() {
+        // Only canonicalize distinct cwds of sessions in this mode, once.
+        let mode_pairs: Vec<(String, String)> = metas
+            .iter()
+            .filter(|s| s.mode == mode && !is_empty_side_chat(s))
+            .map(|s| (s.id.clone(), s.cwd.clone()))
+            .collect();
+        let canon_sessions: Arc<Vec<(String, PathBuf)>> = tokio::task::spawn_blocking(move || {
+            let mut cache: HashMap<String, PathBuf> = HashMap::new();
+            mode_pairs
+                .into_iter()
+                .map(|(id, cwd)| {
+                    let canon = cache
+                        .entry(cwd)
+                        .or_insert_with_key(|raw| {
+                            std::fs::canonicalize(raw).unwrap_or_else(|_| PathBuf::from(raw))
+                        })
+                        .clone();
+                    (id, canon)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|e| internal(e.to_string()))?
+        .into();
+        let handles: Vec<_> = target_ws
+            .into_iter()
+            .map(|(id, path)| {
+                let canon_sessions = canon_sessions.clone();
+                let h = tokio::task::spawn_blocking(move || {
+                    list_worktrees_blocking(&path, &canon_sessions)
+                });
+                (id, h)
+            })
+            .collect();
+        for (id, h) in handles {
+            if let Ok(Some(list)) = h.await {
+                wts.insert(id, list);
+            }
         }
     }
     Ok(Json(build_tree(&metas, &workspaces, groups, mode, &wts)))
@@ -768,47 +864,40 @@ struct DirEntry {
 }
 
 /// Registered workspaces plus their live worktrees (deduplicated by path).
-async fn allowed_dirs(st: &AppState, metas: &[SessionMeta]) -> Result<Vec<DirEntry>, ApiError> {
+/// Uses lightweight `git worktree list` entries without enumerating sessions or git status.
+async fn allowed_dirs(st: &AppState) -> Result<Vec<DirEntry>, ApiError> {
     let workspaces = {
         let db = st.db.lock();
         store::list_workspaces(&db).map_err(internal)?
     };
-    let pairs: Arc<Vec<(String, String)>> = Arc::new(
-        metas
-            .iter()
-            .map(|s| (s.id.clone(), s.cwd.clone()))
-            .collect(),
-    );
     let mut handles = Vec::new();
     for w in &workspaces {
         if w.kind == WorkspaceKind::Global {
             continue;
         }
-        let (path, pairs) = (w.path.clone(), pairs.clone());
+        let path = w.path.clone();
         handles.push(tokio::task::spawn_blocking(move || {
-            list_worktrees_blocking(&path, &pairs)
+            list_worktree_entries_blocking(&path)
         }));
     }
     let mut handles = handles.into_iter();
     let mut out: Vec<DirEntry> = Vec::new();
-    let push = |out: &mut Vec<DirEntry>, e: DirEntry| {
-        if !out.iter().any(|x| x.path == e.path) {
+    let mut seen_paths: HashSet<String> = HashSet::new();
+    let mut push = |e: DirEntry| {
+        if seen_paths.insert(e.path.clone()) {
             out.push(e);
         }
     };
     for w in &workspaces {
         let global = w.kind == WorkspaceKind::Global;
-        push(
-            &mut out,
-            DirEntry {
-                path: w.path.clone(),
-                label: w.name.clone(),
-                kind: if global { "global" } else { "workspace" },
-                workspace_id: w.id.clone(),
-                mode: w.mode,
-                canon: std::fs::canonicalize(&w.path).unwrap_or_else(|_| PathBuf::from(&w.path)),
-            },
-        );
+        push(DirEntry {
+            path: w.path.clone(),
+            label: w.name.clone(),
+            kind: if global { "global" } else { "workspace" },
+            workspace_id: w.id.clone(),
+            mode: w.mode,
+            canon: std::fs::canonicalize(&w.path).unwrap_or_else(|_| PathBuf::from(&w.path)),
+        });
         if global {
             continue;
         }
@@ -816,24 +905,21 @@ async fn allowed_dirs(st: &AppState, metas: &[SessionMeta]) -> Result<Vec<DirEnt
             continue;
         };
         if let Ok(Some(list)) = handle.await {
-            for wt in list.into_iter().skip(1) {
+            for (wt_canon, wt_branch) in list.into_iter().skip(1) {
+                let wt_path = wt_canon.to_string_lossy().into_owned();
                 let label = format!(
                     "{} · {}",
                     w.name,
-                    wt.branch.clone().unwrap_or_else(|| basename(&wt.path))
+                    wt_branch.unwrap_or_else(|| basename(&wt_path))
                 );
-                push(
-                    &mut out,
-                    DirEntry {
-                        canon: std::fs::canonicalize(&wt.path)
-                            .unwrap_or_else(|_| PathBuf::from(&wt.path)),
-                        path: wt.path,
-                        label,
-                        kind: "worktree",
-                        workspace_id: w.id.clone(),
-                        mode: w.mode,
-                    },
-                );
+                push(DirEntry {
+                    canon: wt_canon,
+                    path: wt_path,
+                    label,
+                    kind: "worktree",
+                    workspace_id: w.id.clone(),
+                    mode: w.mode,
+                });
             }
         }
     }
@@ -864,10 +950,44 @@ async fn confine_cwd<'a>(
     Ok((entry, cwd.to_string()))
 }
 
+/// Validate an optional client-provided `cwd` against registered workspaces and
+/// their live worktrees. Canonicalizes `cwd` so symlinks escaping a workspace
+/// are rejected, and checks workspace roots directly before enumerating git
+/// worktrees.
+async fn authorize_optional_cwd(
+    st: &AppState,
+    cwd: Option<&str>,
+) -> Result<Option<String>, ApiError> {
+    let Some(raw) = cwd.map(str::trim).filter(|c| !c.is_empty()) else {
+        return Ok(None);
+    };
+    let canon = std::fs::canonicalize(raw).map_err(|_| bad_request("目录不存在"))?;
+    if !canon.is_dir() {
+        return Err(bad_request("目录不存在"));
+    }
+    // Fast path: match directly against registered workspace roots without spawning git.
+    let workspaces = {
+        let db = st.db.lock();
+        store::list_workspaces(&db).map_err(internal)?
+    };
+    let matches_workspace = workspaces.iter().any(|w| {
+        let ws_canon = std::fs::canonicalize(&w.path).unwrap_or_else(|_| PathBuf::from(&w.path));
+        canon.starts_with(&ws_canon)
+    });
+    if matches_workspace {
+        return Ok(Some(canon.to_string_lossy().into_owned()));
+    }
+    // Slow path: allow live git worktrees of registered workspaces (e.g. sibling dirs).
+    let dirs = allowed_dirs(st).await?;
+    if resolve_dir(&canon, &dirs).is_some() {
+        return Ok(Some(canon.to_string_lossy().into_owned()));
+    }
+    Err(bad_request("目录不在已登记的工作区内"))
+}
+
 async fn list_dirs<B: Backend>(State(ctx): State<Arc<Ctx<B>>>) -> ApiResult<Value> {
     let st = app(&ctx)?;
-    let metas = ctx.backend.sessions().await;
-    let dirs = allowed_dirs(st, &metas).await?;
+    let dirs = allowed_dirs(st).await?;
     let home_dir = dirs::home_dir().map(|path| path.to_string_lossy().into_owned());
     Ok(Json(json!({ "dirs": dirs, "homeDir": home_dir })))
 }
@@ -938,8 +1058,7 @@ async fn new_session<B: Backend>(
     Json(body): Json<NewSessionBody>,
 ) -> ApiResult<Value> {
     let st = app(&ctx)?;
-    let metas = ctx.backend.sessions().await;
-    let dirs = allowed_dirs(st, &metas).await?;
+    let dirs = allowed_dirs(st).await?;
     let (entry, cwd) = confine_cwd(&body.cwd, &dirs).await?;
     let mode = if entry.kind == "global" {
         SpaceMode::Chat
@@ -1292,7 +1411,7 @@ fn schedule_exists(st: &AppState, id: &str) -> Result<(), ApiError> {
 }
 
 async fn validate_draft<B: Backend>(
-    ctx: &Ctx<B>,
+    _ctx: &Ctx<B>,
     st: &AppState,
     draft: &ScheduleDraft,
 ) -> Result<(), ApiError> {
@@ -1312,8 +1431,7 @@ async fn validate_draft<B: Backend>(
     if draft.agent_trigger != crate::contracts::ScheduleAgentTrigger::Always && !has_probe {
         return Err(bad_request("请填写本地脚本"));
     }
-    let metas = ctx.backend.sessions().await;
-    let dirs = allowed_dirs(st, &metas).await?;
+    let dirs = allowed_dirs(st).await?;
     confine_cwd(&draft.cwd, &dirs).await.map(|_| ())
 }
 
@@ -1406,9 +1524,9 @@ async fn schedules_release_awaiting<B: Backend>(
 ) -> ApiResult<Value> {
     let st = app(&ctx)?;
     schedule_exists(st, &id)?;
-    crate::schedules::commands::schedules_release_awaiting(
-        st.app.state::<AppState>(), id, run_id,
-    ).await.map_err(bad_request)?;
+    crate::schedules::commands::schedules_release_awaiting(st.app.state::<AppState>(), id, run_id)
+        .await
+        .map_err(bad_request)?;
     Ok(ok_json())
 }
 
@@ -1418,9 +1536,9 @@ async fn schedules_resume_awaiting<B: Backend>(
 ) -> ApiResult<Value> {
     let st = app(&ctx)?;
     schedule_exists(st, &id)?;
-    crate::schedules::commands::schedules_resume_awaiting(
-        st.app.state::<AppState>(), id, run_id,
-    ).await.map_err(bad_request)?;
+    crate::schedules::commands::schedules_resume_awaiting(st.app.state::<AppState>(), id, run_id)
+        .await
+        .map_err(bad_request)?;
     Ok(ok_json())
 }
 
@@ -1649,18 +1767,11 @@ struct CwdQuery {
 }
 
 async fn catalog_for<B: Backend>(
-    ctx: &Ctx<B>,
+    _ctx: &Ctx<B>,
     st: &AppState,
     cwd: Option<&str>,
 ) -> Result<crate::contracts::SkillsCatalog, ApiError> {
-    let cwd = match cwd.map(str::trim).filter(|c| !c.is_empty()) {
-        Some(c) => {
-            let metas = ctx.backend.sessions().await;
-            let dirs = allowed_dirs(st, &metas).await?;
-            Some(confine_cwd(c, &dirs).await?.1)
-        }
-        None => None,
-    };
+    let cwd = authorize_optional_cwd(st, cwd).await?;
     crate::skills::commands::skills_list(cwd)
         .await
         .map_err(bad_gateway)
@@ -1959,7 +2070,9 @@ struct SettingSetBody {
 }
 
 /// App-settings allowlist entry, intentionally separate from OMP config keys.
-fn automation_overlap_policy(value: &Value) -> Result<crate::contracts::AutomationOverlapPolicy, String> {
+fn automation_overlap_policy(
+    value: &Value,
+) -> Result<crate::contracts::AutomationOverlapPolicy, String> {
     use crate::contracts::AutomationOverlapPolicy;
     match value.as_str() {
         Some("skip") => Ok(AutomationOverlapPolicy::Skip),
@@ -1979,7 +2092,14 @@ fn global_automation_policy_allowlist_accepts_only_wire_values() {
         // This preference must never be forwarded to `omp config set`.
         assert!(validate_mobile_setting("automationOverlapPolicy", &json!(value)).is_err());
     }
-    for value in [json!(true), json!(1), Value::Null, json!("Queue"), json!("queue "), json!("")] {
+    for value in [
+        json!(true),
+        json!(1),
+        Value::Null,
+        json!("Queue"),
+        json!("queue "),
+        json!(""),
+    ] {
         assert!(automation_overlap_policy(&value).is_err());
     }
 }
@@ -1992,8 +2112,11 @@ async fn setting_set<B: Backend>(
     if body.key == "automationOverlapPolicy" {
         let policy = automation_overlap_policy(&body.value).map_err(bad_request)?;
         crate::settings::set_automation_overlap_policy(st, policy)
-            .await.map_err(bad_request)?;
-        return Ok(Json(json!({ "ok": true, "key": body.key, "value": policy })));
+            .await
+            .map_err(bad_request)?;
+        return Ok(Json(
+            json!({ "ok": true, "key": body.key, "value": policy }),
+        ));
     }
     let value = validate_mobile_setting(&body.key, &body.value).map_err(bad_request)?;
     crate::settings::omp_config_set(st.app.state::<AppState>(), body.key.clone(), value)
@@ -2014,7 +2137,8 @@ async fn roles_get<B: Backend>(
     Query(q): Query<CwdQuery>,
 ) -> ApiResult<Value> {
     let st = app(&ctx)?;
-    let snapshot = crate::settings_model_roles::omp_model_roles_read(q.cwd.clone(), None)
+    let cwd = authorize_optional_cwd(st, q.cwd.as_deref()).await?;
+    let snapshot = crate::settings_model_roles::omp_model_roles_read(cwd, None)
         .await
         .map_err(bad_gateway)?;
     let models = crate::catalog::commands::list_models(st.app.state::<AppState>(), None)
@@ -2038,11 +2162,13 @@ struct RoleSetBody {
 }
 
 async fn roles_set<B: Backend>(
-    State(_ctx): State<Arc<Ctx<B>>>,
+    State(ctx): State<Arc<Ctx<B>>>,
     Json(body): Json<RoleSetBody>,
 ) -> ApiResult<Value> {
+    let st = app(&ctx)?;
+    let cwd = authorize_optional_cwd(st, body.cwd.as_deref()).await?;
     let next = crate::settings_model_roles::omp_model_roles_set(
-        body.cwd, body.scope, body.table, body.name, body.value, None,
+        cwd, body.scope, body.table, body.name, body.value, None,
     )
     .await
     .map_err(bad_request)?;
@@ -2078,13 +2204,19 @@ async fn providers_save<B: Backend>(
         .into_iter()
         .find(|r| r.id == body.id)
         .ok_or_else(|| bad_request("供应商不存在".to_string()))?;
-    let new_key = body.api_key.filter(|k| !k.trim().is_empty());
+    let mut new_key = body.api_key.filter(|k| !k.trim().is_empty());
     let new_url = body
         .base_url
         .map(|u| u.trim().to_string())
         .filter(|u| !u.is_empty() && Some(u) != row.base_url.as_ref());
     let mut saved = row.clone();
     if let (Some(url), ProviderOrigin::Custom, Some(api)) = (new_url, row.origin, row.api.clone()) {
+        let key_for_upsert = new_key.take();
+        let auth_none = if key_for_upsert.is_some() {
+            false
+        } else {
+            row.auth_none
+        };
         saved = provider_upsert(
             ProviderUpsert {
                 original_id: Some(row.id.clone()),
@@ -2093,10 +2225,10 @@ async fn providers_save<B: Backend>(
                 base_url: url,
                 api,
                 models: row.models.clone(),
-                auth_none: row.auth_none,
+                auth_none,
                 discovery_type: row.discovery_type.clone(),
             },
-            None,
+            key_for_upsert,
         )
         .await
         .map_err(bad_request)?;
@@ -2129,22 +2261,92 @@ async fn providers_test<B: Backend>(
     Ok(Json(json!({ "ok": true, "result": res })))
 }
 
+fn validate_chain_scalar(raw: &str, label: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label}不能为空"));
+    }
+    if trimmed.chars().count() > 256 {
+        return Err(format!("{label}过长"));
+    }
+    if trimmed
+        .chars()
+        .any(|c| c == '"' || c == '\\' || c.is_control())
+    {
+        return Err(format!("{label}包含非法字符"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn parse_fallback_chains(raw: &Value) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let obj = raw
+        .as_object()
+        .ok_or_else(|| "回退链配置必须是 JSON 对象".to_string())?;
+    let mut out = BTreeMap::new();
+    for (k, v) in obj {
+        let key = validate_chain_scalar(k, "回退链源模型")?;
+        let arr = v
+            .as_array()
+            .ok_or_else(|| format!("回退链 {key} 的目标列表必须是数组"))?;
+        let mut items = Vec::with_capacity(arr.len());
+        for item in arr {
+            let s = item
+                .as_str()
+                .ok_or_else(|| format!("回退链 {key} 的目标必须是字符串"))?;
+            items.push(validate_chain_scalar(s, "回退链目标模型")?);
+        }
+        out.insert(key, items);
+    }
+    Ok(out)
+}
+
+/// Compute lossless `ChainStep` edits (creates & updates before deletes so the
+/// `retry.fallbackChains` header stays intact while entries remain).
+fn build_chain_steps(
+    current: &BTreeMap<String, Vec<String>>,
+    desired: &BTreeMap<String, Vec<String>>,
+) -> Vec<Vec<crate::settings_model_roles::ChainStep>> {
+    use crate::settings_model_roles::ChainStep;
+    let mut steps = Vec::new();
+    for (key, new_items) in desired {
+        match current.get(key) {
+            None => steps.push(vec![ChainStep {
+                key: key.clone(),
+                before: None,
+                after: Some(new_items.clone()),
+            }]),
+            Some(old_items) if old_items != new_items => steps.push(vec![ChainStep {
+                key: key.clone(),
+                before: Some(old_items.clone()),
+                after: Some(new_items.clone()),
+            }]),
+            Some(_) => {}
+        }
+    }
+    for (key, old_items) in current {
+        if !desired.contains_key(key) {
+            steps.push(vec![ChainStep {
+                key: key.clone(),
+                before: Some(old_items.clone()),
+                after: None,
+            }]);
+        }
+    }
+    steps
+}
+
 async fn fallbacks_get<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Query(q): Query<CwdQuery>,
 ) -> ApiResult<Value> {
     let st = app(&ctx)?;
-    let list = crate::settings::omp_config_list(st.app.state::<AppState>())
+    let cwd = authorize_optional_cwd(st, q.cwd.as_deref()).await?;
+    let global_chains = tokio::task::spawn_blocking(crate::settings_model_roles::read_chains)
         .await
+        .map_err(|e| bad_gateway(e.to_string()))?
         .map_err(bad_gateway)?;
-    let global_chains = list
-        .entries
-        .iter()
-        .find(|e| e.key == "retry.fallbackChains")
-        .and_then(|e| e.value.clone())
-        .unwrap_or_else(|| json!({}));
 
-    let project_chains = if let Some(cwd) = q.cwd {
+    let project_chains = if let Some(cwd) = cwd {
         if let Ok(p_cfg) = crate::settings::omp_project_config_read(cwd).await {
             if p_cfg.exists {
                 serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&p_cfg.content)
@@ -2177,18 +2379,16 @@ struct FallbackSetBody {
 }
 
 async fn fallbacks_set<B: Backend>(
-    State(ctx): State<Arc<Ctx<B>>>,
+    State(_ctx): State<Arc<Ctx<B>>>,
     Json(body): Json<FallbackSetBody>,
 ) -> ApiResult<Value> {
-    let st = app(&ctx)?;
-    let str_val = serde_json::to_string(&body.chains).map_err(|e| bad_request(e.to_string()))?;
-    crate::settings::omp_config_set(
-        st.app.state::<AppState>(),
-        "retry.fallbackChains".to_string(),
-        str_val,
-    )
+    let desired = parse_fallback_chains(&body.chains).map_err(bad_request)?;
+    tokio::task::spawn_blocking(move || {
+        crate::settings_model_roles::edit_chains(|current| build_chain_steps(current, &desired))
+    })
     .await
-    .map_err(bad_gateway)?;
+    .map_err(|e| bad_gateway(e.to_string()))?
+    .map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -2571,5 +2771,77 @@ mod tests {
         );
         assert!(resolve_dir(FsPath::new("/rr"), &dirs).is_none());
         assert!(resolve_dir(FsPath::new("/"), &dirs).is_none());
+    }
+
+    #[test]
+    fn sort_recent_orders_descending_by_timestamp_and_breaks_ties_by_id() {
+        let mut list = vec![
+            meta("b", "/x", "2026-01-01T00:00:00Z"),
+            meta("c", "/x", "2026-01-03T00:00:00Z"),
+            meta("a", "/x", "2026-01-01T00:00:00Z"),
+            meta("d", "/x", "2026-01-02T00:00:00Z"),
+        ];
+        sort_recent(&mut list);
+        let ids: Vec<&str> = list.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["c", "d", "a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn confine_cwd_rejects_unregistered_dirs_and_symlink_escapes() {
+        let base = std::env::temp_dir().join(format!("omp-left-confine-{}", uuid::Uuid::new_v4()));
+        let ws = base.join("ws");
+        let inside = ws.join("sub");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let ws_canon = std::fs::canonicalize(&ws).unwrap();
+        let dirs = vec![DirEntry {
+            path: ws.to_string_lossy().into_owned(),
+            label: "ws".into(),
+            kind: "workspace",
+            workspace_id: "w1".into(),
+            mode: SpaceMode::Code,
+            canon: ws_canon,
+        }];
+
+        assert!(confine_cwd(&inside.to_string_lossy(), &dirs).await.is_ok());
+        assert!(confine_cwd(&outside.to_string_lossy(), &dirs)
+            .await
+            .is_err());
+
+        #[cfg(unix)]
+        {
+            let escape = ws.join("escape-link");
+            std::os::unix::fs::symlink(&outside, &escape).unwrap();
+            assert!(confine_cwd(&escape.to_string_lossy(), &dirs).await.is_err());
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn fallback_chain_parsing_and_step_diffing() {
+        assert!(parse_fallback_chains(&json!(["not-object"])).is_err());
+        assert!(parse_fallback_chains(&json!({"": ["a/b"]})).is_err());
+        assert!(parse_fallback_chains(&json!({"a/b": "not-array"})).is_err());
+        assert!(parse_fallback_chains(&json!({"a/b": ["bad\"quote"]})).is_err());
+
+        let current = BTreeMap::from([
+            ("m1".to_string(), vec!["f1".to_string()]),
+            ("m2".to_string(), vec!["f2".to_string()]),
+        ]);
+        let desired = parse_fallback_chains(&json!({
+            "m2": ["f2", "f3"],
+            "m3": ["f4"],
+        }))
+        .unwrap();
+        let steps = build_chain_steps(&current, &desired);
+        // Creates/updates precede deletes.
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0][0].key, "m2");
+        assert_eq!(steps[0][0].after, Some(vec!["f2".into(), "f3".into()]));
+        assert_eq!(steps[1][0].key, "m3");
+        assert_eq!(steps[1][0].before, None);
+        assert_eq!(steps[2][0].key, "m1");
+        assert_eq!(steps[2][0].after, None);
     }
 }

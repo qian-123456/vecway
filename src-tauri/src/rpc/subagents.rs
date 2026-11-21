@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
@@ -23,6 +23,10 @@ const LOCK_FRESH: Duration = Duration::from_secs(300);
 const MAX_OUTPUT_BYTES: u64 = 1_000_000;
 /// Prompt preview length for `SubagentSummary::prompt`.
 const PROMPT_PREVIEW: usize = 160;
+/// Maximum cached subagent summary entries across all visited sessions.
+const MAX_SUMMARY_CACHE_ENTRIES: usize = 512;
+/// Maximum cached subagent detail states (retaining `system_prompt`) across sessions.
+const MAX_DETAIL_CACHE_ENTRIES: usize = 128;
 
 fn allowed_root() -> PathBuf {
     paths::omp_sessions_dir()
@@ -79,7 +83,7 @@ fn fresh_enough(t: Option<SystemTime>) -> bool {
 }
 
 /// Per-file metadata accumulated while scanning the jsonl once.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct AgentMeta {
     has_session_header: bool,
     model: Option<String>,
@@ -190,19 +194,17 @@ fn accumulate(meta: &mut AgentMeta, v: &Value) {
     let _ = ts;
 }
 
-/// Parsed pass over a subagent jsonl: meta + transcript items (only lines
-/// at/after `from_byte` are normalized).
-#[derive(Default)]
-struct AgentScan {
+/// Parsed metadata + timing segments + complete-line cursor of a subagent jsonl
+/// (transcript items are never stored in cache).
+#[derive(Default, Clone)]
+struct AgentState {
     meta: AgentMeta,
-    items: Vec<crate::contracts::TranscriptItem>,
     closed_segments: Vec<SubagentRunSegment>,
     current_segment: Option<(String, String)>,
     next_byte: u64,
-    reset: bool,
 }
 
-impl AgentScan {
+impl AgentState {
     fn all_segments(&self) -> Vec<SubagentRunSegment> {
         let mut out = self.closed_segments.clone();
         if let Some((s, e)) = &self.current_segment {
@@ -244,7 +246,7 @@ fn cmp_ts(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-fn record_timing(scan: &mut AgentScan, v: &Value) {
+fn record_timing(scan: &mut AgentState, v: &Value) {
     if is_session_exit(v) {
         if let Some((s, e)) = scan.current_segment.take() {
             scan.closed_segments.push(SubagentRunSegment {
@@ -276,40 +278,9 @@ fn record_timing(scan: &mut AgentScan, v: &Value) {
     }
 }
 
-fn scan_agent(path: &Path, from_byte: u64) -> std::io::Result<AgentScan> {
-    let bytes = fs::read(path)?;
-    let size = bytes.len() as u64;
-    let (start, reset) = if from_byte > size {
-        (0, true)
-    } else {
-        (from_byte.min(size), false)
-    };
-    // Only complete lines: stop after the last newline.
-    let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-    let mut scan = AgentScan {
-        next_byte: complete as u64,
-        reset,
-        ..Default::default()
-    };
-    let mut offset = 0usize;
-    for line in bytes[..complete].split(|b| *b == b'\n') {
-        let line_start = offset;
-        offset += line.len() + 1;
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        record_timing(&mut scan, &v);
-        accumulate(&mut scan.meta, &v);
-        if reset || line_start >= start as usize {
-            if let Some(item) = cat_transcript::normalize_entry(&v) {
-                scan.items.push(item);
-            }
-        }
-    }
-    Ok(scan)
+#[cfg(test)]
+fn scan_agent(path: &Path, from_byte: u64) -> std::io::Result<AgentState> {
+    scan_detail_file(path, from_byte, None).map(|r| r.state)
 }
 
 /// Inferred status for a subagent file.
@@ -356,7 +327,7 @@ fn infer_status(
 fn summary_from(
     id: &str,
     path: &Path,
-    scan: &AgentScan,
+    scan: &AgentState,
     status: SubagentStatus,
     output: Option<PathBuf>,
 ) -> SubagentSummary {
@@ -401,75 +372,119 @@ fn read_output(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-/// What the cache remembers per subagent transcript: the summary scan (items
-/// are never kept) plus the file identity it was computed from.
-struct CachedScan {
-    size: u64,
-    mtime: Option<SystemTime>,
-    scan: AgentScan,
+/// Cross-platform file identity used to detect rotation/replacement across polls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    created: Option<SystemTime>,
 }
 
-/// Per-transcript scan summaries keyed by path, so listing does not re-read
-/// and re-parse unchanged files. Transcripts are append-only: when a file only
-/// grew, just the bytes after the last parsed newline are read and folded in.
-#[derive(Default)]
+impl FileIdentity {
+    fn from_metadata(md: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Self {
+                dev: md.dev(),
+                ino: md.ino(),
+                created: md.created().ok(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                created: md.created().ok(),
+            }
+        }
+    }
+}
+
+/// What the cache remembers per subagent transcript: the parsed state (items
+/// are never kept) plus the file identity/size/mtime it was computed from.
+#[derive(Clone)]
+struct CachedAgent {
+    identity: FileIdentity,
+    size: u64,
+    mtime: Option<SystemTime>,
+    state: AgentState,
+}
+
+struct CacheEntry {
+    value: CachedAgent,
+    last_access: u64,
+}
+
+/// Bounded LRU cache of parsed subagent transcript states keyed by path.
+/// Callers snapshot entries under a short lock, perform all FS I/O and parsing
+/// lock-free, and commit updates under a second short lock.
 struct ScanCache {
-    map: HashMap<PathBuf, CachedScan>,
+    map: HashMap<PathBuf, CacheEntry>,
+    max_entries: usize,
+    tick: u64,
     /// Total transcript bytes read from disk (observability / tests).
     bytes_read: u64,
 }
 
+impl Default for ScanCache {
+    fn default() -> Self {
+        Self::with_capacity(MAX_SUMMARY_CACHE_ENTRIES)
+    }
+}
+
 impl ScanCache {
-    /// Summary scan of `path`, reading from disk only what changed.
-    fn scan(&mut self, path: &Path) -> std::io::Result<&AgentScan> {
-        let md = fs::metadata(path)?;
-        let (size, modified) = (md.len(), md.modified().ok());
-        let fresh = match self.map.get(path) {
-            Some(c) if c.size == size && c.mtime == modified => false,
-            // Grew: continue after the last complete line already parsed.
-            Some(c) if size > c.size && c.scan.next_byte <= size => {
-                self.append(path, size, modified)?;
-                false
-            }
-            _ => true,
-        };
-        if fresh {
-            let mut f = fs::File::open(path)?;
-            let mut bytes = Vec::with_capacity(size as usize);
-            f.read_to_end(&mut bytes)?;
-            self.bytes_read += bytes.len() as u64;
-            let mut scan = AgentScan::default();
-            fold_lines(&mut scan, &bytes);
-            self.map.insert(
-                path.to_path_buf(),
-                CachedScan {
-                    size: bytes.len() as u64,
-                    mtime: modified,
-                    scan,
-                },
-            );
+    fn with_capacity(max_entries: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            max_entries: max_entries.max(1),
+            tick: 0,
+            bytes_read: 0,
         }
-        Ok(&self.map[path].scan)
     }
 
-    fn append(
-        &mut self,
-        path: &Path,
-        size: u64,
-        modified: Option<SystemTime>,
-    ) -> std::io::Result<()> {
-        let Some(c) = self.map.get_mut(path) else {
-            return Ok(());
-        };
-        let mut f = fs::File::open(path)?;
-        f.seek(SeekFrom::Start(c.scan.next_byte))?;
-        let mut tail = Vec::new();
-        f.read_to_end(&mut tail)?;
-        self.bytes_read += tail.len() as u64;
-        fold_lines(&mut c.scan, &tail);
-        c.size = size;
-        c.mtime = modified;
-        Ok(())
+    fn get_cloned(&mut self, path: &Path) -> Option<CachedAgent> {
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        let entry = self.map.get_mut(path)?;
+        entry.last_access = tick;
+        Some(entry.value.clone())
+    }
+
+    fn upsert(&mut self, path: PathBuf, value: CachedAgent, force_replace: bool) {
+        if !force_replace {
+            if let Some(existing) = self.map.get(&path) {
+                let e = &existing.value;
+                if e.identity == value.identity && e.mtime == value.mtime && e.size > value.size {
+                    return;
+                }
+            }
+        }
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        self.map.insert(
+            path,
+            CacheEntry {
+                value,
+                last_access: tick,
+            },
+        );
+        self.evict_if_needed();
+    }
+
+    fn evict_if_needed(&mut self) {
+        while self.map.len() > self.max_entries {
+            let Some(oldest_key) = self
+                .map
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_access)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            self.map.remove(&oldest_key);
+        }
     }
 
     /// Drop entries under `dir` that were not seen in the latest listing.
@@ -479,9 +494,9 @@ impl ScanCache {
     }
 }
 
-/// Parse the complete lines of `bytes` (which start at `scan.next_byte`) into
+/// Parse the complete lines of `bytes` (which start at `state.next_byte`) into
 /// the running summary; a trailing partial line is left for the next pass.
-fn fold_lines(scan: &mut AgentScan, bytes: &[u8]) {
+fn fold_lines(state: &mut AgentState, bytes: &[u8], keep_system_prompt: bool) {
     let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
     for line in bytes[..complete].split(|b| *b == b'\n') {
         if line.is_empty() {
@@ -490,19 +505,274 @@ fn fold_lines(scan: &mut AgentScan, bytes: &[u8]) {
         let Ok(v) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
-        record_timing(scan, &v);
-        accumulate(&mut scan.meta, &v);
+        record_timing(state, &v);
+        accumulate(&mut state.meta, &v);
     }
-    // The list never shows the system prompt; do not keep it resident.
-    scan.meta.system_prompt = None;
-    scan.next_byte += complete as u64;
+    if !keep_system_prompt {
+        // The list never shows the system prompt; do not keep it resident.
+        state.meta.system_prompt = None;
+    }
+    state.next_byte += complete as u64;
 }
 
-// `LazyLock` needs Rust 1.80; the crate's MSRV is 1.77.
-fn scan_cache() -> &'static Mutex<ScanCache> {
-    static CACHE: OnceLock<Mutex<ScanCache>> = OnceLock::new();
-    CACHE.get_or_init(Mutex::default)
+struct SummaryScanResult {
+    state: AgentState,
+    updated_cache: Option<(CachedAgent, bool)>,
+    bytes_read: u64,
+    mtime: Option<SystemTime>,
 }
+
+fn scan_summary_file(
+    path: &Path,
+    cached: Option<&CachedAgent>,
+) -> std::io::Result<SummaryScanResult> {
+    let md = fs::metadata(path)?;
+    let size = md.len();
+    let modified = md.modified().ok();
+    let identity = FileIdentity::from_metadata(&md);
+
+    if let Some(c) = cached {
+        if c.identity == identity {
+            if c.size == size && c.mtime == modified {
+                return Ok(SummaryScanResult {
+                    state: c.state.clone(),
+                    updated_cache: None,
+                    bytes_read: 0,
+                    mtime: modified,
+                });
+            }
+            if size > c.size && c.state.next_byte <= size {
+                let start = c.state.next_byte;
+                let mut f = fs::File::open(path)?;
+                f.seek(SeekFrom::Start(start))?;
+                let mut tail = Vec::new();
+                f.read_to_end(&mut tail)?;
+                let bytes_read = tail.len() as u64;
+                let mut state = c.state.clone();
+                fold_lines(&mut state, &tail, false);
+                let actual_size = start + bytes_read;
+                let updated = CachedAgent {
+                    identity,
+                    size: actual_size,
+                    mtime: modified,
+                    state: state.clone(),
+                };
+                return Ok(SummaryScanResult {
+                    state,
+                    updated_cache: Some((updated, false)),
+                    bytes_read,
+                    mtime: modified,
+                });
+            }
+        }
+    }
+
+    let mut f = fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(size as usize);
+    f.read_to_end(&mut bytes)?;
+    let bytes_read = bytes.len() as u64;
+    let mut state = AgentState::default();
+    fold_lines(&mut state, &bytes, false);
+    let updated = CachedAgent {
+        identity,
+        size: bytes_read,
+        mtime: modified,
+        state: state.clone(),
+    };
+    let force_replace = cached.is_some_and(|c| c.identity != identity || bytes_read < c.size);
+    Ok(SummaryScanResult {
+        state,
+        updated_cache: Some((updated, force_replace)),
+        bytes_read,
+        mtime: modified,
+    })
+}
+
+struct DetailScanResult {
+    state: AgentState,
+    items: Vec<crate::contracts::TranscriptItem>,
+    reset: bool,
+    updated_cache: Option<(CachedAgent, bool)>,
+    bytes_read: u64,
+    mtime: Option<SystemTime>,
+}
+
+fn scan_detail_file(
+    path: &Path,
+    from_byte: u64,
+    cached: Option<&CachedAgent>,
+) -> std::io::Result<DetailScanResult> {
+    let md = fs::metadata(path)?;
+    let size = md.len();
+    let modified = md.modified().ok();
+    let identity = FileIdentity::from_metadata(&md);
+
+    // Incremental paths: reuse cached metadata/segments and seek directly to
+    // the cached/requested byte offset when the same file did not shrink or rewrite.
+    if from_byte > 0 && from_byte <= size {
+        if let Some(c) = cached {
+            if c.identity == identity {
+                let unchanged = size == c.size && modified == c.mtime;
+                let monotonic_growth = size > c.size && c.state.next_byte <= size;
+
+                if unchanged && from_byte >= c.state.next_byte {
+                    return Ok(DetailScanResult {
+                        state: c.state.clone(),
+                        items: Vec::new(),
+                        reset: false,
+                        updated_cache: None,
+                        bytes_read: 0,
+                        mtime: modified,
+                    });
+                }
+
+                if unchanged && from_byte < c.state.next_byte {
+                    let mut f = fs::File::open(path)?;
+                    f.seek(SeekFrom::Start(from_byte - 1))?;
+                    let want = 1 + (c.state.next_byte - from_byte);
+                    let mut buf = Vec::with_capacity(want as usize);
+                    f.take(want).read_to_end(&mut buf)?;
+                    let bytes_read = buf.len() as u64;
+                    if !buf.is_empty() {
+                        let slice = if buf[0] == b'\n' {
+                            &buf[1..]
+                        } else if let Some(nl) = buf[1..].iter().position(|&b| b == b'\n') {
+                            &buf[1 + nl + 1..]
+                        } else {
+                            &[][..]
+                        };
+                        let complete = slice.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+                        let mut items = Vec::new();
+                        for line in slice[..complete].split(|&b| b == b'\n') {
+                            if line.is_empty() {
+                                continue;
+                            }
+                            if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                                if let Some(item) = cat_transcript::normalize_entry(&v) {
+                                    items.push(item);
+                                }
+                            }
+                        }
+                        return Ok(DetailScanResult {
+                            state: c.state.clone(),
+                            items,
+                            reset: false,
+                            updated_cache: None,
+                            bytes_read,
+                            mtime: modified,
+                        });
+                    }
+                }
+
+                if monotonic_growth && from_byte >= c.state.next_byte {
+                    let base = c.state.next_byte;
+                    let mut f = fs::File::open(path)?;
+                    f.seek(SeekFrom::Start(base))?;
+                    let mut tail = Vec::new();
+                    f.read_to_end(&mut tail)?;
+                    let bytes_read = tail.len() as u64;
+                    let complete = tail.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+                    let mut state = c.state.clone();
+                    let mut items = Vec::new();
+                    let mut rel_offset = 0usize;
+                    for line in tail[..complete].split(|&b| b == b'\n') {
+                        let abs_line_start = base + rel_offset as u64;
+                        rel_offset += line.len() + 1;
+                        if line.is_empty() {
+                            continue;
+                        }
+                        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+                            continue;
+                        };
+                        record_timing(&mut state, &v);
+                        accumulate(&mut state.meta, &v);
+                        if abs_line_start >= from_byte {
+                            if let Some(item) = cat_transcript::normalize_entry(&v) {
+                                items.push(item);
+                            }
+                        }
+                    }
+                    state.next_byte = base + complete as u64;
+                    let actual_size = base + bytes_read;
+                    let updated = CachedAgent {
+                        identity,
+                        size: actual_size,
+                        mtime: modified,
+                        state: state.clone(),
+                    };
+                    return Ok(DetailScanResult {
+                        state,
+                        items,
+                        reset: false,
+                        updated_cache: Some((updated, false)),
+                        bytes_read,
+                        mtime: modified,
+                    });
+                }
+            }
+        }
+    }
+
+    // Full re-read fallback: initial load (`from_byte == 0`), cache miss,
+    // truncation, rotation (changed file identity), or in-place rewrite.
+    let mut f = fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(size as usize);
+    f.read_to_end(&mut bytes)?;
+    let actual_size = bytes.len() as u64;
+    let invalidated = from_byte > 0
+        && cached.is_some_and(|c| {
+            c.identity != identity
+                || actual_size < c.size
+                || (actual_size == c.size && modified != c.mtime)
+        });
+    let reset = from_byte > actual_size || invalidated;
+    let start = if reset { 0 } else { from_byte.min(actual_size) };
+    let complete = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let mut state = AgentState {
+        next_byte: complete as u64,
+        ..Default::default()
+    };
+    let mut items = Vec::new();
+    let mut offset = 0usize;
+    for line in bytes[..complete].split(|&b| b == b'\n') {
+        let line_start = offset;
+        offset += line.len() + 1;
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        record_timing(&mut state, &v);
+        accumulate(&mut state.meta, &v);
+        if reset || line_start >= start as usize {
+            if let Some(item) = cat_transcript::normalize_entry(&v) {
+                items.push(item);
+            }
+        }
+    }
+    let updated = CachedAgent {
+        identity,
+        size: actual_size,
+        mtime: modified,
+        state: state.clone(),
+    };
+    let force_replace =
+        reset || cached.is_some_and(|c| c.identity != identity || actual_size < c.size);
+    Ok(DetailScanResult {
+        state,
+        items,
+        reset,
+        updated_cache: Some((updated, force_replace)),
+        bytes_read: actual_size,
+        mtime: modified,
+    })
+}
+
+static SUMMARY_CACHE: LazyLock<Mutex<ScanCache>> =
+    LazyLock::new(|| Mutex::new(ScanCache::with_capacity(MAX_SUMMARY_CACHE_ENTRIES)));
+static DETAIL_CACHE: LazyLock<Mutex<ScanCache>> =
+    LazyLock::new(|| Mutex::new(ScanCache::with_capacity(MAX_DETAIL_CACHE_ENTRIES)));
 
 /// Nested subagents (an agent that dispatches its own) live one directory
 /// deeper per generation: `<dir>/<A>/<A>.<B>.jsonl`, `<dir>/<A>/<A>.<B>/...`.
@@ -571,6 +841,103 @@ fn find_agent_file(dir: &Path, id: &str) -> Option<PathBuf> {
         .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(id))
 }
 
+struct ListComputeOutput {
+    summaries: Vec<SubagentSummary>,
+    seen: HashSet<PathBuf>,
+    updates: Vec<(PathBuf, CachedAgent, bool)>,
+    bytes_read: u64,
+}
+
+fn collect_valid_agent_files(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut files = Vec::new();
+    collect_agent_files(dir, 0, &mut files);
+    files
+        .into_iter()
+        .filter_map(|path| {
+            let id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            validate_agent_id(&id).ok().map(|()| (id, path))
+        })
+        .collect()
+}
+
+fn compute_list_entries(
+    dir: &Path,
+    entries: Vec<(String, PathBuf, Option<CachedAgent>)>,
+) -> ListComputeOutput {
+    let mut summaries = Vec::new();
+    let mut seen = HashSet::new();
+    let mut updates = Vec::new();
+    let mut bytes_read = 0u64;
+    for (id, path, cached) in entries {
+        let Ok(res) = scan_summary_file(&path, cached.as_ref()) else {
+            continue;
+        };
+        bytes_read += res.bytes_read;
+        seen.insert(path.clone());
+        if let Some((updated, force_replace)) = res.updated_cache {
+            updates.push((path.clone(), updated, force_replace));
+        }
+        if !res.state.meta.has_session_header {
+            continue;
+        }
+        let agent_dir = path.parent().unwrap_or(dir);
+        let (status, output) = infer_status(agent_dir, &id, &res.state.meta, res.mtime);
+        summaries.push(summary_from(&id, &path, &res.state, status, output));
+    }
+    summaries.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+    ListComputeOutput {
+        summaries,
+        seen,
+        updates,
+        bytes_read,
+    }
+}
+
+fn list_with_mutex(
+    parent_file: &str,
+    root: &Path,
+    cache_lock: &Mutex<ScanCache>,
+    prune_detail_cache: Option<&Mutex<ScanCache>>,
+) -> Result<Vec<SubagentSummary>, String> {
+    // Directory scan happens completely outside any cache lock.
+    let parent = validate_parent(parent_file, root)?;
+    let dir = subagent_dir(&parent);
+    let files = collect_valid_agent_files(&dir);
+
+    let entries: Vec<(String, PathBuf, Option<CachedAgent>)> = {
+        let mut cache = cache_lock.lock().unwrap_or_else(|e| e.into_inner());
+        files
+            .into_iter()
+            .map(|(id, path)| {
+                let snap = cache.get_cloned(&path);
+                (id, path, snap)
+            })
+            .collect()
+    };
+
+    // File reads, JSON parsing, and status inference run completely lock-free.
+    let computed = compute_list_entries(&dir, entries);
+
+    {
+        let mut cache = cache_lock.lock().unwrap_or_else(|e| e.into_inner());
+        cache.bytes_read += computed.bytes_read;
+        for (path, updated, force_replace) in computed.updates {
+            cache.upsert(path, updated, force_replace);
+        }
+        cache.retain_seen(&dir, &computed.seen);
+    }
+    if let Some(detail_lock) = prune_detail_cache {
+        let mut detail = detail_lock.lock().unwrap_or_else(|e| e.into_inner());
+        detail.retain_seen(&dir, &computed.seen);
+    }
+    Ok(computed.summaries)
+}
+
+#[cfg(test)]
 fn list_with(
     parent_file: &str,
     root: &Path,
@@ -578,33 +945,21 @@ fn list_with(
 ) -> Result<Vec<SubagentSummary>, String> {
     let parent = validate_parent(parent_file, root)?;
     let dir = subagent_dir(&parent);
-    let mut out = Vec::new();
-    let mut files = Vec::new();
-    collect_agent_files(&dir, 0, &mut files);
-    let mut seen = HashSet::new();
-    for path in files {
-        let id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_string();
-        if validate_agent_id(&id).is_err() {
-            continue;
-        }
-        let Ok(scan) = cache.scan(&path) else {
-            continue;
-        };
-        seen.insert(path.clone());
-        if !scan.meta.has_session_header {
-            continue;
-        }
-        let agent_dir = path.parent().unwrap_or(&dir);
-        let (status, output) = infer_status(agent_dir, &id, &scan.meta, mtime(&path));
-        out.push(summary_from(&id, &path, scan, status, output));
+    let files = collect_valid_agent_files(&dir);
+    let entries = files
+        .into_iter()
+        .map(|(id, path)| {
+            let snap = cache.get_cloned(&path);
+            (id, path, snap)
+        })
+        .collect();
+    let computed = compute_list_entries(&dir, entries);
+    cache.bytes_read += computed.bytes_read;
+    for (path, updated, force_replace) in computed.updates {
+        cache.upsert(path, updated, force_replace);
     }
-    cache.retain_seen(&dir, &seen);
-    out.sort_by(|a, b| a.started_at.cmp(&b.started_at));
-    Ok(out)
+    cache.retain_seen(&dir, &computed.seen);
+    Ok(computed.summaries)
 }
 
 #[cfg(test)]
@@ -613,15 +968,20 @@ fn list_in(parent_file: &str, root: &Path) -> Result<Vec<SubagentSummary>, Strin
 }
 
 pub fn list(parent_file: &str) -> Result<Vec<SubagentSummary>, String> {
-    let mut cache = scan_cache().lock().unwrap_or_else(|e| e.into_inner());
-    list_with(parent_file, &allowed_root(), &mut cache)
+    list_with_mutex(
+        parent_file,
+        &allowed_root(),
+        &SUMMARY_CACHE,
+        Some(&DETAIL_CACHE),
+    )
 }
 
-pub fn transcript_in(
+fn transcript_with_mutex(
     parent_file: &str,
     agent_id: &str,
     from_byte: u64,
     root: &Path,
+    cache_lock: &Mutex<ScanCache>,
 ) -> Result<SubagentTranscript, String> {
     validate_agent_id(agent_id)?;
     let parent = validate_parent(parent_file, root)?;
@@ -630,30 +990,55 @@ pub fn transcript_in(
         return Err(format!("subagent session not found: {agent_id}"));
     };
     let agent_dir = file.parent().unwrap_or(&dir).to_path_buf();
-    let scan = scan_agent(&file, from_byte)
+
+    let cached = {
+        let mut cache = cache_lock.lock().unwrap_or_else(|e| e.into_inner());
+        cache.get_cloned(&file)
+    };
+
+    // Perform incremental seek / read / parse completely outside the cache lock.
+    let res = scan_detail_file(&file, from_byte, cached.as_ref())
         .map_err(|e| format!("read subagent transcript {agent_id}: {e}"))?;
-    if !scan.meta.has_session_header {
+
+    {
+        let mut cache = cache_lock.lock().unwrap_or_else(|e| e.into_inner());
+        cache.bytes_read += res.bytes_read;
+        if let Some((updated, force_replace)) = res.updated_cache {
+            cache.upsert(file.clone(), updated, force_replace);
+        }
+    }
+
+    if !res.state.meta.has_session_header {
         return Err(format!("subagent session not found: {agent_id}"));
     }
-    let (status, output_path) = infer_status(&agent_dir, agent_id, &scan.meta, mtime(&file));
-    let summary = summary_from(agent_id, &file, &scan, status, output_path.clone());
+    let (status, output_path) = infer_status(&agent_dir, agent_id, &res.state.meta, res.mtime);
+    let summary = summary_from(agent_id, &file, &res.state, status, output_path.clone());
     // Prefer the output artifact; fall back to the last assistant text.
     let output = output_path
         .as_deref()
         .and_then(read_output)
-        .or_else(|| scan.meta.last_assistant_text.clone());
+        .or_else(|| res.state.meta.last_assistant_text.clone());
     Ok(SubagentTranscript {
         agent_id: agent_id.to_string(),
         file: file.to_string_lossy().into_owned(),
         summary,
-        system_prompt: scan.meta.system_prompt,
-        prompt: scan.meta.prompt,
-        items: scan.items,
+        system_prompt: res.state.meta.system_prompt,
+        prompt: res.state.meta.prompt,
+        items: res.items,
         output,
         output_path: output_path.map(|p| p.to_string_lossy().into_owned()),
-        next_byte: scan.next_byte,
-        reset: scan.reset,
+        next_byte: res.state.next_byte,
+        reset: res.reset,
     })
+}
+
+pub fn transcript_in(
+    parent_file: &str,
+    agent_id: &str,
+    from_byte: u64,
+    root: &Path,
+) -> Result<SubagentTranscript, String> {
+    transcript_with_mutex(parent_file, agent_id, from_byte, root, &DETAIL_CACHE)
 }
 
 pub fn transcript(
@@ -1136,6 +1521,139 @@ mod tests {
         let cached_second = second_list.iter().find(|s| s.id == "Cached").unwrap();
         assert_eq!(cached_second.run_segments, list[0].run_segments);
         assert_eq!(cached_second.ended_at, list[0].ended_at);
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn detail_cache_seeks_incrementally_on_append_and_resets_on_truncation_or_rotation() {
+        let (root, parent, subdir) = setup();
+        let p = parent.to_str().unwrap();
+        let file = subdir.join("Inc.jsonl");
+        fs::write(&file, AGENT).unwrap();
+        let cache = Mutex::new(ScanCache::with_capacity(8));
+
+        // Initial load from byte 0 populates the detail cache.
+        let first = transcript_with_mutex(p, "Inc", 0, &root, &cache).unwrap();
+        assert_eq!(cache.lock().unwrap().bytes_read, AGENT.len() as u64);
+        assert_eq!(first.system_prompt.as_deref(), Some("SYS"));
+        assert_eq!(first.prompt.as_deref(), Some("do the thing"));
+        assert!(!first.reset);
+
+        // Unchanged poll at next_byte reads zero bytes from disk.
+        let same = transcript_with_mutex(p, "Inc", first.next_byte, &root, &cache).unwrap();
+        assert_eq!(cache.lock().unwrap().bytes_read, AGENT.len() as u64);
+        assert!(same.items.is_empty());
+        assert!(!same.reset);
+        assert_eq!(same.next_byte, first.next_byte);
+        assert_eq!(same.system_prompt.as_deref(), Some("SYS"));
+
+        // Append one complete line + trailing partial line: seeks directly to
+        // cached next_byte and parses only the newly appended bytes.
+        let appended_complete = concat!(
+            r#"{"type":"message","id":"m_inc","timestamp":"T8","message":{"role":"assistant","content":[{"type":"text","text":"tail answer"}],"stopReason":"stop","usage":{"input":2,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":3,"cost":{"total":0.05}}}}"#,
+            "\n",
+        );
+        let appended_partial = r#"{"type":"message","id":"m_part"#;
+        let extra = format!("{appended_complete}{appended_partial}");
+        {
+            let mut f = fs::OpenOptions::new().append(true).open(&file).unwrap();
+            std::io::Write::write_all(&mut f, extra.as_bytes()).unwrap();
+        }
+        let inc = transcript_with_mutex(p, "Inc", first.next_byte, &root, &cache).unwrap();
+        assert_eq!(
+            cache.lock().unwrap().bytes_read,
+            (AGENT.len() + extra.len()) as u64
+        );
+        assert!(!inc.reset);
+        assert_eq!(inc.items.len(), 1);
+        assert_eq!(inc.items[0].id, "m_inc");
+        assert_eq!(
+            inc.next_byte,
+            (AGENT.len() + appended_complete.len()) as u64
+        );
+        assert_eq!(inc.summary.message_count, first.summary.message_count + 1);
+        assert_eq!(inc.summary.request_count, first.summary.request_count + 1);
+        assert_eq!(inc.summary.tokens, Some(10 + 5 + 1 + 3 + 2 + 2 + 1));
+        assert_eq!(inc.output.as_deref(), Some("tail answer"));
+        assert_eq!(inc.system_prompt.as_deref(), Some("SYS"));
+
+        // Finish the partial line: seeks to inc.next_byte and reads only the completed line.
+        let partial_rest = concat!(
+            r#"","timestamp":"T9","message":{"role":"assistant","content":[{"type":"text","text":"completed partial"}],"stopReason":"stop"}}"#,
+            "\n",
+        );
+        {
+            let mut f = fs::OpenOptions::new().append(true).open(&file).unwrap();
+            std::io::Write::write_all(&mut f, partial_rest.as_bytes()).unwrap();
+        }
+        let bytes_before_partial = cache.lock().unwrap().bytes_read;
+        let inc2 = transcript_with_mutex(p, "Inc", inc.next_byte, &root, &cache).unwrap();
+        assert_eq!(
+            cache.lock().unwrap().bytes_read,
+            bytes_before_partial + (appended_partial.len() + partial_rest.len()) as u64
+        );
+        assert!(!inc2.reset);
+        assert_eq!(inc2.items.len(), 1);
+        assert_eq!(inc2.items[0].id, "m_part");
+        assert_eq!(inc2.output.as_deref(), Some("completed partial"));
+
+        // Truncation forces full re-read and sets reset=true.
+        let shorter = concat!(
+            r#"{"type":"session","version":3,"id":"A2","timestamp":"T10","cwd":"/w"}"#,
+            "\n",
+            r#"{"type":"message","id":"u_new","timestamp":"T11","message":{"role":"user","content":[{"type":"text","text":"fresh"}]}}"#,
+            "\n",
+        );
+        fs::write(&file, shorter).unwrap();
+        let trunc = transcript_with_mutex(p, "Inc", inc2.next_byte, &root, &cache).unwrap();
+        assert!(trunc.reset);
+        assert_eq!(trunc.items.len(), 1);
+        assert_eq!(trunc.items[0].id, "u_new");
+        assert_eq!(trunc.next_byte, shorter.len() as u64);
+
+        // Atomic rotation (new inode, larger file) triggers full re-read + reset=true.
+        #[cfg(unix)]
+        {
+            let rotated_tmp = subdir.join(".Inc.jsonl.tmp");
+            fs::write(&rotated_tmp, AGENT).unwrap();
+            fs::rename(&rotated_tmp, &file).unwrap();
+            let rot = transcript_with_mutex(p, "Inc", trunc.next_byte, &root, &cache).unwrap();
+            assert!(rot.reset);
+            assert_eq!(rot.items.len(), first.items.len());
+            assert_eq!(rot.next_byte, AGENT.len() as u64);
+        }
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn bounded_cache_evicts_least_recently_accessed_entries() {
+        let (root, parent, subdir) = setup();
+        let p = parent.to_str().unwrap();
+        for name in ["A", "B", "C"] {
+            fs::write(subdir.join(format!("{name}.jsonl")), AGENT).unwrap();
+        }
+        let cache = Mutex::new(ScanCache::with_capacity(2));
+
+        // Load A then B -> cache holds {A, B}.
+        transcript_with_mutex(p, "A", 0, &root, &cache).unwrap();
+        transcript_with_mutex(p, "B", 0, &root, &cache).unwrap();
+        assert_eq!(cache.lock().unwrap().map.len(), 2);
+
+        // Touch A so B becomes the least-recently-accessed entry.
+        let a_len = AGENT.len() as u64;
+        transcript_with_mutex(p, "A", a_len, &root, &cache).unwrap();
+
+        // Load C -> must evict B and keep {A, C}.
+        transcript_with_mutex(p, "C", 0, &root, &cache).unwrap();
+        let guard = cache.lock().unwrap();
+        let canon_subdir = fs::canonicalize(&subdir).unwrap();
+        assert_eq!(guard.map.len(), 2);
+        assert!(guard.map.contains_key(&canon_subdir.join("A.jsonl")));
+        assert!(guard.map.contains_key(&canon_subdir.join("C.jsonl")));
+        assert!(!guard.map.contains_key(&canon_subdir.join("B.jsonl")));
+        drop(guard);
 
         fs::remove_dir_all(&root).ok();
     }

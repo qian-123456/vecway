@@ -37,11 +37,14 @@ impl RepoInfo {
     }
 }
 
-pub fn repo_info(dir: &Path) -> Option<RepoInfo> {
+/// Run a single `git rev-parse` to resolve repository locations.
+/// Returns `Ok(None)` when `dir` is not a git repository, `Ok(Some(info))` on
+/// success, and `Err(msg)` on unexpected git/OS errors.
+pub(crate) fn probe_repo_info(dir: &Path) -> Result<Option<RepoInfo>, String> {
     if !dir.is_dir() {
-        return None;
+        return Ok(None);
     }
-    let text = git_ok(
+    let out = git(
         dir,
         &[
             "rev-parse",
@@ -50,17 +53,32 @@ pub fn repo_info(dir: &Path) -> Option<RepoInfo> {
             "--git-common-dir",
             "--git-dir",
         ],
-    )
-    .ok()?;
+    )?;
+    if !out.ok() {
+        let error = out.err_msg();
+        if error.contains("not a git repository") {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    let text = out.text();
     let mut lines = text.lines();
-    let toplevel = canon(Path::new(lines.next()?));
-    let common_dir = canon(Path::new(lines.next()?));
-    let git_dir = canon(Path::new(lines.next()?));
-    Some(RepoInfo {
-        toplevel,
-        common_dir,
-        git_dir,
-    })
+    let (Some(top), Some(common), Some(git_dir)) = (lines.next(), lines.next(), lines.next())
+    else {
+        return Err(format!(
+            "failed to resolve Git repository: {}",
+            dir.display()
+        ));
+    };
+    Ok(Some(RepoInfo {
+        toplevel: canon(Path::new(top)),
+        common_dir: canon(Path::new(common)),
+        git_dir: canon(Path::new(git_dir)),
+    }))
+}
+
+pub fn repo_info(dir: &Path) -> Option<RepoInfo> {
+    probe_repo_info(dir).ok().flatten()
 }
 
 /// Canonicalize when possible (macOS `/tmp` → `/private/tmp`).
@@ -393,6 +411,7 @@ pub fn create(
     }
     inherit_main_roles(Path::new(&main.path), &target)?;
     inherit_mcp_config(&root, &target);
+    super::invalidate_cache(&target);
     info_for(&target, &[])
 }
 
@@ -429,7 +448,10 @@ const ROLE_CONFIG_NAMES: [&str; 6] = [
 
 fn inherit_main_roles(main: &Path, target: &Path) -> Result<(), String> {
     inherit_role_config(main, target).map_err(|error| {
-        format!("工作树已创建于 {}，但角色配置继承失败：{error}", target.display())
+        format!(
+            "工作树已创建于 {}，但角色配置继承失败：{error}",
+            target.display()
+        )
     })
 }
 
@@ -514,7 +536,10 @@ fn inherit_role_config(main: &Path, target: &Path) -> Result<(), String> {
     }
     if !overrides.is_empty() {
         let mut task = Mapping::new();
-        task.insert(Value::String("agentModelOverrides".into()), Value::Mapping(overrides));
+        task.insert(
+            Value::String("agentModelOverrides".into()),
+            Value::Mapping(overrides),
+        );
         value.insert(Value::String("task".into()), Value::Mapping(task));
     }
     if value.is_empty() {
@@ -549,7 +574,6 @@ fn inherit_role_config(main: &Path, target: &Path) -> Result<(), String> {
     }
 }
 
-
 /// `git worktree add --detach <root>/.worktrees/<dir> <sha>` (reuses an existing one).
 pub fn create_detached(repo: &Path, dir_name: &str, sha: &str) -> Result<PathBuf, String> {
     let info = repo_info(repo).ok_or("不是 git 仓库")?;
@@ -564,6 +588,7 @@ pub fn create_detached(repo: &Path, dir_name: &str, sha: &str) -> Result<PathBuf
     let target_s = target.to_string_lossy().into_owned();
     git_ok(&root, &["worktree", "add", "--detach", &target_s, sha])?;
     inherit_main_roles(Path::new(&main.path), &target)?;
+    super::invalidate_cache(&target);
     Ok(canon(&target))
 }
 
@@ -631,6 +656,7 @@ pub fn remove(repo: &Path, path: &Path, delete_branch: bool, force: bool) -> Res
     } else {
         git_ok(&root, &["worktree", "prune"])?;
     }
+    super::invalidate_cache(&target);
     if delete_branch {
         if let Some(branch) = &entry.branch {
             let flag = if force { "-D" } else { "-d" };
@@ -645,7 +671,7 @@ pub fn remove(repo: &Path, path: &Path, delete_branch: bool, force: bool) -> Res
 pub fn orphans(workspace_paths: &[String], sessions: &[(String, String)]) -> Vec<WorktreeInfo> {
     let mut roots: Vec<PathBuf> = workspace_paths
         .iter()
-        .filter_map(|p| repo_info(Path::new(p)).map(|i| i.main_root()))
+        .filter_map(|p| super::repo_info_cached(Path::new(p)).map(|i| i.main_root()))
         .collect();
     roots.sort();
     roots.dedup();

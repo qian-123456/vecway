@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -23,7 +23,7 @@ use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNIN
 use ring::{aead, agreement, hkdf};
 use rusqlite::{params, Connection, OptionalExtension as _};
 use serde_json::{json, Value};
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 
 use crate::contracts::SessionStatus;
 use crate::state::{AppEvent, AppState};
@@ -38,6 +38,13 @@ const VAPID_TTL_SECS: i64 = 12 * 3600;
 /// Subscriptions kept per paired device (oldest are dropped).
 const MAX_PER_DEVICE: i64 = 8;
 const RECORD_SIZE: u32 = 4096;
+/// Maximum concurrent outbound Web Push HTTP deliveries globally.
+const MAX_CONCURRENT_PUSHES: usize = 12;
+/// Cap on queued background push dispatch tasks spawned from the app event bus.
+const MAX_QUEUED_PUSH_TASKS: usize = 64;
+
+static DELIVERY_SEMAPHORE: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_PUSHES)));
 
 /// Push services a subscription endpoint may point at. The server POSTs to the
 /// endpoint the phone supplies, so anything else (private hosts, arbitrary
@@ -306,13 +313,19 @@ pub fn validate_subscription(
     })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StoredSubscription {
+    sub: Subscription,
+    created_at: String,
+}
+
 pub fn save_subscription(conn: &Connection, sub: &Subscription, now: &str) -> Result<(), String> {
     let err = |e: rusqlite::Error| format!("保存订阅失败: {e}");
     conn.execute(
         "INSERT INTO push_subscriptions(endpoint, p256dh, auth, token_hash, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth,
-           token_hash = excluded.token_hash",
+           token_hash = excluded.token_hash, created_at = excluded.created_at",
         params![sub.endpoint, sub.p256dh, sub.auth, sub.token_hash, now],
     )
     .map_err(err)?;
@@ -335,32 +348,53 @@ pub fn remove_subscription(conn: &Connection, endpoint: &str, token_hash: &str) 
     .unwrap_or(0)
 }
 
-fn drop_endpoint(conn: &Connection, endpoint: &str) {
-    let _ = conn.execute(
-        "DELETE FROM push_subscriptions WHERE endpoint = ?1",
-        [endpoint],
-    );
+/// Delete a subscription only if its keys, owner, and timestamp still match the
+/// snapshot that produced the 404/410 response, so a slow stale 410 never wipes
+/// a freshly re-registered subscription on the same endpoint.
+fn drop_stale_subscription(conn: &Connection, stored: &StoredSubscription) -> usize {
+    conn.execute(
+        "DELETE FROM push_subscriptions
+         WHERE endpoint = ?1 AND p256dh = ?2 AND auth = ?3 AND token_hash = ?4 AND created_at = ?5",
+        params![
+            stored.sub.endpoint,
+            stored.sub.p256dh,
+            stored.sub.auth,
+            stored.sub.token_hash,
+            stored.created_at,
+        ],
+    )
+    .unwrap_or(0)
 }
 
-/// Subscriptions of still-paired devices; `device` narrows to one device.
-pub fn list_subscriptions(conn: &Connection, device: Option<&str>) -> Vec<Subscription> {
+fn list_stored_subscriptions(conn: &Connection, device: Option<&str>) -> Vec<StoredSubscription> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT s.endpoint, s.p256dh, s.auth, s.token_hash FROM push_subscriptions s
+        "SELECT s.endpoint, s.p256dh, s.auth, s.token_hash, s.created_at FROM push_subscriptions s
          JOIN mobile_devices d ON d.token_hash = s.token_hash
          WHERE (?1 IS NULL OR s.token_hash = ?1) ORDER BY s.created_at",
     ) else {
         return Vec::new();
     };
     stmt.query_map([device], |r| {
-        Ok(Subscription {
-            endpoint: r.get(0)?,
-            p256dh: r.get(1)?,
-            auth: r.get(2)?,
-            token_hash: r.get(3)?,
+        Ok(StoredSubscription {
+            sub: Subscription {
+                endpoint: r.get(0)?,
+                p256dh: r.get(1)?,
+                auth: r.get(2)?,
+                token_hash: r.get(3)?,
+            },
+            created_at: r.get(4)?,
         })
     })
     .map(|rows| rows.flatten().collect())
     .unwrap_or_default()
+}
+
+/// Subscriptions of still-paired devices; `device` narrows to one device.
+pub fn list_subscriptions(conn: &Connection, device: Option<&str>) -> Vec<Subscription> {
+    list_stored_subscriptions(conn, device)
+        .into_iter()
+        .map(|s| s.sub)
+        .collect()
 }
 
 // -------------------------------------------------------- SSE presence
@@ -462,17 +496,21 @@ pub struct PushHttp {
     pub urgency: &'static str,
 }
 
+fn build_push_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("初始化推送 HTTP 客户端失败: {e}"))
+}
+
 /// POST to the push service; resolves to its HTTP status. Redirects are not
 /// followed (the endpoint host was allow-listed, its redirect target was not).
+/// Never falls back to an unhardened default client if builder fails.
 pub async fn http_post(req: PushHttp) -> Result<u16, String> {
-    static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(15))
-            .build()
-            .unwrap_or_default()
-    });
-    let res = CLIENT
+    static CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(build_push_client);
+    let client = CLIENT.as_ref().map_err(Clone::clone)?;
+    let res = client
         .post(&req.endpoint)
         .header("Authorization", req.authorization)
         .header("Content-Encoding", "aes128gcm")
@@ -523,8 +561,42 @@ fn subscription_is_current(conn: &Connection, sub: &Subscription) -> bool {
     .unwrap_or(false)
 }
 
+async fn wait_shutdown(shutdown: &mut Option<watch::Receiver<bool>>) {
+    match shutdown {
+        Some(rx) => loop {
+            if *rx.borrow() {
+                return;
+            }
+            if rx.changed().await.is_err() {
+                return;
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
+async fn wait_revoked(
+    revocations: &mut tokio::sync::broadcast::Receiver<String>,
+    db: &Mutex<Connection>,
+    sub: &Subscription,
+) {
+    loop {
+        match revocations.recv().await {
+            Ok(hash) if hash == sub.token_hash => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                if !subscription_is_current(&db.lock(), sub) {
+                    break;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Ok(_) => {}
+        }
+    }
+}
+
 /// Encrypt and send `payload` to subscriptions (optionally one device, optionally
-/// only devices without an open SSE stream). 404/410 delete the subscription.
+/// only devices without an open SSE stream). 404/410 delete the subscription
+/// conditionally if its stored record has not been replaced since snapshot.
 pub async fn notify<F, Fut>(
     db: &Mutex<Connection>,
     device: Option<&str>,
@@ -536,17 +608,49 @@ where
     F: Fn(PushHttp) -> Fut,
     Fut: Future<Output = Result<u16, String>>,
 {
+    notify_inner(
+        db,
+        device,
+        skip_live_devices,
+        payload,
+        send,
+        None,
+        DELIVERY_SEMAPHORE.clone(),
+    )
+    .await
+}
+
+async fn notify_inner<F, Fut>(
+    db: &Mutex<Connection>,
+    device: Option<&str>,
+    skip_live_devices: bool,
+    payload: &Value,
+    send: F,
+    mut shutdown: Option<watch::Receiver<bool>>,
+    semaphore: Arc<Semaphore>,
+) -> Summary
+where
+    F: Fn(PushHttp) -> Fut,
+    Fut: Future<Output = Result<u16, String>>,
+{
+    if shutdown.as_ref().is_some_and(|rx| *rx.borrow()) {
+        return Summary::default();
+    }
     let (vapid, subs) = {
         let conn = db.lock();
         let Ok(vapid) = load_vapid(&conn) else {
             return Summary::default();
         };
-        (vapid, list_subscriptions(&conn, device))
+        (vapid, list_stored_subscriptions(&conn, device))
     };
     let body = payload.to_string();
     let now = chrono::Utc::now().timestamp();
     let mut out = Summary::default();
-    for sub in subs {
+    for stored in subs {
+        if shutdown.as_ref().is_some_and(|rx| *rx.borrow()) {
+            break;
+        }
+        let sub = &stored.sub;
         if skip_live_devices {
             if let Some(session_id) = payload.get("sessionId").and_then(Value::as_str) {
                 if is_viewing_session(&sub.token_hash, session_id) {
@@ -556,38 +660,52 @@ where
         }
         // Subscribe before checking the snapshot so a concurrent revocation is not missed.
         let mut revocations = super::auth::subscribe_revocations();
-        if !subscription_is_current(&db.lock(), &sub) {
+        if !subscription_is_current(&db.lock(), sub) {
             continue;
         }
-        let status = match build_request(&vapid, &sub, body.as_bytes(), now, "high") {
+        let permit = tokio::select! {
+            biased;
+            _ = wait_shutdown(&mut shutdown) => break,
+            _ = wait_revoked(&mut revocations, db, sub) => continue,
+            permit = semaphore.clone().acquire_owned() => match permit {
+                Ok(p) => p,
+                Err(_) => break,
+            }
+        };
+        // Re-check after waiting for a concurrency permit.
+        if !subscription_is_current(&db.lock(), sub) {
+            drop(permit);
+            continue;
+        }
+        let status = match build_request(&vapid, sub, body.as_bytes(), now, "high") {
             Ok(req) => {
-                tokio::select! {
+                let outcome = tokio::select! {
                     biased;
-                    _ = async {
-                        loop {
-                            match revocations.recv().await {
-                                Ok(hash) if hash == sub.token_hash => break,
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                    if !subscription_is_current(&db.lock(), &sub) {
-                                        break;
-                                    }
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                                Ok(_) => {}
-                            }
-                        }
-                    } => continue,
+                    _ = wait_shutdown(&mut shutdown) => {
+                        drop(permit);
+                        break;
+                    }
+                    _ = wait_revoked(&mut revocations, db, sub) => None,
                     // Keep sender construction lazy: it may itself perform synchronous work.
-                    status = async { send(req).await } => status,
+                    status = async { send(req).await } => Some(status),
+                };
+                match outcome {
+                    Some(s) => s,
+                    None => {
+                        drop(permit);
+                        continue;
+                    }
                 }
             }
             Err(e) => Err(e),
         };
+        drop(permit);
         match status {
             Ok(200..=299) => out.sent += 1,
             Ok(404 | 410) => {
-                drop_endpoint(&db.lock(), &sub.endpoint);
-                out.removed += 1;
+                if drop_stale_subscription(&db.lock(), &stored) > 0 {
+                    out.removed += 1;
+                }
             }
             Ok(code) => {
                 tracing::warn!("web push rejected with HTTP {code}");
@@ -679,7 +797,11 @@ async fn push_session_event(
     kind: Kind,
     identity: &str,
     pending: Vec<crate::contracts::PendingUiRequest>,
+    shutdown: watch::Receiver<bool>,
 ) {
+    if *shutdown.borrow() {
+        return;
+    }
     let meta = crate::catalog::get(state, session_id).await;
     let name = meta
         .as_ref()
@@ -707,21 +829,35 @@ async fn push_session_event(
     if !identity.is_empty() {
         body["tag"] = json!(format!("{session_id}:{identity}"));
     }
-    notify(&state.db, None, true, &body, http_post).await;
+    notify_inner(
+        &state.db,
+        None,
+        true,
+        &body,
+        http_post,
+        Some(shutdown),
+        DELIVERY_SEMAPHORE.clone(),
+    )
+    .await;
 }
 
-/// Bus listener; runs until `shutdown` flips (mobile server stop).
+/// Bus listener; runs until `shutdown` flips (mobile server stop), canceling any
+/// in-flight or queued deliveries on shutdown.
 pub async fn run(state: AppState, mut shutdown: watch::Receiver<bool>) {
     let mut rx = state.bus.subscribe();
     // Only identical requests share a rate-limit window, never an entire session.
     let mut recent: HashMap<(String, Kind, String), std::time::Instant> = HashMap::new();
+    let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {
+        while tasks.try_join_next().is_some() {}
         tokio::select! {
+            biased;
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
-                    return;
+                    break;
                 }
             }
+            _ = tasks.join_next(), if !tasks.is_empty() => {}
             ev = rx.recv() => match ev {
                 Ok(AppEvent::SessionStatusChanged { session_id, old, new }) => {
                     let Some(kind) = classify(old, new) else { continue };
@@ -734,14 +870,23 @@ pub async fn run(state: AppState, mut shutdown: watch::Receiver<bool>) {
                     if recent.insert((session_id.clone(), kind, identity.clone()), now).is_some() {
                         continue;
                     }
+                    if tasks.len() >= MAX_QUEUED_PUSH_TASKS {
+                        tracing::warn!("web push task queue full; dropping event for {session_id}");
+                        continue;
+                    }
                     let state = state.clone();
-                    tokio::spawn(async move { push_session_event(&state, &session_id, kind, &identity, pending).await });
+                    let sd = shutdown.clone();
+                    tasks.spawn(async move {
+                        push_session_event(&state, &session_id, kind, &identity, pending, sd).await
+                    });
                 }
                 Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     }
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
 }
 
 /// Payload of `POST /push/test`.
@@ -1269,5 +1414,77 @@ mod tests {
             sum.sent, 2,
             "both devices receive push because neither is in foreground viewing s1"
         );
+    }
+
+    #[tokio::test]
+    async fn stale_410_does_not_delete_reregistered_subscription() {
+        let conn = push_db();
+        pair_device(&conn, "dev-re");
+        let (p1, a1) = good_keys();
+        let (p2, a2) = good_keys();
+        let endpoint = "https://fcm.googleapis.com/fcm/send/re-reg";
+        let old_sub = validate_subscription(endpoint, &p1, &a1, "dev-re").unwrap();
+        let new_sub = validate_subscription(endpoint, &p2, &a2, "dev-re").unwrap();
+        save_subscription(&conn, &old_sub, "2026-01-01T00:00:00Z").unwrap();
+
+        let db = Arc::new(Mutex::new(conn));
+        let db_send = db.clone();
+        let new_sub_clone = new_sub.clone();
+        let sum = notify(
+            &db,
+            Some("dev-re"),
+            false,
+            &json!({"title": "hi"}),
+            move |_req| {
+                let db_send = db_send.clone();
+                let new_sub_clone = new_sub_clone.clone();
+                async move {
+                    // Simulate fresh re-registration on the same endpoint while slow 410 is in flight.
+                    save_subscription(&db_send.lock(), &new_sub_clone, "2026-01-01T00:01:00Z")
+                        .unwrap();
+                    Ok::<u16, String>(410)
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(
+            sum.removed, 0,
+            "stale 410 must not remove freshly re-registered sub"
+        );
+        let remaining = list_subscriptions(&db.lock(), Some("dev-re"));
+        assert_eq!(remaining, vec![new_sub]);
+    }
+
+    #[tokio::test]
+    async fn notify_respects_shutdown_and_semaphore_concurrency_cap() {
+        let conn = push_db();
+        pair_device(&conn, "dev-sd");
+        let (p, a) = good_keys();
+        let sub = validate_subscription("https://fcm.googleapis.com/fcm/send/sd", &p, &a, "dev-sd")
+            .unwrap();
+        save_subscription(&conn, &sub, "t1").unwrap();
+        let db = Mutex::new(conn);
+
+        // Semaphore held with 0 permits available -> shutdown cancels queued delivery immediately.
+        let sem = Arc::new(Semaphore::new(1));
+        let _held = sem.clone().acquire_owned().await.unwrap();
+        let (tx, rx) = watch::channel(false);
+        let cancel = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = tx.send(true);
+        });
+        let sum = notify_inner(
+            &db,
+            Some("dev-sd"),
+            false,
+            &json!({"title": "queued"}),
+            |_req| async { Ok::<u16, String>(201) },
+            Some(rx),
+            sem,
+        )
+        .await;
+        cancel.await.unwrap();
+        assert_eq!(sum, Summary::default());
     }
 }

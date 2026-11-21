@@ -13,9 +13,43 @@ use crate::schedules::probe::{self, ProbeOutcome};
 use crate::schedules::{author, runner, scheduler, store};
 use crate::state::AppState;
 
+async fn blocking_db<T, F>(state: &AppState, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
+{
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || f(&db.lock()))
+        .await
+        .map_err(|e| format!("task failed: {e}"))?
+}
+
+async fn blocking_db_with_snapshot<T, F>(state: &AppState, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
+{
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let (res, snapshot_items) = {
+            let guard = db.lock();
+            let res = f(&guard)?;
+            let items = store::list(&guard).ok();
+            (res, items)
+        };
+        // Serialize JSON and atomically write catalog.json AFTER releasing the DB mutex.
+        if let Some(items) = snapshot_items {
+            store::write_catalog_snapshot_items(&items);
+        }
+        Ok(res)
+    })
+    .await
+    .map_err(|e| format!("task failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn schedules_list(state: State<'_, AppState>) -> Result<Vec<Schedule>, String> {
-    store::list(&state.db.lock()).map_err(|e| e.to_string())
+    blocking_db(&state, |db| store::list(db).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
@@ -23,12 +57,7 @@ pub async fn schedules_save(
     state: State<'_, AppState>,
     schedule: ScheduleDraft,
 ) -> Result<Schedule, String> {
-    let saved = {
-        let db = state.db.lock();
-        let res = store::upsert(&db, &schedule)?;
-        store::write_catalog_snapshot(&db);
-        res
-    };
+    let saved = blocking_db_with_snapshot(&state, move |db| store::upsert(db, &schedule)).await?;
     scheduler::notify_scheduler();
     let _ = state.app.emit("schedules:changed", ());
     Ok(saved)
@@ -36,11 +65,7 @@ pub async fn schedules_save(
 
 #[tauri::command]
 pub async fn schedules_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    {
-        let db = state.db.lock();
-        store::delete(&db, &id).map_err(|e| e.to_string())?;
-        store::write_catalog_snapshot(&db);
-    }
+    blocking_db_with_snapshot(&state, move |db| store::delete(db, &id)).await?;
     scheduler::notify_scheduler();
     let _ = state.app.emit("schedules:changed", ());
     Ok(())
@@ -52,12 +77,8 @@ pub async fn schedules_set_enabled(
     id: String,
     enabled: bool,
 ) -> Result<Schedule, String> {
-    let updated = {
-        let db = state.db.lock();
-        let res = store::set_enabled(&db, &id, enabled)?;
-        store::write_catalog_snapshot(&db);
-        res
-    };
+    let updated =
+        blocking_db_with_snapshot(&state, move |db| store::set_enabled(db, &id, enabled)).await?;
     scheduler::notify_scheduler();
     let _ = state.app.emit("schedules:changed", ());
     Ok(updated)
@@ -87,21 +108,27 @@ pub async fn schedules_release_awaiting(
     schedule_id: String,
     run_id: String,
 ) -> Result<(), String> {
-    let (session_id, attempt) = {
-        let db = state.db.lock();
-        let session_id = store::list_awaiting_runs(&db, &schedule_id)
-            .map_err(|e| e.to_string())?.into_iter()
-            .find(|run| run.id == run_id).and_then(|run| run.session_id);
-        let attempt: Option<String> = db.query_row(
-            "SELECT resume_attempt FROM schedule_runs WHERE id = ?1 AND schedule_id = ?2",
-            rusqlite::params![run_id, schedule_id], |row| row.get(0),
-        ).ok().flatten();
-        store::release_awaiting(&db, &schedule_id, &run_id)?;
-        store::write_catalog_snapshot(&db);
-        (session_id, attempt)
-    };
+    let (session_id, attempt) = blocking_db_with_snapshot(&state, move |db| {
+        let session_id = store::list_awaiting_runs(db, &schedule_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|run| run.id == run_id)
+            .and_then(|run| run.session_id);
+        let attempt: Option<String> = db
+            .query_row(
+                "SELECT resume_attempt FROM schedule_runs WHERE id = ?1 AND schedule_id = ?2",
+                rusqlite::params![run_id, schedule_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        store::release_awaiting(db, &schedule_id, &run_id)?;
+        Ok((session_id, attempt))
+    })
+    .await?;
     if let (Some(handle), Some(attempt)) = (
-        session_id.as_deref().and_then(crate::rpc::get_handle), attempt.as_deref(),
+        session_id.as_deref().and_then(crate::rpc::get_handle),
+        attempt.as_deref(),
     ) {
         crate::rpc::clear_automation_resume_guard(handle.pid, attempt);
     }
@@ -116,7 +143,10 @@ pub async fn schedules_list_awaiting(
     state: State<'_, AppState>,
     schedule_id: String,
 ) -> Result<Vec<ScheduleRun>, String> {
-    store::list_awaiting_runs(&state.db.lock(), &schedule_id).map_err(|e| e.to_string())
+    blocking_db(&state, move |db| {
+        store::list_awaiting_runs(db, &schedule_id).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -125,9 +155,11 @@ pub async fn schedule_runs(
     schedule_id: String,
     limit: Option<u32>,
 ) -> Result<Vec<ScheduleRun>, String> {
-    store::list_runs(&state.db.lock(), &schedule_id, limit.unwrap_or(20)).map_err(|e| e.to_string())
+    blocking_db(&state, move |db| {
+        store::list_runs(db, &schedule_id, limit.unwrap_or(20)).map_err(|e| e.to_string())
+    })
+    .await
 }
-
 #[tauri::command]
 pub async fn schedules_test_probe(
     cwd: String,

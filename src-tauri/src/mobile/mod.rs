@@ -56,9 +56,8 @@ fn covered_ddns_host<'a>(advertised: Option<&'a str>, served: Option<&str>) -> O
 }
 
 /// Autostart when settings.mobile_enabled (and settings.mobile_ipv6_enabled).
+/// Skips all startup work (including DDNS background loop) when mobile is disabled.
 pub fn init(state: AppState) {
-    ddns::init(state.clone());
-
     let (mobile_enabled, ipv6_enabled) = {
         let s = state.settings.read();
         (s.mobile_enabled, s.mobile_ipv6_enabled)
@@ -265,6 +264,7 @@ pub async fn ipv6_start(state: &AppState) -> Result<MobileStatus, String> {
     });
     tokio::spawn(server::serve_tls(listener, acceptor, ctx));
 
+    ddns::init(state.clone());
     persist_ipv6_enabled(state, true).await;
     Ok(status(state))
 }

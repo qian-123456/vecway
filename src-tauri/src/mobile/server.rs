@@ -1,5 +1,6 @@
 //! axum router for the mobile web app: pairing, cookie/Bearer auth, JSON API, SSE.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,7 +50,75 @@ fn bad_gateway(e: String) -> ApiError {
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
+/// Cap on concurrent SSE streams per router/listener, strictly below
+/// `MAX_CONNECTIONS` so normal HTTP API and pairing requests always retain
+/// reserved connection slots.
+const MAX_SSE_CONNECTIONS: usize = 32;
+/// Max simultaneous SSE streams a single paired device may hold open.
+const MAX_SSE_PER_DEVICE: usize = 5;
+
+/// Reserves listener connection capacity for non-SSE HTTP/pairing requests
+/// and bounds per-device concurrent SSE streams.
+struct SseLimiter {
+    global: Arc<Semaphore>,
+    per_device: parking_lot::Mutex<HashMap<String, usize>>,
+    max_per_device: usize,
+}
+
+struct SseSlot {
+    _global_permit: tokio::sync::OwnedSemaphorePermit,
+    limiter: Arc<SseLimiter>,
+    token_hash: String,
+}
+
+impl SseLimiter {
+    fn new(max_total: usize, max_per_device: usize) -> Self {
+        Self {
+            global: Arc::new(Semaphore::new(max_total)),
+            per_device: parking_lot::Mutex::new(HashMap::new()),
+            max_per_device,
+        }
+    }
+
+    fn try_acquire(self: &Arc<Self>, token_hash: String) -> Result<SseSlot, ApiError> {
+        let permit = self.global.clone().try_acquire_owned().map_err(|_| {
+            ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "实时事件流已达上限，请稍后重试".into(),
+            )
+        })?;
+        {
+            let mut map = self.per_device.lock();
+            let count = map.entry(token_hash.clone()).or_insert(0);
+            if *count >= self.max_per_device {
+                return Err(ApiError(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "当前设备打开的实时连接过多，请关闭多余标签页后重试".into(),
+                ));
+            }
+            *count += 1;
+        }
+        Ok(SseSlot {
+            _global_permit: permit,
+            limiter: Arc::clone(self),
+            token_hash,
+        })
+    }
+}
+
+impl Drop for SseSlot {
+    fn drop(&mut self) {
+        let mut map = self.limiter.per_device.lock();
+        if let Some(count) = map.get_mut(&self.token_hash) {
+            *count -= 1;
+            if *count == 0 {
+                map.remove(&self.token_hash);
+            }
+        }
+    }
+}
 pub fn router<B: Backend>(ctx: Arc<Ctx<B>>) -> Router {
+    let sse_limiter = Arc::new(SseLimiter::new(MAX_SSE_CONNECTIONS, MAX_SSE_PER_DEVICE));
     let api = Router::new()
         .route("/sessions", get(sessions::<B>))
         .route("/todos", get(todos::<B>))
@@ -64,6 +133,7 @@ pub fn router<B: Backend>(ctx: Arc<Ctx<B>>) -> Router {
         .route("/device/name", post(rename_device::<B>))
         .route("/device", get(current_device::<B>))
         .merge(super::api::routes::<B>())
+        .layer(axum::Extension(sse_limiter))
         .route_layer(middleware::from_fn_with_state(
             ctx.clone(),
             require_auth::<B>,
@@ -220,11 +290,7 @@ async fn require_auth<B: Backend>(
     let (token, device_id) = match auth::token_from_headers(req.headers()) {
         Some(t) => {
             let db = ctx.db.lock();
-            if !auth::verify(&db, &t, chrono::Utc::now()) {
-                return ApiError(StatusCode::UNAUTHORIZED, "未配对或已被撤销".into())
-                    .into_response();
-            }
-            match auth::device_id_for_token(&db, &t) {
+            match auth::authenticate(&db, &t, chrono::Utc::now()) {
                 Some(id) => (t, id),
                 None => {
                     return ApiError(StatusCode::UNAUTHORIZED, "未配对或已被撤销".into())
@@ -756,15 +822,17 @@ pub fn sse_event(ev: &AppEvent) -> Option<Event> {
 async fn events<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     axum::extract::Extension(auth::Token(token)): axum::extract::Extension<auth::Token>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    axum::extract::Extension(sse_limiter): axum::extract::Extension<Arc<SseLimiter>>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let token_hash = auth::hash_token(&token);
+    let sse_slot = sse_limiter.try_acquire(token_hash.clone())?;
     // While this stream lives the device sees events live; no web push for it.
-    let sse_guard = super::push::SseGuard::new(auth::hash_token(&token));
+    let sse_guard = super::push::SseGuard::new(token_hash.clone());
     let hello = stream::once(async { Ok(Event::default().event("hello").data("{}")) });
     let rx = ctx.backend.subscribe();
     let sd = ctx.shutdown.clone();
     let db = ctx.db.clone();
     let revoked = auth::subscribe_revocations();
-    let token_hash = auth::hash_token(&token);
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -776,6 +844,7 @@ async fn events<B: Backend>(
                     return None;
                 }
                 tokio::select! {
+                    biased;
                     changed = sd.changed() => {
                         if changed.is_err() { return None; }
                     }
@@ -794,10 +863,10 @@ async fn events<B: Backend>(
                     }
                     r = rx.recv() => match r {
                         Ok(ev) => {
-                            if !auth::is_valid(&db.lock(), &token) {
-                                return None;
-                            }
                             if let Some(e) = sse_event(&ev) {
+                                if !auth::is_valid(&db.lock(), &token) {
+                                    return None;
+                                }
                                 return Some((Ok(e), (rx, sd, db, token, interval, revoked, token_hash)));
                             }
                         }
@@ -814,10 +883,10 @@ async fn events<B: Backend>(
         },
     );
     let stream = hello.chain(updates).map(move |item| {
-        let _live = &sse_guard;
+        let _live = (&sse_guard, &sse_slot);
         item
     });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// TLS handshake timeout for one accepted connection.
@@ -993,4 +1062,36 @@ pub async fn serve_tls<B: Backend>(
         });
     }
     drain_connections(&mut tasks).await;
+}
+
+#[cfg(test)]
+mod sse_limit_tests {
+    use super::*;
+
+    #[test]
+    fn sse_limiter_enforces_per_device_and_global_caps_and_releases_on_drop() {
+        const {
+            assert!(
+                MAX_SSE_CONNECTIONS < MAX_CONNECTIONS,
+                "SSE cap must leave reserved capacity for normal HTTP and pairing requests"
+            );
+        }
+        let limiter = Arc::new(SseLimiter::new(4, 2));
+        let a1 = limiter.try_acquire("dev-a".into()).unwrap();
+        let a2 = limiter.try_acquire("dev-a".into()).unwrap();
+        let err = limiter.try_acquire("dev-a".into()).err().unwrap();
+        assert_eq!(err.0, StatusCode::TOO_MANY_REQUESTS);
+
+        let b1 = limiter.try_acquire("dev-b".into()).unwrap();
+        let b2 = limiter.try_acquire("dev-b".into()).unwrap();
+        let err = limiter.try_acquire("dev-c".into()).err().unwrap();
+        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+
+        drop(a1);
+        let _c1 = limiter.try_acquire("dev-c".into()).unwrap();
+        drop(a2);
+        let _a3 = limiter.try_acquire("dev-a".into()).unwrap();
+        drop(b1);
+        drop(b2);
+    }
 }

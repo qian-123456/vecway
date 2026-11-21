@@ -256,9 +256,21 @@ impl FrameBatcher {
     }
 
     pub(crate) fn push(&self, ev: OutEvent) {
+        let ev = match ev {
+            OutEvent::Frame { session_id, frame } => OutEvent::Frame {
+                session_id,
+                frame: slim_rpc_frame(frame),
+            },
+            barrier @ OutEvent::Process { .. } => barrier,
+        };
+        self.push_slimmed(ev);
+    }
+
+    /// Enqueue an event whose `OutEvent::Frame` payload has already passed
+    /// through `slim_rpc_frame`, avoiding a redundant traversal on the hot path.
+    pub(crate) fn push_slimmed(&self, ev: OutEvent) {
         match ev {
             OutEvent::Frame { session_id, frame } => {
-                let frame = slim_rpc_frame(frame);
                 if let Some(key_ref) = coalesce_key_ref(&frame) {
                     let mut state = self.inner.state.lock();
                     let hit_idx = state

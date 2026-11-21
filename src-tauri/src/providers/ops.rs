@@ -83,6 +83,39 @@ fn is_local_url(base_url: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1" | "0.0.0.0")
 }
 
+/// Compare two Base URLs after normalizing scheme, host, effective port, and
+/// trailing slashes on the path. Used to detect endpoint changes that could
+/// redirect an existing API key to a different host or path.
+pub(super) fn same_base_url(a: &str, b: &str) -> bool {
+    type Key = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<u16>,
+        String,
+        Option<String>,
+        Option<String>,
+    );
+    fn normalize(raw: &str) -> Option<Key> {
+        let url = reqwest::Url::parse(raw.trim()).ok()?;
+        Some((
+            url.scheme().to_ascii_lowercase(),
+            url.username().to_string(),
+            url.password().map(str::to_string),
+            url.host_str().map(|h| h.to_ascii_lowercase()),
+            url.port_or_known_default(),
+            url.path().trim_end_matches('/').to_string(),
+            url.query().map(str::to_string),
+            url.fragment().map(str::to_string),
+        ))
+    }
+    match (normalize(a), normalize(b)) {
+        (Some(na), Some(nb)) => na == nb,
+        _ => a.trim().trim_end_matches('/') == b.trim().trim_end_matches('/'),
+    }
+}
+
 /// Set `providers.<id>.apiKey` (creating the block when absent), dropping a now
 /// contradictory `auth: none`. A block created here for a discovery-only local
 /// engine also gets `discovery` + `api`, so OMP keeps discovering its models.
@@ -176,6 +209,20 @@ pub fn upsert(env: &Env, input: &ProviderUpsert, api_key: Option<&str>) -> Resul
         Some(o) if o != id && exists(id) => return Err("供应商 ID 已存在".to_string()),
         _ => {}
     }
+    if let Some(old) = orig.and_then(|o| all.iter().find(|p| p.id == o)) {
+        let has_saved_key =
+            !old.auth_none && old.api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
+        let url_changed = match old.base_url.as_deref() {
+            Some(old_url) => !same_base_url(old_url, base_url),
+            None => true,
+        };
+        if has_saved_key && url_changed && new_key.is_none() && !input.auth_none {
+            return Err(
+                "修改 Base URL 时必须重新输入 API Key（或勾选无需密钥），以防已有密钥被发送到新地址"
+                    .to_string(),
+            );
+        }
+    }
     let renaming = orig.is_some_and(|o| o != id);
     let creating = orig.is_none();
     let auth_none = input.auth_none || (creating && new_key.is_none() && is_local_url(base_url));
@@ -260,6 +307,21 @@ pub fn save_builtin(
         .transpose()?;
     let key_edit = new_key.map(|k| (k, yml::yaml_scalar(k)));
     let auth_none = input.auth_none;
+    if let (Some(new_url), Some(old)) = (base_url, env.provider(id)?) {
+        let has_saved_key =
+            !old.auth_none && old.api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
+        let effective_old = old.base_url.as_deref().or(default_base_url);
+        let url_changed = match effective_old {
+            Some(old_url) => !same_base_url(old_url, new_url),
+            None => true,
+        };
+        if has_saved_key && url_changed && new_key.is_none() && !auth_none {
+            return Err(
+                "修改 Base URL 时必须重新输入 API Key（或勾选无需密钥），以防已有密钥被发送到新地址"
+                    .to_string(),
+            );
+        }
+    }
     edit_file(
         env.models_yml,
         &|t| {
@@ -529,20 +591,41 @@ mod tests {
         );
         assert!(upsert(&env, &input, None).is_err(), "duplicate id");
 
-        // update: no key → key kept, other blocks identical
+        // update without changing base_url (trailing slash only): no key → key kept, other blocks identical
         input.original_id = Some("brand new".into());
-        input.base_url = "https://n2.example/v1".into();
+        input.base_url = "https://n.example/v1/".into();
+        input.display_name = Some("Nicer".into());
         upsert(&env, &input, None).unwrap();
         let t2 = fx.text();
         let p = env.provider("brand new").unwrap().unwrap();
-        assert_eq!(p.base_url.as_deref(), Some("https://n2.example/v1"));
+        assert_eq!(p.base_url.as_deref(), Some("https://n.example/v1/"));
         assert_eq!(p.api_key.as_deref(), Some("sk-n"));
         for id in ["plain", "other", "聪明 it's"] {
             assert_eq!(block_of(&t2, id), block_of(BASE, id));
         }
 
-        // new key replaces; rename carries the key
+        // changing base_url with a saved key requires a new key (or auth_none)
+        input.base_url = "https://n2.example/v1".into();
+        assert!(upsert(&env, &input, None).is_err());
+        assert_eq!(
+            env.provider("brand new")
+                .unwrap()
+                .unwrap()
+                .base_url
+                .as_deref(),
+            Some("https://n.example/v1/")
+        );
+
+        // new key allows base_url change and replaces key; rename carries the key
         upsert(&env, &input, Some("sk-n2")).unwrap();
+        assert_eq!(
+            env.provider("brand new")
+                .unwrap()
+                .unwrap()
+                .base_url
+                .as_deref(),
+            Some("https://n2.example/v1")
+        );
         input.id = "renamed".into();
         upsert(&env, &input, None).unwrap();
         assert!(env.provider("brand new").unwrap().is_none());
@@ -811,5 +894,67 @@ mod tests {
         assert_eq!(resolve_key(&env, "plain", &|_| None).unwrap(), None);
         apply_key(&env, "plain", "sk-fresh").unwrap();
         assert_eq!(fx.text().replace("sk-fresh", "sk-plain-123"), BASE);
+    }
+
+    #[test]
+    fn base_url_change_with_saved_key_requires_reentering_key_or_auth_none() {
+        let fx = Fx::new(BASE);
+        let env = fx.env();
+
+        // Same URL ignoring trailing slash / host case / default port: allowed without key.
+        for same in [
+            "https://p.example/v1/",
+            "HTTPS://P.EXAMPLE:443/v1",
+            "  https://p.example/v1  ",
+        ] {
+            let mut u = edit_plain();
+            u.base_url = same.into();
+            upsert(&env, &u, None).unwrap();
+            assert_eq!(
+                env.provider("plain").unwrap().unwrap().api_key.as_deref(),
+                Some("sk-plain-123")
+            );
+        }
+
+        // Any scheme, host, port, or path change with a saved key is rejected when key is omitted.
+        let before = fx.text();
+        for changed in [
+            "https://evil.example/v1",
+            "http://p.example/v1",
+            "https://p.example:8443/v1",
+            "https://p.example/v2",
+        ] {
+            let mut u = edit_plain();
+            u.base_url = changed.into();
+            let err = upsert(&env, &u, None).unwrap_err();
+            assert!(err.contains("Base URL"), "{changed}: {err}");
+            assert_eq!(fx.text(), before, "file untouched on reject: {changed}");
+        }
+
+        // Built-in override also rejects changing base_url without a new key when a key is saved.
+        assert!(save_builtin(
+            &env,
+            &ov("plain", Some("https://evil.example/v1"), false, &["m1"]),
+            None,
+            None,
+        )
+        .is_err());
+
+        // Explicit auth_none is allowed and clears the saved key.
+        let mut to_local = edit_plain();
+        to_local.base_url = "http://127.0.0.1:11434/v1".into();
+        to_local.auth_none = true;
+        upsert(&env, &to_local, None).unwrap();
+        let p = env.provider("plain").unwrap().unwrap();
+        assert!(p.auth_none && p.api_key.is_none());
+
+        // Without a saved key, changing base_url freely works (including local/LAN endpoints).
+        let mut local_shift = to_local;
+        local_shift.base_url = "http://192.168.1.50:11434/v1".into();
+        upsert(&env, &local_shift, None).unwrap();
+        assert_eq!(
+            env.provider("plain").unwrap().unwrap().base_url.as_deref(),
+            Some("http://192.168.1.50:11434/v1")
+        );
     }
 }

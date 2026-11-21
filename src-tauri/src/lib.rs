@@ -41,6 +41,48 @@ use tauri::{Emitter as _, Manager as _};
 /// Menu id of the custom Cmd+W item; the webview decides what it closes (src/lib/nativeShortcuts.ts).
 const CLOSE_TAB_MENU_ID: &str = "close-tab";
 
+/// Cached git worktree identity for the process cwd so menu construction,
+/// startup window title, and the IPC query spawn `git` at most once.
+fn cached_worktree_identity() -> Option<String> {
+    static IDENTITY: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
+        std::env::current_dir()
+            .ok()
+            .and_then(|d| settings::worktree_identity(&d))
+    });
+    IDENTITY.clone()
+}
+
+/// Apply the startup window title using the cached worktree identity so `git`
+/// is not invoked a second time right after `build_app_menu`.
+fn apply_startup_window_title(state: &AppState) {
+    if !state.settings.read().window_worktree_title {
+        return;
+    }
+    let Some(identity) = cached_worktree_identity() else {
+        return;
+    };
+    if let Some(window) = state.app.get_webview_window("main") {
+        let config = state.app.config();
+        let base = config
+            .app
+            .windows
+            .iter()
+            .find(|w| w.label == "main")
+            .map(|w| w.title.clone())
+            .filter(|t| !t.is_empty())
+            .or_else(|| config.product_name.clone())
+            .unwrap_or_default();
+        if !base.is_empty() {
+            let title = if identity.is_empty() || identity == base {
+                base
+            } else {
+                format!("{base} · {identity}")
+            };
+            let _ = window.set_title(&title);
+        }
+    }
+}
+
 /// Default app menu with every native "Close Window" item (Cmd+W → `performClose:`,
 /// which closes the only window and quits the app) swapped for a custom item that
 /// just notifies the webview. The Window submenu copy is dropped to avoid a duplicate accelerator.
@@ -49,9 +91,7 @@ fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<
     let menu = tauri::menu::Menu::default(handle)?;
     let mut replaced = false;
     let mut is_first = true;
-    let wt = std::env::current_dir()
-        .ok()
-        .and_then(|d| settings::worktree_identity(&d));
+    let wt = cached_worktree_identity();
     for top in menu.items()? {
         let MenuItemKind::Submenu(sub) = top else {
             continue;
@@ -387,8 +427,7 @@ async fn app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
 }
 #[tauri::command]
 async fn current_worktree_identity() -> Result<Option<String>, String> {
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    Ok(settings::worktree_identity(&cwd))
+    Ok(cached_worktree_identity())
 }
 
 pub fn parse_allowed_tools_from_text(content: &str) -> Option<Vec<String>> {
@@ -533,7 +572,7 @@ pub fn run() {
             rpc::init(state.clone());
             git::init(state.clone());
             services::init(state.clone());
-            settings::apply_window_title(&state);
+            apply_startup_window_title(&state);
             mobile::init(state.clone());
             terminal::init(state.clone());
             schedules::init(state.clone());

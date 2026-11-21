@@ -23,7 +23,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::contracts::{
-    PendingKind, Schedule, ScheduleAgentTrigger, ScheduleNotify, AutomationOverlapPolicy,
+    AutomationOverlapPolicy, PendingKind, Schedule, ScheduleAgentTrigger, ScheduleNotify,
     ScheduleRunMode, ScheduleRunPhase, ScheduleRunStatus, Settings, TodoKind, TodoSource,
 };
 use crate::rpc::frame::ChunkReassembler;
@@ -372,8 +372,13 @@ fn assistant_stop_reason(frame: &Value) -> Option<&str> {
         .as_str()
 }
 
-async fn execute_claimed_schedule(conn: &Connection, settings: &Settings, schedule: Schedule, run_id: String, policy: AutomationOverlapPolicy) {
-
+async fn execute_claimed_schedule(
+    conn: &Connection,
+    settings: &Settings,
+    schedule: Schedule,
+    run_id: String,
+    policy: AutomationOverlapPolicy,
+) {
     let base_path = Path::new(&schedule.cwd);
     if !base_path.exists() || !base_path.is_dir() {
         record_headless_error(
@@ -391,12 +396,22 @@ async fn execute_claimed_schedule(conn: &Connection, settings: &Settings, schedu
     }
 
     let isolated_cwd = if policy == AutomationOverlapPolicy::Parallel
-        && schedule.run_mode == ScheduleRunMode::Worktree {
+        && schedule.run_mode == ScheduleRunMode::Worktree
+    {
         match runner::create_schedule_worktree(base_path, &schedule.name, &run_id) {
             Ok(path) => Some(path),
             Err(e) => {
-                record_headless_error(conn, settings, &schedule, &run_id, None,
-                    &format!("创建独立 worktree 失败：{e}"), ScheduleRunPhase::Agent, None, false);
+                record_headless_error(
+                    conn,
+                    settings,
+                    &schedule,
+                    &run_id,
+                    None,
+                    &format!("创建独立 worktree 失败：{e}"),
+                    ScheduleRunPhase::Agent,
+                    None,
+                    false,
+                );
                 return;
             }
         }
@@ -556,39 +571,42 @@ async fn execute_claimed_schedule(conn: &Connection, settings: &Settings, schedu
 
     let effective_cwd = if let Some(path) = isolated_cwd {
         path
-    } else { match schedule.run_mode {
-        ScheduleRunMode::Worktree => {
-            match runner::create_schedule_worktree(base_path, &schedule.name, &run_id) {
-                Ok(p) => p,
-                Err(e) => {
-                    record_headless_error(
-                        conn,
-                        settings,
-                        &schedule,
-                        &run_id,
-                        None,
-                        &format!("创建独立 worktree 失败：{e}"),
-                        ScheduleRunPhase::Agent,
-                        probe_context.as_deref(),
-                        false,
-                    );
-                    return;
+    } else {
+        match schedule.run_mode {
+            ScheduleRunMode::Worktree => {
+                match runner::create_schedule_worktree(base_path, &schedule.name, &run_id) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        record_headless_error(
+                            conn,
+                            settings,
+                            &schedule,
+                            &run_id,
+                            None,
+                            &format!("创建独立 worktree 失败：{e}"),
+                            ScheduleRunPhase::Agent,
+                            probe_context.as_deref(),
+                            false,
+                        );
+                        return;
+                    }
                 }
             }
+            ScheduleRunMode::Local => schedule.cwd.clone(),
         }
-        ScheduleRunMode::Local => schedule.cwd.clone(),
-    }};
+    };
 
-    let resume_file =
-        if policy != AutomationOverlapPolicy::Parallel
-            && !schedule.new_chat_each_run && matches!(schedule.run_mode, ScheduleRunMode::Local) {
-            store::last_run_session_file(conn, &schedule.id)
-                .ok()
-                .flatten()
-                .filter(|f| Path::new(f).is_file())
-        } else {
-            None
-        };
+    let resume_file = if policy != AutomationOverlapPolicy::Parallel
+        && !schedule.new_chat_each_run
+        && matches!(schedule.run_mode, ScheduleRunMode::Local)
+    {
+        store::last_run_session_file(conn, &schedule.id)
+            .ok()
+            .flatten()
+            .filter(|f| Path::new(f).is_file())
+    } else {
+        None
+    };
 
     let outcome = run_headless_omp_turn(
         settings,
@@ -958,7 +976,11 @@ async fn run_headless_omp_turn(
                 let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
                 if matches!(method, "select" | "confirm" | "input" | "editor") {
                     paused_awaiting = true;
-                    awaiting_kind = Some(if method == "confirm" { PendingKind::Approval } else { PendingKind::Question });
+                    awaiting_kind = Some(if method == "confirm" {
+                        PendingKind::Approval
+                    } else {
+                        PendingKind::Question
+                    });
                     break;
                 }
             }
@@ -1032,14 +1054,17 @@ pub fn run_cli() -> i32 {
     let Ok(conn) = crate::db::open() else {
         return 1;
     };
+    let conn = std::rc::Rc::new(conn);
     let settings = crate::db::load_settings(&conn);
     if !settings.automation_background_enabled {
         return 0;
     }
 
     let _ = store::recover_stale_runs(&conn, &store::now_rfc3339());
-    let due = store::find_due(&conn, &chrono::Local::now().to_rfc3339()).unwrap_or_default();
-    if due.is_empty() && store::pending_schedule_ids(&conn).unwrap_or_default().is_empty() {
+    let initial_due =
+        store::find_due(&conn, &chrono::Local::now().to_rfc3339()).unwrap_or_default();
+    let initial_pending = store::pending_schedule_ids(&conn).unwrap_or_default();
+    if initial_due.is_empty() && initial_pending.is_empty() {
         return 0;
     }
 
@@ -1056,39 +1081,63 @@ pub fn run_cli() -> i32 {
     let local = tokio::task::LocalSet::new();
     rt.block_on(local.run_until(async {
         let mut jobs = tokio::task::JoinSet::new();
+        let mut pending_initial_due = Some(initial_due);
+        let mut pending_initial_queued = Some(initial_pending);
         loop {
             let mut progressed = false;
             while jobs.try_join_next().is_some() {}
             if !is_gui_running_at(&data_dir) {
-                let due = store::find_due(&conn, &chrono::Local::now().to_rfc3339()).unwrap_or_default();
+                let due = pending_initial_due.take().unwrap_or_else(|| {
+                    store::find_due(&conn, &chrono::Local::now().to_rfc3339()).unwrap_or_default()
+                });
                 for schedule in due {
-                    let Ok(job_conn) = crate::db::open() else { continue; };
+                    let Some(next) = schedule.next_run_at.as_deref() else {
+                        continue;
+                    };
                     let run_id = uuid::Uuid::new_v4().to_string();
-                    let Some(next) = schedule.next_run_at.as_deref() else { continue; };
-                    if let Ok((claimed, _, policy)) = store::claim_run(&conn, &schedule.id, &run_id, Some(next)) {
+                    if let Ok((claimed, _, policy)) =
+                        store::claim_run(&conn, &schedule.id, &run_id, Some(next))
+                    {
                         progressed = true;
+                        // All LocalSet tasks run cooperatively on this thread and never hold
+                        // SQLite transactions across `.await`, so reusing `Rc<Connection>`
+                        // avoids opening a fresh connection per candidate schedule.
+                        let job_conn = std::rc::Rc::clone(&conn);
                         let settings = crate::db::load_settings(&job_conn);
                         jobs.spawn_local(async move {
-                            execute_claimed_schedule(&job_conn, &settings, claimed, run_id, policy).await;
+                            execute_claimed_schedule(&job_conn, &settings, claimed, run_id, policy)
+                                .await;
                         });
-                    } else if store::get(&conn, &schedule.id).ok().flatten()
-                        .is_some_and(|current| current.next_run_at.as_deref() != Some(next)) {
+                    } else if store::get(&conn, &schedule.id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|current| current.next_run_at.as_deref() != Some(next))
+                    {
                         progressed = true;
                     }
                 }
-                for id in store::pending_schedule_ids(&conn).unwrap_or_default() {
-                    let Ok(job_conn) = crate::db::open() else { continue; };
+                let pending_ids = pending_initial_queued
+                    .take()
+                    .unwrap_or_else(|| store::pending_schedule_ids(&conn).unwrap_or_default());
+                for id in pending_ids {
                     let run_id = uuid::Uuid::new_v4().to_string();
-                    if let Ok(Some((claimed, _, policy))) = store::claim_pending_run(&conn, &id, &run_id) {
+                    if let Ok(Some((claimed, _, policy))) =
+                        store::claim_pending_run(&conn, &id, &run_id)
+                    {
+                        progressed = true;
+                        let job_conn = std::rc::Rc::clone(&conn);
                         let settings = crate::db::load_settings(&job_conn);
                         jobs.spawn_local(async move {
-                            execute_claimed_schedule(&job_conn, &settings, claimed, run_id, policy).await;
+                            execute_claimed_schedule(&job_conn, &settings, claimed, run_id, policy)
+                                .await;
                         });
                     }
                 }
             }
             if jobs.is_empty() {
-                if progressed { continue; }
+                if progressed {
+                    continue;
+                }
                 break;
             }
             tokio::select! {

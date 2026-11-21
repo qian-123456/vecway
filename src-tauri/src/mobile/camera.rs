@@ -584,26 +584,56 @@ where
             .ok_or_else(|| "保存的拍照端口无效".to_string())?;
         Ok(Some(port))
     };
+    let mut replacing_occupied = false;
     if let Some(port) = read_port()? {
-        return bind(port).await;
+        match bind(port).await {
+            Ok(listener) => return Ok(listener),
+            Err(err) => {
+                tracing::warn!(
+                    "camera persisted port {port} unavailable ({err}); falling back to ephemeral port"
+                );
+                replacing_occupied = true;
+            }
+        }
     }
 
     std::fs::create_dir_all(data_dir).map_err(|e| format!("无法保存拍照端口: {e}"))?;
     let listener = bind(0).await?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let temp = data_dir.join(format!(".camera-port-{}.tmp", Uuid::new_v4()));
-    let result = write_temporary(&temp, port.to_string().as_bytes())
-        .and_then(|()| std::fs::hard_link(&temp, &port_path));
-    let _ = std::fs::remove_file(&temp);
-    match result {
-        Ok(()) => Ok(listener),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            drop(listener);
-            let port = read_port()?.ok_or("保存的拍照端口不存在")?;
-            bind(port).await
+    if !replacing_occupied {
+        let result = write_temporary(&temp, port.to_string().as_bytes())
+            .and_then(|()| std::fs::hard_link(&temp, &port_path));
+        let _ = std::fs::remove_file(&temp);
+        match result {
+            Ok(()) => return Ok(listener),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                drop(listener);
+                let winner_port = read_port()?.ok_or("保存的拍照端口不存在")?;
+                if let Ok(winner_listener) = bind(winner_port).await {
+                    return Ok(winner_listener);
+                }
+                let fallback = bind(0).await?;
+                let fb_port = fallback.local_addr().map_err(|e| e.to_string())?.port();
+                let fb_tmp = data_dir.join(format!(".camera-port-{}.tmp", Uuid::new_v4()));
+                let fb_res = write_temporary(&fb_tmp, fb_port.to_string().as_bytes())
+                    .and_then(|()| std::fs::rename(&fb_tmp, &port_path));
+                if let Err(err) = fb_res {
+                    let _ = std::fs::remove_file(&fb_tmp);
+                    return Err(format!("无法保存拍照端口: {err}"));
+                }
+                return Ok(fallback);
+            }
+            Err(e) => return Err(format!("无法保存拍照端口: {e}")),
         }
-        Err(e) => Err(format!("无法保存拍照端口: {e}")),
     }
+    let result = write_temporary(&temp, port.to_string().as_bytes())
+        .and_then(|()| std::fs::rename(&temp, &port_path));
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("无法保存拍照端口: {e}"));
+    }
+    Ok(listener)
 }
 
 pub async fn start(
@@ -1290,7 +1320,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn camera_port_is_persisted_and_collision_is_explicit() {
+    async fn camera_port_is_persisted_and_falls_back_on_collision() {
         let dir = std::env::temp_dir().join(format!("omp-camera-port-test-{}", Uuid::new_v4()));
         let ip = Ipv4Addr::LOCALHOST;
         let first = bind_camera_listener(ip, &dir).await.unwrap();
@@ -1301,19 +1331,22 @@ mod tests {
             std::fs::read_to_string(&port_path).unwrap(),
             port.to_string()
         );
-        let error = bind_camera_listener(ip, &dir).await.unwrap_err();
-        assert!(error.contains(&format!("端口 {port} 不可用")), "{error}");
+        // While the persisted port is held, binding falls back to an ephemeral port and persists it.
+        let second = bind_camera_listener(ip, &dir).await.unwrap();
+        let fallback_port = second.local_addr().unwrap().port();
+        assert_ne!(fallback_port, 0);
+        assert_ne!(fallback_port, port);
         assert_eq!(
             std::fs::read_to_string(&port_path).unwrap(),
-            port.to_string()
+            fallback_port.to_string()
         );
-        // Keep the real listener held through the collision and persistence checks.
+        drop(second);
         drop(first);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
-    async fn camera_saved_port_is_the_only_bind_request_and_failure_preserves_config() {
+    async fn camera_saved_port_is_tried_first_then_falls_back_and_preserves_on_double_failure() {
         let dir = std::env::temp_dir().join(format!("omp-camera-port-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -1325,7 +1358,7 @@ mod tests {
         std::fs::write(&port_path, &saved).unwrap();
         let mut held = Some(listener);
         let mut requests = Vec::new();
-        // Supply the already-held socket: this tests port selection, not OS rebind timing.
+        // When the saved port succeeds, only the saved port is requested and file stays untouched.
         let reopened = bind_camera_listener_with(&dir, |requested| {
             requests.push(requested);
             std::future::ready(Ok(held.take().unwrap()))
@@ -1336,15 +1369,16 @@ mod tests {
         assert_eq!(reopened.local_addr().unwrap().port(), port);
         assert_eq!(std::fs::read_to_string(&port_path).unwrap(), saved);
 
+        // When both the saved port and ephemeral fallback fail, the error surfaces and config is kept.
         requests.clear();
         let error = bind_camera_listener_with(&dir, |requested| {
             requests.push(requested);
-            std::future::ready(Err("saved port bind failed".to_string()))
+            std::future::ready(Err(format!("bind {requested} failed")))
         })
         .await
         .unwrap_err();
-        assert_eq!(error, "saved port bind failed");
-        assert_eq!(requests, [port]);
+        assert_eq!(error, "bind 0 failed");
+        assert_eq!(requests, [port, 0]);
         assert_eq!(std::fs::read_to_string(&port_path).unwrap(), saved);
         drop(reopened);
         std::fs::remove_dir_all(dir).unwrap();

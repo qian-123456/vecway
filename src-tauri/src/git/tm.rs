@@ -1,10 +1,10 @@
 //! Time machine: run an old commit in a detached worktree.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -28,54 +28,179 @@ struct Run {
     seq: u64,
 }
 
+static RUNS: LazyLock<Mutex<HashMap<String, Run>>> = LazyLock::new(Default::default);
+
 fn runs() -> &'static Mutex<HashMap<String, Run>> {
-    static RUNS: OnceLock<Mutex<HashMap<String, Run>>> = OnceLock::new();
-    RUNS.get_or_init(Default::default)
+    &RUNS
 }
 
-/// Finished (no pid) runs kept for the UI; older ones are dropped.
+/// Finished (no pid) runs kept for the UI; older ones are evicted along with
+/// their detached worktrees and SHA-keyed temp data directories.
 const MAX_FINISHED_RUNS: usize = 20;
 
-/// Insert a run and evict the oldest finished runs beyond `MAX_FINISHED_RUNS`.
+struct EvictedResources {
+    repo: String,
+    worktree: String,
+    sha: String,
+    remove_wt: bool,
+    remove_data_dir: bool,
+}
+
+/// Insert a run, evict the oldest finished runs beyond `MAX_FINISHED_RUNS`,
+/// and clean up their unreferenced disk resources outside the map lock.
 fn insert_run(id: String, mut run: Run) {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     run.seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut map = runs().lock();
-    map.insert(id, run);
-    prune_finished(&mut map);
+    let evicted = {
+        let mut map = runs().lock();
+        map.insert(id, run);
+        take_evicted_finished(&mut map)
+    };
+    cleanup_evicted(runs(), evicted);
 }
 
-fn prune_finished(map: &mut HashMap<String, Run>) {
+fn take_evicted_finished(map: &mut HashMap<String, Run>) -> Vec<EvictedResources> {
     let mut done: Vec<(u64, String)> = map
         .iter()
         .filter(|(_, r)| r.info.pid.is_none())
         .map(|(k, r)| (r.seq, k.clone()))
         .collect();
     if done.len() <= MAX_FINISHED_RUNS {
-        return;
+        return Vec::new();
     }
     done.sort_unstable();
+    let mut removed = Vec::new();
     for (_, k) in &done[..done.len() - MAX_FINISHED_RUNS] {
-        map.remove(k);
+        if let Some(run) = map.remove(k) {
+            removed.push(run);
+        }
+    }
+    let remaining_wts: HashSet<PathBuf> = map
+        .values()
+        .map(|r| worktree::canon(Path::new(&r.info.worktree)))
+        .collect();
+    let remaining_shas: HashSet<String> = map.values().map(|r| r.info.sha.clone()).collect();
+
+    let mut seen_wts = HashSet::new();
+    let mut seen_shas = HashSet::new();
+    let mut out = Vec::new();
+    for run in removed {
+        let wt_canon = worktree::canon(Path::new(&run.info.worktree));
+        let remove_wt = !remaining_wts.contains(&wt_canon) && seen_wts.insert(wt_canon);
+        let remove_data_dir =
+            !remaining_shas.contains(&run.info.sha) && seen_shas.insert(run.info.sha.clone());
+        if remove_wt || remove_data_dir {
+            out.push(EvictedResources {
+                repo: run.info.repo,
+                worktree: run.info.worktree,
+                sha: run.info.sha,
+                remove_wt,
+                remove_data_dir,
+            });
+        }
+    }
+    out
+}
+
+fn cleanup_worktree_with_runs(repo: &Path, wt: &Path, active_runs: &[TmRun]) -> Result<(), String> {
+    let wt_canon = worktree::canon(wt);
+    let repo_canon = worktree::canon(repo);
+    if wt_canon == repo_canon {
+        return Err("不能删除主工作区".into());
+    }
+    worktree::ensure_unused(&wt_canon, &[], active_runs)?;
+
+    let mut first_err: Option<String> = None;
+    if wt_canon.exists() {
+        let wt_s = wt_canon.to_string_lossy().into_owned();
+        if let Err(e) = git_ok(repo, &["worktree", "remove", "--force", &wt_s]) {
+            if wt_canon.exists() {
+                if let Err(rm_err) = std::fs::remove_dir_all(&wt_canon) {
+                    first_err = Some(format!("{e}; remove_dir_all failed: {rm_err}"));
+                }
+            }
+        }
+    }
+    let _ = git_ok(repo, &["worktree", "prune"]);
+    super::invalidate_cache(&wt_canon);
+
+    if wt_canon.exists() {
+        return Err(first_err.unwrap_or_else(|| {
+            format!(
+                "worktree directory still exists after cleanup: {}",
+                wt_canon.display()
+            )
+        }));
+    }
+    Ok(())
+}
+
+fn cleanup_data_dir(sha: &str) -> Result<(), String> {
+    if sha.is_empty() {
+        return Ok(());
+    }
+    let dir = isolated_data_dir(sha);
+    if !dir.exists() {
+        return Ok(());
+    }
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("清理临时数据目录失败 ({}): {e}", dir.display())),
     }
 }
 
-fn ansi_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]",
-        )
+fn cleanup_evicted(map_lock: &Mutex<HashMap<String, Run>>, evicted: Vec<EvictedResources>) {
+    for item in evicted {
+        let wt_canon = worktree::canon(Path::new(&item.worktree));
+        let (wt_in_use, sha_in_use, active_runs) = {
+            let map = map_lock.lock();
+            let wt_in_use = map
+                .values()
+                .any(|r| worktree::canon(Path::new(&r.info.worktree)) == wt_canon);
+            let sha_in_use = map.values().any(|r| r.info.sha == item.sha);
+            let active_runs: Vec<TmRun> = map.values().map(|r| r.info.clone()).collect();
+            (wt_in_use, sha_in_use, active_runs)
+        };
+        if item.remove_wt && !wt_in_use {
+            if let Err(e) = cleanup_worktree_with_runs(
+                Path::new(&item.repo),
+                Path::new(&item.worktree),
+                &active_runs,
+            ) {
+                tracing::warn!(
+                    "time machine eviction failed to remove worktree {}: {e}",
+                    item.worktree
+                );
+            }
+        }
+        if item.remove_data_dir && !sha_in_use {
+            if let Err(e) = cleanup_data_dir(&item.sha) {
+                tracing::warn!(
+                    "time machine eviction failed to remove data dir for {}: {e}",
+                    item.sha
+                );
+            }
+        }
+    }
+}
+
+static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]")
         .expect("ansi regex")
-    })
+});
+
+static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d+[^\s]*")
+        .expect("url regex")
+});
+
+fn ansi_re() -> &'static Regex {
+    &ANSI_RE
 }
 
 fn url_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d+[^\s]*")
-            .expect("url regex")
-    })
+    &URL_RE
 }
 
 pub fn strip_ansi(s: &str) -> String {
@@ -333,14 +458,19 @@ pub fn run(repo: &Path, sha: &str, command: Option<&str>, sink: LogSink) -> Resu
     }
     std::thread::spawn(move || {
         let code = child.wait().ok().and_then(|s| s.code());
-        if let Some(r) = runs().lock().get_mut(&id) {
-            r.info.pid = None;
-        }
+        let evicted = {
+            let mut map = runs().lock();
+            if let Some(r) = map.get_mut(&id) {
+                r.info.pid = None;
+            }
+            take_evicted_finished(&mut map)
+        };
         let msg = match code {
             Some(c) => format!("[进程已退出，退出码 {c}]"),
             None => "[进程已被终止]".to_string(),
         };
         push_line(&id, msg, &sink);
+        cleanup_evicted(runs(), evicted);
     });
     Ok(snap)
 }
@@ -388,27 +518,68 @@ pub fn kill_group(pgid: i32) {
     }
 }
 
-/// Stop a run's process group and optionally remove its worktree.
-pub fn stop(run_id: &str, remove_worktree: bool) -> Result<(), String> {
-    let (pid, repo, wt) = {
-        let map = runs().lock();
+fn stop_in(
+    map_lock: &Mutex<HashMap<String, Run>>,
+    run_id: &str,
+    remove_worktree: bool,
+) -> Result<(), String> {
+    let (pid, repo, wt, sha) = {
+        let map = map_lock.lock();
         let r = map.get(run_id).ok_or("运行记录不存在")?;
-        (r.info.pid, r.info.repo.clone(), r.info.worktree.clone())
+        (
+            r.info.pid,
+            r.info.repo.clone(),
+            r.info.worktree.clone(),
+            r.info.sha.clone(),
+        )
     };
     if let Some(pid) = pid {
         kill_group(pid as i32);
         // Reflect the stop immediately; the waiter thread may lag behind.
-        if let Some(r) = runs().lock().get_mut(run_id) {
+        if let Some(r) = map_lock.lock().get_mut(run_id) {
             r.info.pid = None;
         }
     }
     if remove_worktree {
-        runs().lock().remove(run_id);
-        if Path::new(&wt).exists() {
-            worktree::remove(Path::new(&repo), Path::new(&wt), false, true)?;
+        let wt_canon = worktree::canon(Path::new(&wt));
+        let (other_live_uses_wt, other_uses_wt, other_uses_sha, active_runs) = {
+            let map = map_lock.lock();
+            let other_live_uses_wt = map.iter().any(|(id, r)| {
+                id != run_id
+                    && r.info.pid.is_some()
+                    && worktree::canon(Path::new(&r.info.worktree)) == wt_canon
+            });
+            let other_uses_wt = map.iter().any(|(id, r)| {
+                id != run_id && worktree::canon(Path::new(&r.info.worktree)) == wt_canon
+            });
+            let other_uses_sha = map.iter().any(|(id, r)| id != run_id && r.info.sha == sha);
+            let active_runs: Vec<TmRun> = map.values().map(|r| r.info.clone()).collect();
+            (
+                other_live_uses_wt,
+                other_uses_wt,
+                other_uses_sha,
+                active_runs,
+            )
+        };
+        if other_live_uses_wt {
+            return Err("时光机仍在此工作树运行，请先停止".into());
         }
+        // Perform disk cleanup BEFORE removing the in-memory entry so failures
+        // surface cleanly and retain accurate state for retry.
+        if !other_uses_wt {
+            cleanup_worktree_with_runs(Path::new(&repo), Path::new(&wt), &active_runs)?;
+        }
+        if !other_uses_sha {
+            cleanup_data_dir(&sha)?;
+        }
+        map_lock.lock().remove(run_id);
     }
     Ok(())
+}
+
+/// Stop a run's process group and optionally remove its worktree and temp data dir.
+pub fn stop(run_id: &str, remove_worktree: bool) -> Result<(), String> {
+    stop_in(runs(), run_id, remove_worktree)
 }
 
 #[cfg(test)]
@@ -497,5 +668,141 @@ mod tests {
         for d in [web, tauri, cargo] {
             std::fs::remove_dir_all(d).unwrap();
         }
+    }
+
+    fn temp_tm_repo(tag: &str) -> (PathBuf, String) {
+        let dir =
+            std::env::temp_dir().join(format!("vecway-tm-unit-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git_ok(&dir, &["init", "-q", "-b", "main"]).unwrap();
+        git_ok(&dir, &["config", "user.name", "Test"]).unwrap();
+        git_ok(&dir, &["config", "user.email", "t@example.com"]).unwrap();
+        git_ok(&dir, &["config", "commit.gpgsign", "false"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        git_ok(&dir, &["add", "-A"]).unwrap();
+        git_ok(&dir, &["commit", "-q", "-m", "init"]).unwrap();
+        let sha = git_ok(&dir, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        (dir, sha)
+    }
+
+    fn make_finished_run(id: &str, repo: &Path, wt: &Path, sha: &str, seq: u64) -> Run {
+        Run {
+            info: TmRun {
+                id: id.to_string(),
+                repo: repo.to_string_lossy().into_owned(),
+                sha: sha.to_string(),
+                worktree: wt.to_string_lossy().into_owned(),
+                command: String::new(),
+                pid: None,
+                url: None,
+                log_tail: String::new(),
+            },
+            log: VecDeque::new(),
+            seq,
+        }
+    }
+
+    #[test]
+    fn eviction_cleans_up_detached_worktree_and_temp_data_dir() {
+        let (repo, sha) = temp_tm_repo("evict");
+        let wt = worktree::create_detached(&repo, "tm-evict001", &sha).unwrap();
+        std::fs::create_dir_all(wt.join("node_modules/pkg")).unwrap();
+        std::fs::write(wt.join("node_modules/pkg/index.js"), "module.exports = 1;").unwrap();
+
+        let evicted_sha = format!("evict-{}", uuid::Uuid::new_v4());
+        let data_dir = isolated_data_dir(&evicted_sha);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("app.db"), "stub").unwrap();
+
+        let local_runs: Mutex<HashMap<String, Run>> = Mutex::new(HashMap::new());
+        {
+            let mut map = local_runs.lock();
+            map.insert(
+                "oldest".to_string(),
+                make_finished_run("oldest", &repo, &wt, &evicted_sha, 1),
+            );
+            for i in 0..MAX_FINISHED_RUNS {
+                let id = format!("keep-{i}");
+                let dummy_wt = repo.join(format!(".worktrees/dummy-{i}"));
+                map.insert(
+                    id.clone(),
+                    make_finished_run(
+                        &id,
+                        &repo,
+                        &dummy_wt,
+                        &format!("keep-sha-{i}"),
+                        (i + 2) as u64,
+                    ),
+                );
+            }
+        }
+
+        let evicted = {
+            let mut map = local_runs.lock();
+            take_evicted_finished(&mut map)
+        };
+        assert_eq!(evicted.len(), 1);
+        cleanup_evicted(&local_runs, evicted);
+
+        assert!(!wt.exists(), "evicted worktree should be removed from disk");
+        assert!(
+            !data_dir.exists(),
+            "evicted SHA temp data dir should be removed from disk"
+        );
+        let listed = worktree::list_entries(&repo).unwrap();
+        assert!(!listed
+            .iter()
+            .any(|e| worktree::canon(Path::new(&e.path)) == wt));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn stop_retains_entry_on_cleanup_failure_and_cleans_data_dir_on_success() {
+        let (repo, sha) = temp_tm_repo("stop");
+        let wt = worktree::create_detached(&repo, "tm-stop0001", &sha).unwrap();
+        let test_sha = format!("stop-{}", uuid::Uuid::new_v4());
+        let data_dir = isolated_data_dir(&test_sha);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("state.db"), "stub").unwrap();
+
+        let local_runs: Mutex<HashMap<String, Run>> = Mutex::new(HashMap::new());
+        local_runs.lock().insert(
+            "bad-main".to_string(),
+            make_finished_run("bad-main", &repo, &repo, "bad-sha", 1),
+        );
+        // Refusing to delete the main repo root must NOT drop the map entry.
+        assert!(stop_in(&local_runs, "bad-main", true).is_err());
+        assert!(local_runs.lock().contains_key("bad-main"));
+
+        local_runs.lock().insert(
+            "good".to_string(),
+            make_finished_run("good", &repo, &wt, &test_sha, 2),
+        );
+        stop_in(&local_runs, "good", true).unwrap();
+        assert!(!wt.exists(), "worktree removed on stop(true)");
+        assert!(
+            !data_dir.exists(),
+            "SHA temp data dir removed on stop(true)"
+        );
+        assert!(!local_runs.lock().contains_key("good"));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn cleanup_worktree_falls_back_to_remove_dir_all_and_prunes() {
+        let (repo, sha) = temp_tm_repo("fallback");
+        let wt = worktree::create_detached(&repo, "tm-fall0001", &sha).unwrap();
+        // Corrupt the worktree `.git` pointer so `git worktree remove --force` fails.
+        std::fs::write(wt.join(".git"), "corrupted-gitdir\n").unwrap();
+        cleanup_worktree_with_runs(&repo, &wt, &[]).unwrap();
+        assert!(!wt.exists(), "fallback remove_dir_all should remove dir");
+        let listed = worktree::list_entries(&repo).unwrap();
+        assert!(!listed
+            .iter()
+            .any(|e| worktree::canon(Path::new(&e.path)) == wt));
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }

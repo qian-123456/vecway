@@ -193,7 +193,9 @@ pub async fn rpc_stop(
         diagnostic_operation_id.as_deref(),
         false,
         async {
-            let handle = crate::rpc::get_handle(&session_id).ok_or("session is not live")?;
+            let handle = crate::rpc::get_handle(&session_id)
+                .or_else(|| crate::rpc::get_stopping_handle(&session_id))
+                .ok_or("session is not live")?;
             crate::rpc::stop(&handle).await
         },
     )
@@ -224,7 +226,7 @@ pub async fn rpc_list_live(
     Ok(crate::rpc::registry()
         .read()
         .values()
-        .filter(|h| h.alive.load(std::sync::atomic::Ordering::SeqCst))
+        .filter(|h| h.is_usable())
         .map(|h| h.info())
         .collect())
 }
@@ -240,7 +242,7 @@ pub async fn rpc_omp_staleness(state: tauri::State<'_, AppState>) -> Result<OmpS
         super::process::stale_session_ids(
             fingerprint.as_deref(),
             reg.iter()
-                .filter(|(_, h)| h.alive.load(std::sync::atomic::Ordering::SeqCst))
+                .filter(|(_, h)| h.is_usable())
                 .map(|(id, h)| (id.as_str(), h.omp_fingerprint.as_deref())),
         )
     };
@@ -338,7 +340,9 @@ pub async fn subagent_list(
     _state: tauri::State<'_, AppState>,
     parent_file: String,
 ) -> Result<Vec<SubagentSummary>, String> {
-    crate::rpc::subagents::list(&parent_file)
+    tokio::task::spawn_blocking(move || crate::rpc::subagents::list(&parent_file))
+        .await
+        .map_err(|e| format!("subagent_list task failed: {e}"))?
 }
 
 /// Contract C5: normalized subagent transcript + meta + final output.
@@ -351,7 +355,11 @@ pub async fn subagent_transcript(
     agent_id: String,
     from_byte: Option<u64>,
 ) -> Result<SubagentTranscript, String> {
-    crate::rpc::subagents::transcript(&parent_file, &agent_id, from_byte)
+    tokio::task::spawn_blocking(move || {
+        crate::rpc::subagents::transcript(&parent_file, &agent_id, from_byte)
+    })
+    .await
+    .map_err(|e| format!("subagent_transcript task failed: {e}"))?
 }
 
 #[cfg(test)]

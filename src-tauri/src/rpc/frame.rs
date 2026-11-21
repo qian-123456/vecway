@@ -8,6 +8,8 @@ use serde_json::Value;
 
 /// Server default `maxReassembledFrameBytes` (64 MiB).
 pub const DEFAULT_MAX_REASSEMBLED: usize = 64 * 1024 * 1024;
+/// Hard upper ceiling for `ready`-negotiated `maxReassembledFrameBytes` (128 MiB).
+pub const MAX_REASSEMBLED_CEILING: usize = 128 * 1024 * 1024;
 
 struct Active {
     chunk_id: String,
@@ -32,15 +34,25 @@ impl Default for ChunkReassembler {
 impl ChunkReassembler {
     pub fn new(max_reassembled: usize) -> Self {
         Self {
-            max_reassembled: max_reassembled.max(1),
+            max_reassembled: max_reassembled.clamp(1, MAX_REASSEMBLED_CEILING),
             active: None,
         }
     }
 
-    /// Adopt the limit advertised by the `ready` frame.
+    /// Current effective reassembly byte ceiling.
+    pub fn max_reassembled(&self) -> usize {
+        self.max_reassembled
+    }
+
+    /// Drop any in-progress chunk sequence (e.g. after an oversized line).
+    pub fn reset(&mut self) {
+        self.active = None;
+    }
+
+    /// Adopt the limit advertised by the `ready` frame, capped to `MAX_REASSEMBLED_CEILING`.
     pub fn set_max_reassembled(&mut self, max: usize) {
         if max > 0 {
-            self.max_reassembled = max;
+            self.max_reassembled = max.min(MAX_REASSEMBLED_CEILING);
         }
     }
 
@@ -316,5 +328,33 @@ mod tests {
         let mut r = ChunkReassembler::new(10);
         let c = chunk("y", 0, 20, 10, "y");
         assert!(r.feed(c).is_err());
+    }
+
+    #[test]
+    fn caps_negotiated_max_reassembled_at_ceiling() {
+        let mut r = ChunkReassembler::new(MAX_REASSEMBLED_CEILING.saturating_mul(4));
+        assert_eq!(r.max_reassembled(), MAX_REASSEMBLED_CEILING);
+
+        r.set_max_reassembled(usize::MAX);
+        assert_eq!(r.max_reassembled(), MAX_REASSEMBLED_CEILING);
+
+        r.set_max_reassembled(0);
+        assert_eq!(r.max_reassembled(), MAX_REASSEMBLED_CEILING);
+
+        r.set_max_reassembled(1024);
+        assert_eq!(r.max_reassembled(), 1024);
+    }
+
+    #[test]
+    fn reset_clears_in_progress_sequence() {
+        let mut r = ChunkReassembler::default();
+        let payload = json!({"a": "b".repeat(100)});
+        let chunks = split_frame(&payload, 3);
+        assert!(r.feed(chunks[0].clone()).unwrap().is_none());
+        r.reset();
+        assert_eq!(
+            r.feed(json!({"type": "agent_end"})).unwrap(),
+            Some(json!({"type": "agent_end"}))
+        );
     }
 }

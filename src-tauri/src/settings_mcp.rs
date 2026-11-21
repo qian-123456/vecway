@@ -11,13 +11,20 @@
 //! secret are masked before reaching the UI (`"********"` never shown in
 //! plaintext — masked entries carry `value: null`).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 const MCP_SCHEMA_URL: &str =
 	"https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json";
+
+/// Process-wide lock serializing MCP config read-modify-write mutations.
+static MCP_MUTATION_LOCK: Mutex<()> = Mutex::new(());
+static MCP_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -208,7 +215,7 @@ fn read_json_map(path: &Path) -> Result<Option<Map<String, Value>>, String> {
     }
 }
 
-/// Atomic write via tmp+rename (same convention as services::files).
+/// Atomic write via unique tmp+rename (same convention as services::files).
 fn write_json_map(path: &Path, map: &Map<String, Value>) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -221,10 +228,38 @@ fn write_json_map(path: &Path, map: &Map<String, Value>) -> Result<(), String> {
         .file_name()
         .ok_or_else(|| "无效的 mcp.json 路径".to_string())?
         .to_string_lossy();
-    let tmp = path.with_file_name(format!(".{name}.ompws-{}.tmp", std::process::id()));
-    std::fs::write(&tmp, text).map_err(|e| format!("写入失败: {e}"))?;
-    if let Ok(meta) = std::fs::metadata(path) {
-        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    let pid = std::process::id();
+    let existing_perms = std::fs::metadata(path).ok().map(|m| m.permissions());
+    let mut created_tmp = None;
+    for _ in 0..16 {
+        let seq = MCP_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let candidate = path.with_file_name(format!(".{name}.ompws-{pid}-{seq}.tmp"));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        if existing_perms.is_none() {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&candidate) {
+            Ok(mut file) => {
+                if let Err(e) = file
+                    .write_all(text.as_bytes())
+                    .and_then(|()| file.sync_all())
+                {
+                    let _ = std::fs::remove_file(&candidate);
+                    return Err(format!("写入失败: {e}"));
+                }
+                created_tmp = Some(candidate);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("写入失败: {e}")),
+        }
+    }
+    let tmp = created_tmp.ok_or_else(|| "写入失败: 无法创建唯一临时文件".to_string())?;
+    if let Some(perms) = existing_perms {
+        let _ = std::fs::set_permissions(&tmp, perms);
     }
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -1141,6 +1176,9 @@ fn mutate<F>(agent_dir: &Path, projects: &[String], f: F) -> Result<(), String>
 where
     F: FnOnce(&mut Ws) -> Result<(), String>,
 {
+    let _guard = MCP_MUTATION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut ws = Ws::open(agent_dir, projects, false)?;
     f(&mut ws)?;
     ws.flush()
@@ -2089,5 +2127,51 @@ mod tests {
         for ok in ["fs", "a.b-c_d:e", &"x".repeat(100)] {
             assert!(validate_server_name(ok).is_ok(), "should accept: {ok}");
         }
+    }
+
+    #[test]
+    fn concurrent_mutations_are_serialized_without_losing_writes() {
+        let fx = Fx::new("concurrent", 1);
+        let agent = fx.agent.clone();
+        let projs = fx.projs.clone();
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let agent = agent.clone();
+                let projs = projs.clone();
+                std::thread::spawn(move || {
+                    let name = format!("srv-{i}");
+                    let mut patch = Map::new();
+                    patch.insert("command".into(), Value::String(format!("cmd-{i}")));
+                    let scope = McpScope {
+                        all_projects: true,
+                        projects: Vec::new(),
+                    };
+                    mutate(&agent, &projs, |ws| {
+                        save_ws(ws, None, &name, &patch, Some(&scope))
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let cat = catalog_impl(&fx.agent, &fx.projs).unwrap();
+        for i in 0..8 {
+            let name = format!("srv-{i}");
+            assert!(
+                cat.servers.iter().any(|s| s.name == name),
+                "missing {name} after concurrent saves"
+            );
+        }
+        let leftover_tmps = std::fs::read_dir(&fx.agent)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .ok()
+                    .is_some_and(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            })
+            .count();
+        assert_eq!(leftover_tmps, 0);
     }
 }

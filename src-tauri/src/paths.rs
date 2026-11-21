@@ -39,15 +39,23 @@ pub(crate) fn agent_dir_from(
     home.join(".omp").join("agent")
 }
 
+/// Default `~/.vecway` data directory (ignoring `OMPWS_DATA_DIR`).
+pub fn default_data_dir() -> PathBuf {
+    home().join(".vecway")
+}
+
+/// Pure core of [`data_dir`]: env override is passed in so tests need no global env.
+pub(crate) fn data_dir_from(override_dir: Option<&str>, home: &std::path::Path) -> PathBuf {
+    if let Some(dir) = override_dir.map(str::trim).filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    home.join(".vecway")
+}
+
 /// `~/.vecway` (overridable via `OMPWS_DATA_DIR` for isolated dev/preview instances)
 pub fn data_dir() -> PathBuf {
-    if let Ok(val) = std::env::var("OMPWS_DATA_DIR") {
-        let trimmed = val.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-    home().join(".vecway")
+    let override_dir = std::env::var("OMPWS_DATA_DIR").ok();
+    data_dir_from(override_dir.as_deref(), &home())
 }
 
 /// `~/.vecway/app.db`
@@ -131,16 +139,12 @@ pub fn extension_path() -> PathBuf {
 
 /// `~/.vecway/extension/vecway-checkpoints.ts`
 pub fn checkpoints_extension_path() -> PathBuf {
-    data_dir()
-        .join("extension")
-        .join("vecway-checkpoints.ts")
+    data_dir().join("extension").join("vecway-checkpoints.ts")
 }
 
 /// `~/.vecway/extension/vecway-privacy.ts`
 pub fn privacy_extension_path() -> PathBuf {
-    data_dir()
-        .join("extension")
-        .join("vecway-privacy.ts")
+    data_dir().join("extension").join("vecway-privacy.ts")
 }
 
 /// `~/.vecway/extension/vecway-plan.ts`
@@ -150,9 +154,7 @@ pub fn plan_extension_path() -> PathBuf {
 
 /// `~/.vecway/extension/vecway-automation.ts`
 pub fn automation_extension_path() -> PathBuf {
-    data_dir()
-        .join("extension")
-        .join("vecway-automation.ts")
+    data_dir().join("extension").join("vecway-automation.ts")
 }
 
 /// True when using the default `~/.vecway` user data dir (not an isolated dev/test dir).
@@ -175,7 +177,7 @@ pub fn automations_dir() -> PathBuf {
     data_dir().join("automations")
 }
 
-/// `~/.omp-workspace/automations/<sanitized-id>/`
+/// `~/.vecway/automations/<sanitized-id>/`
 pub fn automation_dir(id: &str) -> PathBuf {
     let safe: String = id
         .chars()
@@ -225,7 +227,9 @@ fn merge_dir_missing(src: &std::path::Path, dst: &std::path::Path) {
                     dst_path.display()
                 );
             }
-        } else if src_path.is_dir() && dst_path.is_dir() {
+        } else if src_path.symlink_metadata().is_ok_and(|m| m.is_dir())
+            && dst_path.symlink_metadata().is_ok_and(|m| m.is_dir())
+        {
             merge_dir_missing(&src_path, &dst_path);
             let _ = std::fs::remove_dir(&src_path);
         }
@@ -268,7 +272,7 @@ fn migrate_legacy_data_dir_in(legacy: &std::path::Path, target: &std::path::Path
 /// Create all app-owned directories at startup.
 pub fn ensure_dirs() -> io::Result<()> {
     if is_default_data_dir() {
-        migrate_legacy_data_dir_in(&home().join(".omp-workspace"), &data_dir());
+        migrate_legacy_data_dir_in(&home().join(".omp-workspace"), &default_data_dir());
     }
     for dir in [
         data_dir(),
@@ -303,6 +307,23 @@ mod tests {
         assert_eq!(data_dir(), PathBuf::from("/tmp/ompws-test-env"));
         std::env::remove_var("OMPWS_DATA_DIR");
         assert_eq!(data_dir(), default_dir);
+    }
+
+    #[test]
+    fn test_data_dir_from_trims_and_falls_back() {
+        let h = std::path::Path::new("/Users/tester");
+        assert_eq!(
+            data_dir_from(None, h),
+            PathBuf::from("/Users/tester/.vecway")
+        );
+        assert_eq!(
+            data_dir_from(Some("   "), h),
+            PathBuf::from("/Users/tester/.vecway")
+        );
+        assert_eq!(
+            data_dir_from(Some("  /tmp/vecway-isolated  "), h),
+            PathBuf::from("/tmp/vecway-isolated")
+        );
     }
 
     #[test]
@@ -418,7 +439,10 @@ mod tests {
             resolve_image_path_in(target.to_str().unwrap(), &images_dir),
             Some(target)
         );
-        let missing = base.join(".omp-workspace").join("images").join("missing.png");
+        let missing = base
+            .join(".omp-workspace")
+            .join("images")
+            .join("missing.png");
         assert_eq!(
             resolve_image_path_in(missing.to_str().unwrap(), &images_dir),
             None

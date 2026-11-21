@@ -178,16 +178,25 @@ pub fn scan() -> Vec<Scanned> {
         .map(|l| l.pid.to_string())
         .collect::<Vec<_>>()
         .join(",");
-    let mut cmd = Command::new(lsof_bin());
-    cmd.args(["-a", "-p", &pids, "-d", "cwd", "-F", "n"]);
-    let cwds = run(cmd, SCAN_TIMEOUT)
-        .map(|o| parse_lsof_cwd(&o.text()))
-        .unwrap_or_default();
-    let mut cmd = Command::new("/bin/ps");
-    cmd.args(["-o", "pid=,pgid=,rss=,command=", "-p", &pids]);
-    let ps = run(cmd, SCAN_TIMEOUT)
-        .map(|o| parse_ps(&o.text()))
-        .unwrap_or_default();
+    let (cwds, ps) = std::thread::scope(|scope| {
+        let pids_ref = pids.as_str();
+        let cwd_handle = scope.spawn(move || {
+            let mut cmd = Command::new(lsof_bin());
+            cmd.args([
+                "-w", "-n", "-P", "-a", "-p", pids_ref, "-d", "cwd", "-F", "n",
+            ]);
+            run(cmd, SCAN_TIMEOUT)
+                .map(|o| parse_lsof_cwd(&o.text()))
+                .unwrap_or_default()
+        });
+        let mut cmd = Command::new("/bin/ps");
+        cmd.args(["-o", "pid=,pgid=,rss=,command=", "-p", pids_ref]);
+        let ps = run(cmd, SCAN_TIMEOUT)
+            .map(|o| parse_ps(&o.text()))
+            .unwrap_or_default();
+        let cwds = cwd_handle.join().unwrap_or_default();
+        (cwds, ps)
+    });
     listeners
         .into_iter()
         .map(|l| {
@@ -215,6 +224,7 @@ pub fn match_session(cwd: &str, sessions: &[(String, String)]) -> Option<String>
 }
 
 /// Build `ServiceInfo` rows (one per port) from a scan.
+#[cfg(test)]
 pub fn to_services(
     scanned: Vec<Scanned>,
     all: bool,
@@ -243,6 +253,42 @@ pub fn to_services(
         .collect();
     out.sort_by_key(|s| (s.port, s.pid));
     out
+}
+
+/// Build both `(dev_only, all)` `ServiceInfo` lists in a single pass over one
+/// `scan()` result so `list(false)` and `list(true)` share the same scan/cache.
+pub fn to_services_split(
+    scanned: Vec<Scanned>,
+    sessions: &[(String, String)],
+    app_pgids: &[i32],
+) -> (Vec<ServiceInfo>, Vec<ServiceInfo>) {
+    let mut dev = Vec::new();
+    let mut all = Vec::new();
+    for s in scanned {
+        let is_dev = is_dev_like(&s.listener.name, &s.command);
+        let session_id = s.cwd.as_deref().and_then(|c| match_session(c, sessions));
+        let started_by_app = app_pgids.contains(&s.pgid);
+        for port in s.listener.ports {
+            let info = ServiceInfo {
+                pid: s.listener.pid,
+                name: s.listener.name.clone(),
+                port,
+                cwd: s.cwd.clone(),
+                command: s.command.clone(),
+                url: format!("http://localhost:{port}"),
+                session_id: session_id.clone(),
+                started_by_app,
+                memory_kb: s.rss_kb,
+            };
+            if is_dev {
+                dev.push(info.clone());
+            }
+            all.push(info);
+        }
+    }
+    dev.sort_by_key(|s| (s.port, s.pid));
+    all.sort_by_key(|s| (s.port, s.pid));
+    (dev, all)
 }
 
 #[cfg(test)]
@@ -331,5 +377,41 @@ mod tests {
         assert_eq!(rows[0].session_id.as_deref(), Some("root"));
         assert!(rows[0].started_by_app);
         assert_eq!(rows[0].memory_kb, Some(102_400));
+    }
+
+    #[test]
+    fn to_services_split_partitions_dev_and_all_in_one_pass() {
+        let scanned = vec![
+            Scanned {
+                listener: Listener {
+                    pid: 100,
+                    name: "node".into(),
+                    ports: vec![5173, 5174],
+                },
+                cwd: Some("/repo/app".into()),
+                command: "node vite".into(),
+                pgid: 42,
+                rss_kb: Some(1234),
+            },
+            Scanned {
+                listener: Listener {
+                    pid: 200,
+                    name: "ControlCenter".into(),
+                    ports: vec![7000],
+                },
+                cwd: Some("/".into()),
+                command: "/System/Library/ControlCenter".into(),
+                pgid: 200,
+                rss_kb: None,
+            },
+        ];
+        let sessions = vec![("s1".to_string(), "/repo".to_string())];
+        let (dev, all) = to_services_split(scanned, &sessions, &[42]);
+        assert_eq!(dev.len(), 2);
+        assert_eq!(all.len(), 3);
+        assert_eq!(dev[0].session_id.as_deref(), Some("s1"));
+        assert!(dev[0].started_by_app);
+        assert!(!all[2].started_by_app);
+        assert_eq!(all[2].port, 7000);
     }
 }

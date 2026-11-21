@@ -1,14 +1,18 @@
 //! Targeted writer for `providers.<id>.modelOverrides.<modelId>.contextWindow` in
 //! OMP's `~/.omp/agent/models.yml`. Edits are line-level: every byte outside the
-//! touched lines (comments, key lines, ordering) is preserved. A timestamped
-//! backup is written next to the file, the result is re-parsed and verified, and
-//! the original is restored on any failure. File contents are never returned.
+//! touched lines (comments, key lines, ordering) is preserved. Edits are staged
+//! into a private `0600` temp file, re-parsed and verified, backed up into a
+//! single `0600` snapshot next to the file, and atomically renamed into place.
+//! File contents are never returned.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::contracts::ModelContextWindowEdit;
 
 const NEW_INDENT: usize = 2;
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[tauri::command]
 pub async fn omp_models_set_context_windows(
@@ -133,8 +137,10 @@ fn apply_with(
     commit_text(path, existed, &text, &|written| check(written, entries))
 }
 
-/// Write `text` to `path` with a timestamped backup, run `check` on the read-back
-/// content, and restore the original on any failure.
+/// Atomically stage `text` into a private `0600` temp file in the same
+/// directory, verify the read-back content with `check`, refresh the single
+/// `0600` backup snapshot (pruning legacy timestamped `.bak-*` files), and
+/// rename into `path`. Readers never observe a truncated or unverified file.
 pub(super) fn commit_text(
     path: &Path,
     existed: bool,
@@ -145,44 +151,112 @@ pub(super) fn commit_text(
         || "models.yml".to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
-    let backup = if existed {
-        let b = backup_path(path);
-        std::fs::copy(path, &b).map_err(|e| format!("备份 {label} 失败: {}", e.kind()))?;
-        Some(b)
-    } else {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {}", e.kind()))?;
-        }
-        None
-    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {}", e.kind()))?;
+    }
+    if existed
+        && std::fs::metadata(path)
+            .map(|m| m.permissions().readonly())
+            .unwrap_or(false)
+    {
+        return Err(format!("写入 {label} 失败: permission denied"));
+    }
 
-    let result = std::fs::write(path, text)
-        .map_err(|e| format!("写入 {label} 失败: {}", e.kind()))
-        .and_then(|_| {
-            let written = std::fs::read_to_string(path)
-                .map_err(|e| format!("回读 {label} 失败: {}", e.kind()))?;
-            check(&written)
-        });
-    if let Err(err) = result {
-        let restored = match &backup {
-            Some(b) => std::fs::copy(b, path).map(|_| ()),
-            None => std::fs::remove_file(path),
-        };
-        return Err(match restored {
-            Ok(()) => format!("{err}；已恢复原文件"),
-            Err(e) => format!("{err}；恢复原文件失败: {}", e.kind()),
-        });
+    let staged = write_private_temp(path, "stage", text.as_bytes())
+        .map_err(|e| format!("写入 {label} 失败: {}", e.kind()))?;
+    let verify_result = std::fs::read_to_string(&staged)
+        .map_err(|e| format!("回读 {label} 失败: {}", e.kind()))
+        .and_then(|written| check(&written));
+    if let Err(err) = verify_result {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("{err}；已恢复原文件"));
+    }
+
+    if existed {
+        let orig_bytes =
+            std::fs::read(path).map_err(|e| format!("备份 {label} 失败: {}", e.kind()))?;
+        let bak = backup_path(path);
+        let bak_tmp = write_private_temp(path, "bak", &orig_bytes).map_err(|e| {
+            let _ = std::fs::remove_file(&staged);
+            format!("备份 {label} 失败: {}", e.kind())
+        })?;
+        if let Err(e) = std::fs::rename(&bak_tmp, &bak) {
+            let _ = std::fs::remove_file(&bak_tmp);
+            let _ = std::fs::remove_file(&staged);
+            return Err(format!("备份 {label} 失败: {}", e.kind()));
+        }
+        prune_legacy_backups(path, &bak);
+    }
+
+    if let Err(e) = std::fs::rename(&staged, path) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("写入 {label} 失败: {}；已恢复原文件", e.kind()));
     }
     Ok(())
 }
 
-pub(super) fn backup_path(path: &Path) -> PathBuf {
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%3f");
+fn write_private_temp(path: &Path, kind: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "models.yml".into());
-    path.with_file_name(format!("{name}.bak-{stamp}"))
+    let pid = std::process::id();
+    for _ in 0..16 {
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_file_name(format!(".{name}.{kind}-{pid}-{seq}.tmp"));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&tmp) {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e);
+                }
+                return Ok(tmp);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "failed to allocate unique temp file",
+    ))
+}
+
+fn prune_legacy_backups(path: &Path, keep: &Path) {
+    let Some(dir) = path.parent() else { return };
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "models.yml".into());
+    let prefix = format!("{name}.bak-");
+    let keep_name = keep.file_name();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        if Some(fname.as_os_str()) == keep_name {
+            continue;
+        }
+        if fname.to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+pub(super) fn backup_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "models.yml".into());
+    path.with_file_name(format!("{name}.bak-latest"))
 }
 
 fn verify(text: &str, entries: &[ModelContextWindowEdit]) -> Result<(), String> {
@@ -639,5 +713,49 @@ mod tests {
         std::fs::write(&path, bad).unwrap();
         assert!(apply_to_file(&path, &[entry("a", "m", Some(2))]).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), bad);
+    }
+
+    #[test]
+    fn atomic_writes_bound_backup_count_prune_legacy_and_enforce_0600() {
+        let path = tmp("bounded-bak");
+        std::fs::write(&path, SAMPLE).unwrap();
+        let dir = path.parent().unwrap();
+        // Simulate leftover timestamped backups from older versions.
+        std::fs::write(dir.join("models.yml.bak-20260101-000000000"), "old1").unwrap();
+        std::fs::write(dir.join("models.yml.bak-20260102-000000000"), "old2").unwrap();
+
+        for cw_val in [100_000, 200_000, 300_000] {
+            apply_to_file(&path, &[entry("acme", "gpt-4o", Some(cw_val))]).unwrap();
+        }
+        let baks: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| {
+                let name = e.ok()?.file_name().to_string_lossy().into_owned();
+                name.starts_with("models.yml.bak-").then_some(name)
+            })
+            .collect();
+        assert_eq!(baks, vec!["models.yml.bak-latest".to_string()]);
+        let temps = std::fs::read_dir(dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .ok()
+                    .is_some_and(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            })
+            .count();
+        assert_eq!(temps, 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let main_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            let bak_mode = std::fs::metadata(backup_path(&path))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(main_mode, 0o600);
+            assert_eq!(bak_mode, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

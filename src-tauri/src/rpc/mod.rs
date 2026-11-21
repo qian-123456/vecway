@@ -37,6 +37,10 @@ type ResumeLocks = parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>
 static REGISTRY: OnceLock<parking_lot::RwLock<HashMap<String, Arc<SessionHandle>>>> =
     OnceLock::new();
 static RESUME_LOCKS: OnceLock<ResumeLocks> = OnceLock::new();
+static STARTUP_LOCKS: std::sync::LazyLock<ResumeLocks> = std::sync::LazyLock::new(Default::default);
+static STOPPING_HANDLES: std::sync::LazyLock<
+    parking_lot::Mutex<HashMap<String, Arc<SessionHandle>>>,
+> = std::sync::LazyLock::new(Default::default);
 static IDLE_TIMERS: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, u64>>> =
     std::sync::LazyLock::new(Default::default);
 static ACTIVITY_GUARDS: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, HashSet<String>>>> =
@@ -53,7 +57,10 @@ pub(crate) fn automation_resume_guarded(pid: u32) -> bool {
 }
 
 pub(crate) fn automation_resume_owned(pid: u32, attempt: &str) -> bool {
-    AUTOMATION_RESUME_GUARDS.lock().get(&pid).is_some_and(|v| v == attempt)
+    AUTOMATION_RESUME_GUARDS
+        .lock()
+        .get(&pid)
+        .is_some_and(|v| v == attempt)
 }
 
 pub(crate) fn clear_automation_resume_guard(pid: u32, attempt: &str) {
@@ -91,7 +98,9 @@ pub(crate) async fn reserve_automation_resume(
         if !idle {
             return Err("会话仍在运行或有待处理内容，请完成后重试".to_string());
         }
-        AUTOMATION_RESUME_GUARDS.lock().insert(handle.pid, attempt.clone());
+        AUTOMATION_RESUME_GUARDS
+            .lock()
+            .insert(handle.pid, attempt.clone());
     }
     Ok((handle, attempt))
 }
@@ -102,8 +111,12 @@ pub(crate) async fn send_automation_resume(
     attempt: &str,
     text: &str,
 ) -> Result<Value, String> {
-    let response = process::send_automation_resume(handle, prompt_command(text, Vec::new(), None), attempt).await?;
-    state.emit(AppEvent::PromptSent { session_id: handle.session_id.read().clone() });
+    let response =
+        process::send_automation_resume(handle, prompt_command(text, Vec::new(), None), attempt)
+            .await?;
+    state.emit(AppEvent::PromptSent {
+        session_id: handle.session_id.read().clone(),
+    });
     Ok(response)
 }
 
@@ -137,8 +150,87 @@ pub fn get_handle(session_id: &str) -> Option<Arc<SessionHandle>> {
     registry()
         .read()
         .get(session_id)
-        .filter(|h| h.alive.load(std::sync::atomic::Ordering::SeqCst))
+        .filter(|h| h.is_usable())
         .cloned()
+}
+
+pub(crate) fn track_stopping_handle(session_id: &str, handle: &Arc<SessionHandle>) {
+    STOPPING_HANDLES
+        .lock()
+        .insert(session_id.to_string(), handle.clone());
+}
+
+pub(crate) fn clear_stopping_handle(session_id: &str, handle: &Arc<SessionHandle>) {
+    let mut stopping = STOPPING_HANDLES.lock();
+    if stopping
+        .get(session_id)
+        .is_some_and(|existing| Arc::ptr_eq(existing, handle))
+    {
+        stopping.remove(session_id);
+    }
+}
+
+pub(crate) fn get_stopping_handle(session_id: &str) -> Option<Arc<SessionHandle>> {
+    STOPPING_HANDLES.lock().get(session_id).cloned()
+}
+
+/// Wait for any handle that has started shutting down for `session_id` to finish
+/// exiting before spawning a replacement process on the same session file.
+async fn wait_for_teardown(session_id: &str) -> Result<(), String> {
+    let stopping = get_stopping_handle(session_id).or_else(|| {
+        registry()
+            .read()
+            .get(session_id)
+            .filter(|h| !h.is_usable())
+            .cloned()
+    });
+    if let Some(handle) = stopping {
+        process::stop_handle_after_signal(&handle).await?;
+    }
+    Ok(())
+}
+
+struct StartupLockGuard {
+    key: String,
+    _guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for StartupLockGuard {
+    fn drop(&mut self) {
+        drop(self._guard.take());
+        let mut locks = STARTUP_LOCKS.lock();
+        if locks
+            .get(&self.key)
+            .is_some_and(|lock| Arc::strong_count(lock) == 1)
+        {
+            locks.remove(&self.key);
+        }
+    }
+}
+
+fn startup_lock_key(resume_file: Option<&str>) -> String {
+    match resume_file {
+        Some(file) => {
+            let canonical = std::fs::canonicalize(file)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| file.to_string());
+            format!("resume:{canonical}")
+        }
+        None => format!("new:{}", uuid::Uuid::new_v4()),
+    }
+}
+
+async fn acquire_startup_lock(key: String) -> StartupLockGuard {
+    let lock = STARTUP_LOCKS
+        .lock()
+        .entry(key.clone())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let guard = lock.lock_owned().await;
+    StartupLockGuard {
+        key,
+        _guard: Some(guard),
+    }
 }
 
 /// Install all app-bundled OMP extensions and skill plugins into `<data_dir>`.
@@ -258,9 +350,18 @@ pub fn touch_session(session_id: &str) {
     }
 }
 
+/// Short timeout for background idle-maintenance probes so they never block
+/// user dispatches or linger for 120s on a wedged child.
+const MAINTENANCE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Convert `idle_suspend_minutes` to a duration, returning `None` when disabled (`0`).
+fn idle_suspend_threshold(minutes: u32) -> Option<Duration> {
+    (minutes > 0).then(|| Duration::from_secs(u64::from(minutes) * 60))
+}
+
 /// Cheap local eligibility. Unknown runtime state is not proof of idleness.
 fn maintenance_idle(handle: &SessionHandle) -> bool {
-    handle.alive.load(Ordering::SeqCst)
+    handle.is_usable()
         && !automation_resume_guarded(handle.pid)
         && !handle.streaming.load(Ordering::SeqCst)
         && handle.settled.load(Ordering::SeqCst)
@@ -281,14 +382,14 @@ async fn schedule_idle_suspend(state: AppState, session_id: String, delay: Optio
     let Some(handle) = get_handle(&session_id) else {
         return;
     };
-    if session_retained(&session_id) || !handle.alive.load(Ordering::SeqCst) {
+    if session_retained(&session_id) || !handle.is_usable() {
         return;
     }
-    let minutes = state.settings.read().idle_suspend_minutes;
-    if minutes == 0 {
+    let Some(configured_delay) = idle_suspend_threshold(state.settings.read().idle_suspend_minutes)
+    else {
         return;
-    }
-    let delay = delay.unwrap_or_else(|| Duration::from_secs(u64::from(minutes) * 60));
+    };
+    let delay = delay.unwrap_or(configured_delay);
     let version = handle.activity_version.load(Ordering::SeqCst);
     if IDLE_TIMERS.lock().insert(session_id.clone(), version) == Some(version) {
         return;
@@ -298,13 +399,14 @@ async fn schedule_idle_suspend(state: AppState, session_id: String, delay: Optio
         {
             let resume = session_resume_lock(&session_id);
             let _resume_guard = resume.lock().await;
-            if get_handle(&session_id).is_some_and(|current| Arc::ptr_eq(&current, &handle)) {
-                let threshold =
-                    Duration::from_secs(u64::from(state.settings.read().idle_suspend_minutes) * 60);
-                let suspended =
-                    idle_suspendable(&handle, threshold) && suspend_if_idle(&handle, version).await;
-                if suspended {
-                    set_suspended(&state, &session_id, true);
+            let idle_minutes = state.settings.read().idle_suspend_minutes;
+            if let Some(threshold) = idle_suspend_threshold(idle_minutes) {
+                if get_handle(&session_id).is_some_and(|current| Arc::ptr_eq(&current, &handle)) {
+                    let suspended = idle_suspendable(&handle, threshold)
+                        && suspend_if_idle(&handle, version).await;
+                    if suspended {
+                        set_suspended(&state, &session_id, true);
+                    }
                 }
             }
         }
@@ -316,9 +418,9 @@ async fn schedule_idle_suspend(state: AppState, session_id: String, delay: Optio
     });
 }
 
-/// Atomically with respect to host dispatch: query authoritative state and
-/// active subagents, verify that no frame arrived meanwhile, then close stdin.
-/// Missing fields, query errors and new activity all conservatively keep it.
+/// Verify authoritative state and active subagents using short-timeout probes
+/// without blocking user dispatches across probes, then atomically detach and
+/// await process exit under `dispatch_lock`.
 async fn suspend_if_idle(handle: &Arc<SessionHandle>, version: u64) -> bool {
     if !idle_suspendable(handle, Duration::ZERO) {
         return false;
@@ -336,7 +438,11 @@ fn select_idle_evictions(mut candidates: Vec<(String, Duration)>, max_idle: usiz
     candidates.sort_by(|(id_a, elapsed_a), (id_b, elapsed_b)| {
         elapsed_b.cmp(elapsed_a).then_with(|| id_a.cmp(id_b))
     });
-    candidates.into_iter().take(excess).map(|(id, _)| id).collect()
+    candidates
+        .into_iter()
+        .take(excess)
+        .map(|(id, _)| id)
+        .collect()
 }
 
 async fn evict_excess_idle_sessions(state: &AppState) {
@@ -355,7 +461,7 @@ async fn evict_excess_idle_sessions(state: &AppState) {
     let candidates: Vec<(String, Duration)> = handles
         .into_iter()
         .filter_map(|(session_id, handle)| {
-            if !*handle.shutdown.borrow() && idle_suspendable(&handle, Duration::ZERO) {
+            if handle.is_usable() && idle_suspendable(&handle, Duration::ZERO) {
                 let elapsed = handle.last_activity.lock().elapsed();
                 Some((session_id, elapsed))
             } else {
@@ -367,10 +473,13 @@ async fn evict_excess_idle_sessions(state: &AppState) {
     for session_id in evictions {
         let resume = session_resume_lock(&session_id);
         let _guard = resume.lock().await;
+        if idle_suspend_threshold(state.settings.read().idle_suspend_minutes).is_none() {
+            break;
+        }
         let Some(handle) = get_handle(&session_id) else {
             continue;
         };
-        if *handle.shutdown.borrow() || !idle_suspendable(&handle, Duration::ZERO) {
+        if !handle.is_usable() || !idle_suspendable(&handle, Duration::ZERO) {
             continue;
         }
         let version = handle.activity_version.load(Ordering::SeqCst);
@@ -380,47 +489,76 @@ async fn evict_excess_idle_sessions(state: &AppState) {
     }
 }
 
+fn maintenance_precheck(handle: &SessionHandle, version: u64, respect_retention: bool) -> bool {
+    handle.activity_version.load(Ordering::SeqCst) == version
+        && maintenance_idle(handle)
+        && (!respect_retention || !session_retained(&handle.session_id.read()))
+}
+
 async fn maintenance_shutdown(
     handle: &Arc<SessionHandle>,
     version: u64,
     respect_retention: bool,
     source: &str,
 ) -> bool {
-    let _dispatch = handle.dispatch_lock.lock().await;
-    if !maintenance_quiescent_locked(handle, version, respect_retention).await {
+    if !maintenance_quiescent_probes(handle, version, respect_retention).await {
         return false;
     }
-    lifecycle::record(handle, source, None);
-    let _ = handle.shutdown.send(true);
-    true
+    let committed = {
+        let _dispatch = handle.dispatch_lock.lock().await;
+        if !maintenance_precheck(handle, version, respect_retention) {
+            false
+        } else {
+            lifecycle::record(handle, source, None);
+            process::mark_shutting_down_and_detach(handle);
+            true
+        }
+    };
+    if !committed {
+        return false;
+    }
+    process::stop_handle_after_signal(handle).await.is_ok()
 }
 
-/// Called with dispatch locked; response frames do not advance activity_version.
-async fn maintenance_quiescent_locked(
+/// Probe authoritative upstream state with short timeouts without holding
+/// `dispatch_lock` across the RPC round-trips. If any user command or inbound
+/// activity arrives meanwhile, `activity_version` advances (or `pending` becomes
+/// non-empty) and maintenance aborts cleanly.
+async fn maintenance_quiescent_probes(
     handle: &Arc<SessionHandle>,
     version: u64,
     respect_retention: bool,
 ) -> bool {
-    if handle.activity_version.load(Ordering::SeqCst) != version
-        || !maintenance_idle(handle)
-        || (respect_retention && session_retained(&handle.session_id.read()))
-    {
+    if !maintenance_precheck(handle, version, respect_retention) {
         return false;
     }
-    let Ok(state) = process::send_command_locked(handle, json!({"type": "get_state"})).await else {
+    let Ok(state) = process::send_command_with_timeout(
+        handle,
+        json!({"type": "get_state"}),
+        MAINTENANCE_PROBE_TIMEOUT,
+    )
+    .await
+    else {
         return false;
     };
+    if handle.activity_version.load(Ordering::SeqCst) != version {
+        return false;
+    }
     process::apply_state(handle, &state);
     let data = state.get("data").unwrap_or(&state);
     let fully_settled = data.get("isSettled").and_then(Value::as_bool) == Some(true)
         && data.get("isStreaming").and_then(Value::as_bool) == Some(false)
         && data.get("hasPendingAsyncWork").and_then(Value::as_bool) == Some(false)
         && data.get("queuedMessageCount").and_then(Value::as_u64) == Some(0);
-    if !fully_settled {
+    if !fully_settled || !maintenance_precheck(handle, version, respect_retention) {
         return false;
     }
-    let Ok(subagents) =
-        process::send_command_locked(handle, json!({"type": "get_subagents"})).await
+    let Ok(subagents) = process::send_command_with_timeout(
+        handle,
+        json!({"type": "get_subagents"}),
+        MAINTENANCE_PROBE_TIMEOUT,
+    )
+    .await
     else {
         return false;
     };
@@ -436,24 +574,26 @@ async fn maintenance_quiescent_locked(
                 )
             })
         });
-    if !no_active_subagents
-        || handle.activity_version.load(Ordering::SeqCst) != version
-        || !maintenance_idle(handle)
-        || (respect_retention && session_retained(&handle.session_id.read()))
-    {
-        return false;
-    }
-    true
+    no_active_subagents && maintenance_precheck(handle, version, respect_retention)
 }
 
 /// Stop all app-owned rpc session processes concurrently.
 pub async fn shutdown() {
-    let handles: Vec<Arc<SessionHandle>> = {
+    let mut handles: Vec<Arc<SessionHandle>> = {
         let mut reg = registry().write();
         let list: Vec<Arc<SessionHandle>> = reg.values().cloned().collect();
         reg.clear();
         list
     };
+    {
+        let mut stopping = STOPPING_HANDLES.lock();
+        for handle in stopping.values() {
+            if !handles.iter().any(|h| Arc::ptr_eq(h, handle)) {
+                handles.push(handle.clone());
+            }
+        }
+        stopping.clear();
+    }
     RESUME_LOCKS.get_or_init(Default::default).lock().clear();
     let mut set = tokio::task::JoinSet::new();
     for handle in handles {
@@ -474,29 +614,36 @@ pub async fn start(state: &AppState, opts: &StartOpts) -> Result<LiveSessionInfo
         .to_string_lossy()
         .into_owned();
     let opts = &normalized;
-    let _mutation = catalog::session_mutation_lock().lock().await;
-    if let Some(file) = &opts.resume_file {
-        if !std::path::Path::new(file).is_file() {
-            return Err(format!("session file no longer exists: {file}"));
-        }
-        ensure_not_held(file).await?;
-    }
+    let _startup_guard = acquire_startup_lock(startup_lock_key(opts.resume_file.as_deref())).await;
     let mode = opts.mode.unwrap_or_default();
-    if let Some(gid) = opts.group_id.as_deref() {
-        let ok = {
+    // Brief mutation gate for fast pre-checks and global workspace init only;
+    // never hold the global mutation lock across lsof or 30s-120s child handshakes.
+    {
+        let _mutation = catalog::session_mutation_lock().lock().await;
+        if let Some(file) = &opts.resume_file {
+            if !std::path::Path::new(file).is_file() {
+                return Err(format!("session file no longer exists: {file}"));
+            }
+        }
+        if let Some(gid) = opts.group_id.as_deref() {
+            let ok = {
+                let db = state.db.lock();
+                catalog::store::get_session_group(&db, gid)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|g| g.mode == mode && mode == crate::contracts::SpaceMode::Chat)
+            };
+            if !ok {
+                return Err("会话分组不存在，或仅通用对话可使用分组".to_string());
+            }
+        }
+        {
             let db = state.db.lock();
-            catalog::store::get_session_group(&db, gid)
-                .ok()
-                .flatten()
-                .is_some_and(|g| g.mode == mode && mode == crate::contracts::SpaceMode::Chat)
-        };
-        if !ok {
-            return Err("会话分组不存在，或仅通用对话可使用分组".to_string());
+            let _ = crate::db::ensure_global_workspace(&db);
         }
     }
-    {
-        let db = state.db.lock();
-        let _ = crate::db::ensure_global_workspace(&db);
+    if let Some(file) = &opts.resume_file {
+        ensure_not_held(file).await?;
     }
     let handle = process::spawn(state, opts).await?;
     let session_id = handle.session_id.read().clone();
@@ -504,40 +651,77 @@ pub async fn start(state: &AppState, opts: &StartOpts) -> Result<LiveSessionInfo
         let _ = process::stop_handle_with_source(&handle, "startup_missing_session_id").await;
         return Err("omp did not report a sessionId".into());
     }
-    // Spawning an RPC process for the session (new or resumed) makes it
-    // app-owned: CLI sessions the user continues here join the inbox.
-    {
-        let db = state.db.lock();
-        if let Err(e) = catalog::store::mark_created_by_app(&db, &session_id) {
-            tracing::warn!("mark session app-owned {session_id}: {e}");
-        }
-    }
-    {
-        let db = state.db.lock();
-        if let Err(e) =
-            catalog::store::set_mode_group(&db, &session_id, opts.mode, opts.group_id.as_deref())
-        {
-            tracing::warn!("persist session mode/group {session_id}: {e}");
-        }
-    }
+    // Stop any pre-existing live handle outside the global mutation lock.
     let old_handle = registry().read().get(&session_id).cloned();
     if let Some(old) = old_handle {
         if !Arc::ptr_eq(&old, &handle) {
             let _ = process::stop_handle_with_source(&old, "registration_replacement").await;
         }
     }
-    let info = handle.info();
-    register_started(&handle, || {
-        let _ = state.app.emit(
-            "rpc:process",
-            json!({ "sessionId": session_id, "running": true, "exitCode": null }),
-        );
-        state.emit(AppEvent::RpcProcess {
-            session_id,
-            running: true,
-            exit_code: None,
-        });
-    })?;
+    // Re-enter the mutation gate briefly for final existence check, DB persistence,
+    // and atomic registry publication.
+    let mut replaced_old: Option<Arc<SessionHandle>> = None;
+    let reg_result: Result<LiveSessionInfo, String> = {
+        let _mutation = catalog::session_mutation_lock().lock().await;
+        if let Some(file) = &opts.resume_file {
+            if !std::path::Path::new(file).is_file() {
+                Err(format!("session file no longer exists: {file}"))
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+        .and_then(|()| {
+            if !handle.is_usable() {
+                return Err("omp exited before session registration".into());
+            }
+            if let Some(old) = registry().read().get(&session_id).cloned() {
+                if !Arc::ptr_eq(&old, &handle) {
+                    replaced_old = Some(old);
+                }
+            }
+            // Spawning an RPC process for the session (new or resumed) makes it
+            // app-owned: CLI sessions the user continues here join the inbox.
+            {
+                let db = state.db.lock();
+                if let Err(e) = catalog::store::mark_created_by_app(&db, &session_id) {
+                    tracing::warn!("mark session app-owned {session_id}: {e}");
+                }
+                if let Err(e) = catalog::store::set_mode_group(
+                    &db,
+                    &session_id,
+                    opts.mode,
+                    opts.group_id.as_deref(),
+                ) {
+                    tracing::warn!("persist session mode/group {session_id}: {e}");
+                }
+            }
+            let info = handle.info();
+            register_started(&handle, || {
+                let _ = state.app.emit(
+                    "rpc:process",
+                    json!({ "sessionId": session_id, "running": true, "exitCode": null }),
+                );
+                state.emit(AppEvent::RpcProcess {
+                    session_id: session_id.clone(),
+                    running: true,
+                    exit_code: None,
+                });
+            })?;
+            Ok(info)
+        })
+    };
+    let info = match reg_result {
+        Ok(info) => info,
+        Err(err) => {
+            let _ = process::stop_handle_with_source(&handle, "spawn_aborted").await;
+            return Err(err);
+        }
+    };
+    if let Some(old) = replaced_old {
+        let _ = process::stop_handle_with_source(&old, "registration_replacement").await;
+    }
     let evict_state = state.clone();
     tauri::async_runtime::spawn(async move {
         evict_excess_idle_sessions(&evict_state).await;
@@ -548,7 +732,7 @@ pub async fn start(state: &AppState, opts: &StartOpts) -> Result<LiveSessionInfo
 fn register_started(handle: &Arc<SessionHandle>, publish: impl FnOnce()) -> Result<(), String> {
     let id = handle.session_id.read().clone();
     let mut reg = registry().write();
-    if !handle.alive.load(Ordering::SeqCst) {
+    if !handle.is_usable() {
         return Err("omp exited before session registration".into());
     }
     reg.insert(id, handle.clone());
@@ -654,6 +838,7 @@ pub async fn ensure_live(
             handle.touch();
             return Ok(handle.info());
         }
+        wait_for_teardown(session_id).await?;
         reused = false;
         omp_terminal_guard(session_id)?;
         let (file, found_cwd) = find_session_file(state, session_id)
@@ -739,8 +924,7 @@ pub fn image_blocks_from_paths(paths: &[String]) -> Result<Vec<Value>, String> {
     for path in paths {
         let resolved = crate::paths::resolve_image_path_in(path, &images_dir)
             .unwrap_or_else(|| std::path::PathBuf::from(path));
-        let bytes =
-            std::fs::read(&resolved).map_err(|e| format!("无法读取图片 {path}：{e}"))?;
+        let bytes = std::fs::read(&resolved).map_err(|e| format!("无法读取图片 {path}：{e}"))?;
         let mime = crate::mobile::api::media::sniff(&bytes)
             .ok_or_else(|| format!("不支持的图片格式（仅 png/jpeg/gif/webp）：{path}"))?;
         images.push(crate::mobile::api::chat::ImageIn {
@@ -867,17 +1051,17 @@ async fn restart_locked(
     source: &str,
 ) -> Result<LiveSessionInfo, String> {
     omp_terminal_guard(session_id)?;
-    if let Some(handle) = get_handle(session_id) {
-        let _ = process::stop_handle_with_source(&handle, source).await;
-        for _ in 0..20 {
-            if get_handle(session_id).is_none() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        if get_handle(session_id).is_some() {
-            return Err("旧进程尚未退出，请稍后重试".to_string());
-        }
+    let existing = registry()
+        .read()
+        .get(session_id)
+        .cloned()
+        .or_else(|| get_stopping_handle(session_id));
+    if let Some(handle) = existing {
+        process::stop_handle_with_source(&handle, source).await?;
+    }
+    wait_for_teardown(session_id).await?;
+    if get_handle(session_id).is_some() {
+        return Err("旧进程尚未退出，请稍后重试".to_string());
     }
     let (file, cwd) = find_session_file(state, session_id)
         .await
@@ -1165,13 +1349,29 @@ mod tests {
         let mut handle = SessionHandle::for_test();
         handle.pid = 4_000_000_001;
         let handle = Arc::new(handle);
-        AUTOMATION_RESUME_GUARDS.lock().insert(handle.pid, "first".to_string());
-        assert!(process::send_command(&handle, json!({"type":"prompt","message":"other"})).await.is_err());
-        assert!(process::send_command(&handle, json!({"type":"navigate_tree"})).await.is_err());
-        assert!(process::send_automation_resume(&handle, json!({"type":"prompt"}), "wrong").await.is_err());
+        AUTOMATION_RESUME_GUARDS
+            .lock()
+            .insert(handle.pid, "first".to_string());
+        assert!(
+            process::send_command(&handle, json!({"type":"prompt","message":"other"}))
+                .await
+                .is_err()
+        );
+        assert!(
+            process::send_command(&handle, json!({"type":"navigate_tree"}))
+                .await
+                .is_err()
+        );
+        assert!(
+            process::send_automation_resume(&handle, json!({"type":"prompt"}), "wrong")
+                .await
+                .is_err()
+        );
         clear_automation_resume_guard(handle.pid, "wrong");
         assert!(automation_resume_owned(handle.pid, "first"));
-        AUTOMATION_RESUME_GUARDS.lock().insert(handle.pid, "second".to_string());
+        AUTOMATION_RESUME_GUARDS
+            .lock()
+            .insert(handle.pid, "second".to_string());
         clear_automation_resume_guard(handle.pid, "first");
         assert!(automation_resume_owned(handle.pid, "second"));
         clear_automation_resume_guard(handle.pid, "second");
@@ -1179,19 +1379,15 @@ mod tests {
 
     fn maintenance_test_handle() -> (
         Arc<SessionHandle>,
-        tokio::sync::mpsc::UnboundedReceiver<String>,
+        tokio::sync::mpsc::Receiver<process::StdinMessage>,
         tokio::sync::watch::Receiver<bool>,
     ) {
-        let mut handle = SessionHandle::for_test();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
-        handle.stdin_tx = tx;
-        handle.shutdown = shutdown;
+        let (handle, rx, shutdown_rx) = SessionHandle::for_test_bounded(16);
         (Arc::new(handle), rx, shutdown_rx)
     }
 
-    fn reply(handle: &SessionHandle, line: &str, data: Value) {
-        let command: Value = serde_json::from_str(line).unwrap();
+    fn reply(handle: &SessionHandle, msg: &process::StdinMessage, data: Value) {
+        let command: Value = serde_json::from_str(&msg.line).unwrap();
         assert!(handle.pending.resolve(
             command["id"].as_str().unwrap(),
             json!({"success": true, "data": data})
@@ -1216,10 +1412,10 @@ mod tests {
             tokio::spawn(
                 async move { maintenance_shutdown(&h, 1, false, "privacy_refresh").await },
             );
-        let line = rx.recv().await.unwrap();
+        let state = rx.recv().await.unwrap();
         reply(
             &handle,
-            &line,
+            &state,
             json!({"isSettled":true,"isStreaming":false,"hasPendingAsyncWork":false,"queuedMessageCount":1}),
         );
         assert!(!probe.await.unwrap());
@@ -1227,18 +1423,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maintenance_check_and_shutdown_excludes_concurrent_dispatch() {
+    async fn maintenance_probes_do_not_block_concurrent_prompt_and_abort_cleanly() {
         let (handle, mut rx, shutdown) = maintenance_test_handle();
         let h = handle.clone();
         let maintenance =
             tokio::spawn(
-                async move { maintenance_shutdown(&h, 1, false, "privacy_refresh").await },
+                async move { maintenance_shutdown(&h, 1, false, "idle_suspension").await },
             );
         let state = rx.recv().await.unwrap();
+        // A user prompt arriving while maintenance probes are in flight must not
+        // be blocked on dispatch_lock and must cancel idle suspension.
         let h = handle.clone();
         let prompt = tokio::spawn(async move {
             process::send_command(&h, json!({"type":"prompt","message":"test"})).await
         });
+        let prompt_msg = rx.recv().await.unwrap();
+        let prompt_cmd: Value = serde_json::from_str(&prompt_msg.line).unwrap();
+        assert_eq!(prompt_cmd["type"], "prompt");
+        reply(&handle, &prompt_msg, json!({"accepted": true}));
+        assert!(prompt.await.unwrap().is_ok());
+
+        reply(
+            &handle,
+            &state,
+            json!({"isSettled":true,"isStreaming":false,"hasPendingAsyncWork":false,"queuedMessageCount":0}),
+        );
+        assert!(!maintenance.await.unwrap());
+        assert!(!*shutdown.borrow());
+    }
+
+    #[tokio::test]
+    async fn maintenance_shutdown_detaches_registry_and_blocks_subsequent_dispatch() {
+        let (handle, mut rx, shutdown) = maintenance_test_handle();
+        let id = format!("maint-detach-{}", uuid::Uuid::new_v4());
+        *handle.session_id.write() = id.clone();
+        registry().write().insert(id.clone(), handle.clone());
+
+        let h = handle.clone();
+        let maintenance =
+            tokio::spawn(
+                async move { maintenance_shutdown(&h, 1, false, "idle_suspension").await },
+            );
+        let state = rx.recv().await.unwrap();
         reply(
             &handle,
             &state,
@@ -1248,8 +1474,31 @@ mod tests {
         reply(&handle, &subagents, json!({"subagents":[]}));
         assert!(maintenance.await.unwrap());
         assert!(*shutdown.borrow());
-        assert!(prompt.await.unwrap().is_err());
+        assert!(get_handle(&id).is_none());
+        assert!(!registry().read().contains_key(&id));
+        assert!(
+            process::send_command(&handle, json!({"type":"prompt","message":"late"}))
+                .await
+                .is_err()
+        );
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn maintenance_aborts_promptly_on_probe_timeout() {
+        let (handle, mut rx, shutdown) = maintenance_test_handle();
+        let h = handle.clone();
+        let started = tokio::time::Instant::now();
+        let maintenance =
+            tokio::spawn(
+                async move { maintenance_shutdown(&h, 1, false, "idle_suspension").await },
+            );
+        let state_msg = rx.recv().await.unwrap();
+        // Never reply to get_state: probe must time out at MAINTENANCE_PROBE_TIMEOUT, not 120s.
+        assert!(!maintenance.await.unwrap());
+        assert!(!*shutdown.borrow());
+        assert!(state_msg.is_cancelled());
+        assert!(started.elapsed() < Duration::from_secs(30));
     }
 
     #[tokio::test]
@@ -1271,6 +1520,43 @@ mod tests {
         reply(&handle, &subagents, json!({"subagents":[]}));
         assert!(!maintenance.await.unwrap());
         assert!(!*shutdown.borrow());
+    }
+
+    #[test]
+    fn idle_suspend_threshold_zero_disables_suspension() {
+        assert_eq!(idle_suspend_threshold(0), None);
+        assert_eq!(idle_suspend_threshold(10), Some(Duration::from_secs(600)));
+    }
+
+    #[tokio::test]
+    async fn startup_locks_parallelize_distinct_sessions_and_serialize_same_file() {
+        let key_a = format!("resume:/tmp/a-{}", uuid::Uuid::new_v4());
+        let key_b = format!("resume:/tmp/b-{}", uuid::Uuid::new_v4());
+        let guard_a = acquire_startup_lock(key_a.clone()).await;
+        // Distinct key acquires immediately without waiting on key_a.
+        let guard_b = tokio::time::timeout(
+            Duration::from_millis(100),
+            acquire_startup_lock(key_b.clone()),
+        )
+        .await
+        .expect("distinct startup key must not block");
+        // Same key serializes until guard_a drops.
+        let acquired_second = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = acquired_second.clone();
+        let key_a_clone = key_a.clone();
+        let waiter = tokio::spawn(async move {
+            let _g = acquire_startup_lock(key_a_clone).await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        tokio::task::yield_now().await;
+        assert!(!acquired_second.load(Ordering::SeqCst));
+        drop(guard_a);
+        waiter.await.unwrap();
+        assert!(acquired_second.load(Ordering::SeqCst));
+        drop(guard_b);
+        let locks = STARTUP_LOCKS.lock();
+        assert!(!locks.contains_key(&key_a));
+        assert!(!locks.contains_key(&key_b));
     }
 
     struct TempFile(std::path::PathBuf);

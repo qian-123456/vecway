@@ -22,6 +22,13 @@ const CHECKPOINT_TYPE: &str = "vecway.turn-checkpoint";
 const LEGACY_CHECKPOINT_TYPE: &str = "omp-workspace.turn-checkpoint";
 /// Shown when the turn's commits are no longer on top of HEAD.
 const HEAD_WARNING: &str = "这一轮之后又有新的存档，版本历史没有回退，只恢复了文件";
+/// Maximum path arguments per batched git command (keeps argv well under ARG_MAX).
+const GIT_PATH_CHUNK_MAX_COUNT: usize = 128;
+/// Maximum total path bytes per batched git command.
+const GIT_PATH_CHUNK_MAX_BYTES: usize = 64 * 1024;
+/// Repository-wide cap on retained `refs/omp/undone/*` markers so pruned
+/// snapshot commits are not pinned forever and `git gc` can reclaim them.
+const MAX_UNDONE_REFS: usize = 100;
 
 /// `sid` = session id with every char outside `[A-Za-z0-9._-]` → `_`
 /// (same rule as the extension; contract "Hidden refs").
@@ -383,6 +390,28 @@ pub fn worktree_turns(
     Ok(collect_turns(&files, &dir))
 }
 
+fn chunk_paths<'a>(paths: &[&'a str]) -> Vec<Vec<&'a str>> {
+    let mut chunks = Vec::new();
+    let mut cur = Vec::new();
+    let mut cur_bytes = 0usize;
+    for &p in paths {
+        let p_bytes = p.len() + 1;
+        if !cur.is_empty()
+            && (cur.len() >= GIT_PATH_CHUNK_MAX_COUNT
+                || cur_bytes + p_bytes > GIT_PATH_CHUNK_MAX_BYTES)
+        {
+            chunks.push(std::mem::take(&mut cur));
+            cur_bytes = 0;
+        }
+        cur.push(p);
+        cur_bytes += p_bytes;
+    }
+    if !cur.is_empty() {
+        chunks.push(cur);
+    }
+    chunks
+}
+
 /// Blob sha of the file as it currently is on disk; None when absent, Some("")
 /// when present but not a regular file (never matches a blob sha).
 fn worktree_blob(dir: &Path, path: &str) -> Option<String> {
@@ -396,6 +425,53 @@ fn worktree_blob(dir: &Path, path: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Batched worktree blob lookup: avoids spawning one `git hash-object` per file.
+fn worktree_blobs_batched<'a>(dir: &Path, paths: &[&'a str]) -> HashMap<&'a str, Option<String>> {
+    let mut out = HashMap::with_capacity(paths.len());
+    let mut regular_files = Vec::new();
+    for &path in paths {
+        match std::fs::symlink_metadata(dir.join(path)) {
+            Err(_) => {
+                out.insert(path, None);
+            }
+            Ok(meta) if !meta.is_file() => {
+                out.insert(path, Some(String::new()));
+            }
+            Ok(_) => regular_files.push(path),
+        }
+    }
+    for chunk in chunk_paths(&regular_files) {
+        let mut args = Vec::with_capacity(2 + chunk.len());
+        args.push("hash-object");
+        args.push("--");
+        args.extend_from_slice(&chunk);
+        let parsed = git_ok(dir, &args).ok().and_then(|text| {
+            let lines: Vec<&str> = text.lines().map(str::trim).collect();
+            if lines.len() == chunk.len() && lines.iter().all(|l| !l.is_empty()) {
+                Some(
+                    chunk
+                        .iter()
+                        .zip(lines)
+                        .map(|(&p, sha)| (p, Some(sha.to_string())))
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            }
+        });
+        if let Some(entries) = parsed {
+            for (p, sha) in entries {
+                out.insert(p, sha);
+            }
+        } else {
+            for &p in &chunk {
+                out.insert(p, worktree_blob(dir, p));
+            }
+        }
+    }
+    out
+}
+
 /// Blob sha of `path` inside `commit`; None when the path is absent there.
 fn blob_at(dir: &Path, commit: &str, path: &str) -> Option<String> {
     git_ok(
@@ -407,13 +483,72 @@ fn blob_at(dir: &Path, commit: &str, path: &str) -> Option<String> {
     .filter(|s| !s.is_empty())
 }
 
+/// Batched `<commit>:<path>` object lookup via a single `git cat-file --batch-check`.
+fn blobs_at_batched<'a>(
+    dir: &Path,
+    pairs: &[(&'a str, &'a str)],
+) -> HashMap<&'a str, Option<String>> {
+    let mut out = HashMap::with_capacity(pairs.len());
+    let mut batch: Vec<(&'a str, &'a str)> = Vec::with_capacity(pairs.len());
+    for &(path, commit) in pairs {
+        if path.contains(['\n', '\r']) {
+            out.insert(path, blob_at(dir, commit, path));
+        } else {
+            batch.push((path, commit));
+        }
+    }
+    if batch.is_empty() {
+        return out;
+    }
+    let mut stdin = String::new();
+    for &(path, commit) in &batch {
+        stdin.push_str(commit);
+        stdin.push(':');
+        stdin.push_str(path);
+        stdin.push('\n');
+    }
+    let parsed = super::cmd::git_with_stdin(dir, &["cat-file", "--batch-check"], stdin.as_bytes())
+        .ok()
+        .filter(|o| o.ok())
+        .and_then(|o| {
+            let text = o.text();
+            let lines: Vec<&str> = text.lines().collect();
+            if lines.len() != batch.len() {
+                return None;
+            }
+            let mut entries = Vec::with_capacity(batch.len());
+            for (&(path, commit), &line) in batch.iter().zip(&lines) {
+                let missing = format!("{commit}:{path} missing");
+                let sha = if line == missing {
+                    None
+                } else {
+                    line.split_whitespace()
+                        .next()
+                        .filter(|s| !s.is_empty() && !s.contains(':'))
+                        .map(str::to_string)
+                };
+                entries.push((path, sha));
+            }
+            Some(entries)
+        });
+    if let Some(entries) = parsed {
+        for (p, sha) in entries {
+            out.insert(p, sha);
+        }
+    } else {
+        for &(path, commit) in &batch {
+            out.insert(path, blob_at(dir, commit, path));
+        }
+    }
+    out
+}
+
 fn head(dir: &Path) -> Option<String> {
     git_ok(dir, &["rev-parse", "--verify", "-q", "HEAD"])
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
-
 /// `git_undo_turn`: roll the workspace back to its state before `turn_id`
 /// started. That means the target turn AND every later non-undone turn of the
 /// session are undone, newest first (a cascade). Per turn: reset HEAD to
@@ -469,12 +604,17 @@ pub fn undo_turn(
             expected.entry(f.path.as_str()).or_insert(t.after.as_str());
         }
     }
-    let mut conflicts: Vec<String> = expected
+    let pairs: Vec<(&str, &str)> = expected.iter().map(|(&p, &a)| (p, a)).collect();
+    let paths: Vec<&str> = pairs.iter().map(|&(p, _)| p).collect();
+    let wt_blobs = worktree_blobs_batched(cwd, &paths);
+    let expected_blobs = blobs_at_batched(cwd, &pairs);
+    let mut conflicts: Vec<String> = pairs
         .iter()
-        .filter(|(path, after)| {
-            worktree_blob(cwd, path).as_deref() != blob_at(cwd, after, path).as_deref()
+        .filter(|&&(path, _)| {
+            wt_blobs.get(path).and_then(|o| o.as_deref())
+                != expected_blobs.get(path).and_then(|o| o.as_deref())
         })
-        .map(|(path, _)| (*path).to_string())
+        .map(|&(path, _)| path.to_string())
         .collect();
     // A mixed HEAD reset rewrites the whole index, including staged edits to
     // files this turn never touched. Treat those as explicit-override conflicts
@@ -512,6 +652,9 @@ pub fn undo_turn(
         }
         undone_count += 1;
     }
+    // Prune ancient undo markers beyond the repo-wide ceiling so pruned
+    // snapshot commits can be reclaimed by `git gc`.
+    prune_undone_refs(cwd, MAX_UNDONE_REFS);
 
     // Report each path once, under the OLDEST cascaded action that touched it
     // (the last one that ran) — that is the state the file ends up in.
@@ -554,6 +697,7 @@ fn undo_one(
 
     // Files: only the turn's files are touched. `restore --worktree` never
     // touches the real index; created files are deleted from disk.
+    let mut to_restore: Vec<&str> = Vec::new();
     for f in &t.files {
         if f.status == "A" {
             match std::fs::remove_file(cwd.join(&f.path)) {
@@ -562,18 +706,27 @@ fn undo_one(
                 Err(e) => return Err(format!("删除 {} 失败: {e}", f.path)),
             }
         } else {
-            git_ok(
-                cwd,
-                &[
-                    "restore",
-                    &format!("--source={}", t.before),
-                    "--worktree",
-                    "--",
-                    &f.path,
-                ],
-            )
-            .map_err(|e| format!("恢复 {} 失败: {e}", f.path))?;
-            restored.push(f.path.clone());
+            to_restore.push(f.path.as_str());
+        }
+    }
+    let source_arg = format!("--source={}", t.before);
+    for chunk in chunk_paths(&to_restore) {
+        let mut args: Vec<&str> = Vec::with_capacity(4 + chunk.len());
+        args.push("restore");
+        args.push(&source_arg);
+        args.push("--worktree");
+        args.push("--");
+        args.extend_from_slice(&chunk);
+        match git_ok(cwd, &args) {
+            Ok(_) => restored.extend(chunk.iter().map(|p| (*p).to_string())),
+            Err(_) if chunk.len() > 1 => {
+                for &path in &chunk {
+                    git_ok(cwd, &["restore", &source_arg, "--worktree", "--", path])
+                        .map_err(|e| format!("恢复 {path} 失败: {e}"))?;
+                    restored.push(path.to_string());
+                }
+            }
+            Err(e) => return Err(format!("恢复 {} 失败: {e}", chunk[0])),
         }
     }
 
@@ -584,6 +737,128 @@ fn undo_one(
     )
     .map_err(|e| format!("标记撤回失败: {e}"))?;
     Ok(())
+}
+
+fn parse_turn_num(turn_id: &str) -> u64 {
+    turn_id
+        .strip_prefix('t')
+        .and_then(|rest| rest.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn delete_refs_batch(dir: &Path, refs: &[String]) {
+    if refs.is_empty() {
+        return;
+    }
+    if refs.len() == 1 {
+        let _ = git_ok(dir, &["update-ref", "-d", &refs[0]]);
+        return;
+    }
+    let mut stdin = String::new();
+    for r in refs {
+        stdin.push_str("delete ");
+        stdin.push_str(r);
+        stdin.push('\n');
+    }
+    let ok = super::cmd::git_with_stdin(dir, &["update-ref", "--stdin"], stdin.as_bytes())
+        .is_ok_and(|o| o.ok());
+    if !ok {
+        for r in refs {
+            let _ = git_ok(dir, &["update-ref", "-d", r]);
+        }
+    }
+}
+
+/// Cap total `refs/omp/undone/*` markers in the repo at `max_undone`.
+/// Prunes oldest markers whose snapshot refs are already gone first (preferring
+/// sessions with no remaining live snapshots). If active undone turns alone
+/// exceed `max_undone`, their snapshot refs are removed alongside the pruned
+/// undone marker so an already-undone turn never becomes falsely restorable.
+fn prune_undone_refs(dir: &Path, max_undone: usize) {
+    let Ok(out) = git_ok(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname)\t%(committerdate:unix)",
+            "refs/omp/",
+        ],
+    ) else {
+        return;
+    };
+    let mut turn_refs_by_key: HashMap<(String, String), Vec<String>> = HashMap::new();
+    let mut live_sessions: HashSet<String> = HashSet::new();
+    struct UndoneEntry {
+        refname: String,
+        sid: String,
+        turn_id: String,
+        turn_num: u64,
+        ts: i64,
+    }
+    let mut undone_entries: Vec<UndoneEntry> = Vec::new();
+
+    for line in out.lines() {
+        let mut parts = line.splitn(2, '\t');
+        let Some(refname) = parts.next().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let ts = parts
+            .next()
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .unwrap_or(0);
+        if let Some(rest) = refname.strip_prefix("refs/omp/turns/") {
+            let segs: Vec<&str> = rest.split('/').collect();
+            if segs.len() == 3 && (segs[2] == "before" || segs[2] == "after") {
+                let sid = segs[0].to_string();
+                let turn_id = segs[1].to_string();
+                live_sessions.insert(sid.clone());
+                turn_refs_by_key
+                    .entry((sid, turn_id))
+                    .or_default()
+                    .push(refname.to_string());
+            }
+        } else if let Some(rest) = refname.strip_prefix("refs/omp/undone/") {
+            let segs: Vec<&str> = rest.split('/').collect();
+            if segs.len() == 2 {
+                let sid = segs[0].to_string();
+                let turn_id = segs[1].to_string();
+                let turn_num = parse_turn_num(&turn_id);
+                undone_entries.push(UndoneEntry {
+                    refname: refname.to_string(),
+                    sid,
+                    turn_id,
+                    turn_num,
+                    ts,
+                });
+            }
+        }
+    }
+
+    if undone_entries.len() <= max_undone {
+        return;
+    }
+
+    undone_entries.sort_by(|a, b| {
+        let a_live_turn = turn_refs_by_key.contains_key(&(a.sid.clone(), a.turn_id.clone()));
+        let b_live_turn = turn_refs_by_key.contains_key(&(b.sid.clone(), b.turn_id.clone()));
+        let a_live_sess = live_sessions.contains(&a.sid);
+        let b_live_sess = live_sessions.contains(&b.sid);
+        a_live_turn
+            .cmp(&b_live_turn)
+            .then_with(|| a_live_sess.cmp(&b_live_sess))
+            .then_with(|| a.turn_num.cmp(&b.turn_num))
+            .then_with(|| a.ts.cmp(&b.ts))
+            .then_with(|| a.refname.cmp(&b.refname))
+    });
+
+    let excess = undone_entries.len() - max_undone;
+    let mut to_delete: Vec<String> = Vec::with_capacity(excess);
+    for entry in undone_entries.into_iter().take(excess) {
+        to_delete.push(entry.refname);
+        if let Some(snap_refs) = turn_refs_by_key.get(&(entry.sid, entry.turn_id)) {
+            to_delete.extend(snap_refs.iter().cloned());
+        }
+    }
+    delete_refs_batch(dir, &to_delete);
 }
 
 #[cfg(test)]
@@ -1592,5 +1867,112 @@ mod tests {
         );
         std::fs::remove_dir_all(repo).unwrap();
         std::fs::remove_dir_all(sess).unwrap();
+    }
+
+    #[test]
+    fn undo_batches_many_files_and_detects_conflicts_with_spaces() {
+        let repo = temp_repo("batch-undo");
+        let sid = "s-batch";
+        for i in 0..12 {
+            write(&repo, &format!("dir/file {i}.txt"), &format!("v1-{i}\n"));
+        }
+        write(&repo, "to remove.txt", "gone\n");
+        g(&repo, &["add", "-A"]);
+        g(&repo, &["commit", "-q", "-m", "init"]);
+
+        let before = snap(&repo, "before");
+        let names: Vec<String> = (0..12).map(|i| format!("dir/file {i}.txt")).collect();
+        let mut files: Vec<(&str, &str)> = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            write(&repo, name, &format!("v2-{i}\n"));
+            files.push((name.as_str(), "M"));
+        }
+        std::fs::remove_file(repo.join("to remove.txt")).unwrap();
+        files.push(("to remove.txt", "D"));
+        write(&repo, "brand new.txt", "created\n");
+        files.push(("brand new.txt", "A"));
+
+        let after = snap(&repo, "after");
+        refs(&repo, sid, "t1", &before, &after);
+        let e = entry(
+            sid,
+            "t1",
+            "bulk edit",
+            &before,
+            &after,
+            None,
+            None,
+            &[],
+            &files,
+            "2026-10-29T00:00:00Z",
+        );
+        let sess = temp_dir("sess-batch-undo");
+        let file = session_file(&sess, &repo, sid, &[e]);
+
+        // Post-turn edit to one file triggers conflict detection without writing.
+        write(&repo, "dir/file 5.txt", "user edit\n");
+        let conflict = undo_turn(&repo, &file, "t1", false).unwrap();
+        assert_eq!(conflict.conflicts, vec!["dir/file 5.txt"]);
+        assert_eq!(conflict.turns_undone, 0);
+
+        // Force undo restores all modified/deleted files and removes created file.
+        let res = undo_turn(&repo, &file, "t1", true).unwrap();
+        assert_eq!(res.turns_undone, 1);
+        assert_eq!(res.restored.len(), 13);
+        assert_eq!(res.deleted, vec!["brand new.txt"]);
+        for i in 0..12 {
+            assert_eq!(
+                std::fs::read_to_string(repo.join(format!("dir/file {i}.txt"))).unwrap(),
+                format!("v1-{i}\n")
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(repo.join("to remove.txt")).unwrap(),
+            "gone\n"
+        );
+        assert!(!repo.join("brand new.txt").exists());
+        std::fs::remove_dir_all(&repo).unwrap();
+        std::fs::remove_dir_all(&sess).unwrap();
+    }
+
+    #[test]
+    fn prune_undone_refs_caps_total_and_prefers_orphaned_oldest() {
+        let repo = temp_repo("prune-undone");
+        write(&repo, "a.txt", "a\n");
+        g(&repo, &["add", "-A"]);
+        g(&repo, &["commit", "-q", "-m", "init"]);
+        let sha = g(&repo, &["rev-parse", "HEAD"]);
+
+        // 2 orphaned undone markers from a dead session, 1 orphaned from an active
+        // session, and 2 active undone markers whose snapshot pairs still exist.
+        g(&repo, &["update-ref", &undone_ref("dead", "t1"), &sha]);
+        g(&repo, &["update-ref", &undone_ref("dead", "t2"), &sha]);
+        g(&repo, &["update-ref", &undone_ref("live", "t3"), &sha]);
+        refs(&repo, "live", "t4", &sha, &sha);
+        g(&repo, &["update-ref", &undone_ref("live", "t4"), &sha]);
+        refs(&repo, "live", "t5", &sha, &sha);
+        g(&repo, &["update-ref", &undone_ref("live", "t5"), &sha]);
+
+        // Cap at 3: drops the 2 oldest orphaned dead-session markers first.
+        prune_undone_refs(&repo, 3);
+        let left = omp_refs(&repo);
+        assert!(!left.contains(&undone_ref("dead", "t1")));
+        assert!(!left.contains(&undone_ref("dead", "t2")));
+        assert!(left.contains(&undone_ref("live", "t3")));
+        assert!(left.contains(&undone_ref("live", "t4")));
+        assert!(left.contains(&undone_ref("live", "t5")));
+
+        // Cap at 1: drops orphaned t3 and active t4 (along with t4's snapshot refs
+        // so t4 cannot become falsely restorable), keeping newest t5 intact.
+        prune_undone_refs(&repo, 1);
+        let left = omp_refs(&repo);
+        assert!(!left.contains(&undone_ref("live", "t3")));
+        assert!(!left.contains(&undone_ref("live", "t4")));
+        assert!(!left.contains(&turn_ref("live", "t4", "before")));
+        assert!(!left.contains(&turn_ref("live", "t4", "after")));
+        assert!(left.contains(&undone_ref("live", "t5")));
+        assert!(left.contains(&turn_ref("live", "t5", "before")));
+        assert!(left.contains(&turn_ref("live", "t5", "after")));
+        std::fs::remove_dir_all(&repo).unwrap();
     }
 }

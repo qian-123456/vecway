@@ -5,7 +5,7 @@ use std::time::Duration;
 use tauri::Emitter;
 
 use crate::contracts::{
-    Schedule, ScheduleAgentTrigger, ScheduleNotify, AutomationOverlapPolicy, ScheduleResultMode,
+    AutomationOverlapPolicy, Schedule, ScheduleAgentTrigger, ScheduleNotify, ScheduleResultMode,
     ScheduleRun, ScheduleRunMode, ScheduleRunPhase, ScheduleRunStatus, SessionStatus, StartOpts,
     TodoKind, TodoSource,
 };
@@ -42,44 +42,93 @@ pub(crate) fn should_create_inbox_todo(
     }
 }
 
-/// Claim before spawning so stale scheduler snapshots cannot outlive deletion.
-pub fn spawn_run(state: AppState, schedule: Schedule) {
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let claimed = {
-        let db = state.db.lock();
-        match schedule.next_run_at.as_deref() {
-            Some(next) => store::claim_run(&db, &schedule.id, &run_id, Some(next)),
-            None => return,
-        }
+/// Result of attempting to claim and dispatch a due schedule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DispatchOutcome {
+    /// Claim succeeded and execution was spawned.
+    Dispatched,
+    /// Claim did not dispatch a run, but the schedule advanced or is no longer
+    /// due at the expected instant (e.g. Skip/Coalesce/Queue or concurrent edit).
+    Advanced,
+    /// Claim failed while the schedule remains enabled and due at the expected
+    /// instant (e.g. SQLite write-lock contention).
+    Stalled,
+}
+
+/// Async due-schedule dispatcher used by the background scheduler loop:
+/// offloads the blocking DB claim off Tokio workers and distinguishes normal
+/// advancement (Skip/Coalesce/Queue) from stalled claim contention.
+pub(crate) async fn dispatch_due_schedule(state: AppState, schedule: Schedule) -> DispatchOutcome {
+    let Some(expected_next) = schedule.next_run_at.clone() else {
+        return DispatchOutcome::Advanced;
     };
-    let _ = state.app.emit("schedules:changed", ());
-    match claimed {
-        Ok((schedule, _, policy)) => {
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let db = state.db.clone();
+    let schedule_id = schedule.id.clone();
+    let run_id_for_db = run_id.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let guard = db.lock();
+        match store::claim_run(&guard, &schedule_id, &run_id_for_db, Some(&expected_next)) {
+            Ok(claimed) => Ok(claimed),
+            Err(err) => {
+                let still_due =
+                    store::get(&guard, &schedule_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|cur| {
+                            cur.enabled
+                                && cur.next_run_at.as_deref() == Some(expected_next.as_str())
+                        });
+                Err((err, still_due))
+            }
+        }
+    })
+    .await;
+
+    match outcome {
+        Ok(Ok((claimed_schedule, _, policy))) => {
             tauri::async_runtime::spawn(async move {
-                execute_run_with_existing_run(state, schedule, run_id, true, policy).await;
+                execute_run_with_existing_run(state, claimed_schedule, run_id, true, policy).await;
                 crate::schedules::scheduler::notify_scheduler();
             });
+            DispatchOutcome::Dispatched
         }
-        Err(e) => tracing::debug!("Schedule {} not dispatched: {e}", schedule.id),
+        Ok(Err((e, false))) => {
+            tracing::debug!("Schedule {} not dispatched (advanced): {e}", schedule.id);
+            DispatchOutcome::Advanced
+        }
+        Ok(Err((e, true))) => {
+            tracing::warn!("Schedule {} claim stalled: {e}", schedule.id);
+            DispatchOutcome::Stalled
+        }
+        Err(e) => {
+            tracing::warn!("Schedule {} claim task join failed: {e}", schedule.id);
+            DispatchOutcome::Stalled
+        }
     }
 }
 
-/// Start one already-enqueued occurrence, if it is no longer blocked.
-pub fn spawn_pending(state: AppState, schedule_id: &str) {
+/// Async pending-run dispatcher that offloads DB locking to `spawn_blocking`.
+pub(crate) async fn spawn_pending_async(state: AppState, schedule_id: String) {
     let run_id = uuid::Uuid::new_v4().to_string();
-    let claimed = {
-        let db = state.db.lock();
-        store::claim_pending_run(&db, schedule_id, &run_id)
-    };
+    let db = state.db.clone();
+    let schedule_id_for_db = schedule_id.clone();
+    let run_id_for_db = run_id.clone();
+    let claimed = tokio::task::spawn_blocking(move || {
+        let guard = db.lock();
+        store::claim_pending_run(&guard, &schedule_id_for_db, &run_id_for_db)
+    })
+    .await;
     match claimed {
-        Ok(Some((schedule, _, policy))) => {
+        Ok(Ok(Some((schedule, _, policy)))) => {
             let _ = state.app.emit("schedules:changed", ());
             tauri::async_runtime::spawn(async move {
                 execute_run_with_existing_run(state, schedule, run_id, true, policy).await;
                 crate::schedules::scheduler::notify_scheduler();
             });
         }
-        Ok(None) => {}
+        Ok(Ok(None)) => {}
+        Ok(Err(e)) => tracing::warn!("Cannot claim queued automation {schedule_id}: {e}"),
         Err(e) => tracing::warn!("Cannot claim queued automation {schedule_id}: {e}"),
     }
 }
@@ -98,12 +147,18 @@ pub(crate) fn classify_resume_result(frame: &serde_json::Value, request_id: &str
     {
         return ResumeResult::Unrelated;
     }
-    if frame.get("agentInvoked").and_then(serde_json::Value::as_bool) != Some(true)
+    if frame
+        .get("agentInvoked")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
         || frame.get("status").and_then(serde_json::Value::as_str) != Some("completed")
     {
         return ResumeResult::Failed;
     }
-    match frame.get("sessionSettled").and_then(serde_json::Value::as_bool) {
+    match frame
+        .get("sessionSettled")
+        .and_then(serde_json::Value::as_bool)
+    {
         Some(true) => ResumeResult::CompletedSettled,
         Some(false) => ResumeResult::CompletedUnsettled,
         None => ResumeResult::Failed,
@@ -111,18 +166,40 @@ pub(crate) fn classify_resume_result(frame: &serde_json::Value, request_id: &str
 }
 
 /// Continue one paused automation with an exclusive, request-correlated turn.
-pub async fn resume_awaiting(state: AppState, schedule_id: String, run_id: String) -> Result<(), String> {
+pub async fn resume_awaiting(
+    state: AppState,
+    schedule_id: String,
+    run_id: String,
+) -> Result<(), String> {
     let session_id = {
-        let db = state.db.lock();
-        store::list_awaiting_runs(&db, &schedule_id).map_err(|e| e.to_string())?
-            .into_iter().find(|run| run.id == run_id)
-            .and_then(|run| run.session_id)
-            .ok_or_else(|| "等待中的运行没有可恢复的会话".to_string())?
+        let db = state.db.clone();
+        let sid_key = schedule_id.clone();
+        let rid_key = run_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = db.lock();
+            store::list_awaiting_runs(&guard, &sid_key)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|run| run.id == rid_key)
+                .and_then(|run| run.session_id)
+                .ok_or_else(|| "等待中的运行没有可恢复的会话".to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())??
     };
     let (handle, attempt) = crate::rpc::reserve_automation_resume(&state, &session_id).await?;
     let reserved = {
-        let db = state.db.lock();
-        store::begin_awaiting_resume(&db, &schedule_id, &run_id, &session_id, &attempt)
+        let db = state.db.clone();
+        let sid_key = schedule_id.clone();
+        let rid_key = run_id.clone();
+        let sess_key = session_id.clone();
+        let att_key = attempt.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = db.lock();
+            store::begin_awaiting_resume(&guard, &sid_key, &rid_key, &sess_key, &att_key)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()))
     };
     if let Err(e) = reserved {
         crate::rpc::clear_automation_resume_guard(handle.pid, &attempt);
@@ -130,20 +207,35 @@ pub async fn resume_awaiting(state: AppState, schedule_id: String, run_id: Strin
     }
     let mut events = state.bus.subscribe();
     let response = crate::rpc::send_automation_resume(
-        &state, &handle, &attempt,
+        &state,
+        &handle,
+        &attempt,
         "请继续执行刚才因后台无人值守而暂停的步骤；如需我审批或回答问题，请现在直接提出。",
-    ).await;
+    )
+    .await;
     let request_id = match response {
         Ok(response) => match response.get("id").and_then(serde_json::Value::as_str) {
             Some(id) if !id.is_empty() => id.to_string(),
             _ => {
-                let _ = store::abandon_awaiting_resume(&state.db.lock(), &run_id, &attempt);
+                let db = state.db.clone();
+                let rid = run_id.clone();
+                let att = attempt.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = store::abandon_awaiting_resume(&db.lock(), &rid, &att);
+                })
+                .await;
                 crate::rpc::clear_automation_resume_guard(handle.pid, &attempt);
                 return Err("恢复请求缺少关联标识，仍保持等待".to_string());
             }
         },
         Err(e) => {
-            let _ = store::abandon_awaiting_resume(&state.db.lock(), &run_id, &attempt);
+            let db = state.db.clone();
+            let rid = run_id.clone();
+            let att = attempt.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = store::abandon_awaiting_resume(&db.lock(), &rid, &att);
+            })
+            .await;
             crate::rpc::clear_automation_resume_guard(handle.pid, &attempt);
             return Err(e);
         }
@@ -153,22 +245,28 @@ pub async fn resume_awaiting(state: AppState, schedule_id: String, run_id: Strin
         let mut settled = false;
         while let Ok(event) = events.recv().await {
             match event {
-                AppEvent::RpcFrame { session_id: sid, frame } if sid == session_id => {
+                AppEvent::RpcFrame {
+                    session_id: sid,
+                    frame,
+                } if sid == session_id => {
                     if !crate::rpc::automation_resume_owned(handle.pid, &attempt)
-                        || !crate::rpc::get_handle(&session_id).is_some_and(|current| std::sync::Arc::ptr_eq(&current, &handle))
+                        || !crate::rpc::get_handle(&session_id)
+                            .is_some_and(|current| std::sync::Arc::ptr_eq(&current, &handle))
                     {
                         break;
                     }
                     match frame.get("type").and_then(serde_json::Value::as_str) {
-                        Some("prompt_result") => match classify_resume_result(&frame, &request_id) {
-                            ResumeResult::Unrelated => {}
-                            ResumeResult::Failed => break,
-                            ResumeResult::CompletedUnsettled => completed = true,
-                            ResumeResult::CompletedSettled => {
-                                settled = true;
-                                break;
+                        Some("prompt_result") => {
+                            match classify_resume_result(&frame, &request_id) {
+                                ResumeResult::Unrelated => {}
+                                ResumeResult::Failed => break,
+                                ResumeResult::CompletedUnsettled => completed = true,
+                                ResumeResult::CompletedSettled => {
+                                    settled = true;
+                                    break;
+                                }
                             }
-                        },
+                        }
                         Some("session_settled") if completed => {
                             settled = true;
                             break;
@@ -176,31 +274,54 @@ pub async fn resume_awaiting(state: AppState, schedule_id: String, run_id: Strin
                         _ => {}
                     }
                 }
-                AppEvent::RpcProcess { session_id: sid, running: false, .. } if sid == session_id => break,
+                AppEvent::RpcProcess {
+                    session_id: sid,
+                    running: false,
+                    ..
+                } if sid == session_id => break,
                 _ => {}
             }
         }
-        let changed = {
-            let db = state.db.lock();
-            if settled {
-                match store::finish_awaiting_resume(&db, &run_id, &session_id, &attempt) {
-                    Ok(changed) => changed,
-                    Err(e) => {
-                        tracing::warn!("persist completed automation continuation: {e}");
-                        let _ = store::abandon_awaiting_resume(&db, &run_id, &attempt);
-                        false
+        let (changed, snapshot_items) = {
+            let db = state.db.clone();
+            let rid = run_id.clone();
+            let sess = session_id.clone();
+            let att = attempt.clone();
+            tokio::task::spawn_blocking(move || {
+                let guard = db.lock();
+                let changed = if settled {
+                    match store::finish_awaiting_resume(&guard, &rid, &sess, &att) {
+                        Ok(changed) => changed,
+                        Err(e) => {
+                            tracing::warn!("persist completed automation continuation: {e}");
+                            let _ = store::abandon_awaiting_resume(&guard, &rid, &att);
+                            false
+                        }
                     }
-                }
-            } else {
-                let _ = store::abandon_awaiting_resume(&db, &run_id, &attempt);
-                false
-            }
+                } else {
+                    let _ = store::abandon_awaiting_resume(&guard, &rid, &att);
+                    false
+                };
+                let items = if changed {
+                    store::list(&guard).ok()
+                } else {
+                    None
+                };
+                (changed, items)
+            })
+            .await
+            .unwrap_or((false, None))
         };
         crate::rpc::clear_automation_resume_guard(handle.pid, &attempt);
         let _ = state.app.emit("schedules:changed", ());
         if changed {
             crate::todos::notify_changed(&state);
-            store::write_catalog_snapshot(&state.db.lock());
+            if let Some(items) = snapshot_items {
+                let _ = tokio::task::spawn_blocking(move || {
+                    store::write_catalog_snapshot_items(&items);
+                })
+                .await;
+            }
             crate::schedules::scheduler::notify_scheduler();
         }
     });
@@ -226,10 +347,14 @@ pub(crate) fn create_schedule_worktree(
 
 pub async fn run_now(state: AppState, id: String) -> Result<ScheduleRun, String> {
     let run_id = uuid::Uuid::new_v4().to_string();
-    let (schedule, run, policy) = {
-        let db = state.db.lock();
-        store::claim_run(&db, &id, &run_id, None)?
-    };
+    let db = state.db.clone();
+    let run_id_for_db = run_id.clone();
+    let (schedule, run, policy) = tokio::task::spawn_blocking(move || {
+        let guard = db.lock();
+        store::claim_run(&guard, &id, &run_id_for_db, None)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let _ = state.app.emit("schedules:changed", ());
     tauri::async_runtime::spawn(async move {
         execute_run_with_existing_run(state, schedule, run_id, false, policy).await;
@@ -238,7 +363,13 @@ pub async fn run_now(state: AppState, id: String) -> Result<ScheduleRun, String>
     Ok(run)
 }
 
-async fn execute_run_with_existing_run(state: AppState, schedule: Schedule, run_id: String, automatic: bool, policy: AutomationOverlapPolicy) {
+async fn execute_run_with_existing_run(
+    state: AppState,
+    schedule: Schedule,
+    run_id: String,
+    automatic: bool,
+    policy: AutomationOverlapPolicy,
+) {
     let base_path = Path::new(&schedule.cwd);
     if !base_path.exists() || !base_path.is_dir() {
         finish_with_error(
@@ -253,13 +384,20 @@ async fn execute_run_with_existing_run(state: AppState, schedule: Schedule, run_
 
     // Worktree parallel runs isolate the probe as well as the agent; local
     // mode intentionally keeps the user's selected directory.
-    let isolated_cwd = if automatic && policy == AutomationOverlapPolicy::Parallel
-        && schedule.run_mode == ScheduleRunMode::Worktree {
+    let isolated_cwd = if automatic
+        && policy == AutomationOverlapPolicy::Parallel
+        && schedule.run_mode == ScheduleRunMode::Worktree
+    {
         match create_schedule_worktree(base_path, &schedule.name, &run_id) {
             Ok(path) => Some(path),
             Err(e) => {
-                finish_with_error(&state, &schedule, &run_id, None,
-                    &format!("创建独立 worktree 失败：{e}"));
+                finish_with_error(
+                    &state,
+                    &schedule,
+                    &run_id,
+                    None,
+                    &format!("创建独立 worktree 失败：{e}"),
+                );
                 return;
             }
         }
@@ -353,7 +491,9 @@ async fn execute_run_with_existing_run(state: AppState, schedule: Schedule, run_
                     .filter(|s| !s.is_empty())
                     .map(truncate_summary);
 
-                if schedule.result_mode == ScheduleResultMode::LlmSummary && !output.trim().is_empty() {
+                if schedule.result_mode == ScheduleResultMode::LlmSummary
+                    && !output.trim().is_empty()
+                {
                     let prompt = format!(
                         "Summarize this automation script output for the user in 1-2 concise sentences (same language as the automation name).\n\
                          Return ONLY a JSON object: {{\"status\":\"ok\"|\"skipped\"|\"warning\"|\"error\",\"summary\":\"...\"}}\n\
@@ -365,16 +505,30 @@ async fn execute_run_with_existing_run(state: AppState, schedule: Schedule, run_
                         schedule.name,
                         truncate_summary(&output),
                     );
-                    if let Ok(raw_summary) =
-                        crate::todos::omp::run_print(&state, "smol", &prompt, Duration::from_secs(45)).await
+                    if let Ok(raw_summary) = crate::todos::omp::run_print(
+                        &state,
+                        "smol",
+                        &prompt,
+                        Duration::from_secs(45),
+                    )
+                    .await
                     {
                         if let Some(parsed) = probe::parse_structured_result(&raw_summary) {
-                            if let Some(st) = parsed.status.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
+                            if let Some(st) = parsed
+                                .status
+                                .as_deref()
+                                .map(|s| s.trim().to_ascii_lowercase())
+                            {
                                 if matches!(st.as_str(), "ok" | "skipped" | "warning" | "error") {
                                     status_kind = st;
                                 }
                             }
-                            if let Some(s) = parsed.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                            if let Some(s) = parsed
+                                .summary
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            {
                                 detail = Some(truncate_summary(s));
                             }
                         } else if !raw_summary.trim().is_empty() {
@@ -384,7 +538,11 @@ async fn execute_run_with_existing_run(state: AppState, schedule: Schedule, run_
                 }
 
                 let final_detail = detail.unwrap_or_else(|| {
-                    let first_line = output.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+                    let first_line = output
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .trim();
                     if first_line.is_empty() {
                         "脚本执行完成".to_string()
                     } else {
@@ -505,40 +663,43 @@ async fn execute_run_with_existing_run(state: AppState, schedule: Schedule, run_
 
     let effective_cwd = if let Some(path) = isolated_cwd {
         path
-    } else { match schedule.run_mode {
-        ScheduleRunMode::Worktree => {
-            match create_schedule_worktree(base_path, &schedule.name, &run_id) {
-                Ok(p) => p,
-                Err(e) => {
-                    finish_with_error_phase(
-                        &state,
-                        &schedule,
-                        &run_id,
-                        None,
-                        &format!("创建独立 worktree 失败：{e}"),
-                        ScheduleRunPhase::Agent,
-                        probe_context.as_deref(),
-                        false,
-                    );
-                    return;
+    } else {
+        match schedule.run_mode {
+            ScheduleRunMode::Worktree => {
+                match create_schedule_worktree(base_path, &schedule.name, &run_id) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        finish_with_error_phase(
+                            &state,
+                            &schedule,
+                            &run_id,
+                            None,
+                            &format!("创建独立 worktree 失败：{e}"),
+                            ScheduleRunPhase::Agent,
+                            probe_context.as_deref(),
+                            false,
+                        );
+                        return;
+                    }
                 }
             }
+            ScheduleRunMode::Local => schedule.cwd.clone(),
         }
-        ScheduleRunMode::Local => schedule.cwd.clone(),
-    }};
+    };
 
     let label = format!("⏰ {}", schedule.name);
 
     // `new_chat_each_run == false` continues the previous run's session —
     // local mode only; worktree runs always start fresh.
-    let resume_file =
-        if (!automatic || policy != AutomationOverlapPolicy::Parallel)
-            && !schedule.new_chat_each_run && matches!(schedule.run_mode, ScheduleRunMode::Local) {
-            let db = state.db.lock();
-            store::last_run_session_file(&db, &schedule.id).unwrap_or(None)
-        } else {
-            None
-        };
+    let resume_file = if (!automatic || policy != AutomationOverlapPolicy::Parallel)
+        && !schedule.new_chat_each_run
+        && matches!(schedule.run_mode, ScheduleRunMode::Local)
+    {
+        let db = state.db.lock();
+        store::last_run_session_file(&db, &schedule.id).unwrap_or(None)
+    } else {
+        None
+    };
     let resume_file = resume_file.filter(|f| {
         let exists = Path::new(f).is_file();
         if !exists {

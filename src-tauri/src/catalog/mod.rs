@@ -18,12 +18,12 @@ mod tasks;
 pub(crate) mod transcript;
 mod usage;
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-
-use parking_lot::Mutex;
 use tauri::Emitter as _;
 
 use crate::contracts::{PendingKind, SessionMeta, SessionStatus};
@@ -41,6 +41,8 @@ const GIT_TTL: Duration = Duration::from_secs(5);
 #[derive(Default)]
 struct Catalog {
     files: FileMap,
+    /// Newest scanned file per session id, kept in sync with `files`.
+    by_id: HashMap<String, Arc<Scanned>>,
     runtime: HashMap<String, Runtime>,
     /// Session file path -> external omp pid.
     external: HashMap<String, u32>,
@@ -56,6 +58,31 @@ struct Catalog {
     quiet: std::collections::HashSet<String>,
 }
 
+impl Catalog {
+    fn upsert_file(&mut self, s: Arc<Scanned>) {
+        let id = s.head.id.clone();
+        let path = s.path.clone();
+        let mtime = s.mtime;
+        self.files.insert(path.clone(), s.clone());
+        match self.by_id.get(&id) {
+            Some(cur) if cur.path == path && mtime < cur.mtime => {
+                if let Some(best) = self
+                    .files
+                    .values()
+                    .filter(|f| f.head.id == id)
+                    .max_by_key(|f| f.mtime)
+                    .cloned()
+                {
+                    self.by_id.insert(id, best);
+                }
+            }
+            Some(cur) if cur.path != path && cur.mtime >= mtime => {}
+            _ => {
+                self.by_id.insert(id, s);
+            }
+        }
+    }
+}
 /// Max remembered deleted ids; only recent ones can race a late exit event.
 const DELETED_CAP: usize = 512;
 
@@ -85,9 +112,7 @@ pub fn init(state: AppState) {
 }
 
 pub async fn list(state: &AppState) -> Vec<SessionMeta> {
-    if !cat().lock().ready {
-        rebuild(state).await;
-    }
+    ensure_ready(state).await;
     let mut list: Vec<SessionMeta> = cat().lock().metas.values().cloned().collect();
     list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     list
@@ -107,9 +132,7 @@ pub(crate) fn set_quiet_turn(session_id: &str, quiet: bool) {
 /// `(session id, cwd)` pairs in `list` order (newest first), skipping empty
 /// cwds. Clones only the two strings instead of every full `SessionMeta`.
 pub(crate) async fn id_cwds(state: &AppState) -> Vec<(String, String)> {
-    if !cat().lock().ready {
-        rebuild(state).await;
-    }
+    ensure_ready(state).await;
     let c = cat().lock();
     let mut refs: Vec<&SessionMeta> = c.metas.values().filter(|m| !m.cwd.is_empty()).collect();
     refs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -119,21 +142,22 @@ pub(crate) async fn id_cwds(state: &AppState) -> Vec<(String, String)> {
 }
 
 pub async fn get(state: &AppState, session_id: &str) -> Option<SessionMeta> {
-    if !cat().lock().ready {
-        rebuild(state).await;
-    }
+    ensure_ready(state).await;
     cat().lock().metas.get(session_id).cloned()
 }
 
 /// Internal to A; listed in §9 only so nobody else writes `pending_kind`.
 #[allow(dead_code)] // Reserved cross-module API documented in architecture §9.
 pub async fn set_pending(state: &AppState, session_id: &str, pending: Option<PendingKind>) {
-    {
-        let db = state.db.lock();
-        if let Err(e) = store::set_pending(&db, session_id, pending) {
-            tracing::warn!("set_pending {session_id}: {e}");
+    let st = state.clone();
+    let sid = session_id.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        let db = st.db.lock();
+        if let Err(e) = store::set_pending(&db, &sid, pending) {
+            tracing::warn!("set_pending {sid}: {e}");
         }
-    }
+    })
+    .await;
     recompute_async(state, Some(vec![session_id.to_string()])).await;
 }
 
@@ -141,13 +165,54 @@ pub async fn set_pending(state: &AppState, session_id: &str, pending: Option<Pen
 /// when the original worktree dir is gone — then recompute the session so
 /// `meta.cwd`, git facts and workspace membership follow the new cwd.
 pub async fn set_cwd_override(state: &AppState, session_id: &str, cwd: &str) {
-    {
-        let db = state.db.lock();
-        if let Err(e) = store::set_cwd_override(&db, session_id, Some(cwd)) {
-            tracing::warn!("set_cwd_override {session_id}: {e}");
+    let st = state.clone();
+    let sid = session_id.to_string();
+    let cwd = cwd.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        let db = st.db.lock();
+        if let Err(e) = store::set_cwd_override(&db, &sid, Some(&cwd)) {
+            tracing::warn!("set_cwd_override {sid}: {e}");
         }
-    }
+    })
+    .await;
     recompute_async(state, Some(vec![session_id.to_string()])).await;
+}
+
+/// Double-checked cold-start gate: only the first caller under `lock` runs
+/// `build`; concurrent waiters see `is_ready() == true` after acquiring `lock`
+/// and return immediately without repeating the scan.
+async fn ensure_ready_with<F, Fut>(
+    lock: &tokio::sync::Mutex<()>,
+    is_ready: impl Fn() -> bool,
+    build: F,
+) where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    if is_ready() {
+        return;
+    }
+    let _guard = lock.lock().await;
+    if is_ready() {
+        return;
+    }
+    build().await;
+}
+
+/// Ensure the initial catalog rebuild has finished, deduplicating concurrent
+/// cold-start callers under `scan_lock`.
+pub(crate) async fn ensure_ready(state: &AppState) {
+    let st = state.clone();
+    ensure_ready_with(
+        scan_lock(),
+        || cat().lock().ready,
+        move || async move {
+            if let Err(e) = tokio::task::spawn_blocking(move || rebuild_blocking(&st)).await {
+                tracing::error!("catalog rebuild panicked: {e}");
+            }
+        },
+    )
+    .await;
 }
 
 /// Full rescan (only changed files are re-parsed), then recompute every meta.
@@ -183,16 +248,17 @@ pub(crate) fn apply_relocation_side_effects(state: &AppState, outcomes: &[store:
 /// Remap a raw transcript header cwd through workspace path aliases when
 /// catalog metadata is not yet available (e.g. cold-start `find_session_file`).
 pub(crate) fn remap_cwd_using_db(state: &AppState, raw_cwd: &str) -> String {
-    let (workspaces, aliases) = {
+    let (mut workspaces, aliases) = {
         let db = state.db.lock();
         (
-            store::list_workspaces(&db).unwrap_or_default(),
+            store::list_workspaces_raw(&db).unwrap_or_default(),
             store::list_workspace_aliases(&db).unwrap_or_default(),
         )
     };
     if aliases.is_empty() {
         return raw_cwd.to_string();
     }
+    store::fill_workspace_missing(&mut workspaces);
     let global_dir = paths::global_dir().to_string_lossy().into_owned();
     let row = MetaRow::default();
     let head = parse::HeadInfo {
@@ -227,11 +293,11 @@ fn rebuild_blocking(state: &AppState) {
         let c = cat().lock();
         (c.files.clone(), c.ready)
     };
-    let relocations = {
+    {
         let db = state.db.lock();
         let _ = crate::db::ensure_global_workspace(&db);
-        store::reconcile_workspaces(&db)
-    };
+    }
+    let relocations = store::reconcile_workspaces_unlocked(&state.db);
     if !relocations.is_empty() {
         apply_relocation_side_effects(state, &relocations);
     }
@@ -241,7 +307,7 @@ fn rebuild_blocking(state: &AppState) {
     let t_scan = t0.elapsed();
     // Git facts key on the *effective* cwd (a persisted cwd_override or
     // workspace path alias wins over the transcript header's cwd).
-    let (overrides, workspaces, aliases): (
+    let (overrides, mut workspaces, aliases): (
         HashMap<String, MetaRow>,
         Vec<crate::contracts::Workspace>,
         Vec<store::WorkspaceAlias>,
@@ -249,10 +315,11 @@ fn rebuild_blocking(state: &AppState) {
         let db = state.db.lock();
         (
             store::load_meta_rows(&db).unwrap_or_default(),
-            store::list_workspaces(&db).unwrap_or_default(),
+            store::list_workspaces_raw(&db).unwrap_or_default(),
             store::list_workspace_aliases(&db).unwrap_or_default(),
         )
     };
+    store::fill_workspace_missing(&mut workspaces);
     let empty_row = MetaRow::default();
     refresh_git(
         map.values()
@@ -267,13 +334,31 @@ fn rebuild_blocking(state: &AppState) {
             .collect(),
         false,
     );
-    {
+    if !changed.is_empty() {
         let db = state.db.lock();
-        for path in &changed {
-            note_changed(&db, &map[path], prev.get(path).map(|p| &**p), ready);
-        }
+        match db.unchecked_transaction() {
+            Ok(tx) => {
+                for path in &changed {
+                    note_changed(&tx, &map[path], prev.get(path).map(|p| &**p), ready);
+                }
+                if let Err(e) = tx.commit() {
+                    tracing::warn!("catalog note_changed commit: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("catalog note_changed tx: {e}");
+                for path in &changed {
+                    note_changed(&db, &map[path], prev.get(path).map(|p| &**p), ready);
+                }
+            }
+        };
     }
-    cat().lock().files = map;
+    let by_id = index_by_id(&map);
+    {
+        let mut c = cat().lock();
+        c.files = map;
+        c.by_id = by_id;
+    }
     recompute_inner(state, None, false);
     cat().lock().ready = true;
     let total = t0.elapsed();
@@ -358,16 +443,29 @@ fn refresh_paths_blocking(state: &AppState, paths: &[PathBuf]) -> bool {
     }
     {
         let db = state.db.lock();
-        for (prev, s) in &updated {
-            note_changed(&db, s, Some(prev), ready);
-        }
+        match db.unchecked_transaction() {
+            Ok(tx) => {
+                for (prev, s) in &updated {
+                    note_changed(&tx, s, Some(prev), ready);
+                }
+                if let Err(e) = tx.commit() {
+                    tracing::warn!("catalog refresh note_changed commit: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("catalog refresh note_changed tx: {e}");
+                for (prev, s) in &updated {
+                    note_changed(&db, s, Some(prev), ready);
+                }
+            }
+        };
     }
     let mut ids: Vec<String> = Vec::with_capacity(updated.len());
     {
         let mut c = cat().lock();
         for (_, s) in updated {
             ids.push(s.head.id.clone());
-            c.files.insert(s.path.clone(), s);
+            c.upsert_file(s);
         }
     }
     ids.sort();
@@ -473,8 +571,8 @@ pub(crate) async fn recompute_async(state: &AppState, ids: Option<Vec<String>>) 
     // newly created session files are picked up.
     let needs_rebuild = match &ids {
         Some(ids) => {
-            let index = index_by_id(&cat().lock().files);
-            ids.iter().any(|id| !index.contains_key(id))
+            let c = cat().lock();
+            ids.iter().any(|id| !c.by_id.contains_key(id))
         }
         None => false,
     };
@@ -496,24 +594,23 @@ fn recompute_blocking(state: &AppState, ids: Option<Vec<String>>) {
 fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
     scan::reset_canon_cache();
     let full = ids.is_none();
-    let (index, deleted) = {
+    // Collect live targets directly from the maintained `by_id` index without
+    // rebuilding a full session map.
+    let targets: Vec<Arc<Scanned>> = {
         let c = cat().lock();
-        (index_by_id(&c.files), c.deleted.clone())
-    };
-    // A delete that raced this recompute already purged the row and files; the
-    // snapshot above may still hold them, so never rebuild a deleted session.
-    let live_targets = |s: &Arc<Scanned>| !deleted.contains(&s.head.id);
-    let targets: Vec<Arc<Scanned>> = match &ids {
-        None => index
-            .values()
-            .filter(|s| live_targets(s))
-            .cloned()
-            .collect(),
-        Some(ids) => ids
-            .iter()
-            .filter_map(|id| index.get(id).cloned())
-            .filter(|s| live_targets(s))
-            .collect(),
+        match &ids {
+            None => c
+                .by_id
+                .values()
+                .filter(|s| !c.deleted.contains(&s.head.id))
+                .cloned()
+                .collect(),
+            Some(ids) => ids
+                .iter()
+                .filter_map(|id| c.by_id.get(id).cloned())
+                .filter(|s| !c.deleted.contains(&s.head.id))
+                .collect(),
+        }
     };
     let live: HashSet<String> = targets
         .iter()
@@ -521,8 +618,8 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
         .map(|s| s.head.id.clone())
         .collect();
 
-    // DB phase: rows (+ seq assignment for labels without "#<n>"), workspaces, and aliases.
-    let (mut rows, workspaces, aliases) = {
+    // DB phase: rows (+ batched seq assignment for labels without "#<n>"), workspaces, and aliases.
+    let (mut rows, mut workspaces, aliases) = {
         let db = state.db.lock();
         let mut rows = match &ids {
             None => store::load_meta_rows(&db).unwrap_or_default(),
@@ -531,6 +628,7 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
                 .map(|id| (id.clone(), store::load_meta_row(&db, id)))
                 .collect(),
         };
+        let mut need_seq: Vec<(String, String)> = Vec::new();
         for s in &targets {
             let id = &s.head.id;
             let row = rows.entry(id.clone()).or_default();
@@ -538,16 +636,32 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
                 && row.label.as_deref().is_none_or(str::is_empty)
                 && scan::title_number(s, row).is_none();
             if needs_seq {
-                let _ = store::ensure_row(&db, id, &s.path.to_string_lossy());
-                row.seq = store::assign_seq(&db, id).ok();
+                need_seq.push((id.clone(), s.path.to_string_lossy().into_owned()));
+            }
+        }
+        if !need_seq.is_empty() {
+            let refs: Vec<(&str, &str)> = need_seq
+                .iter()
+                .map(|(id, file)| (id.as_str(), file.as_str()))
+                .collect();
+            match store::assign_seqs_batch(&db, &refs) {
+                Ok(assigned) => {
+                    for (id, seq) in assigned {
+                        if let Some(row) = rows.get_mut(&id) {
+                            row.seq = Some(seq);
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!("assign_seqs_batch: {e}"),
             }
         }
         (
             rows,
-            store::list_workspaces(&db).unwrap_or_default(),
+            store::list_workspaces_raw(&db).unwrap_or_default(),
             store::list_workspace_aliases(&db).unwrap_or_default(),
         )
     };
+    store::fill_workspace_missing(&mut workspaces);
 
     // Refresh git facts for the effective cwd of each target (override- and alias-aware).
     // (Skipped right after a full rebuild, which already refreshed every cwd.)
@@ -605,24 +719,21 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
         let mut c = cat().lock();
         for s in &targets {
             let id = &s.head.id;
+            if c.deleted.contains(id) {
+                continue;
+            }
             let row = rows.remove(id).unwrap_or_default();
             let parent_id = row.parent_session_id.clone().or_else(|| {
                 let p = s.head.parent_session.as_deref()?;
-                if index.contains_key(p) {
+                if c.by_id.contains_key(p) {
                     return Some(p.to_string());
                 }
                 c.files.get(&PathBuf::from(p)).map(|ps| ps.head.id.clone())
             });
             let eff_cwd = scan::effective_cwd_with_aliases(&s.head, &row, &workspaces, &aliases);
             let git = c.git.get(&eff_cwd).map(|g| g.1.clone()).unwrap_or_default();
-            let mut meta = scan::build_meta_with_aliases(
-                s,
-                &row,
-                &git,
-                &workspaces,
-                &aliases,
-                parent_id,
-            );
+            let mut meta =
+                scan::build_meta_with_aliases(s, &row, &git, &workspaces, &aliases, parent_id);
             let rt = c.runtime.get(id).cloned().unwrap_or_default();
             let is_live = !rt.exited && (rt.live || live.contains(id));
             let path = s.path.to_string_lossy();
@@ -680,7 +791,7 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
             removed = c
                 .metas
                 .keys()
-                .filter(|id| !index.contains_key(*id))
+                .filter(|id| !c.by_id.contains_key(*id))
                 .cloned()
                 .collect();
             for id in &removed {
@@ -691,11 +802,26 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
 
     if !pending_writes.is_empty() {
         let db = state.db.lock();
-        for (id, p) in &pending_writes {
-            if let Err(e) = store::set_pending(&db, id, *p) {
-                tracing::warn!("persist pending {id}: {e}");
+        match db.unchecked_transaction() {
+            Ok(tx) => {
+                for (id, p) in &pending_writes {
+                    if let Err(e) = store::set_pending(&tx, id, *p) {
+                        tracing::warn!("persist pending {id}: {e}");
+                    }
+                }
+                if let Err(e) = tx.commit() {
+                    tracing::warn!("persist pending commit: {e}");
+                }
             }
-        }
+            Err(e) => {
+                tracing::warn!("persist pending tx: {e}");
+                for (id, p) in &pending_writes {
+                    if let Err(e) = store::set_pending(&db, id, *p) {
+                        tracing::warn!("persist pending {id}: {e}");
+                    }
+                }
+            }
+        };
     }
     emit_changes(state, changed, removed, status_changes);
 }
@@ -740,12 +866,7 @@ pub(crate) fn file_of(session_id: &str) -> Option<PathBuf> {
     if let Some(m) = c.metas.get(session_id) {
         return Some(PathBuf::from(&m.file));
     }
-    if let Some(s) = c
-        .files
-        .values()
-        .filter(|s| s.head.id == session_id)
-        .max_by_key(|s| s.mtime)
-    {
+    if let Some(s) = c.by_id.get(session_id) {
         return Some(s.path.clone());
     }
     drop(c);
@@ -764,34 +885,48 @@ pub(crate) async fn delete(state: &AppState, session_id: &str) -> Result<(), Str
     delete_with(state, session_id, Disposal::Permanent).await
 }
 
+/// Timeout for the destructive-cleanup `lsof` ownership check.
+const CLEANUP_LSOF_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Cleanup is destructive: unlike periodic discovery, a failed ownership
 /// probe is not evidence that no terminal owns the transcript.
-fn cleanup_holders_from_output(
-    output: std::process::Output,
+fn cleanup_holders_from_parts(
+    code: Option<i32>,
+    stdout: &[u8],
+    stderr: &str,
     sessions_dir: &std::path::Path,
 ) -> Result<HashMap<String, external::Holder>, String> {
-    if !output.stderr.is_empty() || (!output.status.success() && output.status.code() != Some(1)) {
+    if !stderr.is_empty() || !matches!(code, Some(0) | Some(1)) {
         return Err(format!(
             "无法核验终端会话占用，已跳过清理：{}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            stderr.trim()
         ));
     }
     // lsof exit 1 with no diagnostic means no matching open files.
     Ok(external::parse_lsof(
-        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(stdout),
         &sessions_dir.to_string_lossy(),
     ))
+}
+
+#[cfg(test)]
+fn cleanup_holders_from_output(
+    output: std::process::Output,
+    sessions_dir: &std::path::Path,
+) -> Result<HashMap<String, external::Holder>, String> {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    cleanup_holders_from_parts(output.status.code(), &output.stdout, &stderr, sessions_dir)
 }
 
 fn cleanup_external_holders(
     sessions_dir: &std::path::Path,
 ) -> Result<HashMap<String, external::Holder>, String> {
-    let output = std::process::Command::new("/usr/sbin/lsof")
-        .args(["-w", "-n", "-P", "-c", "omp", "-F", "pRn"])
-        .env("PATH", "/usr/sbin:/usr/bin:/bin:/sbin")
-        .output()
+    let mut cmd = std::process::Command::new(crate::services::scan::lsof_bin());
+    cmd.args(["-w", "-n", "-P", "-c", "omp", "-F", "pRn"])
+        .env("PATH", "/usr/sbin:/usr/bin:/bin:/sbin");
+    let out = crate::git::cmd::run(cmd, CLEANUP_LSOF_TIMEOUT)
         .map_err(|e| format!("无法核验终端会话占用，已跳过清理：{e}"))?;
-    cleanup_holders_from_output(output, sessions_dir)
+    cleanup_holders_from_parts(out.code, &out.stdout, &out.stderr, sessions_dir)
 }
 
 /// [`delete`] with a choice of disposal. Besides the transcript it removes the
@@ -802,10 +937,40 @@ pub(crate) async fn delete_with(
     session_id: &str,
     disposal: Disposal,
 ) -> Result<(), String> {
-    if !cat().lock().ready {
-        rebuild(state).await;
-    }
-    let _mutation = session_mutation_lock().lock().await;
+    ensure_ready(state).await;
+
+    let sessions_dir = paths::omp_sessions_dir();
+    // Run slow external ownership probes off the async worker and outside
+    // `session_mutation_lock` / `scan_lock` so other catalog & session ops are
+    // never blocked while `lsof` runs.
+    let external_probe: Option<(HashMap<String, external::Holder>, Vec<external::StatusFile>)> =
+        if disposal == Disposal::Trash {
+            if crate::rpc::get_handle(session_id)
+                .is_some_and(|h| h.alive.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                return Err("正在运行".into());
+            }
+            if crate::terminal::commands::omp_terminal_open(session_id) {
+                return Err("正被终端里的 omp 使用".into());
+            }
+            let s_dir = sessions_dir.clone();
+            let st_dir = paths::status_dir();
+            let probed = tokio::task::spawn_blocking(move || {
+                let holders = cleanup_external_holders(&s_dir)?;
+                let alive_status: Vec<external::StatusFile> = external::read_status_files(&st_dir)
+                    .into_iter()
+                    .filter(|s| s.state != "exited" && external::pid_alive(s.pid))
+                    .collect();
+                Ok::<_, String>((holders, alive_status))
+            })
+            .await
+            .map_err(|e| format!("无法核验终端会话占用，已跳过清理：{e}"))??;
+            Some(probed)
+        } else {
+            None
+        };
+
+    let mutation_guard = session_mutation_lock().lock().await;
 
     // A live process mid-turn or waiting on a dialog owns state we cannot
     // silently drop; anything else is safe to stop and delete.
@@ -865,17 +1030,22 @@ pub(crate) async fn delete_with(
     if paths.is_empty() && meta_file.is_none() && !was_live {
         return Err(format!("session not found: {session_id}"));
     }
-    let sessions_dir = paths::omp_sessions_dir();
-    let cleanup_facts =
-        if disposal == Disposal::Trash {
-            // Recheck under the mutation/scan gates, not the stale preview meta.
-            // Pin mutations and app/terminal starts share the mutation gate.
-            let pinned: bool = state.db.lock().query_row(
-            "SELECT EXISTS(SELECT 1 FROM session_meta WHERE session_id = ?1 AND pinned != 0)",
-            [session_id], |row| row.get(0),
-        ).map_err(|e| format!("读取置顶状态失败: {e}"))?;
-            let holders = cleanup_external_holders(&sessions_dir)?;
-            let status = external::read_status_files(&paths::status_dir());
+
+    let st = state.clone();
+    let sid = session_id.to_string();
+    let gone = tokio::task::spawn_blocking(move || -> Result<HashSet<String>, String> {
+        let cleanup_facts = if disposal == Disposal::Trash {
+            // Recheck pinned & app-live state under the mutation/scan gates.
+            let pinned: bool = st
+                .db
+                .lock()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_meta WHERE session_id = ?1 AND pinned != 0)",
+                    [&sid],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("读取置顶状态失败: {e}"))?;
+            let (holders, status) = external_probe.unwrap_or_default();
             let external_pid = paths.iter().chain(meta_file.iter()).find_map(|path| {
                 let file = path.to_string_lossy();
                 holders
@@ -884,49 +1054,51 @@ pub(crate) async fn delete_with(
                     .or_else(|| {
                         status
                             .iter()
-                            .find(|s| {
-                                s.session_file.as_str() == file.as_ref()
-                                    && s.state != "exited"
-                                    && external::pid_alive(s.pid)
-                            })
+                            .find(|s| s.session_file.as_str() == file.as_ref())
                             .map(|s| s.pid)
                     })
             });
-            let live = crate::rpc::get_handle(session_id).is_some();
+            let live = crate::rpc::get_handle(&sid).is_some();
             Some((live, pinned, external_pid))
         } else {
             None
         };
-    let mut gone = std::collections::HashSet::new();
-    for path in paths
-        .iter()
-        .chain(meta_file.iter())
-        .chain(handle_file.iter())
-    {
-        // Missing files are fine (NotFound tolerated by the remover).
-        if let Some((live, pinned, external_pid)) = cleanup_facts {
-            sessions::remove_files_if_unused(
-                path,
-                &sessions_dir,
-                disposal,
-                live,
-                pinned,
-                external_pid,
-            )?;
-        } else {
-            sessions::remove_files(path, &sessions_dir, disposal)?;
+        let mut gone = HashSet::new();
+        for path in paths
+            .iter()
+            .chain(meta_file.iter())
+            .chain(handle_file.iter())
+        {
+            // Missing files are fine (NotFound tolerated by the remover).
+            if let Some((live, pinned, external_pid)) = cleanup_facts {
+                sessions::remove_files_if_unused(
+                    path,
+                    &sessions_dir,
+                    disposal,
+                    live,
+                    pinned,
+                    external_pid,
+                )?;
+            } else {
+                sessions::remove_files(path, &sessions_dir, disposal)?;
+            }
+            gone.insert(path.to_string_lossy().to_string());
         }
-        gone.insert(path.to_string_lossy().to_string());
-    }
-    {
-        let db = state.db.lock();
-        store::delete_row(&db, session_id)
-            .map_err(|e| format!("delete session_meta {session_id}: {e}"))?;
-    }
+        {
+            let db = st.db.lock();
+            store::delete_row(&db, &sid)
+                .map_err(|e| format!("delete session_meta {sid}: {e}"))?;
+        }
+        Ok(gone)
+    })
+    .await
+    .map_err(|e| format!("delete session {session_id}: {e}"))??;
+
     {
         let mut c = cat().lock();
         c.files
             .retain(|p, _| !gone.contains(&p.to_string_lossy().to_string()));
+        c.by_id.remove(session_id);
         c.metas.remove(session_id);
         c.runtime.remove(session_id);
         c.external.retain(|p, _| !gone.contains(p));
@@ -938,6 +1110,7 @@ pub(crate) async fn delete_with(
         }
     }
     drop(scan_guard);
+    drop(mutation_guard);
     crate::rpc::remove_resume_lock(session_id);
     emit_changes(state, Vec::new(), vec![session_id.to_string()], Vec::new());
     Ok(())
@@ -1012,5 +1185,88 @@ mod refresh_tests {
         )
         .unwrap();
         assert_eq!(current["/sessions/project/s.jsonl"].pid, 123);
+    }
+
+    #[tokio::test]
+    async fn ensure_ready_coalesces_concurrent_cold_rebuilds() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let ready = Arc::new(AtomicBool::new(false));
+        let builds = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(tokio::sync::Barrier::new(8));
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let lock = lock.clone();
+            let ready = ready.clone();
+            let builds = builds.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let r_check = ready.clone();
+                let r_set = ready.clone();
+                let b = builds.clone();
+                ensure_ready_with(
+                    &lock,
+                    move || r_check.load(Ordering::Acquire),
+                    move || async move {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        b.fetch_add(1, Ordering::SeqCst);
+                        r_set.store(true, Ordering::Release);
+                    },
+                )
+                .await;
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+
+        // Once ready, subsequent calls bypass the build completely.
+        let r_check = ready.clone();
+        let b = builds.clone();
+        ensure_ready_with(
+            &lock,
+            move || r_check.load(Ordering::Acquire),
+            move || async move {
+                b.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await;
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn catalog_upsert_file_keeps_by_id_pointing_to_newest_file() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let mk = |path: &str, secs: u64| {
+            Arc::new(Scanned {
+                path: PathBuf::from(path),
+                size: 10,
+                mtime: UNIX_EPOCH + Duration::from_secs(secs),
+                head: parse::HeadInfo {
+                    id: "s1".to_string(),
+                    ..Default::default()
+                },
+                head_hash: 1,
+                tail: parse::TailInfo::default(),
+                first_user: None,
+            })
+        };
+
+        let mut cat = Catalog::default();
+        cat.upsert_file(mk("/sessions/a/old.jsonl", 10));
+        assert_eq!(cat.by_id["s1"].path, PathBuf::from("/sessions/a/old.jsonl"));
+        cat.upsert_file(mk("/sessions/a/new.jsonl", 20));
+        assert_eq!(cat.by_id["s1"].path, PathBuf::from("/sessions/a/new.jsonl"));
+        // Older sibling does not overwrite newer entry.
+        cat.upsert_file(mk("/sessions/a/older.jsonl", 5));
+        assert_eq!(cat.by_id["s1"].path, PathBuf::from("/sessions/a/new.jsonl"));
+        // Clock rollback on active file re-selects the newest remaining file.
+        cat.upsert_file(mk("/sessions/a/new.jsonl", 1));
+        assert_eq!(cat.by_id["s1"].path, PathBuf::from("/sessions/a/old.jsonl"));
     }
 }

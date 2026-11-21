@@ -1,7 +1,7 @@
 //! RpcProcess: spawn `omp --mode rpc-ui`, protocol handshake, stdout reader,
 //! stdin writer, request/response correlation.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tauri::Emitter;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdout};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::instrument::WithSubscriber;
@@ -17,8 +17,8 @@ use tracing::Instrument;
 
 use crate::contracts::{LiveSessionInfo, PendingUiRequest, Settings, StartOpts};
 use crate::diagnostics::{self, DiagnosticEvent};
-use crate::rpc::frame::ChunkReassembler;
-use crate::rpc::frame_batch::{FrameBatcher, DEFAULT_BATCH_WINDOW};
+use crate::rpc::frame::{ChunkReassembler, MAX_REASSEMBLED_CEILING};
+use crate::rpc::frame_batch::{slim_rpc_frame, FrameBatcher, DEFAULT_BATCH_WINDOW};
 use crate::state::{AppEvent, AppState};
 use crate::{paths, rpc};
 
@@ -32,7 +32,18 @@ const STOP_GRACE: Duration = Duration::from_secs(5);
 /// How long `monitor` waits for the stdout reader to drain after the child
 /// exits before it fails outstanding requests itself.
 const STDOUT_DRAIN: Duration = Duration::from_secs(2);
-
+/// Bounded capacity for outbound JSONL commands per session.
+pub(crate) const STDIN_QUEUE_CAPACITY: usize = 256;
+/// Minimum stdout line budget even when `ready` negotiates a small chunk limit.
+const MIN_STDOUT_LINE_BYTES: usize = 1024 * 1024;
+/// Maximum startup stderr bytes retained for crash diagnostics (tail-preserving).
+const MAX_STARTUP_STDERR_BYTES: usize = 64 * 1024;
+/// Maximum bytes kept from any single stderr line.
+const MAX_STDERR_LINE_BYTES: usize = 16 * 1024;
+/// Maximum unknown-session frames buffered before `get_state` resolves `session_id`.
+const MAX_PENDING_FRAMES: usize = 256;
+/// Maximum estimated bytes buffered in `pending_frames`.
+const MAX_PENDING_FRAME_BYTES: usize = 4 * 1024 * 1024;
 static REQ_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Request-id → response channel map. Responses echo the command `id`.
@@ -51,8 +62,15 @@ impl PendingMap {
     /// Resolve a pending request. Returns false when the id is unknown
     /// (e.g. a same-id late `prompt` error after an early ack, or unsolicited).
     pub fn resolve(&self, id: &str, value: Value) -> bool {
-        if let Some(tx) = self.map.lock().remove(id) {
-            let _ = tx.send(value);
+        self.resolve_with(id, || value)
+    }
+
+    /// Resolve a pending request, computing/cloning `value` only if `id` is
+    /// actually awaiting a response (and outside the map lock).
+    pub fn resolve_with(&self, id: &str, make_value: impl FnOnce() -> Value) -> bool {
+        let tx = self.map.lock().remove(id);
+        if let Some(tx) = tx {
+            let _ = tx.send(make_value());
             return true;
         }
         false
@@ -89,12 +107,205 @@ impl PendingMap {
 /// UI-request methods that wait for a host answer (track for rpc_pending_ui).
 const DIALOG_METHODS: [&str; 4] = ["select", "confirm", "input", "editor"];
 
+/// One queued outbound JSONL command for the child's stdin writer.
+pub(crate) struct StdinMessage {
+    pub(crate) line: String,
+    /// Set to `true` before returning a command timeout (or dropping the caller
+    /// future) so the stdin writer skips timed-out commands instead of sending
+    /// them late.
+    pub(crate) cancelled: Option<Arc<AtomicBool>>,
+}
+
+impl StdinMessage {
+    pub(crate) fn new(line: String, cancelled: Option<Arc<AtomicBool>>) -> Self {
+        Self { line, cancelled }
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+    }
+}
+
+struct CancelOnDrop {
+    cancelled: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    fn new(cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            cancelled,
+            armed: true,
+        }
+    }
+
+    fn cancel_now(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.armed = false;
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancelled.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn estimate_json_bytes(v: &Value) -> usize {
+    match v {
+        Value::Null => 4,
+        Value::Bool(_) => 5,
+        Value::Number(_) => 16,
+        Value::String(s) => s.len() + 2,
+        Value::Array(items) => {
+            2 + items
+                .iter()
+                .map(|item| estimate_json_bytes(item) + 1)
+                .sum::<usize>()
+        }
+        Value::Object(map) => {
+            2 + map
+                .iter()
+                .map(|(k, val)| k.len() + 4 + estimate_json_bytes(val))
+                .sum::<usize>()
+        }
+    }
+}
+
+/// Bounded queue for frames emitted before `get_state` populates `session_id`.
+#[derive(Default)]
+pub struct PendingFrameBuffer {
+    frames: VecDeque<(Value, usize)>,
+    bytes: usize,
+}
+
+impl PendingFrameBuffer {
+    pub fn push(&mut self, frame: Value) -> bool {
+        self.push_with_limits(frame, MAX_PENDING_FRAMES, MAX_PENDING_FRAME_BYTES)
+    }
+
+    fn push_with_limits(&mut self, frame: Value, max_frames: usize, max_bytes: usize) -> bool {
+        let size = estimate_json_bytes(&frame);
+        if max_frames == 0 || size > max_bytes {
+            return false;
+        }
+        while self.frames.len() >= max_frames || self.bytes.saturating_add(size) > max_bytes {
+            let Some((_, dropped_bytes)) = self.frames.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(dropped_bytes);
+        }
+        self.bytes = self.bytes.saturating_add(size);
+        self.frames.push_back((frame, size));
+        true
+    }
+
+    pub fn take(&mut self) -> Vec<Value> {
+        self.bytes = 0;
+        self.frames.drain(..).map(|(frame, _)| frame).collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.frames.clear();
+        self.frames.shrink_to_fit();
+        self.bytes = 0;
+    }
+
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+/// Tail-preserving bounded startup stderr collector.
+struct BoundedStderr {
+    lines: VecDeque<String>,
+    bytes: usize,
+    max_bytes: usize,
+    truncated: bool,
+}
+
+impl BoundedStderr {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            lines: VecDeque::new(),
+            bytes: 0,
+            max_bytes: max_bytes.max(1),
+            truncated: false,
+        }
+    }
+
+    fn push_line(&mut self, mut line: String) {
+        let max_line = self.max_bytes.saturating_sub(1);
+        if line.len() > max_line {
+            let mut cut = line.len().saturating_sub(max_line);
+            while cut < line.len() && !line.is_char_boundary(cut) {
+                cut += 1;
+            }
+            line = line[cut..].to_string();
+            self.truncated = true;
+        }
+        let added = line.len() + 1;
+        while self.bytes.saturating_add(added) > self.max_bytes {
+            let Some(old) = self.lines.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(old.len() + 1);
+            self.truncated = true;
+        }
+        self.bytes = self.bytes.saturating_add(added);
+        self.lines.push_back(line);
+    }
+
+    fn clear(&mut self) {
+        self.lines.clear();
+        self.lines.shrink_to_fit();
+        self.bytes = 0;
+        self.truncated = false;
+    }
+
+    fn render(&self) -> String {
+        let mut out = String::with_capacity(self.bytes + if self.truncated { 24 } else { 0 });
+        if self.truncated {
+            out.push_str("... (stderr truncated)\n");
+        }
+        for line in &self.lines {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+}
+
 pub struct SessionHandle {
     pub session_id: parking_lot::RwLock<String>,
     pub session_file: parking_lot::RwLock<String>,
     pub cwd: String,
     pub pid: u32,
-    /// Outbound JSONL lines (one command per line).
+    /// Bounded outbound JSONL command channel (one command per line).
+    #[cfg(not(test))]
+    pub(crate) stdin_queue: mpsc::Sender<StdinMessage>,
+    /// Bounded outbound JSONL command channel used by spawned processes and bounded tests.
+    #[cfg(test)]
+    pub(crate) stdin_queue: Option<mpsc::Sender<StdinMessage>>,
+    /// Test-only fallback channel kept for external unit tests constructing
+    /// `SessionHandle { stdin_tx, ..SessionHandle::for_test() }`.
+    #[cfg(test)]
     pub stdin_tx: mpsc::UnboundedSender<String>,
     /// Signalled to close stdin → graceful omp exit.
     pub shutdown: watch::Sender<bool>,
@@ -103,11 +314,13 @@ pub struct SessionHandle {
     /// Last `ompws-plan` status published by the bundled plan extension
     /// (parsed `statusText` JSON); `None` until the extension reports.
     pub plan_status: parking_lot::Mutex<Option<Value>>,
-    pub pending_frames: parking_lot::Mutex<Vec<Value>>,
+    pub pending_frames: parking_lot::Mutex<PendingFrameBuffer>,
     /// Flips to `true` when the stdout reader reached EOF. Pending requests are
     /// only failed after this, so a response printed just before exit still
     /// resolves its caller instead of racing the exit notification.
     pub stdout_closed: watch::Sender<bool>,
+    /// Flips to `true` after the child exited and `publish_exit` completed.
+    pub(crate) exited: watch::Sender<bool>,
     /// Serializes final stdout frames with the published process-exit boundary.
     /// OS exit stops commands immediately, but buffered output must still drain.
     pub output_closed: parking_lot::Mutex<bool>,
@@ -138,18 +351,21 @@ impl SessionHandle {
         let (stdin_tx, _rx) = mpsc::unbounded_channel();
         let (shutdown, _srx) = watch::channel(false);
         let (stdout_closed, _orx) = watch::channel(true);
+        let (exited, _erx) = watch::channel(true);
         Self {
             session_id: parking_lot::RwLock::new("s1".to_string()),
             session_file: parking_lot::RwLock::new("/tmp/s1.jsonl".to_string()),
             cwd: "/tmp".to_string(),
             pid: 0,
+            stdin_queue: None,
             stdin_tx,
             shutdown,
             pending: PendingMap::default(),
             pending_ui: parking_lot::Mutex::new(Vec::new()),
             plan_status: parking_lot::Mutex::new(None),
-            pending_frames: parking_lot::Mutex::new(Vec::new()),
+            pending_frames: parking_lot::Mutex::new(PendingFrameBuffer::default()),
             stdout_closed,
+            exited,
             output_closed: parking_lot::Mutex::new(false),
             streaming: AtomicBool::new(false),
             alive: AtomicBool::new(true),
@@ -164,6 +380,18 @@ impl SessionHandle {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test_bounded(
+        capacity: usize,
+    ) -> (Self, mpsc::Receiver<StdinMessage>, watch::Receiver<bool>) {
+        let (stdin_queue, rx) = mpsc::channel(capacity.max(1));
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let mut handle = Self::for_test();
+        handle.stdin_queue = Some(stdin_queue);
+        handle.shutdown = shutdown;
+        (handle, rx, shutdown_rx)
+    }
+
     pub fn info(&self) -> LiveSessionInfo {
         LiveSessionInfo {
             session_id: self.session_id.read().clone(),
@@ -173,9 +401,41 @@ impl SessionHandle {
         }
     }
 
+    pub fn is_shutting_down(&self) -> bool {
+        *self.shutdown.borrow()
+    }
+
+    pub fn is_usable(&self) -> bool {
+        self.alive.load(Ordering::SeqCst) && !self.is_shutting_down()
+    }
+
     pub fn touch(&self) {
         *self.last_activity.lock() = Instant::now();
         self.activity_version.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn enqueue_stdin(&self, msg: StdinMessage) -> Result<(), String> {
+        #[cfg(test)]
+        let queue = self.stdin_queue.as_ref();
+        #[cfg(not(test))]
+        let queue = Some(&self.stdin_queue);
+
+        if let Some(tx) = queue {
+            match tx.try_send(msg) {
+                Ok(()) => Ok(()),
+                Err(mpsc::error::TrySendError::Full(_)) => Err(stdin_full(self)),
+                Err(mpsc::error::TrySendError::Closed(_)) => Err(stdin_closed(self)),
+            }
+        } else {
+            #[cfg(test)]
+            {
+                self.stdin_tx.send(msg.line).map_err(|_| stdin_closed(self))
+            }
+            #[cfg(not(test))]
+            {
+                unreachable!()
+            }
+        }
     }
 
     fn refresh_settled(&self) {
@@ -193,6 +453,17 @@ impl SessionHandle {
             return;
         }
         let _ = tokio::time::timeout(timeout, rx.wait_for(|closed| *closed)).await;
+    }
+
+    /// Wait until `monitor` observes process exit and finishes `publish_exit`,
+    /// at most `timeout`. Returns `true` if exit completed.
+    pub(crate) async fn wait_exited(&self, timeout: Duration) -> bool {
+        let mut rx = self.exited.subscribe();
+        if *rx.borrow() {
+            return true;
+        }
+        let _ = tokio::time::timeout(timeout, rx.wait_for(|done| *done)).await;
+        *self.exited.borrow()
     }
 
     /// Fail outstanding requests only after stdout drained: a response the
@@ -272,7 +543,7 @@ pub(crate) fn apply_frame(handle: &SessionHandle, frame: &Value) {
     match ty {
         "response" => {
             if let Some(id) = frame.get("id").and_then(Value::as_str) {
-                handle.pending.resolve(id, frame.clone());
+                handle.pending.resolve_with(id, || frame.clone());
             }
         }
         "extension_ui_request" => {
@@ -394,11 +665,14 @@ pub(crate) fn sink_from_state(state: &AppState) -> OutSink {
         }
     });
     let batcher = Arc::new(FrameBatcher::new(DEFAULT_BATCH_WINDOW, raw_sink));
-    Arc::new(move |ev| batcher.push(ev))
+    Arc::new(move |ev| batcher.push_slimmed(ev))
 }
 
 /// Emit a frame to the frontend (`rpc:frame`) and the bus (`AppEvent::RpcFrame`).
-fn emit_frame(sink: &OutSink, handle: &SessionHandle, frame: &Value) {
+/// Takes ownership of `frame` and strips redundant tool `details` once in place
+/// before buffering or delivery, avoiding deep `Value::clone()` on the hot path.
+fn emit_frame(sink: &OutSink, handle: &SessionHandle, frame: Value) {
+    let frame = slim_rpc_frame(frame);
     let output_closed = handle.output_closed.lock();
     if *output_closed {
         return;
@@ -408,7 +682,9 @@ fn emit_frame(sink: &OutSink, handle: &SessionHandle, frame: &Value) {
         let mut guard = handle.pending_frames.lock();
         let session_id = handle.session_id.read().clone();
         if session_id.is_empty() {
-            guard.push(frame.clone());
+            if !guard.push(frame) {
+                tracing::warn!("rpc: dropping oversized unknown-session frame");
+            }
             return;
         }
         drop(guard);
@@ -419,12 +695,7 @@ fn emit_frame(sink: &OutSink, handle: &SessionHandle, frame: &Value) {
 }
 
 /// Keep replacement registration ordered with the last frame from its predecessor.
-fn emit_identified_frame(
-    sink: &OutSink,
-    handle: &SessionHandle,
-    session_id: String,
-    frame: &Value,
-) {
+fn emit_identified_frame(sink: &OutSink, handle: &SessionHandle, session_id: String, frame: Value) {
     let registry = rpc::registry().read();
     if registry
         .get(&session_id)
@@ -432,19 +703,13 @@ fn emit_identified_frame(
     {
         return;
     }
-    sink(OutEvent::Frame {
-        session_id,
-        frame: frame.clone(),
-    });
+    sink(OutEvent::Frame { session_id, frame });
 }
 
 fn drain_pending_frames(sink: &OutSink, handle: &SessionHandle) {
-    let frames = {
-        let mut guard = handle.pending_frames.lock();
-        std::mem::take(&mut *guard)
-    };
+    let frames = handle.pending_frames.lock().take();
     for frame in frames {
-        emit_frame(sink, handle, &frame);
+        emit_frame(sink, handle, frame);
     }
 }
 
@@ -778,11 +1043,18 @@ impl CommandObservation {
 /// pending correlation id, and enqueuing onto stdin. Releasing the lock before
 /// awaiting the response allows concurrent host commands (such as an abort or
 /// model switch) to be dispatched while a long command (e.g. `compact`) runs.
-pub async fn send_command(
+pub async fn send_command(handle: &Arc<SessionHandle>, command: Value) -> Result<Value, String> {
+    send_command_inner(handle, command, None, None).await
+}
+
+/// Send one command with an explicit caller timeout (used by idle maintenance
+/// probes so they never stall user operations or wait 120 seconds).
+pub(crate) async fn send_command_with_timeout(
     handle: &Arc<SessionHandle>,
     command: Value,
+    timeout: Duration,
 ) -> Result<Value, String> {
-    send_command_inner(handle, command, None).await
+    send_command_inner(handle, command, None, Some(timeout)).await
 }
 
 pub(crate) async fn send_automation_resume(
@@ -790,41 +1062,51 @@ pub(crate) async fn send_automation_resume(
     command: Value,
     attempt: &str,
 ) -> Result<Value, String> {
-    send_command_inner(handle, command, Some(attempt)).await
+    send_command_inner(handle, command, Some(attempt), None).await
 }
 
 async fn send_command_inner(
     handle: &Arc<SessionHandle>,
     mut command: Value,
     automation_resume: Option<&str>,
+    timeout_override: Option<Duration>,
 ) -> Result<Value, String> {
     let mut observation = CommandObservation::new(&command);
     let result = async {
         if !command.is_object() {
             return Err("command must be a JSON object".into());
         }
-        let (id, rx, timeout) = {
+        let (id, rx, timeout, mut cancel_guard) = {
             let _dispatch = handle.dispatch_lock.lock().await;
-            if !handle.alive.load(Ordering::SeqCst) || *handle.shutdown.borrow() {
+            if !handle.is_usable() {
                 return Err("session process is not running".into());
             }
             let guarded = rpc::automation_resume_guarded(handle.pid);
-            if automation_resume.is_some_and(|attempt| !rpc::automation_resume_owned(handle.pid, attempt)) {
+            if automation_resume
+                .is_some_and(|attempt| !rpc::automation_resume_owned(handle.pid, attempt))
+            {
                 return Err("自动化恢复保护已失效".into());
             }
-            if guarded && automation_resume.is_none() && !matches!(
-                command.get("type").and_then(Value::as_str),
-                Some("get_state" | "get_entries" | "get_subagents" | "abort")
-            ) {
+            if guarded
+                && automation_resume.is_none()
+                && !matches!(
+                    command.get("type").and_then(Value::as_str),
+                    Some("get_state" | "get_entries" | "get_subagents" | "abort")
+                )
+            {
                 return Err("自动化恢复运行中，暂不能执行此操作".into());
             }
             let id = format!("req_{}", REQ_COUNTER.fetch_add(1, Ordering::Relaxed));
             command["id"] = json!(id);
             let rx = handle.pending.insert(id.clone());
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancel_guard = CancelOnDrop::new(cancelled.clone());
             observation.dispatched(handle, &id);
-            if handle.stdin_tx.send(command.to_string()).is_err() {
+            if let Err(err) =
+                handle.enqueue_stdin(StdinMessage::new(command.to_string(), Some(cancelled)))
+            {
                 handle.pending.remove(&id);
-                return Err(stdin_closed(handle));
+                return Err(err);
             }
             observation.phase = "response";
             if matches!(
@@ -840,15 +1122,18 @@ async fn send_command_inner(
             ) {
                 handle.touch();
             }
-            let timeout = match command.get("type").and_then(Value::as_str) {
-                Some("compact" | "handoff") => LONG_CMD_TIMEOUT,
-                _ => CMD_TIMEOUT,
-            };
-            (id, rx, timeout)
+            let timeout = timeout_override.unwrap_or_else(|| {
+                match command.get("type").and_then(Value::as_str) {
+                    Some("compact" | "handoff") => LONG_CMD_TIMEOUT,
+                    _ => CMD_TIMEOUT,
+                }
+            });
+            (id, rx, timeout, cancel_guard)
         };
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(resp)) => {
+                cancel_guard.disarm();
                 if resp.get("success").and_then(Value::as_bool) == Some(false) {
                     observation.rejected(handle, &resp);
                     let msg = resp
@@ -866,8 +1151,12 @@ async fn send_command_inner(
                 }
                 Ok(resp)
             }
-            Ok(Err(_)) => Err("response channel dropped".into()),
+            Ok(Err(_)) => {
+                cancel_guard.disarm();
+                Err("response channel dropped".into())
+            }
             Err(_) => {
+                cancel_guard.cancel_now();
                 handle.pending.remove(&id);
                 Err("command timed out".into())
             }
@@ -878,9 +1167,7 @@ async fn send_command_inner(
     result
 }
 
-/// Dispatch while the caller owns `dispatch_lock`. Maintenance shutdown probes
-/// hold the lock across both queries and stdin close, which makes
-/// the check-and-stop operation indivisible to host prompts.
+/// Dispatch while the caller owns `dispatch_lock`.
 pub(crate) async fn send_command_locked(
     handle: &Arc<SessionHandle>,
     mut command: Value,
@@ -890,16 +1177,20 @@ pub(crate) async fn send_command_locked(
         if !command.is_object() {
             return Err("command must be a JSON object".into());
         }
-        if !handle.alive.load(Ordering::SeqCst) || *handle.shutdown.borrow() {
+        if !handle.is_usable() {
             return Err("session process is not running".into());
         }
         let id = format!("req_{}", REQ_COUNTER.fetch_add(1, Ordering::Relaxed));
         command["id"] = json!(id);
         let rx = handle.pending.insert(id.clone());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut cancel_guard = CancelOnDrop::new(cancelled.clone());
         observation.dispatched(handle, &id);
-        if handle.stdin_tx.send(command.to_string()).is_err() {
+        if let Err(err) =
+            handle.enqueue_stdin(StdinMessage::new(command.to_string(), Some(cancelled)))
+        {
             handle.pending.remove(&id);
-            return Err(stdin_closed(handle));
+            return Err(err);
         }
         observation.phase = "response";
         // A long command may produce no inbound frames for minutes (`compact`),
@@ -917,6 +1208,7 @@ pub(crate) async fn send_command_locked(
         };
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(resp)) => {
+                cancel_guard.disarm();
                 if resp.get("success").and_then(Value::as_bool) == Some(false) {
                     observation.rejected(handle, &resp);
                     let err = resp
@@ -927,8 +1219,12 @@ pub(crate) async fn send_command_locked(
                 }
                 Ok(resp)
             }
-            Ok(Err(_)) => Err("response channel dropped".into()),
+            Ok(Err(_)) => {
+                cancel_guard.disarm();
+                Err("response channel dropped".into())
+            }
             Err(_) => {
+                cancel_guard.cancel_now();
                 handle.pending.remove(&id);
                 Err("command timed out".into())
             }
@@ -942,7 +1238,7 @@ pub(crate) async fn send_command_locked(
 /// Write a fire-and-forget frame (extension_ui_response etc.).
 pub async fn send_raw(handle: &Arc<SessionHandle>, frame: Value) -> Result<(), String> {
     let _dispatch = handle.dispatch_lock.lock().await;
-    if !handle.alive.load(Ordering::SeqCst) || *handle.shutdown.borrow() {
+    if !handle.is_usable() {
         return Err("session process is not running".into());
     }
     let mut requests = handle.pending_ui.lock();
@@ -957,10 +1253,8 @@ pub async fn send_raw(handle: &Arc<SessionHandle>, frame: Value) -> Result<(), S
             return Err("UI request is no longer pending".into());
         }
     }
-    handle
-        .stdin_tx
-        .send(frame.to_string())
-        .map_err(|_| stdin_closed(handle))?;
+    handle.enqueue_stdin(StdinMessage::new(frame.to_string(), None))?;
+    handle.touch();
     if let Some(id) = response_id {
         requests.retain(|r| r.request.get("id").and_then(Value::as_str) != Some(id));
     }
@@ -982,6 +1276,15 @@ fn stdin_closed(handle: &SessionHandle) -> String {
     event.outcome = Some("error".into());
     diagnostics::emit(event);
     "session stdin closed".into()
+}
+
+fn stdin_full(handle: &SessionHandle) -> String {
+    let mut event = process_event(handle, "rpc.io_failed", "stdin");
+    event.phase = Some("dispatch".into());
+    event.code = Some("io_other".into());
+    event.outcome = Some("error".into());
+    diagnostics::emit(event);
+    "session stdin queue full".into()
 }
 
 fn observe_spawn_stage(
@@ -1063,7 +1366,9 @@ pub async fn spawn_with_sink(
             .stdin
             .take()
             .ok_or_else(|| "omp stdin not piped".to_string())?;
-        let startup_stderr = Arc::new(parking_lot::Mutex::new(String::new()));
+        let startup_stderr = Arc::new(parking_lot::Mutex::new(BoundedStderr::new(
+            MAX_STARTUP_STDERR_BYTES,
+        )));
         let recording_stderr = Arc::new(AtomicBool::new(true));
         let (stderr_done_tx, stderr_done_rx) = oneshot::channel();
         if let Some(stderr) = child.stderr.take() {
@@ -1071,13 +1376,15 @@ pub async fn spawn_with_sink(
             let recording = recording_stderr.clone();
             tokio::spawn(
                 async move {
-                    let mut lines = BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
+                    let mut reader = BufReader::new(stderr);
+                    let mut line_buf = Vec::new();
+                    while let Ok(Some(line)) =
+                        read_bounded_stderr_line(&mut reader, &mut line_buf, MAX_STDERR_LINE_BYTES)
+                            .await
+                    {
                         tracing::debug!(target: "omp-stderr", "{line}");
                         if recording.load(Ordering::Relaxed) {
-                            let mut text = output.lock();
-                            text.push_str(&line);
-                            text.push('\n');
+                            output.lock().push_line(line);
                         }
                     }
                     let _ = stderr_done_tx.send(());
@@ -1087,9 +1394,12 @@ pub async fn spawn_with_sink(
             );
         }
 
-        let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
-        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let (stdin_queue_tx, stdin_rx) = mpsc::channel::<StdinMessage>(STDIN_QUEUE_CAPACITY);
+        #[cfg(test)]
+        let (test_stdin_tx, _test_stdin_rx) = mpsc::unbounded_channel::<String>();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (stdout_closed_tx, _) = watch::channel(false);
+        let (exited_tx, _) = watch::channel(false);
         let (ready_tx, ready_rx) = oneshot::channel::<Value>();
 
         let handle = Arc::new(SessionHandle {
@@ -1097,13 +1407,19 @@ pub async fn spawn_with_sink(
             session_file: parking_lot::RwLock::new(String::new()),
             cwd: opts.cwd.clone(),
             pid,
-            stdin_tx,
+            #[cfg(not(test))]
+            stdin_queue: stdin_queue_tx,
+            #[cfg(test)]
+            stdin_queue: Some(stdin_queue_tx),
+            #[cfg(test)]
+            stdin_tx: test_stdin_tx,
             shutdown: shutdown_tx,
             pending: PendingMap::default(),
             pending_ui: parking_lot::Mutex::new(Vec::new()),
             plan_status: parking_lot::Mutex::new(None),
-            pending_frames: parking_lot::Mutex::new(Vec::new()),
+            pending_frames: parking_lot::Mutex::new(PendingFrameBuffer::default()),
             stdout_closed: stdout_closed_tx,
+            exited: exited_tx,
             output_closed: parking_lot::Mutex::new(false),
             streaming: AtomicBool::new(false),
             alive: AtomicBool::new(true),
@@ -1117,45 +1433,14 @@ pub async fn spawn_with_sink(
             native_hash,
         });
 
-        // stdin writer task: drains the channel, exits on shutdown/close.
+        // stdin writer task: drains the bounded channel, skips timed-out items,
+        // and exits on shutdown/close.
         let writer_handle = handle.clone();
-        let stdin_task = tokio::spawn(async move {
-        let mut stdin = stdin;
-        loop {
-            tokio::select! {
-                line = stdin_rx.recv() => match line {
-                    Some(line) => {
-                        let result = async {
-                            stdin.write_all(line.as_bytes()).await?;
-                            stdin.write_all(b"\n").await?;
-                            stdin.flush().await
-                        }.await;
-                        if let Err(error) = result {
-                            let mut event = process_event(&writer_handle, "rpc.io_failed", "stdin");
-                            event.phase = Some("write".into());
-                            event.code = Some(io_code(&error).into());
-                            event.outcome = Some("error".into());
-                            diagnostics::emit(event);
-                            break;
-                        }
-                    }
-                    None => break,
-                },
-                _ = shutdown_rx.changed() => {
-                    while stdin_rx.try_recv().is_ok() {}
-                    break;
-                }
-            }
-        }
-        // Dropping ChildStdin closes stdin → omp exits gracefully. Do it before
-        // waiting for stdout so the child is never kept alive by the wait.
-        drop(stdin);
-        // The child may still flush a final response on stdout; let the reader
-        // drain before failing anything, then fail whatever is left.
-        writer_handle
-            .fail_pending_after_drain("session stdin closed")
-            .await;
-    }.instrument(tracing::Span::none()).with_current_subscriber());
+        let stdin_task = tokio::spawn(
+            write_stdin_loop(stdin, stdin_rx, shutdown_rx, writer_handle)
+                .instrument(tracing::Span::none())
+                .with_current_subscriber(),
+        );
 
         // stdout reader task.
         let reader_handle = handle.clone();
@@ -1207,6 +1492,7 @@ pub async fn spawn_with_sink(
                         }
                     }
                     self.monitor_task.abort();
+                    self.handle.exited.send_replace(true);
                 }
             }
         }
@@ -1240,7 +1526,7 @@ pub async fn spawn_with_sink(
                     .and_then(Result::ok)
                     .unwrap_or_else(|| "process has not exited".to_string());
                 let _ = tokio::time::timeout(Duration::from_secs(1), stderr_done_rx).await;
-                let stderr = startup_stderr.lock().clone();
+                let stderr = startup_stderr.lock().render();
                 return Err(startup_failure(reason, &exit, &opts.cwd, &stderr));
             }
         };
@@ -1367,39 +1653,252 @@ pub(crate) fn apply_state(handle: &SessionHandle, resp: &Value) {
     }
 }
 
+async fn write_stdin_loop<W: AsyncWrite + Unpin>(
+    mut stdin: W,
+    mut stdin_rx: mpsc::Receiver<StdinMessage>,
+    mut shutdown_rx: watch::Receiver<bool>,
+    writer_handle: Arc<SessionHandle>,
+) {
+    if !*shutdown_rx.borrow() {
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        while stdin_rx.try_recv().is_ok() {}
+                        break;
+                    }
+                }
+                item = stdin_rx.recv() => match item {
+                    Some(msg) => {
+                        if msg.is_cancelled() {
+                            continue;
+                        }
+                        let result = async {
+                            stdin.write_all(msg.line.as_bytes()).await?;
+                            stdin.write_all(b"\n").await?;
+                            stdin.flush().await
+                        }
+                        .await;
+                        if let Err(error) = result {
+                            let mut event = process_event(&writer_handle, "rpc.io_failed", "stdin");
+                            event.phase = Some("write".into());
+                            event.code = Some(io_code(&error).into());
+                            event.outcome = Some("error".into());
+                            diagnostics::emit(event);
+                            break;
+                        }
+                    }
+                    None => break,
+                },
+            }
+        }
+    }
+    // Dropping ChildStdin closes stdin → omp exits gracefully. Do it before
+    // waiting for stdout so the child is never kept alive by the wait.
+    drop(stdin);
+    // The child may still flush a final response on stdout; let the reader
+    // drain before failing anything, then fail whatever is left.
+    writer_handle
+        .fail_pending_after_drain("session stdin closed")
+        .await;
+}
+
+async fn read_bounded_stderr_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    max_bytes: usize,
+) -> std::io::Result<Option<String>> {
+    buf.clear();
+    let mut discarding = false;
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            if buf.is_empty() && !discarding {
+                return Ok(None);
+            }
+            break;
+        }
+        if let Some(pos) = chunk.iter().position(|&b| b == b'\n') {
+            if !discarding {
+                let remain = max_bytes.saturating_sub(buf.len());
+                buf.extend_from_slice(&chunk[..pos.min(remain)]);
+            }
+            reader.consume(pos + 1);
+            break;
+        } else {
+            let len = chunk.len();
+            if !discarding {
+                let remain = max_bytes.saturating_sub(buf.len());
+                let take = len.min(remain);
+                buf.extend_from_slice(&chunk[..take]);
+                if take < len {
+                    discarding = true;
+                }
+            }
+            reader.consume(len);
+        }
+    }
+    if buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    let mut line = String::from_utf8_lossy(buf).into_owned();
+    if discarding {
+        line.push_str("... [truncated]");
+    }
+    if buf.capacity() > max_bytes.saturating_mul(2) {
+        buf.clear();
+        buf.shrink_to(0);
+    }
+    Ok(Some(line))
+}
+
+enum BoundedLine {
+    Line,
+    Oversized(usize),
+    Eof,
+}
+
+async fn read_bounded_stdout_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    max_bytes: usize,
+) -> std::io::Result<BoundedLine> {
+    buf.clear();
+    let mut oversized_len: usize = 0;
+    let mut discarding = false;
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            if discarding {
+                return Ok(BoundedLine::Oversized(oversized_len));
+            }
+            if buf.is_empty() {
+                return Ok(BoundedLine::Eof);
+            }
+            break;
+        }
+        if let Some(pos) = chunk.iter().position(|&b| b == b'\n') {
+            let take = pos + 1;
+            if discarding {
+                oversized_len = oversized_len.saturating_add(pos);
+                reader.consume(take);
+                return Ok(BoundedLine::Oversized(oversized_len));
+            }
+            if buf.len().saturating_add(pos) > max_bytes {
+                let total = buf.len().saturating_add(pos);
+                buf.clear();
+                buf.shrink_to_fit();
+                reader.consume(take);
+                return Ok(BoundedLine::Oversized(total));
+            }
+            buf.extend_from_slice(&chunk[..pos]);
+            reader.consume(take);
+            break;
+        } else {
+            let len = chunk.len();
+            if discarding {
+                oversized_len = oversized_len.saturating_add(len);
+                reader.consume(len);
+            } else if buf.len().saturating_add(len) > max_bytes {
+                oversized_len = buf.len().saturating_add(len);
+                buf.clear();
+                buf.shrink_to_fit();
+                discarding = true;
+                reader.consume(len);
+            } else {
+                buf.extend_from_slice(chunk);
+                reader.consume(len);
+            }
+        }
+    }
+    if buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    Ok(BoundedLine::Line)
+}
+
+fn emit_stdout_closed(handle: &SessionHandle, error: Option<&std::io::Error>) {
+    let mut event = process_event(handle, "rpc.stdout_closed", "stdout");
+    event.phase = Some(if error.is_some() { "read" } else { "eof" }.into());
+    event.outcome = Some(if error.is_some() { "error" } else { "observed" }.into());
+    if let Some(error) = error {
+        event.code = Some(io_code(error).into());
+        let mut failed = process_event(handle, "rpc.io_failed", "stdout");
+        failed.phase = Some("read".into());
+        failed.outcome = Some("error".into());
+        failed.code = event.code.clone();
+        diagnostics::emit(failed);
+    }
+    diagnostics::emit(event);
+}
+
 async fn read_loop(
     sink: OutSink,
     handle: Arc<SessionHandle>,
     stdout: ChildStdout,
     ready_tx: oneshot::Sender<Value>,
 ) {
-    let mut lines = BufReader::new(stdout).lines();
+    read_loop_with_limit(sink, handle, stdout, ready_tx, None).await;
+}
+
+async fn read_loop_with_limit<R: AsyncRead + Unpin>(
+    sink: OutSink,
+    handle: Arc<SessionHandle>,
+    stdout: R,
+    ready_tx: oneshot::Sender<Value>,
+    max_line_override: Option<usize>,
+) {
+    let mut reader = BufReader::new(stdout);
+    let mut line_buf = Vec::new();
     let mut reasm = ChunkReassembler::default();
     let mut ready_tx = Some(ready_tx);
     loop {
-        let line = match lines.next_line().await {
-            Ok(Some(line)) => line,
-            result => {
-                let mut event = process_event(&handle, "rpc.stdout_closed", "stdout");
-                event.phase = Some(if result.is_err() { "read" } else { "eof" }.into());
-                event.outcome = Some(if result.is_err() { "error" } else { "observed" }.into());
-                if let Err(error) = result {
-                    event.code = Some(io_code(&error).into());
-                    let mut failed = process_event(&handle, "rpc.io_failed", "stdout");
-                    failed.phase = Some("read".into());
-                    failed.outcome = Some("error".into());
-                    failed.code = event.code.clone();
-                    diagnostics::emit(failed);
-                }
+        let max_line_bytes = max_line_override.unwrap_or_else(|| {
+            reasm
+                .max_reassembled()
+                .clamp(MIN_STDOUT_LINE_BYTES, MAX_REASSEMBLED_CEILING)
+        });
+        match read_bounded_stdout_line(&mut reader, &mut line_buf, max_line_bytes).await {
+            Ok(BoundedLine::Line) => {}
+            Ok(BoundedLine::Oversized(len)) => {
+                tracing::warn!(
+                    "rpc: oversized stdout line ({len} bytes > {max_line_bytes}), discarding"
+                );
+                reasm.reset();
+                let mut event = process_event(&handle, "rpc.protocol_invalid", "stdout");
+                event.code = Some("protocol_invalid".into());
                 diagnostics::emit(event);
+                continue;
+            }
+            Ok(BoundedLine::Eof) => {
+                emit_stdout_closed(&handle, None);
+                break;
+            }
+            Err(error) => {
+                emit_stdout_closed(&handle, Some(&error));
+                break;
+            }
+        }
+        let text = match std::str::from_utf8(&line_buf) {
+            Ok(text) => text,
+            Err(err) => {
+                let io_err = std::io::Error::new(std::io::ErrorKind::InvalidData, err);
+                emit_stdout_closed(&handle, Some(&io_err));
                 break;
             }
         };
-        if line.trim().is_empty() {
+        if text.trim().is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            tracing::warn!("rpc: unparseable stdout line ({} bytes)", line.len());
+        let raw_len = line_buf.len();
+        let parsed = serde_json::from_str::<Value>(text);
+        if line_buf.capacity() > 64 * 1024 {
+            line_buf.clear();
+            line_buf.shrink_to(0);
+        }
+        let Ok(value) = parsed else {
+            tracing::warn!("rpc: unparseable stdout line ({raw_len} bytes)");
             let mut event = process_event(&handle, "rpc.protocol_invalid", "stdout");
             event.code = Some("protocol_invalid".into());
             diagnostics::emit(event);
@@ -1412,7 +1911,7 @@ async fn read_loop(
                         .get("maxReassembledFrameBytes")
                         .and_then(Value::as_u64)
                     {
-                        reasm.set_max_reassembled(max as usize);
+                        reasm.set_max_reassembled(usize::try_from(max).unwrap_or(usize::MAX));
                     }
                     if let Some(tx) = ready_tx.take() {
                         let _ = tx.send(frame);
@@ -1420,7 +1919,7 @@ async fn read_loop(
                     continue;
                 }
                 apply_frame(&handle, &frame);
-                emit_frame(&sink, &handle, &frame);
+                emit_frame(&sink, &handle, frame);
             }
             Ok(None) => {}
             Err(e) => {
@@ -1478,29 +1977,53 @@ async fn monitor(
     handle.streaming.store(false, Ordering::SeqCst);
     handle.pending_ui.lock().clear();
     publish_exit(&sink, &handle, code);
+    handle.exited.send_replace(true);
 }
 
 fn publish_exit(sink: &OutSink, handle: &Arc<SessionHandle>, code: Option<i32>) {
     rpc::clear_process_automation_guard(handle.pid);
     let mut output_closed = handle.output_closed.lock();
     *output_closed = true;
+    handle.pending_frames.lock().clear();
     let session_id = handle.session_id.read().clone();
     if session_id.is_empty() {
         return;
     }
-    let mut reg = rpc::registry().write();
-    if reg
-        .get(&session_id)
-        .is_some_and(|existing| !Arc::ptr_eq(existing, handle))
     {
-        return; // A replacement process already owns this session.
+        let mut reg = rpc::registry().write();
+        if reg
+            .get(&session_id)
+            .is_some_and(|existing| !Arc::ptr_eq(existing, handle))
+        {
+            rpc::clear_stopping_handle(&session_id, handle);
+            return; // A replacement process already owns this session.
+        }
+        reg.remove(&session_id);
+        sink(OutEvent::Process {
+            session_id: session_id.clone(),
+            running: false,
+            exit_code: code,
+        });
     }
-    reg.remove(&session_id);
-    sink(OutEvent::Process {
-        session_id,
-        running: false,
-        exit_code: code,
-    });
+    rpc::clear_stopping_handle(&session_id, handle);
+}
+
+/// Atomically mark `handle` shutting down and detach it from the live registry
+/// so no concurrent `get_handle` or `ensure_live` can reuse a dying handle.
+pub(super) fn mark_shutting_down_and_detach(handle: &Arc<SessionHandle>) {
+    let session_id = handle.session_id.read().clone();
+    let mut reg = rpc::registry().write();
+    handle.shutdown.send_replace(true);
+    if !session_id.is_empty()
+        && reg
+            .get(&session_id)
+            .is_some_and(|existing| Arc::ptr_eq(existing, handle))
+    {
+        reg.remove(&session_id);
+        if handle.pid > 0 && !*handle.exited.borrow() {
+            rpc::track_stopping_handle(&session_id, handle);
+        }
+    }
 }
 
 /// Close stdin, wait ≤5s for exit, then SIGKILL.
@@ -1512,31 +2035,30 @@ pub(super) async fn stop_handle_with_source(
     handle: &Arc<SessionHandle>,
     source: &str,
 ) -> Result<(), String> {
-    let _dispatch = handle.dispatch_lock.lock().await;
-    stop_handle_locked(handle, source).await
-}
-
-pub(super) async fn stop_handle_locked(
-    handle: &Arc<SessionHandle>,
-    source: &str,
-) -> Result<(), String> {
-    if !*handle.shutdown.borrow() {
-        super::lifecycle::record(handle, source, None);
+    {
+        let _dispatch = handle.dispatch_lock.lock().await;
+        if !handle.is_shutting_down() {
+            super::lifecycle::record(handle, source, None);
+        }
+        mark_shutting_down_and_detach(handle);
     }
     stop_handle_after_signal(handle).await
 }
 
-async fn stop_handle_after_signal(handle: &Arc<SessionHandle>) -> Result<(), String> {
-    let _ = handle.shutdown.send(true);
+pub(super) async fn stop_handle_after_signal(handle: &Arc<SessionHandle>) -> Result<(), String> {
+    mark_shutting_down_and_detach(handle);
     // An explicit stop cancels its callers: fail them now instead of waiting
     // for the exit path (the reader may still resolve responses that already
     // arrived; anything after this point has been abandoned by its caller).
-    handle.pending.fail_all("session is stopping");
-    for _ in 0..50 {
-        if !handle.alive.load(Ordering::SeqCst) {
-            return Ok(());
+    if handle.alive.load(Ordering::SeqCst) {
+        handle.pending.fail_all("session is stopping");
+    }
+    if handle.wait_exited(STOP_GRACE).await {
+        let session_id = handle.session_id.read().clone();
+        if !session_id.is_empty() {
+            rpc::clear_stopping_handle(&session_id, handle);
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        return Ok(());
     }
     let pid = handle.pid;
     if pid > 1 {
@@ -1547,11 +2069,12 @@ async fn stop_handle_after_signal(handle: &Arc<SessionHandle>) -> Result<(), Str
     }
     // Wait for the monitor to observe the exit so callers never respawn while
     // the old process may still write the session file.
-    for _ in 0..20 {
-        if !handle.alive.load(Ordering::SeqCst) {
-            return Ok(());
+    if handle.wait_exited(Duration::from_secs(2)).await {
+        let session_id = handle.session_id.read().clone();
+        if !session_id.is_empty() {
+            rpc::clear_stopping_handle(&session_id, handle);
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        return Ok(());
     }
     Err("session process did not exit".to_string())
 }
@@ -1608,11 +2131,7 @@ mod tests {
         let output = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let capture = output.clone();
         let sink: OutSink = Arc::new(move |event| capture.lock().push(event));
-        emit_frame(
-            &sink,
-            &old,
-            &json!({"type":"message_end","messageId":"old"}),
-        );
+        emit_frame(&sink, &old, json!({"type":"message_end","messageId":"old"}));
         assert!(output.lock().is_empty());
         publish_exit(&sink, &old, Some(0));
         assert!(output.lock().is_empty());
@@ -1654,11 +2173,11 @@ mod tests {
         ];
         for frame in &frames {
             apply_frame(&handle, frame);
-            emit_frame(&sink, &handle, frame);
+            emit_frame(&sink, &handle, frame.clone());
         }
         publish_exit(&sink, &handle, Some(1));
         // A reader that missed its bounded drain cannot publish into a closed stream.
-        emit_frame(&sink, &handle, &json!({"type":"agent_start"}));
+        emit_frame(&sink, &handle, json!({"type":"agent_start"}));
         let output = output.lock();
         assert_eq!(output.len(), frames.len() + 1);
         for (event, expected) in output.iter().zip(&frames) {
@@ -2027,8 +2546,8 @@ mod tests {
         let frame1 = json!({"type": "available_commands_update", "commands": []});
         let frame2 = json!({"type": "extension_ui_request", "id": "1"});
 
-        emit_frame(&sink, &h, &frame1);
-        emit_frame(&sink, &h, &frame2);
+        emit_frame(&sink, &h, frame1.clone());
+        emit_frame(&sink, &h, frame2.clone());
 
         // Buffering: nothing emitted yet
         assert_eq!(emitted.lock().len(), 0);
@@ -2393,5 +2912,153 @@ mod tests {
         let pos = args.iter().position(|a| a == "--prompt-cache-key").unwrap();
         assert_eq!(args[pos + 1], "parent-id");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn bounded_stdin_queue_reports_backpressure_when_full() {
+        let (handle, _rx, _shutdown_rx) = SessionHandle::for_test_bounded(2);
+        let handle = Arc::new(handle);
+        handle
+            .enqueue_stdin(StdinMessage::new("{\"type\":\"a\"}".into(), None))
+            .unwrap();
+        handle
+            .enqueue_stdin(StdinMessage::new("{\"type\":\"b\"}".into(), None))
+            .unwrap();
+        let err = send_command(&handle, json!({"type": "get_state"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err, "session stdin queue full");
+        assert!(handle.pending.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_command_is_skipped_by_stdin_writer() {
+        let (handle, rx, shutdown_rx) = SessionHandle::for_test_bounded(4);
+        let handle = Arc::new(handle);
+
+        // Send a command with a short timeout BEFORE the stdin writer drains the queue.
+        let err = send_command_with_timeout(
+            &handle,
+            json!({"type": "prompt", "message": "should never hit stdin"}),
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "command timed out");
+        assert!(handle.pending.is_empty());
+
+        // Queue a subsequent non-cancelled command to prove the writer continues cleanly.
+        handle
+            .enqueue_stdin(StdinMessage::new(
+                "{\"type\":\"get_state\",\"id\":\"keep\"}".into(),
+                None,
+            ))
+            .unwrap();
+
+        let (client, mut server) = tokio::io::duplex(1024);
+        let writer_handle = handle.clone();
+        let writer = tokio::spawn(write_stdin_loop(client, rx, shutdown_rx, writer_handle));
+
+        // Wait until the kept line is written, then signal shutdown so the writer exits.
+        let mut written = Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            let n = tokio::io::AsyncReadExt::read(&mut server, &mut buf)
+                .await
+                .unwrap();
+            written.extend_from_slice(&buf[..n]);
+            if written.contains(&b'\n') {
+                break;
+            }
+        }
+        let _ = handle.shutdown.send(true);
+        writer.await.unwrap();
+
+        let written_text = String::from_utf8(written).unwrap();
+        assert_eq!(written_text, "{\"type\":\"get_state\",\"id\":\"keep\"}\n");
+        assert!(!written_text.contains("should never hit stdin"));
+    }
+
+    #[tokio::test]
+    async fn read_loop_discards_oversized_stdout_line_and_recovers() {
+        let handle = test_handle();
+        *handle.session_id.write() = format!("oversized-{}", uuid::Uuid::new_v4());
+        let emitted = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let emitted_clone = emitted.clone();
+        let sink: OutSink = Arc::new(move |ev| {
+            if let OutEvent::Frame { frame, .. } = ev {
+                emitted_clone.lock().push(frame);
+            }
+        });
+        let oversized = format!("{{\"big\":\"{}\"}}\n", "x".repeat(256));
+        let valid = "{\"type\":\"agent_end\"}\n";
+        let stream = std::io::Cursor::new(format!("{oversized}{valid}").into_bytes());
+        let (ready_tx, _ready_rx) = oneshot::channel();
+        read_loop_with_limit(sink, handle, stream, ready_tx, Some(64)).await;
+        let frames = emitted.lock();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["type"], "agent_end");
+    }
+
+    #[test]
+    fn bounded_stderr_keeps_tail_within_budget() {
+        let mut stderr = BoundedStderr::new(64);
+        for i in 0..20 {
+            stderr.push_line(format!("noise line {i:02}"));
+        }
+        stderr.push_line("SessionModelRestoreError: Could not restore model x".into());
+        let rendered = stderr.render();
+        assert!(rendered.starts_with("... (stderr truncated)\n"));
+        assert!(rendered.contains("SessionModelRestoreError: Could not restore model x"));
+        assert!(stderr.bytes <= 64);
+    }
+
+    #[test]
+    fn pending_frame_buffer_enforces_count_and_byte_bounds() {
+        let mut buf = PendingFrameBuffer::default();
+        assert!(buf.push_with_limits(json!({"seq": 1}), 2, 1024));
+        assert!(buf.push_with_limits(json!({"seq": 2}), 2, 1024));
+        assert!(buf.push_with_limits(json!({"seq": 3}), 2, 1024));
+        assert_eq!(buf.len(), 2);
+        let frames = buf.take();
+        assert_eq!(frames, vec![json!({"seq": 2}), json!({"seq": 3})]);
+        assert_eq!(buf.bytes(), 0);
+
+        // Oversized single frame is rejected cleanly without panicking.
+        assert!(!buf.push_with_limits(json!({"huge": "x".repeat(200)}), 4, 64));
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn emit_frame_slims_tool_details_before_buffering_and_delivery() {
+        let h = test_handle();
+        *h.session_id.write() = String::new();
+        let emitted = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let emitted_clone = emitted.clone();
+        let sink: OutSink = Arc::new(move |ev| {
+            if let OutEvent::Frame { frame, .. } = ev {
+                emitted_clone.lock().push(frame);
+            }
+        });
+        emit_frame(
+            &sink,
+            &h,
+            json!({
+                "type": "tool_execution_end",
+                "toolCallId": "tc1",
+                "toolName": "read",
+                "result": {
+                    "content": [{"type": "text", "text": "ok"}],
+                    "details": { "displayContent": "x".repeat(4096) }
+                }
+            }),
+        );
+        // Buffered frame is already slimmed (no bloated displayContent retained).
+        assert!(h.pending_frames.lock().bytes() < 512);
+        *h.session_id.write() = "s_slim".to_string();
+        drain_pending_frames(&sink, &h);
+        let frames = emitted.lock();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0]["result"].get("details").is_none());
     }
 }

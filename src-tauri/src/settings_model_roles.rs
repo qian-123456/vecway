@@ -318,28 +318,46 @@ fn selector_text(value: &Value) -> Option<String> {
 fn build_snapshot(ctx: &Ctx, session: Option<&str>) -> Result<ModelRoleSnapshot, String> {
     let global_path = global_config_path(ctx);
     let global_file = read_config(&global_path, GLOBAL_LABEL)?;
-    let global = project_layer(&parse_yaml(&global_file.text, GLOBAL_LABEL)?);
+    let global_root = if global_file.exists {
+        Some(parse_yaml(&global_file.text, GLOBAL_LABEL)?)
+    } else {
+        None
+    };
+    let global = global_root.as_ref().map(project_layer).unwrap_or_default();
     let project = match project_config_path(ctx) {
         Some(path) => {
             let file = read_config(&path, PROJECT_LABEL)?;
-            let values = project_layer(&parse_yaml(&file.text, PROJECT_LABEL)?);
-            Some((path, file.exists, values))
+            let root = if file.exists {
+                Some(parse_yaml(&file.text, PROJECT_LABEL)?)
+            } else {
+                None
+            };
+            let values = root.as_ref().map(project_layer).unwrap_or_default();
+            Some((path, file.exists, root, values))
         }
         None => None,
     };
     let roles = Layered {
         global: &global.model_roles,
-        project: project.as_ref().map(|(_, _, values)| &values.model_roles),
+        project: project
+            .as_ref()
+            .map(|(_, _, _, values)| &values.model_roles),
     };
     let overrides = Layered {
         global: &global.overrides,
-        project: project.as_ref().map(|(_, _, values)| &values.overrides),
+        project: project.as_ref().map(|(_, _, _, values)| &values.overrides),
     };
-    let discovered = discovery::discover_agents(&discovery::DiscoveryCtx {
-        agent_dir: ctx.agent_dir.clone(),
-        home: ctx.home.clone(),
-        project_dir: ctx.project_dir.clone(),
-    });
+    let discovered = discovery::discover_agents_with_configs(
+        &discovery::DiscoveryCtx {
+            agent_dir: ctx.agent_dir.clone(),
+            home: ctx.home.clone(),
+            project_dir: ctx.project_dir.clone(),
+        },
+        discovery::LoadedConfigs {
+            user_yaml: global_root.as_ref(),
+            project_yaml: project.as_ref().and_then(|(_, _, root, _)| root.as_ref()),
+        },
+    );
     let agents: Vec<AgentModelAssignment> = discovered
         .iter()
         .map(|agent| resolve_agent(agent, &roles, &overrides, session))
@@ -353,7 +371,7 @@ fn build_snapshot(ctx: &Ctx, session: Option<&str>) -> Result<ModelRoleSnapshot,
         },
         project: project
             .as_ref()
-            .map(|(path, exists, values)| ModelRoleLayer {
+            .map(|(path, exists, _, values)| ModelRoleLayer {
                 path: path_text(path),
                 exists: *exists,
                 model_roles: values.model_roles.clone(),
@@ -1772,6 +1790,104 @@ pub(crate) fn write_role_batch(
     written
 }
 
+/// One compare-and-swap role edit in a guarded template apply/undo batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RoleBatchEdit {
+    pub(crate) role: String,
+    /// Expected value currently stored in the target layer (`None` = absent).
+    pub(crate) expected_before: Option<String>,
+    /// Desired value to write (`None` = remove key).
+    pub(crate) after: Option<String>,
+}
+
+/// Guarded multi-entry edit with compare-and-swap check under [`WRITE_LOCK`].
+///
+/// Every entry's `expected_before` is verified against a fresh read of the target layer under
+/// [`WRITE_LOCK`] before planning or writing. Any concurrent edit since preview aborts the
+/// whole batch with a drift error instead of silently overwriting newer changes.
+pub(crate) fn write_role_batch_guarded(
+    project: Option<&Path>,
+    edits: &[RoleBatchEdit],
+    validate_values: bool,
+) -> Result<(), String> {
+    if edits.is_empty() {
+        return Ok(());
+    }
+    let project_text = project.map(path_text);
+    let ctx = Ctx::resolve(project_text.as_deref())?;
+    let _guard = WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (path, label) = match project_config_path(&ctx) {
+        Some(path) => (path, PROJECT_LABEL),
+        None => (global_config_path(&ctx), GLOBAL_LABEL),
+    };
+    let current = read_config(&path, label)?;
+    if project.is_none() && !current.exists && is_file(&ctx.agent_dir.join(LEGACY_SETTINGS_NAME)) {
+        return Err(
+            "检测到旧版 settings.json；请先让 omp 迁移为 config.yml 后再设置模型角色，文件未修改"
+                .to_string(),
+        );
+    }
+    let current_roles = project_layer(&parse_yaml(&current.text, label)?).model_roles;
+    let mut validated_names = Vec::with_capacity(edits.len());
+    let mut drifted = Vec::new();
+    for edit in edits {
+        let name = validate_name(&edit.role)?;
+        if current_roles.get(&name) != edit.expected_before.as_ref() {
+            drifted.push(name.clone());
+        }
+        validated_names.push(name);
+    }
+    if !drifted.is_empty() {
+        return Err(format!(
+            "配置已发生变化，拒绝覆盖以下角色（请重新预览后再操作）：{}",
+            drifted.join("、")
+        ));
+    }
+    let mut planned: Option<String> = None;
+    for (name, edit) in validated_names.into_iter().zip(edits.iter()) {
+        let op = match &edit.after {
+            Some(raw) => EditOp::Set {
+                table: Table::ModelRoles,
+                name,
+                value: if validate_values {
+                    validate_value_list(raw)?
+                } else {
+                    raw.clone()
+                },
+            },
+            None => EditOp::Remove {
+                table: Table::ModelRoles,
+                name,
+            },
+        };
+        let source = planned.as_deref().unwrap_or(&current.text);
+        if let Some(next) = plan_edit(source, &op, label)? {
+            planned = Some(next);
+        }
+    }
+    let Some(next) = planned else {
+        return Ok(());
+    };
+    let created_dir = if current.exists {
+        None
+    } else {
+        path.parent().filter(|dir| !dir.exists())
+    };
+    let written = write_guarded(
+        &path,
+        current.exists.then_some(current.bytes.as_slice()),
+        &next,
+    );
+    if written.is_err() {
+        if let Some(dir) = created_dir {
+            let _ = fs::remove_dir(dir);
+        }
+    }
+    written
+}
+
 fn normalize_session(raw: Option<String>) -> Option<String> {
     raw.map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -2576,5 +2692,70 @@ mod tests {
             &ops(&[("default", Some("a/b"))])
         )
         .is_err());
+    }
+
+    #[test]
+    fn guarded_batch_rejects_drifted_roles_without_overwriting() {
+        let project = batch_project_dir("cas");
+        let file = project_config_file(&project);
+        fs::create_dir_all(file.parent().expect("parent")).expect(".omp dir");
+        let initial = "modelRoles:\n  default: \"a/old\"\n  smol: \"b/old\"\n";
+        fs::write(&file, initial).expect("fixture");
+
+        // Concurrent modification changed `default` since preview.
+        let err = write_role_batch_guarded(
+            Some(&project),
+            &[
+                RoleBatchEdit {
+                    role: "default".to_string(),
+                    expected_before: Some("a/stale".to_string()),
+                    after: Some("a/new".to_string()),
+                },
+                RoleBatchEdit {
+                    role: "smol".to_string(),
+                    expected_before: Some("b/old".to_string()),
+                    after: Some("b/new".to_string()),
+                },
+            ],
+            true,
+        )
+        .expect_err("stale before must fail");
+        assert!(err.contains("default"), "{err}");
+        assert_eq!(fs::read_to_string(&file).expect("unchanged"), initial);
+
+        // Matching expected_before succeeds atomically.
+        write_role_batch_guarded(
+            Some(&project),
+            &[
+                RoleBatchEdit {
+                    role: "default".to_string(),
+                    expected_before: Some("a/old".to_string()),
+                    after: Some("a/new".to_string()),
+                },
+                RoleBatchEdit {
+                    role: "smol".to_string(),
+                    expected_before: Some("b/old".to_string()),
+                    after: None,
+                },
+                RoleBatchEdit {
+                    role: "plan".to_string(),
+                    expected_before: None,
+                    after: Some("c/plan".to_string()),
+                },
+            ],
+            true,
+        )
+        .expect("matching cas");
+        let refs = layer_refs(&file, PROJECT_LABEL).expect("refs");
+        assert_eq!(
+            refs.model_roles.get("default").map(String::as_str),
+            Some("a/new")
+        );
+        assert!(!refs.model_roles.contains_key("smol"));
+        assert_eq!(
+            refs.model_roles.get("plan").map(String::as_str),
+            Some("c/plan")
+        );
+        let _ = fs::remove_dir_all(&project);
     }
 }

@@ -312,6 +312,20 @@ pub(crate) fn discovered_kind(item: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// Reuse a provider's stored API key for model discovery only when the
+/// requested Base URL matches the provider's configured Base URL.
+fn resolve_stored_fetch_key(
+    requested_base_url: &str,
+    target_base_url: &str,
+    target_key: Option<String>,
+) -> Option<String> {
+    if ops::same_base_url(target_base_url, requested_base_url) {
+        target_key
+    } else {
+        None
+    }
+}
+
 /// Fetches available models directly from the provider's API endpoint (without CORS restrictions).
 /// Without `api_key` the key of provider `id` is used.
 #[tauri::command]
@@ -333,7 +347,7 @@ pub async fn provider_fetch_models(
     if key.is_none() {
         if let Some(id) = id.as_deref() {
             if let Ok(Ok(target)) = probe_target(id) {
-                key = target.key;
+                key = resolve_stored_fetch_key(base, &target.base_url, target.key);
             }
         }
     }
@@ -1409,5 +1423,34 @@ mod tests {
             Some("other")
         );
         assert_eq!(discovered_kind(&v(r#"{"id":"x"}"#)), None);
+    }
+
+    #[test]
+    fn stored_fetch_key_is_never_sent_to_a_different_base_url() {
+        assert_eq!(
+            resolve_stored_fetch_key(
+                "https://api.example.com/v1/",
+                "https://API.EXAMPLE.COM:443/v1",
+                Some("sk-secret".to_string()),
+            )
+            .as_deref(),
+            Some("sk-secret")
+        );
+        for other in [
+            "https://evil.example.com/v1",
+            "http://api.example.com/v1",
+            "https://api.example.com:8443/v1",
+            "https://api.example.com/v2",
+        ] {
+            assert_eq!(
+                resolve_stored_fetch_key(
+                    other,
+                    "https://api.example.com/v1",
+                    Some("sk-secret".to_string()),
+                ),
+                None,
+                "{other}"
+            );
+        }
     }
 }

@@ -1,10 +1,10 @@
 //! [E] Cloudflare DDNS (AAAA record, DNS-only) for IPv6 direct access.
 
-use std::net::Ipv6Addr;
-use std::time::Duration;
-
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::net::Ipv6Addr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::contracts::DdnsStatus;
@@ -42,6 +42,8 @@ static RUNTIME: Mutex<DdnsRuntime> = Mutex::new(DdnsRuntime {
 
 /// Mutex ensuring only a single in-flight sync operation at any time.
 static SYNC_LOCK: TokioMutex<()> = TokioMutex::const_new(());
+/// Ensures the background DDNS sync loop is spawned at most once.
+static LOOP_STARTED: AtomicBool = AtomicBool::new(false);
 
 // ─── Cloudflare API DTOs ────────────────────────────────────────────────────
 
@@ -344,6 +346,36 @@ pub fn should_sync(
     SyncDecision::Proceed
 }
 
+/// Cheap in-memory pre-check before touching the encrypted vault or probing IPv6.
+/// Returns `Ok(())` only when reading credentials and probing IPv6 is warranted;
+/// `Err(Some(msg))` is returned to manual callers, `Err(None)` means silent skip.
+fn preflight_before_io(
+    mobile_enabled: bool,
+    ipv6_enabled: bool,
+    ddns_enabled: bool,
+    zone_id: &str,
+    hostname: &str,
+    halted: bool,
+    is_manual: bool,
+) -> Result<(), Option<&'static str>> {
+    if !ddns_enabled {
+        return Err(is_manual.then_some("DDNS 功能未启用"));
+    }
+    if !is_manual && (!mobile_enabled || !ipv6_enabled) {
+        return Err(None);
+    }
+    if zone_id.trim().is_empty() {
+        return Err(is_manual.then_some("未配置 Cloudflare Zone ID"));
+    }
+    if hostname.trim().is_empty() {
+        return Err(is_manual.then_some("未配置 DDNS 域名"));
+    }
+    if !is_manual && halted {
+        return Err(None);
+    }
+    Ok(())
+}
+
 pub fn apply_manual_sync_trigger(runtime: &mut DdnsRuntime) {
     runtime.halted = false;
     runtime.consecutive_failures = 0;
@@ -502,14 +534,32 @@ async fn perform_sync(state: &AppState, is_manual: bool) -> Result<(), String> {
         apply_manual_sync_trigger(&mut rt);
     }
 
-    let (enabled, zone_id, hostname) = {
+    let (mobile_enabled, ipv6_enabled, enabled, zone_id, hostname) = {
         let s = state.settings.read();
         (
+            s.mobile_enabled,
+            s.mobile_ipv6_enabled,
             s.ddns_enabled,
             s.ddns_zone_id.clone().unwrap_or_default(),
             s.ddns_hostname.clone().unwrap_or_default(),
         )
     };
+
+    let halted = RUNTIME.lock().halted;
+    if let Err(msg) = preflight_before_io(
+        mobile_enabled,
+        ipv6_enabled,
+        enabled,
+        &zone_id,
+        &hostname,
+        halted,
+        is_manual,
+    ) {
+        return match msg {
+            Some(err) => Err(err.to_string()),
+            None => Ok(()),
+        };
+    }
 
     let token = crate::providers::vault::read_entry(VAULT_SLUG)
         .map_err(|e| format!("读取密钥库失败: {e}"))?;
@@ -517,6 +567,13 @@ async fn perform_sync(state: &AppState, is_manual: bool) -> Result<(), String> {
         .as_deref()
         .map(|t| !t.trim().is_empty())
         .unwrap_or(false);
+    if !token_present {
+        return if is_manual {
+            Err("未在密钥库中配置 Cloudflare API Token".to_string())
+        } else {
+            Ok(())
+        };
+    }
     let current_ip = super::ipv6::current_address();
 
     let decision = {
@@ -612,8 +669,11 @@ pub fn status(state: &AppState) -> DdnsStatus {
     }
 }
 
-/// Initialize background DDNS sync loop.
+/// Initialize background DDNS sync loop (idempotent: spawns at most once).
 pub fn init(state: AppState) {
+    if LOOP_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         // Initial sync attempt on startup
         let _ = perform_sync(&state, false).await;
@@ -663,6 +723,7 @@ pub async fn mobile_ddns_set_token(
         rt.last_error = None;
     }
 
+    init(state.inner().clone());
     Ok(status(&state))
 }
 
@@ -681,6 +742,7 @@ pub async fn mobile_ddns_sync(state: tauri::State<'_, AppState>) -> Result<DdnsS
     // perform_sync applies the manual trigger while holding SYNC_LOCK, so the
     // reset cannot interleave with an in-flight sync's failure.
     perform_sync(&state, true).await?;
+    init(state.inner().clone());
 
     Ok(status(&state))
 }
@@ -1222,5 +1284,42 @@ mod tests {
         // 4. A fatal failure of the manual sync itself re-halts.
         apply_sync_failure(&mut rt, &DdnsError::AuthFailed("still bad".to_string()));
         assert!(rt.halted);
+    }
+
+    #[test]
+    fn preflight_short_circuits_when_ddns_or_mobile_ipv6_disabled() {
+        // Disabled DDNS skips silently in background and errors on manual sync.
+        assert_eq!(
+            preflight_before_io(true, true, false, "z", "h.example", false, false),
+            Err(None)
+        );
+        assert_eq!(
+            preflight_before_io(true, true, false, "z", "h.example", false, true),
+            Err(Some("DDNS 功能未启用"))
+        );
+        // Disabled mobile or IPv6 short-circuits background ticks before vault/IPv6 I/O.
+        assert_eq!(
+            preflight_before_io(false, true, true, "z", "h.example", false, false),
+            Err(None)
+        );
+        assert_eq!(
+            preflight_before_io(true, false, true, "z", "h.example", false, false),
+            Err(None)
+        );
+        // Manual sync is still allowed when DDNS is configured even if IPv6 listener is stopped.
+        assert_eq!(
+            preflight_before_io(true, false, true, "z", "h.example", false, true),
+            Ok(())
+        );
+        // Background sync skips when halted without touching vault/IPv6.
+        assert_eq!(
+            preflight_before_io(true, true, true, "z", "h.example", true, false),
+            Err(None)
+        );
+        // Fully enabled background sync proceeds to vault/IPv6 I/O.
+        assert_eq!(
+            preflight_before_io(true, true, true, "z", "h.example", false, false),
+            Ok(())
+        );
     }
 }

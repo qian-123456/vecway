@@ -1,9 +1,9 @@
 //! [A] Background loops: watcher, external process detection (lsof + status files),
 //! and AppState event bus subscription.
 
-use std::time::Duration;
-
 use notify_debouncer_full::{new_debouncer, notify::RecursiveMode, DebounceEventResult};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use tracing::warn;
 
 use super::cat;
@@ -14,11 +14,17 @@ use crate::paths;
 use crate::state::{AppEvent, AppState};
 
 static EXTERNAL_NOTIFY: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+static EXTERNAL_DIRTY: AtomicBool = AtomicBool::new(false);
 
 pub fn notify_external_check() {
+    EXTERNAL_DIRTY.store(true, Ordering::Release);
     if let Some(notify) = EXTERNAL_NOTIFY.get() {
         notify.notify_one();
     }
+}
+
+fn cooldown_remaining(last_sweep: Instant, now: Instant, min_cooldown: Duration) -> Duration {
+    min_cooldown.saturating_sub(now.saturating_duration_since(last_sweep))
 }
 pub fn spawn_all(state: AppState) {
     // Subscribe to the bus synchronously so no startup events are missed.
@@ -26,16 +32,9 @@ pub fn spawn_all(state: AppState) {
 
     let s1 = state.clone();
     tauri::async_runtime::spawn(async move {
-        // Ensure per-mode global workspace rows exist (lazily, for modes
-        // already referenced by sessions/workspaces/groups).
-        {
-            let db = s1.db.lock();
-            if let Err(e) = crate::db::ensure_global_workspace(&db) {
-                warn!("ensure_global_workspace: {e}");
-            }
-        }
-        // Initial catalog build.
-        super::rebuild(&s1).await;
+        // Initial catalog build (double-checked under `scan_lock`; global workspace
+        // rows are ensured inside `rebuild_blocking` off the async worker).
+        super::ensure_ready(&s1).await;
     });
 
     let s2 = state.clone();
@@ -56,8 +55,7 @@ pub fn spawn_all(state: AppState) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(3)).await;
         if let Ok(summary) =
-            tokio::task::spawn_blocking(crate::storage::clean_expired_status_records_blocking)
-                .await
+            tokio::task::spawn_blocking(crate::storage::clean_expired_status_records_blocking).await
         {
             if summary.count > 0 {
                 tracing::info!(
@@ -185,9 +183,10 @@ async fn run_external_loop(state: AppState) {
     let status_dir = paths::status_dir();
     let own_pid = std::process::id();
 
-    // Idle backoff reaches 60s: the file watcher calls `notify_external_check`
-    // on every session-file change, so a terminal omp opening a session still
-    // wakes this loop immediately.
+    // Idle backoff reaches 60s; watcher notifications wake this loop early but
+    // obey a strict MIN_COOLDOWN floor so rapid transcript/status writes never
+    // trigger back-to-back lsof/ps storms.
+    const MIN_COOLDOWN: Duration = Duration::from_secs(4);
     const MIN_DELAY: Duration = Duration::from_secs(5);
     const MAX_DELAY: Duration = Duration::from_secs(60);
     const STEP: Duration = Duration::from_secs(10);
@@ -195,6 +194,7 @@ async fn run_external_loop(state: AppState) {
     let mut current_delay = MIN_DELAY;
 
     loop {
+        EXTERNAL_DIRTY.store(false, Ordering::Release);
         let owned_pids: std::collections::HashSet<u32> = crate::rpc::registry()
             .read()
             .values()
@@ -253,19 +253,35 @@ async fn run_external_loop(state: AppState) {
             super::recompute_async(&state, None).await;
         }
 
+        let last_sweep = Instant::now();
+
         // Adaptive backoff:
         // If external sessions exist or state changed, stay at 5s to promptly detect exit/takeover.
-        // If idle (no external sessions and no change), progressively back off to 30s.
+        // If idle (no external sessions and no change), progressively back off to 60s.
         if !new_ext.is_empty() || changed {
             current_delay = MIN_DELAY;
         } else {
             current_delay = (current_delay + STEP).min(MAX_DELAY);
         }
 
-        tokio::select! {
-            _ = tokio::time::sleep(current_delay) => {},
-            _ = notify.notified() => {
+        let next_periodic = tokio::time::Instant::now() + current_delay;
+        loop {
+            if EXTERNAL_DIRTY.load(Ordering::Acquire) {
                 current_delay = MIN_DELAY;
+                let rem = cooldown_remaining(last_sweep, Instant::now(), MIN_COOLDOWN);
+                if !rem.is_zero() {
+                    tokio::time::sleep(rem).await;
+                }
+                break;
+            }
+            tokio::select! {
+                _ = tokio::time::sleep_until(next_periodic) => {
+                    break;
+                }
+                _ = notify.notified() => {
+                    // Re-check EXTERNAL_DIRTY so stale permits already covered
+                    // by the completed sweep do not trigger a redundant run.
+                }
             }
         }
     }
@@ -325,19 +341,26 @@ async fn run_bus_loop(state: AppState, mut bus: tokio::sync::broadcast::Receiver
             change
         };
 
-        if let Some(new_p) = change.pending {
-            let db = state.db.lock();
-            if let Err(e) = store::set_pending(&db, &session_id, new_p) {
-                warn!("bus set_pending {session_id}: {e}");
-            }
+        if change.pending.is_some() || change.unread.is_some() {
+            let st = state.clone();
+            let sid = session_id.clone();
+            let new_pending = change.pending;
+            let new_unread = change.unread;
+            let _ = tokio::task::spawn_blocking(move || {
+                let db = st.db.lock();
+                if let Some(new_p) = new_pending {
+                    if let Err(e) = store::set_pending(&db, &sid, new_p) {
+                        warn!("bus set_pending {sid}: {e}");
+                    }
+                }
+                if let Some(u) = new_unread {
+                    if let Err(e) = store::set_unread(&db, &sid, u) {
+                        warn!("bus set_unread {sid}: {e}");
+                    }
+                }
+            })
+            .await;
         }
-        if let Some(u) = change.unread {
-            let db = state.db.lock();
-            if let Err(e) = store::set_unread(&db, &session_id, u) {
-                warn!("bus set_unread {session_id}: {e}");
-            }
-        }
-
         if change.pending.is_some() || change.unread.is_some() || change.runtime {
             super::recompute_async(&state, Some(vec![session_id])).await;
         }
@@ -376,5 +399,27 @@ mod watch_tests {
         let stray_json = PathBuf::from("/other/x.json");
         assert!(classify_events(&dir, &status_dir, [&elsewhere].into_iter()).full);
         assert!(classify_events(&dir, &status_dir, [&stray_json].into_iter()).full);
+    }
+
+    #[test]
+    fn external_cooldown_remaining_clamps_to_zero() {
+        use super::cooldown_remaining;
+        use std::time::{Duration, Instant};
+
+        let min = Duration::from_secs(4);
+        let t0 = Instant::now();
+        assert_eq!(cooldown_remaining(t0, t0, min), min);
+        assert_eq!(
+            cooldown_remaining(t0, t0 + Duration::from_secs(1), min),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            cooldown_remaining(t0, t0 + Duration::from_secs(4), min),
+            Duration::ZERO
+        );
+        assert_eq!(
+            cooldown_remaining(t0, t0 + Duration::from_secs(10), min),
+            Duration::ZERO
+        );
     }
 }

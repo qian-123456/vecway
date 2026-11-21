@@ -352,12 +352,16 @@ pub(crate) async fn apply_template(
         });
     }
 
-    let ops: Vec<(String, Option<String>)> = preview
+    let batch: Vec<roles::RoleBatchEdit> = preview
         .edits
         .iter()
-        .map(|edit| (edit.role.clone(), edit.after.clone()))
+        .map(|edit| roles::RoleBatchEdit {
+            role: edit.role.clone(),
+            expected_before: edit.before.clone(),
+            after: edit.after.clone(),
+        })
         .collect();
-    if let Err(error) = write_batch(project.clone(), ops).await {
+    if let Err(error) = write_batch_guarded(project.clone(), batch, true).await {
         let entry = log_entry(
             &template,
             rule.as_ref(),
@@ -448,14 +452,17 @@ pub(super) fn record(state: &AppState, entry: &ModelSwitchLogEntry) -> Result<()
     store::insert_log(&conn, entry)
 }
 
-/// Runs the blocking guarded write off the async runtime. `project` = `None` writes the global
-/// layer.
-async fn write_batch(
+/// Runs the blocking compare-and-swap guarded write off the async runtime.
+/// `project` = `None` writes the global layer.
+async fn write_batch_guarded(
     project: Option<PathBuf>,
-    ops: Vec<(String, Option<String>)>,
+    edits: Vec<roles::RoleBatchEdit>,
+    validate_values: bool,
 ) -> Result<(), String> {
-    match tokio::task::spawn_blocking(move || roles::write_role_batch(project.as_deref(), &ops))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        roles::write_role_batch_guarded(project.as_deref(), &edits, validate_values)
+    })
+    .await
     {
         Ok(result) => result,
         Err(error) => Err(format!("写入配置失败：{error}")),
@@ -708,7 +715,7 @@ pub(crate) async fn undo_switch(state: &AppState, log_id: &str) -> Result<Switch
     let project = scope_project(&entry.scope)?;
     let current = read_layer(&entry.scope)?.model_roles;
 
-    let mut ops = Vec::new();
+    let mut batch = Vec::new();
     let mut reverted = Vec::new();
     let mut drifted = Vec::new();
     for edit in &entry.edits {
@@ -716,15 +723,19 @@ pub(crate) async fn undo_switch(state: &AppState, log_id: &str) -> Result<Switch
             drifted.push(edit.role.clone());
             continue;
         }
-        ops.push((edit.role.clone(), edit.before.clone()));
+        batch.push(roles::RoleBatchEdit {
+            role: edit.role.clone(),
+            expected_before: edit.after.clone(),
+            after: edit.before.clone(),
+        });
         reverted.push(TemplateRoleEdit {
             role: edit.role.clone(),
             before: edit.after.clone(),
             after: edit.before.clone(),
         });
     }
-    // One guarded write for the whole undo; an empty batch is a no-op.
-    write_batch(project, ops).await?;
+    // One compare-and-swap guarded write for the whole undo; an empty batch is a no-op.
+    write_batch_guarded(project, batch, false).await?;
     {
         let conn = state.db.lock();
         store::mark_log_undone(&conn, log_id, &crate::schedules::store::now_rfc3339())?;
