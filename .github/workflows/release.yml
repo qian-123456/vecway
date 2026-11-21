@@ -99,16 +99,20 @@ jobs:
 
             ### 本次更新 / What's New
             #### 新增功能 / Features
-            - **供应商与模型体验升级**：全新供应商配置界面与模型自动发现，支持记录最近使用的模型选择历史。
-            - **Provider & Model Experience**: Reworked provider setup dialog and model discovery with catalog refresh and recent picker history.
-            - **定时自动化工作流重做**：全新任务创建与切换体验，支持指定多个工作目录并行执行。
-            - **Scheduled Automations Overhaul**: Streamlined creation and switching flow with multi-worktree targeting.
-            - **对话与会话交互增强**：新增内联引用来源标签与多源预览弹窗、对话中直接交互式确认、请求统计可点击查看、复制结果提示，以及侧边栏会话悬停预览与筛选。
-            - **Chat & Session Interactions**: Added inline citation chips with multi-source preview popovers, interactive prompts, clickable request stats, copy feedback pill, session hover cards, and sidebar filters.
+            - **macOS 权限引导弹窗**：在「设置 → 通用」新增辅助功能、屏幕录制与完全磁盘访问权限状态检查及系统设置直达引导。
+            - **macOS Permissions Guide**: Added status probes and System Settings deep links for Accessibility, Screen Recording, and Full Disk Access in General Settings.
+            - **文件浏览、预览与搜索体验增强**：文件树合并为紧凑单行工具栏，支持隐藏点文件/构建目录、自动刷新与定位预览文件；支持右侧面板临时最大化、目录链接直接定位，以及全局 `/` 快捷键快速搜索。
+            - **Explorer, Preview & Search**: Consolidated the file explorer header into a compact toolbar with dotfile/build filtering, auto-refresh, active-file reveal, right-panel maximize, directory link navigation, and scoped `/` search shortcuts.
+            - **定时自动化草稿与交互升级**：新增定时任务草稿面板、统一表单/问答确认面板，并优化供应商模型搜索与记忆开关设置。
+            - **Automations & Chat Interactions**: Added the automation drafts panel, unified ask-form step navigation, provider model search/batch actions, and explicit memory enablement toggle.
 
-            #### 修复与优化 / Fixes & Improvements
-            - 优化会话目录识别、多工作树角色配置继承，以及启动页与侧边栏的排版间距。
-            - Improved session catalog identity resolution, worktree role inheritance, and start/sidebar layout spacing.
+            #### 修复与优化 / Fixes & Performance
+            - **性能与内存大幅瘦身**：精简前端与移动端包体积、按需懒加载弹窗、批处理 RPC 事件帧并优化流式渲染与手绘草图热路径。
+            - **Frontend & Mobile Performance**: Trimmed bundle sizes, gated lazy overlays, batched RPC frames, and optimized streaming and sketch rendering hot paths.
+            - **后端安全与并发加固**：改为按会话独立加锁、有界子代理与缓存读取、SQLite/磁盘扫描隔离、更稳健的进程超时与资源上限控制。
+            - **Backend Security & Concurrency**: Switched to per-session startup locks, bounded caches/process limits, offloaded SQLite/catalog scans, and hardened provider/mobile authorization.
+            - **桌面端细节修复**：优化待审阅计划自动弹出、子代理分段计时与多处布局/主题对比度细节。
+            - **Desktop Polish**: Refined plan panel auto-open lifecycle, multi-segment subagent run timing, and layout/theme contrast details.
 
             ---
 
