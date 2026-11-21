@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Vecway</string>
+    <string name="scanner_title">扫描配对二维码</string>
+    <string name="scanner_hint">对准电脑端「设置 → 连接与设备」中的配对二维码</string>
+    <string name="scanner_torch">照明</string>
+    <string name="scanner_paste">手动输入</string>
+    <string name="scanner_cancel">取消</string>
+    <string name="scanner_permission_denied">需要相机权限才能扫描配对二维码，请先在系统设置中允许相机访问，或点击“手动输入”。</string>
+</resources>
