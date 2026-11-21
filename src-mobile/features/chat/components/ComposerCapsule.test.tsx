@@ -16,7 +16,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
 describe("ComposerCapsule", () => {
-	it("uses a solid composer and unadorned toolbar controls while preserving touch targets", () => {
+	it("renders a stable desktop-style 2-row composer and keeps toolbar controls mounted on focus", () => {
 		const onModel = vi.fn();
 		const onThinking = vi.fn();
 		const onContext = vi.fn();
@@ -39,17 +39,18 @@ describe("ComposerCapsule", () => {
 		expect(circles).toHaveLength(2);
 		expect(Number(circles[1].getAttribute("stroke-dashoffset"))).toBeCloseTo(2 * Math.PI * 7 * 0.85);
 		const mic = screen.getByRole("button", { name: "语音输入" });
-		expect(mic.className).toContain("h-8 w-8");
+		expect(mic.className).toContain("h-9 w-9");
 		expect(mic.className).not.toContain("bg-m-danger");
 		const send = screen.getByRole("button", { name: "发送" });
 		expect(send.className).toContain("bg-m-surface-2");
 		fireEvent.focus(screen.getByRole("textbox"));
-		expect(screen.queryByRole("button", { name: /当前模型/ })).toBeNull();
-		expect(screen.queryByRole("button", { name: /当前思考强度/ })).toBeNull();
-		expect(screen.queryByRole("button", { name: /上下文用量/ })).toBeNull();
+		// Toolbar stays mounted with zero button jumping or unmounting on focus.
+		expect(screen.getByRole("button", { name: /当前模型/ })).toBeTruthy();
+		expect(screen.getByRole("button", { name: /当前思考强度/ })).toBeTruthy();
+		expect(screen.getByRole("button", { name: /上下文用量/ })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "添加" })).toBeTruthy();
-		expect(screen.getByRole("button", { name: "语音输入" })).toBeTruthy();
-		expect(screen.getByRole("button", { name: "发送" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "语音输入" })).toBe(mic);
+		expect(screen.getByRole("button", { name: "发送" })).toBe(send);
 	});
 	it("keeps input uncontrolled and emits nothing during IME composition", async () => {
 		const onInput = vi.fn();
@@ -135,7 +136,7 @@ describe("ComposerCapsule", () => {
   expect(onStop).toHaveBeenCalledTimes(1);
 	});
 
-	it("adapts long model names into a merged capsule and compact context ring", () => {
+	it("keeps model and thinking controls separate and truncates long model names cleanly", () => {
 		const onModel = vi.fn();
 		const onThinking = vi.fn();
 		render(
@@ -151,14 +152,19 @@ describe("ComposerCapsule", () => {
 				onThinking={onThinking}
 			/>,
 		);
-		const mergedBtn = screen.getByRole("button", { name: /当前模型：very-long-custom-model-slug.*当前思考强度：High/ });
-		expect(mergedBtn.textContent).toContain("very-long-custom-model-slug");
-		expect(mergedBtn.textContent).toContain("· High");
-		fireEvent.click(mergedBtn);
+		const modelBtn = screen.getByRole("button", { name: "当前模型：very-long-custom-model-slug，点击切换" });
+		expect(modelBtn.textContent).toContain("very-long-custom-model-slug");
+		expect(modelBtn.querySelector(".truncate")).not.toBeNull();
+		fireEvent.click(modelBtn);
+		expect(onModel).toHaveBeenCalledTimes(1);
+
+		const thinkBtn = screen.getByRole("button", { name: "当前思考强度：High，点击切换" });
+		expect(thinkBtn.textContent).toContain("High");
+		fireEvent.click(thinkBtn);
 		expect(onThinking).toHaveBeenCalledTimes(1);
 
 		const contextBtn = screen.getByRole("button", { name: "上下文用量：25%" });
-		expect(contextBtn.textContent).toBe("");
+		expect(contextBtn.textContent).toBe("25%");
 		expect(contextBtn.querySelectorAll("circle")).toHaveLength(2);
 	});
 });

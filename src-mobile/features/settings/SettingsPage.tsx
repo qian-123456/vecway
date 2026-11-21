@@ -1,6 +1,7 @@
 import { Check, FolderCog, Globe2, X } from "lucide-react";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { api, errorMessage } from "../../core/api";
+import { resolveThemeId, themeById } from "../../app/themes";
 import { nav, paths } from "../../core/nav";
 import { usePrefs } from "../../core/stores/prefs";
 import { BottomSheet, Button, EmptyState, IconButton, ListGroup, ListRow, MenuRow, PullToRefresh, Spinner, TopBar } from "../../ui";
@@ -62,6 +63,8 @@ export function SettingsPage() {
 	const [activeSheet, setActiveSheet] = useState<SheetId | null>(null);
 	const [sheetOpen, setSheetOpen] = useState(false);
 	const scheme = usePrefs((s) => s.scheme);
+	const lightTheme = usePrefs((s) => s.lightTheme);
+	const darkTheme = usePrefs((s) => s.darkTheme);
 
 	const load = useCallback(async () => {
 		setError(null);
@@ -115,7 +118,12 @@ export function SettingsPage() {
 
 	/** Short current value shown at the right of a row. */
 	const valueOf = (id: SettingsItemDef["id"]): string | undefined => {
-		if (id === "appearance") return SCHEMES.find((s) => s.value === scheme)?.label;
+		if (id === "appearance") {
+			const modeLabel = SCHEMES.find((s) => s.value === scheme)?.label;
+			if (scheme === "light") return `${modeLabel} · ${themeById(resolveThemeId("light", lightTheme))?.name ?? ""}`;
+			if (scheme === "dark") return `${modeLabel} · ${themeById(resolveThemeId("dark", darkTheme))?.name ?? ""}`;
+			return modeLabel;
+		}
 		if (id === "general" && mode) return APPROVAL_MODES.find((m) => m.value === mode)?.label;
 		if (id === "connection" && data?.mobile) return data.mobile.running ? "已连接" : "未运行";
 		return undefined;

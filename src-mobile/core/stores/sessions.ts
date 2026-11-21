@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api } from "../api";
-import { events } from "../sse";
+import { events, setEventsProbe } from "../sse";
 import { isDraftId, type MobileSession, type SpaceMode } from "../types";
 export interface CreateSessionInput {
 	cwd: string;
@@ -39,9 +39,30 @@ const index = (list: MobileSession[]): Record<string, MobileSession> => {
 	for (const s of list) byId[s.id] = s;
 	return byId;
 };
+function mergeSession(prev: MobileSession | undefined, incoming: MobileSession): MobileSession {
+	if (!prev) return incoming;
+	for (const key of Object.keys(incoming) as Array<keyof MobileSession>) {
+		if (!Object.is(prev[key], incoming[key])) return { ...prev, ...incoming };
+	}
+	return prev;
+}
+
+function patchSession(cur: MobileSession, patch: Partial<MobileSession>): MobileSession {
+	for (const key of Object.keys(patch) as Array<keyof MobileSession>) {
+		if (!Object.is(cur[key], patch[key])) return { ...cur, ...patch };
+	}
+	return cur;
+}
+
+function sameRowRefs(a: readonly MobileSession[], b: readonly MobileSession[]): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) {
+		if (a[i] !== b[i]) return false;
+	}
+	return true;
+}
 
 let inflight: Promise<MobileSession[]> | null = null;
-
 export const useSessions = create<SessionsState>((set, get) => ({
 	list: [],
 	byId: {},
@@ -53,12 +74,17 @@ export const useSessions = create<SessionsState>((set, get) => ({
 		set({ loading: true });
 		inflight = api<MobileSession[]>("GET", "/sessions")
 			.then((rows) => {
-				const prev = get().byId;
+				const curState = get();
+				const prev = curState.byId;
 				const drafts = Object.values(prev).filter((s) => isDraftId(s.id));
 				const list = [
 					...drafts,
-					...(Array.isArray(rows) ? rows : []).map((r) => (prev[r.id] ? { ...prev[r.id], ...r } : r)),
+					...(Array.isArray(rows) ? rows : []).map((r) => mergeSession(prev[r.id], r)),
 				];
+				if (curState.loaded && sameRowRefs(curState.list, list)) {
+					set({ loading: false });
+					return curState.list;
+				}
 				set({ list, byId: index(list), loaded: true, loading: false });
 				return list;
 			})
@@ -74,7 +100,8 @@ export const useSessions = create<SessionsState>((set, get) => ({
 	patch: (id, patch) => {
 		const cur = get().byId[id];
 		if (!cur) return;
-		const next = { ...cur, ...patch };
+		const next = patchSession(cur, patch);
+		if (next === cur) return;
 		set((s) => ({ list: s.list.map((x) => (x.id === id ? next : x)), byId: { ...s.byId, [id]: next } }));
 	},
 	createSession: async ({ cwd, model, thinking, mode }) => {
@@ -105,14 +132,19 @@ export const useSessions = create<SessionsState>((set, get) => ({
 	},
 }));
 
+// Reuse the coalesced sessions refresh as the SSE auth probe so cold boot issues one GET /api/sessions.
+setEventsProbe(() => useSessions.getState().refresh());
+
 /**
- * Keep the store fresh from SSE: `hello`/`resync`/`session` refetch the flat list (coalesced to one in-flight
- * request); a `session` event also patches the status instantly so badges flip before the refetch lands.
+ * Keep the store fresh from SSE: reconnect `hello`/`resync`/`session` refetch the flat list (coalesced to one
+ * in-flight request); a `session` event also patches the status instantly so badges flip before the refetch lands.
  */
 export function startSessionsSync(): () => void {
 	const refresh = () => void useSessions.getState().refresh().catch(() => {});
 	const offs = [
-		events.on("hello", refresh),
+		events.on("hello", (e) => {
+			if (e?.reconnect !== false) refresh();
+		}),
 		events.on("resync", refresh),
 		events.on("session", (e) => {
 			if (e.new) useSessions.getState().patch(e.sessionId, { status: e.new as MobileSession["status"] });

@@ -2,6 +2,9 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/mobile-dist/
+dist-mobile-native/
+apps/ios/Vecway/Resources/WebBundle/
+apps/android/app/src/main/assets/web/
 .worktrees/
 .DS_Store
 *.log

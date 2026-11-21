@@ -22,15 +22,25 @@ import { loadSlashCommands, parseSlashInput, type SlashCmd } from "./lib/slash";
 import {
 	clearLiveMain,
 	clearLiveStale,
+	flushLiveMain,
 	LIVE_SNAPSHOT_THROTTLE_MS,
 	loadLiveEntry,
 	saveLiveMain,
+	scheduleLiveMain,
 	snapshotToItem,
 	stashLiveStale,
 	type LiveSnapshotBody,
 } from "./lib/liveSnapshot";
 import { contentPersisted, livePersisted, pruneLive, reduceFrame, type StreamState } from "./lib/stream";
-import { EMPTY_TRANSCRIPT, mergePage, reconcileOptimistic, transcriptQuery, type OptimisticMsg, type TranscriptState } from "./lib/transcript";
+import {
+	EMPTY_TRANSCRIPT,
+	mergePage,
+	prependOlderPage,
+	reconcileOptimistic,
+	transcriptQuery,
+	type OptimisticMsg,
+	type TranscriptState,
+} from "./lib/transcript";
 import { buildBlocks, reuseBlocks, type Block } from "./lib/turns";
 import { filterToLeafPath, treeVersions, type TreeVersions } from "./lib/tree";
 import { clearUnsent, loadUnsent, saveUnsent } from "./lib/unsent";
@@ -98,6 +108,10 @@ function loadDelivery(id: string): PromptDeliveryState | null {
 
 /** Hard cap for retained in-turn segments; each lives only until the transcript carries it. */
 const MAX_SEGMENTS = 50;
+/** Visible transcript items fetched per tail / older-history page. */
+const TRANSCRIPT_PAGE_LIMIT = 120;
+/** Fallback composer-state poll cadence while streaming; SSE drives idle updates. */
+const WORKING_STATE_POLL_MS = 12_000;
 
 // Process restarts may reuse request IDs; a new arrival must not inherit an old tombstone.
 const pendingIdentity = (entry: PendingEntry): string => JSON.stringify([entry.request?.id ?? "", entry.receivedAt ?? ""]);
@@ -176,6 +190,12 @@ export class ChatController {
 	private activitySequence = 0;
 	private transcriptRevision = 0;
 	private treeSequence = 0;
+	private treeFetched = false;
+	private treeDirty = false;
+	private stateInflight: Promise<void> | null = null;
+	private stateAgain = false;
+	private pendingsInflight: Promise<void> | null = null;
+	private pendingsAgain = false;
 	private fetchTimer: ReturnType<typeof setTimeout> | undefined;
 	private stateTimer: ReturnType<typeof setInterval> | undefined;
 	private approvalTimer: ReturnType<typeof setTimeout> | undefined;
@@ -290,33 +310,34 @@ export class ChatController {
 			events.on("touch", (d) => {
 				if (!d || !d.sessionId || d.sessionId === this.id) {
 					this.scheduleFetch(150);
-					void this.loadPendings();
+					void this.syncPendings();
 				}
 			}),
 			events.on("resync", () => this.resync()),
-			events.on("hello", () => this.resync()),
+			events.on("hello", (e) => {
+				if (e?.reconnect !== false) this.resync();
+			}),
 			useSessions.subscribe((s, prev) => {
 				if (s.byId[this.id] !== prev.byId[this.id]) this.onSessionChanged();
 			}),
 		);
 		if (!draft) this.firstTranscript = this.fetchTranscript();
 		else this.set({ loaded: true });
-		void this.loadPendings();
-		const firstState = this.loadState();
-		void loadSlashCommands(this.id).catch(() => {});
-		this.stateTimer = setInterval(() => {
-			if (!document.hidden) void this.loadState();
-		}, 5000);
+		void this.syncPendings();
+		const firstState = this.syncState();
+		this.syncStatePolling();
 		if (draft && this.draftMeaningful()) this.draftActivity(true);
 		void this.restoreAfterFirstLoad(firstState);
 	}
 
 	dispose(): void {
 		if (this.stream.live) this.maybeSaveSnapshot(this.stream.live, true);
+		else flushLiveMain(this.id);
 		this.disposed = true;
 		for (const off of this.offs) off();
 		this.offs = [];
 		clearInterval(this.stateTimer);
+		this.stateTimer = undefined;
 		clearTimeout(this.fetchTimer);
 		clearTimeout(this.approvalTimer);
 		if (this.rafId) cancelAnimationFrame(this.rafId);
@@ -378,10 +399,17 @@ export class ChatController {
 		this.fetching = true;
 		const revision = this.transcriptRevision;
 		const fromStart = this.state.transcript.offset === 0;
+		const query = transcriptQuery(
+			this.state.transcript,
+			fromStart ? { limit: TRANSCRIPT_PAGE_LIMIT } : undefined,
+		);
+		let succeeded = false;
+		let changed = false;
 		try {
-			const page = await api<TranscriptPage>("GET", `/sessions/${this.id}/transcript?${transcriptQuery(this.state.transcript)}`);
+			const page = await api<TranscriptPage>("GET", `/sessions/${this.id}/transcript?${query}`);
 			if (this.disposed || revision !== this.transcriptRevision) return;
-			this.applyPage(fromStart ? { ...page, reset: true } : page);
+			succeeded = true;
+			changed = this.applyPage(fromStart ? { ...page, reset: true } : page);
 		} catch (e) {
 			console.warn("[chat] transcript", e);
 			if (!this.state.loaded) this.set({ loaded: true });
@@ -395,13 +423,40 @@ export class ChatController {
 				this.fetchAgain = false;
 				this.scheduleFetch(50);
 			}
-			// The leaf pointer can move without any byte appended
-			// (navigate_tree): re-read it whenever the conversation is idle.
-			if (!this.stream.working) void this.fetchTree();
+			// Refresh the leaf pointer only after a successful initial/changed read or explicit tree navigation.
+			if (succeeded && !this.stream.working && (fromStart || changed || this.treeDirty || !this.treeFetched)) {
+				this.treeDirty = false;
+				void this.fetchTree();
+			}
 		}
 	}
 
-	private applyPage(page: TranscriptPage): void {
+	/** Fetch one older transcript page (`?from=0&before=<oldestIndex>&limit=...`) and prepend it cleanly. */
+	async loadOlder(): Promise<void> {
+		if (isDraftId(this.id) || this.disposed) return;
+		const t = this.state.transcript;
+		if (!t.hasMore || t.oldestIndex === null || t.oldestIndex <= 0 || t.loadingOlder) return;
+		const revision = this.transcriptRevision;
+		const before = t.oldestIndex;
+		this.set({ transcript: { ...t, loadingOlder: true } });
+		try {
+			const query = transcriptQuery(t, { before, limit: TRANSCRIPT_PAGE_LIMIT });
+			const page = await api<TranscriptPage>("GET", `/sessions/${this.id}/transcript?${query}`);
+			if (this.disposed || revision !== this.transcriptRevision) return;
+			const r = prependOlderPage(this.state.transcript, page);
+			this.set({
+				transcript: r.state,
+				blocks: r.changed ? this.rebuild(r.state) : this.state.blocks,
+			});
+		} catch (e) {
+			console.warn("[chat] transcript older", e);
+			if (!this.disposed && revision === this.transcriptRevision && this.state.transcript.loadingOlder) {
+				this.set({ transcript: { ...this.state.transcript, loadingOlder: false } });
+			}
+		}
+	}
+
+	private applyPage(page: TranscriptPage): boolean {
 		const prev = this.state;
 		const r = mergePage(prev.transcript, page);
 		const optimistic = reconcileOptimistic(prev.optimistic, r.newUserTexts);
@@ -439,7 +494,7 @@ export class ChatController {
 			!clearInterrupted &&
 			prev.loaded
 		) {
-			return;
+			return false;
 		}
 		this.set({
 			loaded: true,
@@ -450,6 +505,7 @@ export class ChatController {
 			segments,
 			...(clearInterrupted ? { interrupted: null } : {}),
 		});
+		return r.changed;
 	}
 
 	private releaseOptimisticImages(before: readonly OptimisticMsg[], after: readonly OptimisticMsg[]): void {
@@ -475,6 +531,7 @@ export class ChatController {
 		try {
 			const r = await api<{ leafId?: string | null }>("GET", `/sessions/${this.id}/tree`);
 			if (this.disposed || sequence !== this.treeSequence || activity !== this.activitySequence) return;
+			this.treeFetched = true;
 			const leafId = r.leafId ?? null;
 			if (leafId === this.state.leafId) return;
 			this.set({ leafId, blocks: this.rebuild(this.state.transcript, leafId) });
@@ -483,20 +540,20 @@ export class ChatController {
 		}
 	}
 
-	/** Pull-to-refresh / resync: re-read everything from byte 0 and reconcile live state. */
+	/** Pull-to-refresh / resync: re-read the recent transcript tail and reconcile live state. */
 	async refresh(): Promise<void> {
 		++this.transcriptRevision;
 		this.keepLiveForResync();
-		this.set({ transcript: { ...this.state.transcript, offset: 0, tailId: null } });
-		await Promise.all([this.fetchTranscript(), this.loadState(), this.loadPendings(), useSessions.getState().refresh().catch(() => [])]);
+		this.set({ transcript: { ...this.state.transcript, offset: 0, tailId: null, loadingOlder: false } });
+		await Promise.all([this.fetchTranscript(), this.syncState(), this.syncPendings(), useSessions.getState().refresh().catch(() => [])]);
 	}
 
 	/** SSE frames can be lost (suspended tab, server lag): rebuild live state from transcript + composer state. */
 	private resync(): void {
 		this.keepLiveForResync();
 		this.scheduleFetch(0);
-		void this.loadState();
-		void this.loadPendings();
+		void this.syncState();
+		void this.syncPendings();
 	}
 
 	/**
@@ -520,6 +577,7 @@ export class ChatController {
 		this.staleLiveSeq = 0;
 		const stale = this.stream.live;
 		this.stream = { live: null, working: false };
+		this.syncStatePolling();
 		this.scheduleFlush();
 		if (stale.text.trim() || stale.thinking.trim()) {
 			stashLiveStale(this.id, { text: stale.text, thinking: stale.thinking, tools: stale.tools, ts: stale.ts, at: Date.now() });
@@ -556,6 +614,7 @@ export class ChatController {
 			// The backend is still streaming this very message: continue as the live row. Incoming
 			// full-snapshot frames overwrite the restored text in place (same source, no merge).
 			this.stream = { live: snapshotToItem(main, true), working: true };
+			this.syncStatePolling();
 			this.liveSeq++;
 			this.staleLiveSeq = this.liveSeq; // stale unless a frame confirms the stream
 			this.snapLive = null;
@@ -578,7 +637,7 @@ export class ChatController {
 
 	private onRpc(frame: RpcFrame): void {
 		if (!frame || typeof frame.type !== "string") return;
-		if (frame.type.startsWith("extension_ui")) void this.loadPendings();
+		if (frame.type.startsWith("extension_ui")) void this.syncPendings();
 		const step = reduceFrame(this.stream, frame);
 		if (!step.handled) return;
 		++this.activitySequence;
@@ -605,9 +664,10 @@ export class ChatController {
 		if (step.turnEnded && !step.dropped) clearLiveMain(this.id);
 		if (live !== this.stream.live) this.liveSeq++;
 		this.stream = { live, working: step.state.working };
+		this.syncStatePolling();
 		if (segments !== this.state.segments) this.set({ segments });
 		if (step.refetch) this.scheduleFetch(250);
-		if (step.reloadState) setTimeout(() => void this.loadState(), 300);
+		if (step.reloadState) setTimeout(() => void this.syncState(), 300);
 		if (step.turnEnded) attention("done");
 		this.scheduleFlush();
 	}
@@ -637,26 +697,43 @@ export class ChatController {
 				});
 				if (clearInterrupted) clearLiveStale(this.id);
 			}
-			if (live) this.maybeSaveSnapshot(live);
+			if (live) this.maybeSaveSnapshot(live, hidden);
 		};
 		if (hidden) run();
 		else this.rafId = requestAnimationFrame(run);
 	}
 
-	/** Mirror the streaming half answer to local storage (throttled, content-capped, best-effort). */
-	private maybeSaveSnapshot(live: Item, force = false): void {
+	/** Mirror the streaming half answer to local storage (throttled, deferred off rAF, best-effort). */
+	private maybeSaveSnapshot(live: Item, immediate = false): void {
 		if (!live.text && !live.thinking && !live.tools.length) return;
-		if (!force && live === this.snapLive) return;
+		if (!immediate && live === this.snapLive) return;
 		const now = Date.now();
-		if (!force && now - this.snapAt < LIVE_SNAPSHOT_THROTTLE_MS) return;
+		if (!immediate && now - this.snapAt < LIVE_SNAPSHOT_THROTTLE_MS) return;
 		this.snapAt = now;
 		this.snapLive = live;
-		saveLiveMain(this.id, { text: live.text, thinking: live.thinking, tools: live.tools, ts: live.ts, at: now });
+		const body: LiveSnapshotBody = { text: live.text, thinking: live.thinking, tools: live.tools, ts: live.ts, at: now };
+		if (immediate) saveLiveMain(this.id, body);
+		else scheduleLiveMain(this.id, body);
+	}
+
+	private syncStatePolling(): void {
+		const active = !this.disposed && (this.stream.working || this.state.working);
+		if (active && !this.stateTimer) {
+			this.stateTimer = setInterval(() => {
+				if (!document.hidden && (this.stream.working || this.state.working)) {
+					void this.syncState();
+				}
+			}, WORKING_STATE_POLL_MS);
+		} else if (!active && this.stateTimer) {
+			clearInterval(this.stateTimer);
+			this.stateTimer = undefined;
+		}
 	}
 
 	private setWorking(working: boolean): void {
 		this.stream = { ...this.stream, working };
 		if (this.state.working !== working) this.set({ working });
+		this.syncStatePolling();
 	}
 
 	private onSessionChanged(): void {
@@ -664,44 +741,81 @@ export class ChatController {
 		const s = useSessions.getState().byId[this.id];
 		if (s && s.status !== "working" && !this.stream.live && Date.now() - this.lastSend > 4000) this.setWorking(false);
 		else if (s && s.status === "working") this.setWorking(true);
-		void this.loadPendings();
+		void this.syncPendings();
 	}
 
 	/* ------------------------------------------------------------ composer state / pending */
+
+	private syncState(): Promise<void> {
+		if (this.disposed) return Promise.resolve();
+		if (this.stateInflight) {
+			this.stateAgain = true;
+			return this.stateInflight;
+		}
+		return this.loadState();
+	}
 
 	async loadState(): Promise<void> {
 		if (this.disposed) return;
 		const sequence = ++this.stateSequence;
 		const activity = this.activitySequence;
+		const run = (async () => {
+			try {
+				const st = await api<ComposerState>("GET", `/sessions/${this.id}/composer-state`);
+				if (this.disposed || sequence !== this.stateSequence || activity !== this.activitySequence) return;
+				const prev = this.state.cstate;
+				if (st.thinkingLevel == null && prev?.thinkingLevel) st.thinkingLevel = prev.thinkingLevel;
+				const authoritative = Object.prototype.hasOwnProperty.call(st, "planStatus");
+				if (authoritative) clearTimeout(this.approvalTimer);
+				this.set({ cstate: st, ...(authoritative ? { acceptedPlan: null } : {}) });
+				if (st.streaming && !this.stream.working) this.setWorking(true);
+				else if (!st.streaming && this.stream.working && !this.stream.live && Date.now() - this.lastSend > 4000) {
+					const s = useSessions.getState().byId[this.id];
+					if (!s || s.status !== "working") this.setWorking(false);
+				}
+				// A resync-kept or restored live row is stale once the server proves the turn is over
+				// (explicit `streaming: false`) without any frame refreshing it in between.
+				this.composerIdle = st.streaming === false;
+				if (this.composerIdle) {
+					// A missed terminal frame must not leave a stable live row spinning forever.
+					if (Date.now() - this.lastSend > 4000) this.keepLiveForResync();
+					this.dropStaleLive();
+				}
+			} catch (e) {
+				console.warn("[chat] composer-state", e);
+			}
+		})();
+		this.stateInflight = run;
 		try {
-			const st = await api<ComposerState>("GET", `/sessions/${this.id}/composer-state`);
-			if (this.disposed || sequence !== this.stateSequence || activity !== this.activitySequence) return;
-			const prev = this.state.cstate;
-			if (st.thinkingLevel == null && prev?.thinkingLevel) st.thinkingLevel = prev.thinkingLevel;
-			const authoritative = Object.prototype.hasOwnProperty.call(st, "planStatus");
-			if (authoritative) clearTimeout(this.approvalTimer);
-			this.set({ cstate: st, ...(authoritative ? { acceptedPlan: null } : {}) });
-			if (st.streaming && !this.stream.working) this.setWorking(true);
-			else if (!st.streaming && this.stream.working && !this.stream.live && Date.now() - this.lastSend > 4000) {
-				const s = useSessions.getState().byId[this.id];
-				if (!s || s.status !== "working") this.setWorking(false);
+			await run;
+		} finally {
+			if (this.stateInflight === run) {
+				this.stateInflight = null;
+				if (this.stateAgain && !this.disposed) {
+					this.stateAgain = false;
+					void this.syncState();
+				}
 			}
-			// A resync-kept or restored live row is stale once the server proves the turn is over
-			// (explicit `streaming: false`) without any frame refreshing it in between.
-			this.composerIdle = st.streaming === false;
-			if (this.composerIdle) {
-				// A missed terminal frame must not leave a stable live row spinning forever.
-				if (Date.now() - this.lastSend > 4000) this.keepLiveForResync();
-				this.dropStaleLive();
-			}
-		} catch (e) {
-			console.warn("[chat] composer-state", e);
 		}
 	}
 
 	patchState(p: Partial<ComposerState>): void {
 		++this.stateSequence;
 		this.set({ cstate: { ...(this.state.cstate ?? {}), ...p } });
+	}
+
+	private syncPendings(): Promise<void> {
+		if (isDraftId(this.id) || this.disposed) return Promise.resolve();
+		const s = useSessions.getState().byId[this.id];
+		if (!s || !s.pending) {
+			if (this.state.pendings.length) this.set({ pendings: [] });
+			return Promise.resolve();
+		}
+		if (this.pendingsInflight) {
+			this.pendingsAgain = true;
+			return this.pendingsInflight;
+		}
+		return this.loadPendings();
 	}
 
 	async loadPendings(): Promise<void> {
@@ -712,15 +826,29 @@ export class ChatController {
 			if (this.state.pendings.length) this.set({ pendings: [] });
 			return;
 		}
+		const run = (async () => {
+			try {
+				const list = await api<PendingEntry[]>("GET", `/sessions/${this.id}/pending-ui`);
+				if (this.disposed || sequence !== this.pendingSequence) return;
+				const arr = (Array.isArray(list) ? list : []).filter((p) => !this.answered.has(pendingIdentity(p)));
+				const before = this.state.pendings.length;
+				this.set({ pendings: arr });
+				if (arr.length > before) attention("approval");
+			} catch (e) {
+				console.warn("[chat] pending-ui", e);
+			}
+		})();
+		this.pendingsInflight = run;
 		try {
-			const list = await api<PendingEntry[]>("GET", `/sessions/${this.id}/pending-ui`);
-			if (this.disposed || sequence !== this.pendingSequence) return;
-			const arr = (Array.isArray(list) ? list : []).filter((p) => !this.answered.has(pendingIdentity(p)));
-			const before = this.state.pendings.length;
-			this.set({ pendings: arr });
-			if (arr.length > before) attention("approval");
-		} catch (e) {
-			console.warn("[chat] pending-ui", e);
+			await run;
+		} finally {
+			if (this.pendingsInflight === run) {
+				this.pendingsInflight = null;
+				if (this.pendingsAgain && !this.disposed) {
+					this.pendingsAgain = false;
+					void this.syncPendings();
+				}
+			}
 		}
 	}
 
@@ -900,7 +1028,7 @@ export class ChatController {
 		} catch (e) {
 			toast(`停止失败：${errorMessage(e)}`, { kind: "error" });
 		}
-		setTimeout(() => void this.loadState(), 600);
+		setTimeout(() => void this.syncState(), 600);
 	}
 
 	/** Returns true when the text was consumed (composer should already have been cleared by the caller on true). */
@@ -984,6 +1112,7 @@ export class ChatController {
 		const activity = ++this.activitySequence;
 		this.stream = { ...this.stream, working: true };
 		this.set({ atts: [], optimistic: [...this.state.optimistic, opt], working: true });
+		this.syncStatePolling();
 		this.stashUnsent();
 		let r: { sessionId?: string };
 		try {
@@ -993,6 +1122,7 @@ export class ChatController {
 			// A frame or session update received after dispatch owns the working flag now.
 			if (activity === this.activitySequence) this.stream = { ...this.stream, working: wasWorking };
 			this.set({ delivery: { ...delivery, phase: "unknown" }, optimistic: this.state.optimistic.filter((o) => o.id !== opt.id), working: this.stream.working });
+			this.syncStatePolling();
 			toast(`送达状态未知：${errorMessage(e)}。请核对记录后再决定是否重发`, { kind: "error" });
 			return true;
 		}
@@ -1157,6 +1287,7 @@ export class ChatController {
 				leafId: this.state.transcript.items.find((it) => it.id === entryId)?.parentId ?? null,
 			});
 			this.composer?.set(text, true);
+			this.treeDirty = true;
 			this.scheduleFetch(150);
 		} catch (e) {
 			toast(errorMessage(e));
@@ -1174,6 +1305,7 @@ export class ChatController {
 			if (this.disposed) return;
 			// The target entry becomes the leaf; fetchTree confirms afterwards.
 			this.set({ leafId: entryId, treeEdit: null });
+			this.treeDirty = true;
 			this.scheduleFetch(150);
 		} catch (e) {
 			toast(errorMessage(e));
@@ -1189,6 +1321,7 @@ export class ChatController {
 			try {
 				await api("POST", `/sessions/${this.id}/navigate-tree`, { entryId: edit.prevLeafId });
 				this.set({ leafId: edit.prevLeafId });
+				this.treeDirty = true;
 				this.scheduleFetch(150);
 			} catch (e) {
 				toast(errorMessage(e));

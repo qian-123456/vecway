@@ -171,15 +171,35 @@ const sameQuery = (a: Record<string, string>, b: Record<string, string>) =>
 
 const hrefFor = (path: string) => `#${path.startsWith("/") ? path : `/${path}`}`;
 
-/* Overlay layers: each owns one history entry on top of the current page. */
+/* Overlay layers: each active layer maps onto stacked history entries on top of the current page. */
 interface Layer {
 	close: () => void;
 }
 const layers: Layer[] = [];
-/** popstate events caused by our own history.back() that must not be interpreted. */
+/** Number of overlay history entries currently sitting on top of the page. */
+let historyLayers = 0;
+/** Coalesces synchronous sheet swap / unmount rewinds into one microtask pass. */
+let rewindScheduled = false;
+/** popstate events caused by our own history.back()/go() that must not be interpreted. */
 let ignorePops = 0;
 let queued: Array<() => void> = [];
 const run = (op: () => void) => (ignorePops > 0 ? queued.push(op) : op());
+
+function scheduleRewind(): void {
+	if (rewindScheduled) return;
+	rewindScheduled = true;
+	queueMicrotask(() => {
+		rewindScheduled = false;
+		run(() => {
+			const excess = historyLayers - layers.length;
+			if (excess <= 0) return;
+			historyLayers -= excess;
+			ignorePops++;
+			if (excess === 1) history.back();
+			else history.go(-excess);
+		});
+	});
+}
 
 function syncFromLocation(depth: number): void {
 	setSnap(parseRoute(hashPath()), depth);
@@ -202,14 +222,20 @@ function onPopState(): void {
 		const depth = snap.depth + 1;
 		history.replaceState({ d: depth }, "");
 		closeAllLayers();
+		historyLayers = 0;
 		syncFromLocation(depth);
 		return;
 	}
 	// Back gesture over open overlays closes them one by one instead of navigating.
 	let steps = snap.depth - d;
-	while (steps > 0 && layers.length) {
-		layers.pop()?.close();
-		steps--;
+	if (steps > 0) {
+		const poppedHistory = Math.min(steps, historyLayers);
+		historyLayers -= poppedHistory;
+		while (steps > 0 && layers.length) {
+			layers.pop()?.close();
+			steps--;
+		}
+		if (layers.length === 0 && historyLayers > 0) scheduleRewind();
 	}
 	syncFromLocation(d);
 }
@@ -217,7 +243,6 @@ function onPopState(): void {
 function closeAllLayers(): void {
 	while (layers.length) layers.pop()?.close();
 }
-
 let initialized = false;
 /** Idempotent; call once at boot before rendering. */
 export function initNav(): void {
@@ -252,9 +277,10 @@ function rawTarget(r: Route): string {
  */
 function afterLayersClosed(op: () => void): void {
 	run(() => {
-		const n = layers.length;
-		if (!n) return op();
+		const n = historyLayers;
 		closeAllLayers();
+		if (!n) return op();
+		historyLayers = 0;
 		ignorePops++;
 		queued.push(op);
 		history.go(-n);
@@ -279,7 +305,7 @@ export const nav = {
 	},
 	/** One step back; at the root of the stack navigates to home instead of leaving the app. */
 	back(): void {
-		if (layers.length || snap.depth > 0) history.back();
+		if (layers.length || historyLayers > 0 || snap.depth > 0) history.back();
 		else nav.replace("/");
 	},
 	/** Unwind the whole stack to home. */
@@ -287,28 +313,42 @@ export const nav = {
 		run(() => {
 			if (snap.depth > 0) {
 				closeAllLayers();
+				historyLayers = 0;
 				history.go(-snap.depth);
 			} else nav.replace("/");
 		});
 	},
 	/**
 	 * Register an overlay: the back gesture calls `close` instead of navigating. Returns `dispose`,
-	 * which MUST be called when the overlay closes by any other means (it pops the history entry).
+	 * which MUST be called when the overlay closes by any other means. Reuses spare history entries
+	 * during sibling sheet swaps and avoids rewinding underneath a still-open upper layer.
 	 */
 	pushLayer(close: () => void): () => void {
 		const layer: Layer = { close };
 		layers.push(layer);
-		history.pushState({ d: snap.depth + 1, layer: true }, "", location.hash || hrefFor("/"));
-		setSnap(snap.route, snap.depth + 1);
+		if (layers.length > historyLayers) {
+			if (ignorePops === 0) {
+				historyLayers++;
+				history.pushState({ d: snap.depth + 1, layer: true }, "", location.hash || hrefFor("/"));
+				setSnap(snap.route, snap.depth + 1);
+			} else {
+				run(() => {
+					if (!layers.includes(layer) || layers.length <= historyLayers) return;
+					historyLayers++;
+					history.pushState({ d: snap.depth + 1, layer: true }, "", location.hash || hrefFor("/"));
+					setSnap(snap.route, snap.depth + 1);
+				});
+			}
+		}
 		let disposed = false;
 		return () => {
 			if (disposed) return;
 			disposed = true;
 			const at = layers.indexOf(layer);
 			if (at < 0) return; // already closed by the back gesture or a navigation
+			const wasTop = at === layers.length - 1;
 			layers.splice(at, 1);
-			ignorePops++;
-			history.back();
+			if (wasTop || layers.length === 0) scheduleRewind();
 		};
 	},
 	getRoute: (): Route => snap.route,
@@ -336,6 +376,8 @@ export function __resetNavForTests(): void {
 	window.removeEventListener("popstate", onPopState);
 	initialized = false;
 	layers.length = 0;
+	historyLayers = 0;
+	rewindScheduled = false;
 	ignorePops = 0;
 	queued = [];
 	snap = { route: parseRoute("/"), depth: 0 };

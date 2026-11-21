@@ -24,15 +24,23 @@
 	--color-m-danger-bg: var(--m-danger-bg);
 	--color-m-warn: var(--m-warn);
 	--color-m-warn-bg: var(--m-warn-bg);
+	--color-m-warn-border: var(--m-warn-border);
 	--color-m-success: var(--m-success);
 	--color-m-success-bg: var(--m-success-bg);
 	--color-m-bubble-user-bg: var(--m-bubble-user-bg);
 	--color-m-bubble-user-text: var(--m-bubble-user-text);
+	--color-m-bubble-user-border: var(--m-bubble-user-border);
+	--color-m-topbar-bg: var(--m-topbar-bg);
+	--color-m-topbar-border: var(--m-topbar-border);
 	--color-m-composer-bg: var(--m-composer-bg);
+	--color-m-composer-border: var(--m-composer-border);
 	--color-m-code-bg: var(--m-code-bg);
+	--color-m-code-hdr: var(--m-code-hdr);
 	--color-m-code-text: var(--m-code-text);
 	--color-m-diff-add: var(--m-diff-add);
 	--color-m-diff-del: var(--m-diff-del);
+	--color-m-drawer-bg: var(--m-drawer-bg);
+	--color-m-drawer-active: var(--m-drawer-active);
 	--color-m-scrim: var(--m-scrim);
 	--radius-m-sm: var(--m-r-sm);
 	--radius-m-md: var(--m-r-md);
@@ -161,54 +169,20 @@ body {
 	display: flex;
 	flex-direction: column;
 	height: var(--m-vh, 100dvh);
+	transition: height var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1);
 	transform: translateY(var(--m-vv-top, 0px));
 	min-height: 0;
 	overflow: hidden;
 	background: var(--m-bg);
+}
+html[data-kb-native="1"] .m-app {
+	transform: none;
 }
 .m-page {
 	flex: 1 1 auto;
 	min-height: 0;
 	display: flex;
 	flex-direction: column;
-}
-
-@media (prefers-reduced-motion: reduce) {
-	html,
-	* {
-		scroll-behavior: auto !important;
-	}
-	.m-shimmer {
-		animation: none;
-		background: none;
-		color: inherit;
-	}
-	.m-pulse,
-	.animate-pulse,
-	.animate-bounce,
-	.animate-ping {
-		animation: none;
-	}
-	.m-glass-btn {
-		transition: background-color var(--m-dur-fast) var(--m-ease), box-shadow var(--m-dur-fast) var(--m-ease);
-	}
-	.m-glass-btn:active,
-	html[data-scheme="light"] .m-glass-btn:active {
-		transform: none;
-	}
-	[class*="active:scale-"]:active {
-		transform: none !important;
-		scale: none !important;
-	}
-	[class~="transition"],
-	[class*="transition-transform"],
-	[class*="transition-all"],
-	[class*="transition-[width"],
-	[class*="transition-[height"],
-	[class*="transition-["][class*="transform"],
-	[class*="transition-["][class*="scale"] {
-		transition-property: color, background-color, border-color, opacity, box-shadow !important;
-	}
 }
 
 /* Spinner keyframes shared by ui/ primitives. */
@@ -259,46 +233,82 @@ body {
 	border-top: 1px solid var(--m-border);
 }
 
-/* Liquid glass style buttons & panels (液态玻璃风格) */
+/* Subtle translucent topbar surface (Direction A Calm Native) */
+.m-topbar-glass {
+	background-color: var(--m-topbar-bg);
+	border-bottom: 1px solid var(--m-topbar-border);
+	backdrop-filter: blur(16px) saturate(160%);
+	-webkit-backdrop-filter: blur(16px) saturate(160%);
+}
+
+/* Calm flat surface button (adapts cleanly to every light/dark theme) */
 .m-glass-btn {
-	isolation: isolate;
-	background-color: color-mix(in oklab, var(--m-surface) 52%, transparent);
-	background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.05) 42%, transparent 62%, rgba(255, 255, 255, 0.08) 100%);
-	backdrop-filter: blur(16px) saturate(180%);
-	-webkit-backdrop-filter: blur(16px) saturate(180%);
-	border: 1px solid rgba(255, 255, 255, 0.16);
-	box-shadow:
-		inset 1px 1px 0.5px 0 rgba(255, 255, 255, 0.45),
-		inset -1px -1px 0.5px 0 rgba(255, 255, 255, 0.12),
-		0 2px 8px -2px rgba(0, 0, 0, 0.3);
-	transition: background-color var(--m-dur-fast) var(--m-ease), transform var(--m-dur-fast) var(--m-ease), box-shadow var(--m-dur-fast) var(--m-ease);
+	background-color: var(--m-surface);
+	border: 1px solid var(--m-border);
+	transition: background-color var(--m-dur-fast) var(--m-ease), border-color var(--m-dur-fast) var(--m-ease), transform var(--m-dur-fast) var(--m-ease);
 }
 .m-glass-btn:active {
-	background-color: color-mix(in oklab, var(--m-surface) 75%, transparent);
-	box-shadow:
-		inset 1px 1px 0.5px 0 rgba(255, 255, 255, 0.25),
-		inset -1px -1px 0.5px 0 rgba(255, 255, 255, 0.08),
-		0 1px 4px -1px rgba(0, 0, 0, 0.35);
+	background-color: var(--m-surface-2);
+	border-color: var(--m-border-strong);
 	transform: scale(0.96);
 }
 html[data-scheme="light"] .m-glass-btn {
-	background-color: color-mix(in oklab, var(--m-surface) 60%, transparent);
-	background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.75) 0%, rgba(255, 255, 255, 0.35) 42%, transparent 62%, rgba(255, 255, 255, 0.45) 100%);
-	border: 1px solid rgba(0, 0, 0, 0.08);
-	box-shadow:
-		inset 1px 1px 0.5px 0 rgba(255, 255, 255, 0.85),
-		inset -1px -1px 0.5px 0 rgba(0, 0, 0, 0.05),
-		0 2px 6px -2px rgba(0, 0, 0, 0.1);
+	background-color: var(--m-card);
+	border: 1px solid var(--m-border);
 }
 html[data-scheme="light"] .m-glass-btn:active {
-	background-color: color-mix(in oklab, var(--m-surface) 88%, transparent);
+	background-color: var(--m-surface);
+	border-color: var(--m-border-strong);
 	transform: scale(0.96);
 }
 @media (prefers-reduced-transparency: reduce) {
-	.m-glass-btn {
-		background-color: var(--m-surface);
-		background-image: none;
+	.m-topbar-glass {
+		background-color: var(--m-bg);
 		backdrop-filter: none;
 		-webkit-backdrop-filter: none;
+	}
+	.m-glass-btn {
+		background-color: var(--m-surface);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html,
+	* {
+		scroll-behavior: auto !important;
+	}
+	.m-app {
+		transition: none;
+	}
+	.m-shimmer {
+		animation: none;
+		background: none;
+		color: inherit;
+	}
+	.m-pulse,
+	.animate-pulse,
+	.animate-bounce,
+	.animate-ping {
+		animation: none;
+	}
+	.m-glass-btn {
+		transition: background-color var(--m-dur-fast) var(--m-ease), border-color var(--m-dur-fast) var(--m-ease);
+	}
+	.m-glass-btn:active,
+	html[data-scheme="light"] .m-glass-btn:active {
+		transform: none;
+	}
+	[class*="active:scale-"]:active {
+		transform: none !important;
+		scale: none !important;
+	}
+	[class~="transition"],
+	[class*="transition-transform"],
+	[class*="transition-all"],
+	[class*="transition-[width"],
+	[class*="transition-[height"],
+	[class*="transition-["][class*="transform"],
+	[class*="transition-["][class*="scale"] {
+		transition-property: color, background-color, border-color, opacity, box-shadow !important;
 	}
 }

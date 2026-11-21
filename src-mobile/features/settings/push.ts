@@ -1,5 +1,6 @@
 import { api } from "../../core/api";
 import { nav } from "../../core/nav";
+import type { NativePushStatus } from "../../core/nativeBridge";
 
 /** Why web push cannot be used in the current page, or `null` when it can. */
 export type PushBlock = "insecure" | "no-service-worker" | "no-push-manager" | "no-notification" | "denied";
@@ -175,4 +176,41 @@ export async function disablePush(rt: PushRuntime = browserRuntime, call: ApiFn 
 
 export async function sendTestPush(call: ApiFn = api): Promise<void> {
 	await call("POST", "/push/test", {});
+}
+
+export interface NativePushView {
+	available: boolean;
+	registered: boolean;
+	canToggle: boolean;
+	canTest: boolean;
+	reason: string | null;
+}
+
+/** Pure view-model mapping for native APNs/FCM push status (never emits browser/Safari PWA hints). */
+export function mapNativePushStatus(status: NativePushStatus | null, hasSendTest: boolean): NativePushView {
+	if (!status || !status.supported) {
+		return {
+			available: false,
+			registered: false,
+			canToggle: false,
+			canTest: false,
+			reason: status?.reason || "当前版本暂未开启原生推送通知",
+		};
+	}
+	if (status.permission === "denied") {
+		return {
+			available: false,
+			registered: status.registered,
+			canToggle: status.registered,
+			canTest: false,
+			reason: status.reason || "通知权限已被拒绝，请在系统设置中允许 Vecway 发送通知",
+		};
+	}
+	return {
+		available: true,
+		registered: status.registered,
+		canToggle: true,
+		canTest: status.registered && hasSendTest,
+		reason: null,
+	};
 }

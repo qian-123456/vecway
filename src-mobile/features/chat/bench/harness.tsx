@@ -78,7 +78,7 @@ export async function runChatBench(host: HTMLElement, opts: BenchOptions = {}): 
 	const keystrokes = opts.keystrokes ?? 60;
 	const controller = new ChatController("bench-session");
 	const items = normalizeTranscript(makeTranscript(turns));
-	controller.store.setState({ loaded: true, blocks: buildBlocks(items, {}), transcript: { items, offset: 0, tailId: null, stats: {} } });
+	controller.store.setState({ loaded: true, blocks: buildBlocks(items, {}), transcript: { items, offset: 0, tailId: null, stats: {}, hasMore: false, oldestIndex: 0, loadingOlder: false } });
 
 	const root = createRoot(host);
 	let stream: ReturnType<typeof setInterval> | undefined;

@@ -854,6 +854,15 @@ pub struct PairingInfo {
     pub url: String,
     pub qr_svg: String,
     pub expires_at: String,
+    /// SHA-256 fingerprint of the active TLS certificate (AA:BB:… uppercase), if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_sha256: Option<String>,
+    /// Direct deep-link URL (`vecway://pair?...`) for native mobile apps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_url: Option<String>,
+    /// SVG QR code for `app_url`, for system camera direct app launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_qr_svg: Option<String>,
 }
 
 /// Which reachable base URL a pairing link is built on.
@@ -913,6 +922,14 @@ pub struct MobileStatus {
     pub running: bool,
     pub port: u16,
     pub lan_url: Option<String>,
+    /// LAN direct HTTPS listener (self-signed cert) is bound.
+    #[serde(default)]
+    pub lan_tls_running: bool,
+    #[serde(default)]
+    pub lan_tls_port: u16,
+    /// `https://<lan_ip>:<lan_tls_port>` when the LAN TLS listener is bound.
+    #[serde(default)]
+    pub lan_tls_url: Option<String>,
     pub tunnel_url: Option<String>,
     pub cloudflared_installed: bool,
     pub cloudflared_logged_in: bool,
@@ -1050,6 +1067,9 @@ pub struct Settings {
     /// Default 7789.
     #[serde(default = "default_mobile_ipv6_port")]
     pub mobile_ipv6_port: u16,
+    /// Default 7790 (LAN TLS listener for native mobile apps).
+    #[serde(default = "default_mobile_lan_tls_port")]
+    pub mobile_lan_tls_port: u16,
     /// Cloudflare DDNS (AAAA, DNS-only) for the IPv6 address. Default false.
     /// The API token lives in the vault (slug `cloudflare-ddns`), never here.
     #[serde(default)]
@@ -1205,6 +1225,10 @@ fn default_mobile_ipv6_port() -> u16 {
     7789
 }
 
+fn default_mobile_lan_tls_port() -> u16 {
+    7790
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -1226,6 +1250,7 @@ impl Default for Settings {
             tunnel_hostname: None,
             mobile_ipv6_enabled: false,
             mobile_ipv6_port: default_mobile_ipv6_port(),
+            mobile_lan_tls_port: default_mobile_lan_tls_port(),
             ddns_enabled: false,
             ddns_zone_id: None,
             ddns_hostname: None,

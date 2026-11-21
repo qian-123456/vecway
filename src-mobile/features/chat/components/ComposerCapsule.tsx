@@ -2,7 +2,6 @@ import { ArrowUp, ChevronDown, Mic, Plus, Square } from "lucide-react";
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Spinner } from "../../../ui";
 import { desktopThinkingLabel, shortModel } from "../lib/models";
-import { useKeyboardOpen } from "./ComposerToolbar";
 import { ContextIndicator } from "./ContextIndicator";
 import { useVoiceInput } from "./useVoiceInput";
 
@@ -16,14 +15,15 @@ export interface ComposerApi {
 	insert(text: string): void;
 }
 
-/** One 24px line plus 12px padding, matching the 36px touch/input row. */
-const LINE_PX = 36;
+/** One 24px text line plus pt-3 (12px) and pb-1.5 (6px). */
+const LINE_PX = 42;
 const MAX_INPUT = "calc(var(--m-vh, 100dvh) * 0.4 - 64px)";
 
 /**
- * Desktop-parity mobile composer card:
- * Textarea on top, toolbar on bottom (Plus, Model, Thinking, Extra chips, Context, Mic, Send).
- * When virtual keyboard opens, model, thinking, and context size are hidden to keep the composer compact.
+ * Desktop-style stable 2-row composer card:
+ * - Top row: full-width auto-growing textarea only.
+ * - Bottom toolbar row (always mounted, never jumps/unmounts on keyboard open/close):
+ *   Left: [+], [Model ⌄], [Thinking ⌄], extra chips; Right: Context, [Mic], [Stop?], [Send].
  */
 export function ComposerCapsule({
 	apiRef,
@@ -59,7 +59,7 @@ export function ComposerCapsule({
 	hasExtra?: boolean;
 	/** Sending is in flight: disables send. */
 	busy?: boolean;
-	/** Content inside the capsule above the text (attachment tiles). Forces the stacked layout. */
+	/** Content inside the capsule above the text (attachment tiles). */
 	top?: ReactNode;
 	onPlus: () => void;
 	onSend: (text: string) => void;
@@ -81,27 +81,25 @@ export function ComposerCapsule({
 	onContext?: () => void;
 	extraLeft?: ReactNode;
 }) {
-	const capsule = useRef<HTMLDivElement>(null);
 	const ta = useRef<HTMLTextAreaElement>(null);
 	const composing = useRef(false);
 	const raf = useRef(0);
 	const [hasText, setHasText] = useState(() => initialText.trim() !== "");
-	const [multi, setMulti] = useState(false);
+	const [taWidth, setTaWidth] = useState(0);
 	const cb = useRef({ onSync, onInput, onUnmount });
 	cb.current = { onSync, onInput, onUnmount };
 
-	/** Size textarea at its displayed width. */
+	/** Size textarea at its exact displayed width. */
 	const measure = useCallback(() => {
 		const el = ta.current;
-		const box = capsule.current;
-		if (!el || !box || composing.current) return;
+		if (!el || composing.current) return;
 		const scrollTop = el.scrollTop;
 		el.style.height = "0px";
 		const scrollH = el.scrollHeight;
 		el.style.height = `${Math.max(LINE_PX, scrollH)}px`;
 		el.scrollTop = scrollTop;
-		setMulti(scrollH > LINE_PX + 4);
 	}, []);
+
 	/** One frame-coalesced pass; never change layout or sync drafts during IME composition. */
 	const flush = useCallback(() => {
 		raf.current = 0;
@@ -129,23 +127,22 @@ export function ComposerCapsule({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [flush]);
 
-	const [capsuleWidth, setCapsuleWidth] = useState(0);
-
 	useLayoutEffect(() => {
 		measure();
-		const box = capsule.current;
-		if (!box) return;
-		setCapsuleWidth(box.clientWidth);
-		let width = box.clientWidth;
+		const el = ta.current;
+		if (!el) return;
+		let width = el.clientWidth;
+		setTaWidth(width);
 		const observer = new ResizeObserver(() => {
-			if (box.clientWidth === width) return;
-			width = box.clientWidth;
-			setCapsuleWidth(width);
+			if (el.clientWidth === width) return;
+			width = el.clientWidth;
+			setTaWidth(width);
 			measure();
 		});
-		observer.observe(box);
+		observer.observe(el);
 		return () => observer.disconnect();
-	}, [measure, working, top]);
+	}, [measure, top]);
+
 	const insert = useCallback(
 		(text: string) => {
 			const el = ta.current;
@@ -199,8 +196,6 @@ export function ComposerCapsule({
 	}, [apiRef, flush, insert]);
 
 	const { recording, transcribing, toggleRecording } = useVoiceInput({ onTranscribed: insert });
-	const [focused, setFocused] = useState(false);
-	const keyboardOpen = useKeyboardOpen(focused);
 	const canSend = (hasText || hasExtra) && !busy;
 	const showStop = working && onStop != null;
 	const submit = () => {
@@ -208,242 +203,150 @@ export function ComposerCapsule({
 		// A stale second click on Send must never become an implicit Stop request.
 		if (!busy && !composing.current && (text.trim() !== "" || hasExtra)) onSend(text);
 	};
+
+	const modelName = shortModel(model ?? "") || "默认模型";
+	const thinkName = desktopThinkingLabel(thinking);
+	const hasModel = onModel != null || model != null;
+	const hasThinking = onThinking != null || thinking != null;
+	const compactContext = taWidth > 0 && taWidth < 340;
+
 	return (
-		<div
-			ref={capsule}
-			className="relative flex flex-col rounded-[22px] bg-m-composer-bg border border-m-border shadow-m-composer transition-colors"
-		>
-			{top != null && <div className="p-2 pb-0">{top}</div>}
+		<div className="relative flex flex-col rounded-(--m-composer-radius) border border-m-composer-border bg-m-composer-bg shadow-m-composer transition-[border-color,box-shadow,background-color] duration-(--m-dur-fast) focus-within:border-m-border-strong">
+			{top != null && <div className="p-2.5 pb-0">{top}</div>}
 
-			{/* Main Input Row: [+] on left, Textarea expanding right, actions alongside when keyboard is open */}
-			<div className={`flex min-w-0 ${multi ? "items-end pb-1.5" : "items-center"} px-2.5 ${keyboardOpen ? "py-1.5" : "pt-2 pb-1"} gap-1.5`}>
-				<button
-					type="button"
-					aria-label="添加"
-					onClick={onPlus}
-					className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-m-text-2 hover:bg-m-surface hover:text-m-text active:bg-m-surface-2 active:scale-95 transition-all"
-				>
-					<Plus size={18} strokeWidth={2} />
-				</button>
-
-				<textarea
-					ref={ta}
-					rows={1}
-					enterKeyHint="enter"
-					placeholder={placeholder}
-					aria-label="消息输入框"
-					onFocus={() => {
-						setFocused(true);
-						onFocusChange?.(true);
-					}}
-					onBlur={() => {
-						setFocused(false);
-						onFocusChange?.(false);
-					}}
-					onInput={() => {
-						if (!composing.current) {
-							onInput?.();
-							schedule();
-						}
-					}}
-					onCompositionStart={() => {
-						composing.current = true;
-					}}
-					onCompositionEnd={() => {
-						composing.current = false;
+			{/* Top Row: full-width auto-growing textarea only */}
+			<textarea
+				ref={ta}
+				rows={1}
+				enterKeyHint="enter"
+				placeholder={placeholder}
+				aria-label="消息输入框"
+				onFocus={() => onFocusChange?.(true)}
+				onBlur={() => onFocusChange?.(false)}
+				onInput={() => {
+					if (!composing.current) {
 						onInput?.();
 						schedule();
-					}}
-					onKeyDown={(e) => {
-						const native = e.nativeEvent as KeyboardEvent & { inputType?: string };
-						// Native mobile line breaks and IME commits are never message submissions.
-						if (e.key !== "Enter" || e.shiftKey || composing.current || native.isComposing || e.keyCode === 229 || native.inputType === "insertLineBreak") return;
-						const hardware = e.metaKey || e.ctrlKey || (typeof matchMedia === "function" && matchMedia("(pointer: fine)").matches);
-						if (!hardware || e.altKey) return;
-						e.preventDefault();
-						if (!e.repeat) submit();
-					}}
-					style={{ maxHeight: MAX_INPUT, outline: "none", boxShadow: "none" }}
-					className="m-selectable min-h-[36px] w-full min-w-0 resize-none bg-transparent px-2 py-1.5 text-m-md leading-6 text-m-text outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 placeholder:text-m-text-3"
-				/>
+					}
+				}}
+				onCompositionStart={() => {
+					composing.current = true;
+				}}
+				onCompositionEnd={() => {
+					composing.current = false;
+					onInput?.();
+					schedule();
+				}}
+				onKeyDown={(e) => {
+					const native = e.nativeEvent as KeyboardEvent & { inputType?: string };
+					// Native mobile line breaks and IME commits are never message submissions.
+					if (e.key !== "Enter" || e.shiftKey || composing.current || native.isComposing || e.keyCode === 229 || native.inputType === "insertLineBreak") return;
+					const hardware = e.metaKey || e.ctrlKey || (typeof matchMedia === "function" && matchMedia("(pointer: fine)").matches);
+					if (!hardware || e.altKey) return;
+					e.preventDefault();
+					if (!e.repeat) submit();
+				}}
+				style={{ maxHeight: MAX_INPUT, outline: "none", boxShadow: "none" }}
+				className="m-selectable min-h-[42px] w-full min-w-0 resize-none bg-transparent px-4 pt-3 pb-1.5 text-m-md leading-6 text-m-text outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 placeholder:text-m-text-3"
+			/>
 
-				{/* When keyboard is OPEN: mic, stop and send join the upper row, keeping the composer to strictly 1 row! */}
-				{keyboardOpen && (
-					<div className="flex shrink-0 items-center gap-1.5">
+			{/* Bottom Toolbar Row: always mounted so controls never jump or unmount on keyboard changes */}
+			<div className="flex items-center justify-between gap-1.5 px-2.5 pt-0.5 pb-2 text-xs">
+				<div className="m-noscrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap">
+					<button
+						type="button"
+						aria-label="添加"
+						onClick={onPlus}
+						className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-m-text-2 transition-colors hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
+					>
+						<Plus size={19} strokeWidth={2} />
+					</button>
+
+					{hasModel && (
 						<button
 							type="button"
-							aria-label={recording ? "停止录音" : "语音输入"}
-							aria-pressed={recording}
-							disabled={transcribing}
-							onClick={() => void toggleRecording()}
-							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-all ${
-								recording ? "m-pulse bg-m-danger text-white shadow-sm" : "text-m-text-2 hover:text-m-text hover:bg-m-surface active:bg-m-surface-2 active:scale-95"
-							}`}
+							aria-label={`当前模型：${modelName}，点击切换`}
+							onClick={onModel}
+							disabled={!onModel}
+							className="flex h-9 min-w-0 shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium whitespace-nowrap text-m-text transition-colors hover:bg-m-surface active:bg-m-surface-2 disabled:cursor-default"
 						>
-							{transcribing ? <Spinner size={16} /> : recording ? <Square size={13} fill="currentColor" /> : <Mic size={17} />}
+							<span className="max-w-[132px] truncate">{modelName}</span>
+							<ChevronDown size={13} className="shrink-0 text-m-text-3" aria-hidden />
 						</button>
+					)}
 
-						{showStop && (
-							<button
-								type="button"
-								aria-label="停止"
-								onClick={onStop}
-								className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-m-text text-m-bg active:scale-95 transition-all shadow-sm"
-							>
-								<Square size={12} fill="currentColor" />
-							</button>
-						)}
-
-						<button
-							key="send-kb"
-							type="button"
-							aria-label="发送"
-							disabled={!canSend}
-							onClick={submit}
-							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
-								canSend
-									? "bg-m-accent text-m-accent-text shadow-sm hover:brightness-105 active:scale-95 cursor-pointer"
-									: "bg-m-surface-2 text-m-text-3 border border-m-border/40 cursor-not-allowed"
-							}`}
-						>
-							{busy ? <Spinner size={16} /> : <ArrowUp size={16} strokeWidth={2.25} />}
-						</button>
-					</div>
-				)}
-			</div>
-
-			{/* Bottom Toolbar: ONLY visible when keyboard is CLOSED */}
-			{!keyboardOpen && (
-				<div className="flex items-center justify-between px-2.5 pb-2 pt-0.5 text-xs">
-					{/* Left: [Model ⌵] [Thinking ⌵] [extra chips] */}
-					<div className="m-noscrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap">
-						{(() => {
-							const modelName = shortModel(model ?? "") || "默认模型";
-							const thinkName = desktopThinkingLabel(thinking);
-							const hasModel = onModel || model != null;
-							const hasThinking = onThinking || thinking != null;
-							const shouldMerge = Boolean(
-								hasModel &&
-								hasThinking &&
-								(
-									(capsuleWidth > 0 && capsuleWidth < 330) ||
-									(extraLeft != null && capsuleWidth > 0 && capsuleWidth < 370) ||
-									modelName.length > 18
-								)
-							);
-
-							if (shouldMerge) {
-								return (
-									<button
-										type="button"
-										aria-label={`当前模型：${modelName}，当前思考强度：${thinkName}，点击切换`}
-										onClick={onThinking ?? onModel}
-										disabled={!onThinking && !onModel}
-										className="flex h-8 min-w-0 max-w-[180px] shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium whitespace-nowrap text-m-text hover:bg-m-surface active:bg-m-surface-2 transition-all disabled:cursor-default"
-									>
-										<span className="truncate">{modelName}</span>
-										<span className="shrink-0 text-m-text-3 font-normal">· {thinkName}</span>
-										<ChevronDown size={13} className="shrink-0 text-m-text-3" aria-hidden />
-									</button>
-								);
-							}
-
-							return (
-								<>
-									{hasModel && (
-										<button
-											type="button"
-											aria-label={`当前模型：${modelName}，点击切换`}
-											onClick={onModel}
-											disabled={!onModel}
-											className="flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium whitespace-nowrap text-m-text hover:bg-m-surface active:bg-m-surface-2 transition-all disabled:cursor-default"
-										>
-											<span className="max-w-[130px] truncate">{modelName}</span>
-											<ChevronDown size={13} className="shrink-0 text-m-text-3" aria-hidden />
-										</button>
-									)}
-									{hasThinking && (
-										<button
-											type="button"
-											aria-label={`当前思考强度：${thinkName}，点击切换`}
-											onClick={onThinking ?? onModel}
-											disabled={!onThinking && !onModel}
-											className="flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs whitespace-nowrap text-m-text-2 hover:bg-m-surface active:bg-m-surface-2 transition-all disabled:cursor-default"
-										>
-											<span>{thinkName}</span>
-											<ChevronDown size={13} className="shrink-0 text-m-text-3" aria-hidden />
-										</button>
-									)}
-								</>
-							);
-						})()}
-
-						{extraLeft}
-					</div>
-
-					{/* Right: [Context %] [🎙️] [Stop?] [Send] */}
-					<div className="flex shrink-0 items-center gap-1.5">
-						{contextText && (() => {
-							const mName = shortModel(model ?? "");
-							const compactContext = Boolean(
-								(capsuleWidth > 0 && capsuleWidth < 360) ||
-								(extraLeft != null && (capsuleWidth > 0 && capsuleWidth < 400 || mName.length > 10)) ||
-								mName.length > 15
-							);
-							return (
-								<button
-									type="button"
-									aria-label={`上下文用量：${contextText}`}
-									onClick={onContext}
-									disabled={!onContext}
-									className={`flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs whitespace-nowrap hover:bg-m-surface active:bg-m-surface-2 transition-all disabled:opacity-60 ${contextToneClass}`}
-								>
-									<ContextIndicator text={contextText} percent={contextPercent} compact={compactContext} />
-								</button>
-							);
-						})()}
-
+					{hasThinking && (
 						<button
 							type="button"
-							aria-label={recording ? "停止录音" : "语音输入"}
-							aria-pressed={recording}
-							disabled={transcribing}
-							onClick={() => void toggleRecording()}
-							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-all ${
-								recording ? "m-pulse bg-m-danger text-white shadow-sm" : "text-m-text-2 hover:text-m-text hover:bg-m-surface active:bg-m-surface-2 active:scale-95"
-							}`}
+							aria-label={`当前思考强度：${thinkName}，点击切换`}
+							onClick={onThinking ?? onModel}
+							disabled={!onThinking && !onModel}
+							className="flex h-9 shrink-0 items-center gap-1 rounded-lg px-2 text-xs whitespace-nowrap text-m-text-2 transition-colors hover:bg-m-surface active:bg-m-surface-2 disabled:cursor-default"
 						>
-							{transcribing ? <Spinner size={16} /> : recording ? <Square size={13} fill="currentColor" /> : <Mic size={17} />}
+							<span>{thinkName}</span>
+							<ChevronDown size={13} className="shrink-0 text-m-text-3" aria-hidden />
 						</button>
+					)}
 
-						{showStop && (
-							<button
-								type="button"
-								aria-label="停止"
-								onClick={onStop}
-								className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-m-text text-m-bg active:scale-95 transition-all shadow-sm"
-							>
-								<Square size={12} fill="currentColor" />
-							</button>
-						)}
-
-						<button
-							key="send"
-							type="button"
-							aria-label="发送"
-							disabled={!canSend}
-							onClick={submit}
-							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
-								canSend
-									? "bg-m-accent text-m-accent-text shadow-sm hover:brightness-105 active:scale-95 cursor-pointer"
-									: "bg-m-surface-2 text-m-text-3 border border-m-border/40 cursor-not-allowed"
-							}`}
-						>
-							{busy ? <Spinner size={16} /> : <ArrowUp size={16} strokeWidth={2.25} />}
-						</button>
-					</div>
+					{extraLeft}
 				</div>
-			)}
+
+				<div className="flex shrink-0 items-center gap-1">
+					{contextText && (
+						<button
+							type="button"
+							aria-label={`上下文用量：${contextText}`}
+							onClick={onContext}
+							disabled={!onContext}
+							className={`flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs whitespace-nowrap transition-colors hover:bg-m-surface active:bg-m-surface-2 disabled:opacity-60 ${contextToneClass}`}
+						>
+							<ContextIndicator text={contextText} percent={contextPercent} compact={compactContext} />
+						</button>
+					)}
+
+					<button
+						type="button"
+						aria-label={recording ? "停止录音" : "语音输入"}
+						aria-pressed={recording}
+						disabled={transcribing}
+						onClick={() => void toggleRecording()}
+						className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors ${
+							recording
+								? "m-pulse bg-m-danger text-white"
+								: "text-m-text-2 hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
+						}`}
+					>
+						{transcribing ? <Spinner size={16} /> : recording ? <Square size={13} fill="currentColor" /> : <Mic size={18} />}
+					</button>
+
+					{showStop && (
+						<button
+							key="stop"
+							type="button"
+							aria-label="停止"
+							onClick={onStop}
+							className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-m-danger-bg text-m-danger transition-transform active:scale-95"
+						>
+							<Square size={13} fill="currentColor" />
+						</button>
+					)}
+
+					<button
+						key="send"
+						type="button"
+						aria-label="发送"
+						disabled={!canSend}
+						onClick={submit}
+						className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
+							canSend
+								? "cursor-pointer bg-m-text text-m-bg shadow-xs active:scale-95"
+								: "cursor-not-allowed bg-m-surface-2 text-m-text-3"
+						}`}
+					>
+						{busy ? <Spinner size={16} /> : <ArrowUp size={17} strokeWidth={2.25} />}
+					</button>
+				</div>
+			</div>
 		</div>
 	);
 }

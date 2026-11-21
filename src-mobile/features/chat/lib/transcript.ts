@@ -14,9 +14,23 @@ export interface TranscriptState {
 	tailId: string | null;
 	/** Per assistant item id: request stats (duration/ttft are not part of the normalized Item). */
 	stats: Record<string, RequestStat>;
+	/** True when older visible items exist before `oldestIndex` on the server. */
+	hasMore: boolean;
+	/** Exclusive upper index into server visible items for the next `loadOlder()` page. */
+	oldestIndex: number | null;
+	/** True while an older-history page request is in flight. */
+	loadingOlder: boolean;
 }
 
-export const EMPTY_TRANSCRIPT: TranscriptState = { items: [], offset: 0, tailId: null, stats: {} };
+export const EMPTY_TRANSCRIPT: TranscriptState = {
+	items: [],
+	offset: 0,
+	tailId: null,
+	stats: {},
+	hasMore: false,
+	oldestIndex: null,
+	loadingOlder: false,
+};
 
 export interface MergeResult {
 	state: TranscriptState;
@@ -25,9 +39,25 @@ export interface MergeResult {
 	changed: boolean;
 }
 
-/** Query string of the next incremental read. */
-export function transcriptQuery(state: Pick<TranscriptState, "offset" | "tailId">): string {
-	return `from=${state.offset}${state.tailId ? `&tail=${encodeURIComponent(state.tailId)}` : ""}`;
+export interface TranscriptQueryOptions {
+	limit?: number;
+	before?: number;
+}
+
+/** Query string of the next transcript read (initial tail page, incremental append, or older-history page). */
+export function transcriptQuery(
+	state: Pick<TranscriptState, "offset" | "tailId">,
+	opts?: TranscriptQueryOptions,
+): string {
+	if (opts?.before !== undefined) {
+		const limitPart = opts.limit !== undefined ? `&limit=${opts.limit}` : "";
+		return `from=0&before=${opts.before}${limitPart}`;
+	}
+	const base = `from=${state.offset}${state.tailId ? `&tail=${encodeURIComponent(state.tailId)}` : ""}`;
+	if (state.offset === 0 && opts?.limit !== undefined) {
+		return `${base}&limit=${opts.limit}`;
+	}
+	return base;
 }
 
 /** Locate the tool a result belongs to in already-buffered rows (a result can land in a later page than its call). */
@@ -90,8 +120,80 @@ export function mergePage(prev: TranscriptState, page?: TranscriptPage | null): 
 	const newUserTexts = fresh.filter((x) => x.role === "user" && x.text && !knownIds.has(x.id)).map((x) => x.text.trim());
 	const offset = page.nextOffset || base.offset;
 	const tailId = page.tailId ?? null;
-	const changed = !!page.reset || patched || merged !== items || offset !== prev.offset || tailId !== prev.tailId;
-	return { state: { items: merged, offset, tailId, stats }, newUserTexts, changed };
+	const hasMore = typeof page.hasMore === "boolean" ? page.hasMore : base.hasMore;
+	const oldestIndex = typeof page.oldestIndex === "number" ? page.oldestIndex : base.oldestIndex;
+	const loadingOlder = page.reset ? false : base.loadingOlder;
+	const changed =
+		!!page.reset ||
+		patched ||
+		merged !== items ||
+		offset !== prev.offset ||
+		tailId !== prev.tailId ||
+		hasMore !== prev.hasMore ||
+		oldestIndex !== prev.oldestIndex;
+	return { state: { items: merged, offset, tailId, stats, hasMore, oldestIndex, loadingOlder }, newUserTexts, changed };
+}
+
+/**
+ * Prepend an older transcript page (`?from=0&before=<oldestIndex>&limit=...`) before existing items
+ * while preserving live tail cursors (`offset`, `tailId`) and existing item object references.
+ */
+export function prependOlderPage(prev: TranscriptState, page?: TranscriptPage | null): MergeResult {
+	if (!page) {
+		if (!prev.loadingOlder) return { state: prev, newUserTexts: [], changed: false };
+		return { state: { ...prev, loadingOlder: false }, newUserTexts: [], changed: false };
+	}
+	const raw = (page.items ?? []).filter((r): r is TranscriptItem => !!r);
+	const older = normalizeTranscript(raw);
+	markUnresolved(older, raw);
+	const stats = { ...prev.stats };
+	for (const r of raw) {
+		if (r.kind !== "assistant" || stats[r.id]) continue;
+		const stat = requestStatFromItem(r);
+		if (stat) stats[r.id] = stat;
+	}
+
+	const existingIds = new Set(prev.items.map((item) => item.id));
+	const uniqueOlder = older.filter((item) => !existingIds.has(item.id));
+
+	// Reconcile orphan tool_result rows at the start of `prev.items` whose call sits in `uniqueOlder`.
+	const consumedPrev = new Set<number>();
+	if (uniqueOlder.length > 0) {
+		for (let i = 0; i < prev.items.length; i++) {
+			const row = prev.items[i];
+			if (row.kind !== "tool_result" || row.tools.length !== 1) break;
+			const orphan = row.tools[0];
+			const idx = ownerIndex(uniqueOlder, orphan.id);
+			if (idx < 0) continue;
+			const owner = uniqueOlder[idx];
+			uniqueOlder[idx] = {
+				...owner,
+				tools: owner.tools.map((t) =>
+					t.id === orphan.id ? { ...t, status: orphan.status, result: orphan.result } : t,
+				),
+			};
+			consumedPrev.add(i);
+		}
+	}
+
+	const keptPrev = consumedPrev.size > 0 ? prev.items.filter((_, i) => !consumedPrev.has(i)) : prev.items;
+	const items = uniqueOlder.length > 0 ? [...uniqueOlder, ...keptPrev] : keptPrev;
+	const hasMore = typeof page.hasMore === "boolean" ? page.hasMore : false;
+	const oldestIndex = typeof page.oldestIndex === "number" ? page.oldestIndex : hasMore ? prev.oldestIndex : 0;
+	const changed = uniqueOlder.length > 0 || consumedPrev.size > 0;
+	return {
+		state: {
+			items,
+			offset: prev.offset,
+			tailId: prev.tailId,
+			stats,
+			hasMore,
+			oldestIndex,
+			loadingOlder: false,
+		},
+		newUserTexts: [],
+		changed,
+	};
 }
 
 /* ---------------------------------------------------------------- optimistic */

@@ -2,11 +2,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installViewportTracking } from "./viewport";
 import { applyTheme } from "./theme";
+import { DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, resolveThemeId } from "./themes";
 
 afterEach(() => {
  vi.unstubAllGlobals();
  document.documentElement.removeAttribute("style");
  document.documentElement.removeAttribute("data-scheme");
+ document.documentElement.removeAttribute("data-theme");
  document.head.querySelectorAll('meta[name="theme-color"],meta[name="apple-mobile-web-app-status-bar-style"]').forEach(node => node.remove());
 });
 
@@ -59,5 +61,21 @@ describe("theme browser chrome", () => {
  it("still sets the status bar when the color token is not available", () => {
   applyTheme("dark");
   expect(document.querySelector<HTMLMetaElement>('meta[name="apple-mobile-web-app-status-bar-style"]')?.content).toBe("black-translucent");
+ });
+ it("sets data-theme from the chosen palette and falls back cleanly when mismatched", () => {
+  document.documentElement.style.setProperty("--m-bg", "#1a1b26");
+  applyTheme("dark", "tokyo-night");
+  expect(document.documentElement.dataset.scheme).toBe("dark");
+  expect(document.documentElement.dataset.theme).toBe("tokyo-night");
+  expect(document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.content).toBe("#1a1b26");
+
+  // Passing a light palette id while in dark mode falls back to the dark default.
+  applyTheme("dark", "sakura");
+  expect(document.documentElement.dataset.theme).toBe(DEFAULT_DARK_THEME);
+
+  // Passing a valid light palette in light mode sticks; unknown ids fall back to light default.
+  applyTheme("light", "sakura");
+  expect(document.documentElement.dataset.theme).toBe("sakura");
+  expect(resolveThemeId("light", "nonexistent")).toBe(DEFAULT_LIGHT_THEME);
  });
 });

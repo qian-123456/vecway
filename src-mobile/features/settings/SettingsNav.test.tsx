@@ -239,6 +239,27 @@ describe("SettingsPage navigation and groups", () => {
 		expect(apiModule.api).not.toHaveBeenCalledWith("POST", expect.anything(), expect.anything());
 	});
 
+	it("allows picking independent light and dark colour themes and persists them locally", async () => {
+		usePrefs.setState({ scheme: "system", lightTheme: "native-light", darkTheme: "native-dark" });
+		render(<SettingsPage />);
+		fireEvent.click(await screen.findByText("外观"));
+
+		// System mode exposes both light and dark theme swatch groups.
+		const lightGroup = screen.getByRole("group", { name: "浅色主题" });
+		const darkGroup = screen.getByRole("group", { name: "深色主题" });
+		fireEvent.click(within(lightGroup).getByRole("button", { name: "樱花粉" }));
+		expect(usePrefs.getState().lightTheme).toBe("sakura");
+		expect(within(lightGroup).getByRole("button", { name: "樱花粉" }).getAttribute("aria-pressed")).toBe("true");
+
+		fireEvent.click(within(darkGroup).getByRole("button", { name: "东京夜色" }));
+		expect(usePrefs.getState().darkTheme).toBe("tokyo-night");
+		expect(within(darkGroup).getByRole("button", { name: "东京夜色" }).getAttribute("aria-pressed")).toBe("true");
+
+		// Fixed light mode hides the dark palette grid and shows only light themes.
+		fireEvent.click(screen.getByRole("radio", { name: "浅色" }));
+		expect(screen.queryByRole("group", { name: "深色主题" })).toBeNull();
+		expect(screen.getByRole("group", { name: "浅色主题" })).toBeDefined();
+	});
 	it("opens the Doctor bottom sheet on tapping 会话体检", async () => {
 		render(<SettingsPage />);
 

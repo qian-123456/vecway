@@ -63,27 +63,28 @@ function writeWidgetState(key: string, serialized: string): void {
 	}
 }
 
-function useCurrentTheme(): "light" | "dark" {
-	const [theme, setTheme] = useState<"light" | "dark">(() => {
-		if (typeof document === "undefined") return "dark";
+function useCurrentTheme(): { scheme: "light" | "dark"; key: string } {
+	const read = (): { scheme: "light" | "dark"; key: string } => {
+		if (typeof document === "undefined") return { scheme: "dark", key: "dark:" };
 		const root = document.documentElement;
 		const s = root.dataset.scheme || root.dataset.mode;
-		if (s === "light" || s === "dark") return s;
-		return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
-	});
+		const scheme =
+			s === "light" || s === "dark"
+				? s
+				: window.matchMedia?.("(prefers-color-scheme: light)").matches
+					? "light"
+					: "dark";
+		return { scheme, key: `${scheme}:${root.dataset.theme || ""}` };
+	};
+	const [state, setState] = useState(read);
 
 	useEffect(() => {
 		const update = () => {
-			const root = document.documentElement;
-			const s = root.dataset.scheme || root.dataset.mode;
-			if (s === "light" || s === "dark") {
-				setTheme(s);
-			} else {
-				setTheme(window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark");
-			}
+			const next = read();
+			setState((prev) => (prev.key === next.key ? prev : next));
 		};
 		const obs = new MutationObserver(update);
-		obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-mode"] });
+		obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-theme", "data-mode"] });
 		const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
 		mq?.addEventListener("change", update);
 		return () => {
@@ -92,7 +93,7 @@ function useCurrentTheme(): "light" | "dark" {
 		};
 	}, []);
 
-	return theme;
+	return state;
 }
 
 interface FrameProps {
@@ -110,7 +111,7 @@ function VisualizeFrame({
 	onSendFollowUp,
 	onReloadTriggered,
 }: FrameProps) {
-	const theme = useCurrentTheme();
+	const { scheme: theme, key: themeKey } = useCurrentTheme();
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const portRef = useRef<MessagePort | null>(null);
 	const lastActivityRef = useRef(0);
@@ -154,7 +155,7 @@ function VisualizeFrame({
 	useEffect(() => {
 		const vars = collectVizThemeVars();
 		portRef.current?.postMessage({ type: "theme", theme, vars });
-	}, [theme, reloadSeq]);
+	}, [theme, themeKey, reloadSeq]);
 
 	useEffect(() => {
 		if (status !== "loading") return;

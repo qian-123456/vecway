@@ -1,7 +1,8 @@
 import { ChevronRight } from "lucide-react";
 import { memo, useState } from "react";
 import { copyText } from "../../../core/lib/format";
-import { Button, Markdown, toast } from "../../../ui";
+import { Button, toast } from "../../../ui";
+import { Markdown } from "../../../ui/Markdown";
 import { thinkingLabel } from "../lib/turns";
 
 /** Open state survives remounts of the row (window paging, live → persisted). */

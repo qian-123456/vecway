@@ -5,7 +5,7 @@ import { nav } from "../core/nav";
  * Mount/unmount with a transition window: `mounted` stays true while the exit
  * transition plays, `visible` flips one frame after mount so CSS transitions run.
  */
-export function usePresence(open: boolean, ms = 240): { mounted: boolean; visible: boolean } {
+export function usePresence(open: boolean, ms = 300): { mounted: boolean; visible: boolean } {
 	const [mounted, setMounted] = useState(open);
 	const [visible, setVisible] = useState(false);
 	useEffect(() => {
@@ -45,9 +45,17 @@ function lockScroll(): () => void {
 	};
 }
 
+const escapeStack: Array<() => void> = [];
+
+function onDocumentKeyDown(e: KeyboardEvent): void {
+	if (e.key !== "Escape" || e.defaultPrevented) return;
+	const top = escapeStack[escapeStack.length - 1];
+	if (top) top();
+}
+
 /**
- * Shared overlay behaviour while `open`: back-gesture layer, Escape to close,
- * body scroll lock, and focus restore to the previously focused element.
+ * Shared overlay behaviour while `open`: back-gesture layer, topmost-only Escape to close,
+ * body scroll lock, and safe focus restore once all overlays close.
  */
 export function useOverlay(open: boolean, onClose: () => void): void {
 	const closeRef = useRef(onClose);
@@ -57,15 +65,16 @@ export function useOverlay(open: boolean, onClose: () => void): void {
 		const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		const disposeLayer = nav.pushLayer(() => closeRef.current());
 		const unlock = lockScroll();
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") closeRef.current();
-		};
-		document.addEventListener("keydown", onKey);
+		const entry = () => closeRef.current();
+		if (escapeStack.length === 0) document.addEventListener("keydown", onDocumentKeyDown);
+		escapeStack.push(entry);
 		return () => {
-			document.removeEventListener("keydown", onKey);
+			const idx = escapeStack.lastIndexOf(entry);
+			if (idx >= 0) escapeStack.splice(idx, 1);
+			if (escapeStack.length === 0) document.removeEventListener("keydown", onDocumentKeyDown);
 			unlock();
 			disposeLayer();
-			if (previous?.isConnected) previous.focus({ preventScroll: true });
+			if (lockCount === 0 && previous?.isConnected) previous.focus({ preventScroll: true });
 		};
 	}, [open]);
 }

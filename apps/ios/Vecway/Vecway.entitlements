@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Clean default entitlements for out-of-the-box Automatic Signing. -->
+	<!-- To enable APNs Push Notifications in M5 after enabling the Push capability
+	     for dev.vecway.mobile on developer.apple.com, switch CODE_SIGN_ENTITLEMENTS
+	     in project.yml to Vecway/Vecway-Push.entitlements. -->
+</dict>
+</plist>

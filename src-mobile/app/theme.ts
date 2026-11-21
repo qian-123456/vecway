@@ -1,12 +1,15 @@
 import { useEffect } from "react";
 import { resolveScheme, usePrefs, type Scheme } from "../core/stores/prefs";
+import { resolveThemeId } from "./themes";
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
-/** Write `data-scheme` on <html> and sync browser and iOS status-bar chrome. */
-export function applyTheme(scheme: Scheme): void {
+/** Write `data-scheme` and `data-theme` on <html> and sync browser and iOS status-bar chrome. */
+export function applyTheme(scheme: Scheme, themeId?: string): void {
 	const root = document.documentElement;
+	const resolvedTheme = resolveThemeId(scheme, themeId);
 	root.dataset.scheme = scheme;
+	root.dataset.theme = resolvedTheme;
 	let statusBarMeta = document.querySelector<HTMLMetaElement>('meta[name="apple-mobile-web-app-status-bar-style"]');
 	if (!statusBarMeta) {
 		statusBarMeta = document.createElement("meta");
@@ -26,15 +29,20 @@ export function applyTheme(scheme: Scheme): void {
 	meta.content = bg;
 }
 
-/** Keeps the document attribute in step with prefs and the system colour scheme. */
+/** Keeps the document scheme & palette attributes in step with prefs and the system colour scheme. */
 export function useTheme(): void {
 	const pref = usePrefs((s) => s.scheme);
+	const lightTheme = usePrefs((s) => s.lightTheme);
+	const darkTheme = usePrefs((s) => s.darkTheme);
 	useEffect(() => {
 		const mq = window.matchMedia(DARK_QUERY);
-		const apply = () => applyTheme(resolveScheme(pref, mq.matches));
+		const apply = () => {
+			const scheme = resolveScheme(pref, mq.matches);
+			applyTheme(scheme, scheme === "dark" ? darkTheme : lightTheme);
+		};
 		apply();
 		if (pref !== "system") return;
 		mq.addEventListener("change", apply);
 		return () => mq.removeEventListener("change", apply);
-	}, [pref]);
+	}, [pref, lightTheme, darkTheme]);
 }

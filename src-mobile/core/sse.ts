@@ -8,11 +8,12 @@
  */
 import type { RpcFrame } from "./types";
 import { api } from "./api";
+import { createEventSource } from "./nativeBridge";
 import { isUnauthorized, useConnection } from "./stores/connection";
 
 export interface SseEventMap {
-	/** Fires on every (re)connect of the stream. */
-	hello: Record<string, never>;
+	/** Fires on every (re)connect of the stream. `reconnect` is false only on the initial boot connect. */
+	hello: { reconnect?: boolean };
 	session: { sessionId: string; old?: string; new?: string };
 	rpc: { sessionId: string; frame: RpcFrame };
 	touch: { sessionId?: string };
@@ -64,6 +65,7 @@ export const events = new EventBus();
 
 export interface EventSourceLike {
 	readyState: number;
+	onopen?: (() => void) | null;
 	onerror: ((e: unknown) => void) | null;
 	addEventListener(type: string, fn: (e: { data: string }) => void): void;
 	close(): void;
@@ -82,7 +84,8 @@ export class SseClient {
 	private timer: ReturnType<typeof setTimeout> | 0 = 0;
 	private started = false;
 	private probeVersion = 0;
-
+	private hasConnected = false;
+	private wasDisconnected = false;
 	constructor(private deps: SseDeps) {}
 
 	start(): void {
@@ -93,16 +96,24 @@ export class SseClient {
 
 	stop(): void {
 		this.started = false;
+		this.attempt = 0;
 		this.probeVersion++;
+		this.hasConnected = false;
+		this.wasDisconnected = false;
 		clearTimeout(this.timer);
 		this.timer = 0;
 		this.close();
+	}
+
+	isStarted(): boolean {
+		return this.started;
 	}
 
 	/** Page became visible / network returned: revive a dead stream and tell views to refetch. */
 	resume(reason: "visible" | "online"): void {
 		if (!this.started || isUnauthorized()) return;
 		if (!this.es || this.es.readyState === 2) {
+			if (this.hasConnected) this.wasDisconnected = true;
 			this.close();
 			clearTimeout(this.timer);
 			void this.probeAndConnect();
@@ -136,6 +147,7 @@ export class SseClient {
 			await this.deps.probe();
 		} catch (e) {
 			if (!this.started || version !== this.probeVersion || isUnauthorized() || this.es) return;
+			this.wasDisconnected = true;
 			useConnection.getState().setPhase("closed", e instanceof Error ? e.message : null);
 			this.scheduleReconnect();
 			return;
@@ -163,14 +175,22 @@ export class SseClient {
 					/* keep {} for malformed frames */
 				}
 				if (name === "hello") {
+					const reconnect = this.hasConnected || this.wasDisconnected;
+					this.hasConnected = true;
+					this.wasDisconnected = false;
 					this.attempt = 0;
 					useConnection.getState().setPhase("open");
+					data =
+						data && typeof data === "object" && !Array.isArray(data)
+							? { ...(data as Record<string, unknown>), reconnect }
+							: { reconnect };
 				}
 				this.deps.bus.emit(name, data as never);
 			});
 		}
 		src.onerror = () => {
 			if (this.es !== src) return;
+			this.wasDisconnected = true;
 			this.close();
 			if (isUnauthorized()) return;
 			useConnection.getState().setPhase("closed");
@@ -180,26 +200,52 @@ export class SseClient {
 }
 
 let client: SseClient | null = null;
+let listenersWired = false;
+let defaultProbe: () => Promise<unknown> = () => api("GET", "/sessions");
+
+/** Register the shared probe function (e.g. `useSessions.getState().refresh`) to coalesce boot requests. */
+export function setEventsProbe(probe: () => Promise<unknown>): void {
+	defaultProbe = probe;
+}
+
+function ensureClient(): SseClient {
+	if (!client) {
+		client = new SseClient({
+			create: (url) => createEventSource(url),
+			probe: () => defaultProbe(),
+			random: Math.random,
+			bus: events,
+		});
+	}
+	if (!listenersWired && typeof document !== "undefined" && typeof window !== "undefined") {
+		listenersWired = true;
+		document.addEventListener("visibilitychange", () => {
+			if (!document.hidden) client?.resume("visible");
+		});
+		window.addEventListener("online", () => client?.resume("online"));
+		window.addEventListener("offline", () => {
+			if (client?.isStarted()) useConnection.getState().setPhase("closed", "网络已断开");
+		});
+	}
+	return client;
+}
 
 /** Start the app-wide stream (idempotent) and wire visibility/online resync. */
 export function startEvents(): void {
-	if (client) return;
-	client = new SseClient({
-		create: (url) => new EventSource(url) as unknown as EventSourceLike,
-		probe: () => api("GET", "/sessions"),
-		random: Math.random,
-		bus: events,
-	});
-	document.addEventListener("visibilitychange", () => {
-		if (!document.hidden) client?.resume("visible");
-	});
-	window.addEventListener("online", () => client?.resume("online"));
-	window.addEventListener("offline", () => useConnection.getState().setPhase("closed", "网络已断开"));
-	client.start();
+	ensureClient().start();
+}
+
+/** Stop the app-wide stream (e.g. on native unpair). `startEvents()` can restart it later. */
+export function stopEvents(): void {
+	client?.stop();
 }
 
 /** Re-probe now (banner "重试" button): restarts a stopped/closed stream. */
 export function reconnectEvents(): void {
-	if (!client) return startEvents();
-	client.resume("online");
+	const c = ensureClient();
+	if (!c.isStarted()) {
+		c.start();
+		return;
+	}
+	c.resume("online");
 }

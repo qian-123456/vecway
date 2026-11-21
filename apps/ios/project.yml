@@ -1,0 +1,64 @@
+name: Vecway
+options:
+  bundleIdPrefix: dev.vecway
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: C894W4BL7C
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.9"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+targets:
+  Vecway:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Vecway
+        excludes:
+          - "Info.plist"
+          - "Vecway.entitlements"
+          - "Vecway-Push.entitlements"
+          - "Resources/WebBundle"
+          - "Resources/WebBundle/**"
+      - path: Vecway/Resources/WebBundle
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.vecway.mobile
+        PRODUCT_NAME: Vecway
+        INFOPLIST_FILE: Vecway/Info.plist
+        # Automatic signing works out of the box with Vecway.entitlements.
+        # When Push Notifications capability is enabled for dev.vecway.mobile
+        # on developer.apple.com (M5), switch to Vecway/Vecway-Push.entitlements.
+        CODE_SIGN_ENTITLEMENTS: Vecway/Vecway.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+
+  VecwayTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: VecwayTests
+    dependencies:
+      - target: Vecway
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.vecway.mobile.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Vecway.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Vecway"
+        BUNDLE_LOADER: "$(TEST_HOST)"

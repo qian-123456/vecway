@@ -25,6 +25,7 @@ export const DEFAULT_SETTINGS: Settings = {
 	tunnelHostname: null,
 	mobileIpv6Enabled: false,
 	mobileIpv6Port: 7789,
+	mobileLanTlsPort: 7790,
 	ddnsEnabled: false,
 	ddnsZoneId: null,
 	ddnsHostname: null,

@@ -79,8 +79,8 @@ export function CodeBlock({
 		}
 	};
 	return (
-		<div className={`min-w-0 overflow-hidden rounded-m-md bg-m-code-bg ${className}`}>
-			<div className="flex flex-wrap items-center justify-between gap-x-2 px-3">
+		<div className={`min-w-0 overflow-hidden rounded-m-md border border-m-border bg-m-code-bg ${className}`}>
+			<div className="flex flex-wrap items-center justify-between gap-x-2 border-b border-m-border bg-m-code-hdr px-3">
 				<span className="break-all font-m-mono text-m-xs text-m-text-3">{lang || "text"}</span>
 				{headerActions}
 				<div className="ml-auto flex shrink-0 items-center">

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const pushMock = vi.fn();
@@ -39,12 +39,13 @@ import { MenuSheet } from "./MenuSheet";
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	delete window.__VECWAY_NATIVE__;
 });
 
 afterEach(() => {
 	cleanup();
+	delete window.__VECWAY_NATIVE__;
 });
-
 describe("MenuSheet (Left Navigation Sheet)", () => {
 	it("renders required Top, Middle, and Bottom sections and excludes irrelevant Gemini items", () => {
 		const onClose = vi.fn();
@@ -72,27 +73,18 @@ describe("MenuSheet (Left Navigation Sheet)", () => {
 		fireEvent.click(screen.getByRole("button", { name: "灵感收件箱" }));
 		expect(pushMock).toHaveBeenCalledWith("/ideas");
 
-		// 2. Middle section: Space selector & "按项目 / 按时间" funnel view filter
-		const filterBtn = screen.getByRole("button", { name: /视图筛选/i });
-		expect(filterBtn).not.toBeNull();
-		expect(filterBtn.className).toContain("min-h-11 min-w-11");
-		expect(filterBtn.querySelector("svg")).not.toBeNull();
-		expect(filterBtn.querySelector(".m-glass-btn")).toBeNull();
-		fireEvent.click(filterBtn);
-
-		const projectTab = screen.getByRole("menuitemradio", { name: "按项目" });
+		// 2. Middle section: Space selector & visible "按项目 / 按时间" segmented switch
+		const viewSwitch = screen.getByRole("radiogroup", { name: "切换视图" });
+		expect(viewSwitch).not.toBeNull();
+		const projectTab = screen.getByRole("radio", { name: "按项目" });
+		const timeTab = screen.getByRole("radio", { name: "按时间" });
 		expect(projectTab.getAttribute("aria-checked")).toBe("true");
-		fireEvent.keyDown(document, { key: "Escape" });
-		expect(screen.queryByRole("menu", { name: "切换视图" })).toBeNull();
-		expect(document.activeElement).toBe(filterBtn);
-		fireEvent.click(filterBtn);
+		expect(timeTab.getAttribute("aria-checked")).toBe("false");
 
-		// Toggle view mode
-		fireEvent.click(screen.getByRole("menuitemradio", { name: "按时间" }));
-		expect(screen.getByRole("button", { name: /视图筛选，当前：按时间/i })).not.toBeNull();
-		fireEvent.click(screen.getByRole("button", { name: /视图筛选/i }));
-		expect(screen.getByRole("menuitemradio", { name: "按时间" }).getAttribute("aria-checked")).toBe("true");
-		// 3. Bottom section
+		// Toggle view mode directly without dropdown
+		fireEvent.click(timeTab);
+		expect(timeTab.getAttribute("aria-checked")).toBe("true");
+		expect(projectTab.getAttribute("aria-checked")).toBe("false");
 		const inboxBtn = screen.getByRole("button", { name: "收件箱" });
 		expect(inboxBtn).not.toBeNull();
 		fireEvent.click(inboxBtn);
@@ -116,11 +108,12 @@ describe("MenuSheet (Left Navigation Sheet)", () => {
 		expect(screen.queryByText(/笔记本/)).toBeNull();
 	});
 
-	it("uses a full-width drawer and a compact desktop-style space menu", () => {
+	it("leaves right scrim visible with an 85vw/340px drawer and uses a compact desktop-style space menu", () => {
 		const onClose = vi.fn();
 		render(<MenuSheet open onClose={onClose} />);
 		const drawer = screen.getByRole("dialog", { name: "导航" });
-		expect(drawer.className).toContain("w-full");
+		expect(drawer.className).toContain("w-[85vw]");
+		expect(drawer.className).toContain("max-w-[340px]");
 		const trigger = screen.getByRole("button", { name: /代码空间/ });
 		fireEvent.click(trigger);
 		expect(screen.getByRole("menu", { name: "切换空间" })).toBeTruthy();
@@ -148,5 +141,42 @@ describe("MenuSheet (Left Navigation Sheet)", () => {
 		fireEvent.touchEnd(drawer);
 		expect(onClose).not.toHaveBeenCalled();
 		expect(drawer.style.transform).toBe("");
+	});
+
+	it("offers a one-tap switch back to LAN in native mode when currently on tunnel", async () => {
+		const lanStatus = {
+			paired: true,
+			activeChannel: "lan_tls" as const,
+			preferredChannel: "lan_tls" as const,
+			activeUrl: "https://192.168.1.10:7790",
+			certSha256: "AA:BB",
+			candidates: { lanTls: "https://192.168.1.10:7790", tunnel: "https://omp.example.com" },
+		};
+		const switchChannel = vi.fn(async () => lanStatus);
+		window.__VECWAY_NATIVE__ = {
+			platform: "ios",
+			appVersion: "1.0.0",
+			httpRequest: vi.fn(),
+			openSse: vi.fn(() => vi.fn()),
+			getConnectionStatus: vi.fn(async () => ({
+				...lanStatus,
+				activeChannel: "tunnel" as const,
+				preferredChannel: "tunnel" as const,
+				activeUrl: "https://omp.example.com",
+			})),
+			openPairScanner: vi.fn(),
+			updateEndpoints: vi.fn(),
+			reprobeConnection: vi.fn(),
+			switchChannel,
+			unpair: vi.fn(),
+		};
+
+		render(<MenuSheet open onClose={vi.fn()} />);
+		const quickLanBtn = await screen.findByRole("button", { name: "切回局域网" });
+		await act(async () => {
+			fireEvent.click(quickLanBtn);
+		});
+		await waitFor(() => expect(switchChannel).toHaveBeenCalledWith("lan_tls"));
+		expect(screen.queryByRole("button", { name: "切回局域网" })).toBeNull();
 	});
 });

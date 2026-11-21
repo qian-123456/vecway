@@ -2,7 +2,8 @@ import { ArrowUp, Code2, Eye, File as FileIcon, Folder, Search, WrapText, X } fr
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../core/api";
 import type { PageProps } from "../../core/nav";
-import { CodeBlock, EmptyState, IconButton, ListGroup, ListRow, Markdown, PageHeader, PullToRefresh } from "../../ui";
+import { CodeBlock, EmptyState, IconButton, ListGroup, ListRow, PageHeader, PullToRefresh } from "../../ui";
+import { Markdown } from "../../ui/Markdown";
 import { LoadGate } from "./PanelState";
 import { useLayer, useLoad } from "./hooks";
 import { breadcrumbs, fmtSize, langFromPath } from "./pure";

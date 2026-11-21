@@ -63,7 +63,9 @@ hyper-util = { version = "0.1", default-features = false, features = [
     "server",
     "service",
     "http1",
+    "http2",
 ] }
+flate2 = "1.1"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 tauri-plugin-updater = "=2.14.0"
 tauri-plugin-process = "2"

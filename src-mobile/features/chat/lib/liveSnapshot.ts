@@ -14,14 +14,14 @@ import type { Item, ToolItem } from "../../../core/types";
 
 export const LIVE_SNAPSHOT_KEY = "ompm.chat.livestream";
 /** Minimum interval between two mirror writes of the streaming row. */
-export const LIVE_SNAPSHOT_THROTTLE_MS = 600;
+export const LIVE_SNAPSHOT_THROTTLE_MS = 1500;
 const MAX_ENTRIES = 8;
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
-const MAX_TEXT = 200_000;
-const MAX_THINKING = 100_000;
-const MAX_TOOLS = 64;
-const MAX_TOOL_RESULT = 4000;
-const MAX_ENTRY_JSON = 1_000_000;
+const MAX_TEXT = 40_000;
+const MAX_THINKING = 20_000;
+const MAX_TOOLS = 24;
+const MAX_TOOL_RESULT = 1_500;
+const MAX_ENTRY_JSON = 120_000;
 
 export interface LiveSnapshotBody {
 	text: string;
@@ -89,26 +89,87 @@ export function loadLiveEntry(id: string, storage: Storage | null = store()): En
 	return { main: main ?? undefined, stale: stale ?? undefined };
 }
 
+interface PendingSave {
+	body: LiveSnapshotBody;
+	storage: Storage | null;
+	cancel: () => void;
+}
+
+const pendingSaves = new Map<string, PendingSave>();
+
+/** Cancel any queued deferred mirror write for `id`. */
+export function cancelLiveMain(id: string): void {
+	const job = pendingSaves.get(id);
+	if (!job) return;
+	pendingSaves.delete(id);
+	job.cancel();
+}
+
+/** Flush a queued deferred mirror write immediately (e.g. on pagehide/dispose). */
+export function flushLiveMain(id: string): void {
+	const job = pendingSaves.get(id);
+	if (!job) return;
+	pendingSaves.delete(id);
+	job.cancel();
+	saveLiveMain(id, job.body, job.storage);
+}
+
 /** Mirror the streaming row (content-capped); failures are swallowed by design. */
 export function saveLiveMain(id: string, body: LiveSnapshotBody, storage: Storage | null = store()): void {
+	cancelLiveMain(id);
 	if (!storage) return;
 	const book = read(storage);
 	const capped: LiveSnapshotBody = {
 		text: body.text.length > MAX_TEXT ? body.text.slice(-MAX_TEXT) : body.text,
 		thinking: body.thinking.length > MAX_THINKING ? body.thinking.slice(-MAX_THINKING) : body.thinking,
-		tools: body.tools.slice(-MAX_TOOLS).map((t) => ({ ...t, result: t.result.length > MAX_TOOL_RESULT ? t.result.slice(0, MAX_TOOL_RESULT) : t.result })),
+		tools: body.tools.slice(-MAX_TOOLS).map((t) => ({
+			...t,
+			result: t.result.length > MAX_TOOL_RESULT ? t.result.slice(0, MAX_TOOL_RESULT) : t.result,
+		})),
 		at: body.at,
 		...(typeof body.ts === "string" ? { ts: body.ts } : {}),
 	};
 	const entry: Entry = { ...book[id], main: capped };
-	if (JSON.stringify(entry).length > MAX_ENTRY_JSON) entry.main = { ...capped, tools: [] };
-	if (JSON.stringify(entry).length > MAX_ENTRY_JSON) return;
+	if (JSON.stringify(entry).length > MAX_ENTRY_JSON) {
+		entry.main = { ...capped, tools: [] };
+		if (JSON.stringify(entry).length > MAX_ENTRY_JSON) return;
+	}
 	book[id] = entry;
 	write(storage, book, body.at);
 }
 
+/**
+ * Defer `localStorage` serialization off the active animation frame so streaming updates never stall
+ * rendering on iOS WebKit. Coalesces rapid calls for the same session to the latest snapshot.
+ */
+export function scheduleLiveMain(id: string, body: LiveSnapshotBody, storage: Storage | null = store()): void {
+	if (!storage) return;
+	const existing = pendingSaves.get(id);
+	if (existing) {
+		existing.body = body;
+		existing.storage = storage;
+		return;
+	}
+	const run = () => {
+		const job = pendingSaves.get(id);
+		if (!job) return;
+		pendingSaves.delete(id);
+		saveLiveMain(id, job.body, job.storage);
+	};
+	let cancel: () => void;
+	if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function" && typeof window.cancelIdleCallback === "function") {
+		const handle = window.requestIdleCallback(run, { timeout: 40 });
+		cancel = () => window.cancelIdleCallback(handle);
+	} else {
+		const timer = setTimeout(run, 0);
+		cancel = () => clearTimeout(timer);
+	}
+	pendingSaves.set(id, { body, storage, cancel });
+}
+
 /** Move content out of the streaming slot into the interrupted slot (replaces any previous stale). */
 export function stashLiveStale(id: string, body: LiveSnapshotBody, storage: Storage | null = store()): void {
+	cancelLiveMain(id);
 	if (!storage) return;
 	const book = read(storage);
 	book[id] = { stale: body };
@@ -116,6 +177,7 @@ export function stashLiveStale(id: string, body: LiveSnapshotBody, storage: Stor
 }
 
 export const clearLiveMain = (id: string, storage: Storage | null = store()): void => {
+	cancelLiveMain(id);
 	if (!storage) return;
 	const book = read(storage);
 	if (!book[id]?.main) return;

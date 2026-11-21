@@ -3,6 +3,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { useVoiceInput } from "./useVoiceInput";
 import { toast } from "../../../ui";
+import type { NativeBridge } from "../../../core/nativeBridge";
 
 vi.mock("../../../ui", () => ({ toast: vi.fn() }));
 
@@ -40,7 +41,7 @@ beforeEach(() => {
 	Recorder.instances = [];
 	vi.mocked(toast).mockClear();
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); delete window.__VECWAY_NATIVE__; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("mobile voice lifecycle", () => {
 	it("requests permission once while a start is pending", async () => {
@@ -137,5 +138,78 @@ describe("mobile voice lifecycle", () => {
 		await act(async () => result.current.toggleRecording());
 		expect(stopTrack).toHaveBeenCalledTimes(1);
 		expect(result.current.recording).toBe(false);
+	});
+});
+
+describe("native bridge.audio voice lifecycle", () => {
+	function installNativeAudio(audio: NonNullable<NativeBridge["audio"]>) {
+		window.__VECWAY_NATIVE__ = {
+			platform: "ios",
+			appVersion: "0.2.0",
+			httpRequest: vi.fn(),
+			openSse: vi.fn(() => vi.fn()),
+			getConnectionStatus: vi.fn(),
+			openPairScanner: vi.fn(),
+			updateEndpoints: vi.fn(),
+			reprobeConnection: vi.fn(),
+			unpair: vi.fn(),
+			audio,
+		};
+	}
+
+	it("records and transcribes via bridge.audio without using MediaRecorder or fetch", async () => {
+		const startRecording = vi.fn(async () => {});
+		const stopAndTranscribe = vi.fn(async () => ({ text: "  原生录音转写  " }));
+		const cancelRecording = vi.fn(async () => {});
+		installNativeAudio({ startRecording, stopAndTranscribe, cancelRecording });
+
+		const onTranscribed = vi.fn();
+		const { result } = renderHook(() => useVoiceInput({ onTranscribed }));
+
+		await act(async () => result.current.toggleRecording());
+		expect(startRecording).toHaveBeenCalledTimes(1);
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(result.current.recording).toBe(true);
+
+		await act(async () => result.current.toggleRecording());
+		expect(stopAndTranscribe).toHaveBeenCalledTimes(1);
+		expect(fetch).not.toHaveBeenCalled();
+		expect(result.current.recording).toBe(false);
+		expect(result.current.transcribing).toBe(false);
+		expect(onTranscribed).toHaveBeenCalledExactlyOnceWith("原生录音转写");
+		expect(toast).toHaveBeenCalledWith("语音识别成功", { kind: "success" });
+	});
+
+	it("cancels native recording on unmount without calling stopAndTranscribe", async () => {
+		const startRecording = vi.fn(async () => {});
+		const stopAndTranscribe = vi.fn(async () => ({ text: "unused" }));
+		const cancelRecording = vi.fn(async () => {});
+		installNativeAudio({ startRecording, stopAndTranscribe, cancelRecording });
+
+		const { result, unmount } = renderHook(() => useVoiceInput({ onTranscribed: vi.fn() }));
+		await act(async () => result.current.toggleRecording());
+		expect(result.current.recording).toBe(true);
+
+		unmount();
+		expect(cancelRecording).toHaveBeenCalledTimes(1);
+		expect(stopAndTranscribe).not.toHaveBeenCalled();
+	});
+
+	it("reports native audio errors via toast", async () => {
+		const startRecording = vi.fn(async () => {});
+		const stopAndTranscribe = vi.fn(async () => {
+			throw new Error("语音服务离线");
+		});
+		const cancelRecording = vi.fn(async () => {});
+		installNativeAudio({ startRecording, stopAndTranscribe, cancelRecording });
+
+		const onTranscribed = vi.fn();
+		const { result } = renderHook(() => useVoiceInput({ onTranscribed }));
+		await act(async () => result.current.toggleRecording());
+		await act(async () => result.current.toggleRecording());
+
+		expect(onTranscribed).not.toHaveBeenCalled();
+		expect(result.current.transcribing).toBe(false);
+		expect(toast).toHaveBeenCalledWith("语音识别失败：语音服务离线", { kind: "error" });
 	});
 });

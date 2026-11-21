@@ -136,6 +136,14 @@ export function validateSettingsShape(input: unknown): ValidationResult {
 		out.mobileIpv6Port = port;
 	}
 
+	if ("mobileLanTlsPort" in raw) {
+		const port = raw.mobileLanTlsPort;
+		if (typeof port !== "number" || !Number.isInteger(port) || port < 1024 || port > 65535) {
+			return { ok: false, error: tNow("settingsCore.validation.lanTlsPortRange") };
+		}
+		out.mobileLanTlsPort = port;
+	}
+
 	if ("inboxWindowHours" in raw) {
 		const val = raw.inboxWindowHours;
 		if (typeof val !== "number" || !Number.isInteger(val) || val < 1 || val > 720) {

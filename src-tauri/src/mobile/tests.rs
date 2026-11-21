@@ -1934,3 +1934,896 @@ async fn sse_tree_navigated_maps_to_touch() {
     assert!(text.contains("\"sessionId\":\"a\""));
     h.shutdown.send(true).unwrap();
 }
+
+#[tokio::test]
+async fn bearer_and_cookie_csrf_rules_are_split_strictly() {
+    let h = harness();
+    let cookie = pair(&h).await;
+    let token = cookie.split_once('=').unwrap().1.to_string();
+    let bearer = format!("Bearer {token}");
+    let body_json = || Body::from(json!({"text":"hi"}).to_string());
+
+    // 1. Cookie + cross-origin → 403.
+    let req = Request::post("/api/sessions/a/prompt")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::HOST, "192.168.1.5:7788")
+        .header(header::ORIGIN, "https://evil.example")
+        .body(body_json())
+        .unwrap();
+    assert_eq!(call(&h, req).await.0, StatusCode::FORBIDDEN);
+
+    // 2. Bearer without auth cookie + stripped Origin/Referer → 200.
+    let req = Request::post("/api/sessions/a/prompt")
+        .header(header::AUTHORIZATION, &bearer)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::HOST, "192.168.1.5:7790")
+        .header(header::USER_AGENT, "Vecway-iOS/0.2.0 (iPhone)")
+        .body(body_json())
+        .unwrap();
+    assert_eq!(call(&h, req).await.0, StatusCode::OK);
+
+    // 3. Bearer without auth cookie + native WebView Origin (`vecway://app`) → 200.
+    let req = Request::post("/api/sessions/a/prompt")
+        .header(header::AUTHORIZATION, &bearer)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::HOST, "192.168.1.5:7790")
+        .header(header::ORIGIN, "vecway://app")
+        .body(body_json())
+        .unwrap();
+    assert_eq!(call(&h, req).await.0, StatusCode::OK);
+
+    // 4. Bearer without auth cookie + explicit Sec-Fetch-Site: cross-site → 403.
+    let req = Request::post("/api/sessions/a/prompt")
+        .header(header::AUTHORIZATION, &bearer)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("sec-fetch-site", "cross-site")
+        .body(body_json())
+        .unwrap();
+    assert_eq!(call(&h, req).await.0, StatusCode::FORBIDDEN);
+
+    // 5. Bearer WITH auth cookie + cross-origin Origin → 403 (strict CSRF preserved).
+    let req = Request::post("/api/sessions/a/prompt")
+        .header(header::AUTHORIZATION, &bearer)
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::HOST, "192.168.1.5:7790")
+        .header(header::ORIGIN, "https://evil.example")
+        .body(body_json())
+        .unwrap();
+    assert_eq!(call(&h, req).await.0, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn pairing_return_token_requires_https_preserves_code_and_supports_bearer_lifecycle() {
+    let h = harness();
+    let (code, _) = auth::create_pairing(&h.ctx.db.lock(), chrono::Utc::now()).unwrap();
+
+    // Plaintext HTTP POST /pair with returnToken: true → 403 JSON, NO Set-Cookie, code NOT consumed.
+    let plain_req = Request::post("/pair")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::USER_AGENT, "Vecway-iOS/0.2.0 (iPhone)")
+        .body(Body::from(
+            json!({"code": code, "returnToken": true}).to_string(),
+        ))
+        .unwrap();
+    let (status, headers, body) = call(&h, plain_req).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(!headers.contains_key(header::SET_COOKIE));
+    let err_json: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        err_json["error"].as_str(),
+        Some("App 令牌配对仅允许通过 HTTPS/TLS 连接")
+    );
+
+    // Same code over TLS succeeds with 200, Cache-Control: no-store, NO Set-Cookie, and {token, device}.
+    let tls_router = server::router(h.ctx.clone()).layer(axum::Extension(server::TlsConnection));
+    let tls_req = Request::post("/pair")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::USER_AGENT, "Vecway-iOS/0.2.0 (iPhone)")
+        .body(Body::from(
+            json!({"code": code, "name": "My iPhone", "returnToken": true}).to_string(),
+        ))
+        .unwrap();
+    let res = tls_router.clone().oneshot(tls_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()[header::CACHE_CONTROL], "no-store");
+    assert!(!res.headers().contains_key(header::SET_COOKIE));
+    let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let paired: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let token = paired["token"].as_str().expect("token string").to_string();
+    assert!(!token.is_empty());
+    assert_eq!(paired["device"]["name"].as_str(), Some("My iPhone"));
+    assert_eq!(
+        paired["device"]["userAgent"].as_str(),
+        Some("Vecway-iOS/0.2.0 (iPhone)")
+    );
+    let device_id = paired["device"]["id"]
+        .as_str()
+        .expect("device id")
+        .to_string();
+
+    // Reusing the same code over TLS returns 403 JSON (single-use).
+    let reuse_req = Request::post("/pair")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({"code": code, "returnToken": true}).to_string(),
+        ))
+        .unwrap();
+    let res = tls_router.clone().oneshot(reuse_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let reuse_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let reuse_json: Value = serde_json::from_slice(&reuse_bytes).unwrap();
+    assert!(reuse_json["error"].as_str().is_some_and(|s| !s.is_empty()));
+
+    // Missing code with returnToken: true over TLS returns 403 JSON.
+    let missing_req = Request::post("/pair")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"returnToken": true}).to_string()))
+        .unwrap();
+    let res = tls_router.oneshot(missing_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let missing_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let missing_json: Value = serde_json::from_slice(&missing_bytes).unwrap();
+    assert!(missing_json["error"]
+        .as_str()
+        .is_some_and(|s| !s.is_empty()));
+
+    // x-forwarded-proto: https (Cloudflare Tunnel) also permits returnToken: true.
+    let (tunnel_code, _) = auth::create_pairing(&h.ctx.db.lock(), chrono::Utc::now()).unwrap();
+    let tunnel_req = Request::post("/pair")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-forwarded-proto", "https")
+        .header(header::USER_AGENT, "Vecway-iOS/0.2.0 (iPad)")
+        .body(Body::from(
+            json!({"code": tunnel_code, "returnToken": true}).to_string(),
+        ))
+        .unwrap();
+    let (st, hdrs, bdy) = call(&h, tunnel_req).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hdrs[header::CACHE_CONTROL], "no-store");
+    assert!(!hdrs.contains_key(header::SET_COOKIE));
+    let tunnel_paired: Value = serde_json::from_str(&bdy).unwrap();
+    assert_eq!(tunnel_paired["device"]["name"].as_str(), Some("iPad"));
+
+    // Cloudflare CF-Visitor: {"scheme":"https"} or multi-hop x-forwarded-proto also permits returnToken: true.
+    let (cf_code, _) = auth::create_pairing(&h.ctx.db.lock(), chrono::Utc::now()).unwrap();
+    let cf_req = Request::post("/pair")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("cf-visitor", r#"{"scheme":"https"}"#)
+        .header(header::USER_AGENT, "Vecway-iOS/0.2.0 (iPhone)")
+        .body(Body::from(
+            json!({"code": cf_code, "returnToken": true}).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(call(&h, cf_req).await.0, StatusCode::OK);
+
+    // Returned Bearer token works on GET /api/device, POST /api/sessions/a/prompt, and GET /api/events SSE.
+    let bearer = format!("Bearer {token}");
+    let dev_req = Request::get("/api/device")
+        .header(header::AUTHORIZATION, &bearer)
+        .body(Body::empty())
+        .unwrap();
+    let (st, _, dev_body) = call(&h, dev_req).await;
+    assert_eq!(st, StatusCode::OK);
+    let dev_json: Value = serde_json::from_str(&dev_body).unwrap();
+    assert_eq!(dev_json["id"].as_str(), Some(device_id.as_str()));
+
+    let post_req = Request::post("/api/sessions/a/prompt")
+        .header(header::AUTHORIZATION, &bearer)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"text": "via bearer"}).to_string()))
+        .unwrap();
+    assert_eq!(call(&h, post_req).await.0, StatusCode::OK);
+
+    let sse_req = Request::get("/api/events")
+        .header(header::AUTHORIZATION, &bearer)
+        .body(Body::empty())
+        .unwrap();
+    let sse_res = server::router(h.ctx.clone())
+        .oneshot(sse_req)
+        .await
+        .unwrap();
+    assert_eq!(sse_res.status(), StatusCode::OK);
+    let mut sse_body = sse_res.into_body();
+    sse_body.frame().await.unwrap().unwrap();
+
+    // Revoking the device closes its SSE stream immediately and turns subsequent requests into 401.
+    let hash = auth::hash_token(&token);
+    assert_eq!(
+        auth::revoke_device(&h.ctx.db.lock(), &device_id).unwrap(),
+        Some(hash.clone())
+    );
+    auth::notify_revoked(&hash);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), sse_body.frame())
+            .await
+            .unwrap()
+            .is_none(),
+        "revoked Bearer SSE stream must close immediately"
+    );
+
+    let revoked_get = Request::get("/api/device")
+        .header(header::AUTHORIZATION, &bearer)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(call(&h, revoked_get).await.0, StatusCode::UNAUTHORIZED);
+
+    let revoked_post = Request::post("/api/sessions/a/prompt")
+        .header(header::AUTHORIZATION, &bearer)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"text": "after revoke"}).to_string()))
+        .unwrap();
+    assert_eq!(call(&h, revoked_post).await.0, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn pairing_without_return_token_preserves_web_cookie_behavior() {
+    let h = harness();
+    // JSON without returnToken → 204 + Set-Cookie.
+    let (code1, _) = auth::create_pairing(&h.ctx.db.lock(), chrono::Utc::now()).unwrap();
+    let req1 = Request::post("/pair")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"code": code1}).to_string()))
+        .unwrap();
+    let (status1, headers1, body1) = call(&h, req1).await;
+    assert_eq!(status1, StatusCode::NO_CONTENT);
+    assert!(headers1.contains_key(header::SET_COOKIE));
+    assert!(body1.is_empty());
+
+    // JSON with explicit returnToken: false → 204 + Set-Cookie.
+    let (code2, _) = auth::create_pairing(&h.ctx.db.lock(), chrono::Utc::now()).unwrap();
+    let req2 = Request::post("/pair")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({"code": code2, "returnToken": false}).to_string(),
+        ))
+        .unwrap();
+    let (status2, headers2, _) = call(&h, req2).await;
+    assert_eq!(status2, StatusCode::NO_CONTENT);
+    assert!(headers2.contains_key(header::SET_COOKIE));
+
+    // Form POST → 303 + Set-Cookie + Location: /.
+    let (code3, _) = auth::create_pairing(&h.ctx.db.lock(), chrono::Utc::now()).unwrap();
+    let (status3, headers3, _) = call(&h, pair_request(&code3)).await;
+    assert_eq!(status3, StatusCode::SEE_OTHER);
+    assert_eq!(headers3[header::LOCATION], "/");
+    assert!(headers3.contains_key(header::SET_COOKIE));
+}
+
+#[derive(Debug)]
+struct PinCaptureVerifier {
+    expected_sha256: String,
+    captured_sha256: Arc<Mutex<Option<String>>>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for PinCaptureVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let actual = super::tls::compute_fingerprint(end_entity.as_ref());
+        *self.captured_sha256.lock() = Some(actual.clone());
+        if actual == self.expected_sha256 {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General("certificate pin mismatch".into()))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+async fn tls_http_request(
+    addr: std::net::SocketAddr,
+    expected_sha256: &str,
+    raw_request: &str,
+) -> Result<(String, String, Option<String>), std::io::Error> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let captured = Arc::new(Mutex::new(None));
+    let verifier = Arc::new(PinCaptureVerifier {
+        expected_sha256: expected_sha256.to_string(),
+        captured_sha256: captured.clone(),
+    });
+    let client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .dangerous()
+    .with_custom_certificate_verifier(verifier)
+    .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+    let tcp = tokio::net::TcpStream::connect(addr).await?;
+    let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    let mut tls = connector.connect(server_name, tcp).await?;
+    tls.write_all(raw_request.as_bytes()).await?;
+    tls.flush().await?;
+    let mut buf = Vec::new();
+    match tls.read_to_end(&mut buf).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !buf.is_empty() => {}
+        Err(e) => return Err(e),
+    }
+    let response = String::from_utf8_lossy(&buf).to_string();
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .map(|(h, b)| (h.to_string(), b.to_string()))
+        .unwrap_or((response, String::new()));
+    let fp = captured.lock().clone();
+    Ok((head, body, fp))
+}
+
+#[tokio::test]
+async fn serve_tls_loopback_matches_cert_fingerprint_and_pairs_return_token() {
+    let h = harness();
+    let tls_dir = h.dir.join("mobile-tls");
+    let ident = super::tls::ensure_tls_identity_in(&tls_dir, None).unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(ident.server_config.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(server::serve_tls(listener, acceptor, h.ctx.clone()));
+
+    // Wrong certificate pin must fail the TLS handshake before any HTTP bytes are sent.
+    let wrong_pin = "00:".repeat(31) + "00";
+    let wrong_req = format!(
+        "GET /api/device HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        addr.port()
+    );
+    assert!(
+        tls_http_request(addr, &wrong_pin, &wrong_req)
+            .await
+            .is_err(),
+        "mismatched cert pin must abort TLS handshake"
+    );
+
+    // Matching pin succeeds: verify leaf DER SHA-256 == ident.cert_sha256 and POST /pair returnToken.
+    let (code, _) = auth::create_pairing(&h.ctx.db.lock(), chrono::Utc::now()).unwrap();
+    let pair_body = json!({"code": code, "returnToken": true}).to_string();
+    let pair_req = format!(
+        "POST /pair HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nUser-Agent: Vecway-iOS/0.2.0 (iPhone)\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        addr.port(),
+        pair_body.len(),
+        pair_body
+    );
+    let (head, body, peer_fp) = tls_http_request(addr, &ident.cert_sha256, &pair_req)
+        .await
+        .expect("pinned TLS pair request succeeds");
+    assert_eq!(peer_fp.as_deref(), Some(ident.cert_sha256.as_str()));
+    let head_lower = head.to_ascii_lowercase();
+    assert!(head_lower.starts_with("http/1.1 200"), "{head}");
+    assert!(
+        head_lower.lines().any(|l| l == "cache-control: no-store"),
+        "{head}"
+    );
+    assert!(!head_lower.contains("set-cookie:"), "{head}");
+    let paired: Value = serde_json::from_str(&body).expect("json body");
+    let token = paired["token"].as_str().expect("token");
+    let device_id = paired["device"]["id"].as_str().expect("device id");
+    assert_eq!(paired["device"]["name"].as_str(), Some("iPhone"));
+
+    // Subsequent authenticated request over real TLS with Authorization: Bearer works.
+    let dev_req = format!(
+        "GET /api/device HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+        addr.port(),
+        token
+    );
+    let (dev_head, dev_body, _) = tls_http_request(addr, &ident.cert_sha256, &dev_req)
+        .await
+        .expect("pinned TLS GET /api/device succeeds");
+    assert!(dev_head.to_ascii_lowercase().starts_with("http/1.1 200"));
+    let dev_json: Value = serde_json::from_str(&dev_body).expect("device json");
+    assert_eq!(dev_json["id"].as_str(), Some(device_id));
+
+    h.shutdown.send(true).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), server_task)
+        .await
+        .expect("tls server stops")
+        .unwrap();
+}
+
+#[test]
+fn pairing_url_encodes_dual_use_app_fragment_and_deep_link() {
+    use crate::contracts::PairingTarget;
+    use base64::Engine as _;
+
+    let fp = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+    let (dual, app) = super::build_pairing_urls(
+        "http://192.168.1.10:7788",
+        "CODE_abc-123",
+        PairingTarget::Lan,
+        Some("https://192.168.1.10:7790"),
+        Some(fp),
+        Some("https://[2408:4005::1]:7789"),
+        Some("https://demo.trycloudflare.com"),
+    );
+    let (prefix, encoded) = dual
+        .split_once("#app=")
+        .expect("dual-use URL has #app= fragment");
+    assert_eq!(prefix, "http://192.168.1.10:7788/pair?code=CODE_abc-123");
+    let raw_json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .expect("valid base64url_nopad");
+    let payload: Value = serde_json::from_slice(&raw_json).expect("compact JSON");
+    assert_eq!(
+        payload,
+        json!({
+            "v": 1,
+            "t": "lan",
+            "lt": "https://192.168.1.10:7790",
+            "fp": fp,
+            "v6": "https://[2408:4005::1]:7789",
+            "tn": "https://demo.trycloudflare.com"
+        })
+    );
+
+    let app_url = app.expect("app_url present");
+    assert!(app_url.starts_with("vecway://pair?v=1&code=CODE_abc-123&t=lan&"));
+    assert!(app_url.contains("&lt=https%3A%2F%2F192.168.1.10%3A7790"));
+    assert!(app_url.contains("&fp=AA%3ABB%3ACC"));
+    assert!(app_url.contains("&v6=https%3A%2F%2F%5B2408%3A4005%3A%3A1%5D%3A7789"));
+    assert!(app_url.contains("&tn=https%3A%2F%2Fdemo.trycloudflare.com"));
+
+    // Absent optional keys are omitted cleanly from both #app= JSON and vecway://pair.
+    let (dual_tn, app_tn) = super::build_pairing_urls(
+        "https://demo.trycloudflare.com/",
+        "T_CODE",
+        PairingTarget::Tunnel,
+        None,
+        None,
+        None,
+        Some("https://demo.trycloudflare.com"),
+    );
+    let (tn_prefix, tn_b64) = dual_tn.split_once("#app=").unwrap();
+    assert_eq!(tn_prefix, "https://demo.trycloudflare.com/pair?code=T_CODE");
+    let tn_payload: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(tn_b64)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        tn_payload,
+        json!({
+            "v": 1,
+            "t": "tunnel",
+            "tn": "https://demo.trycloudflare.com"
+        })
+    );
+    let app_tn = app_tn.unwrap();
+    assert_eq!(
+        app_tn,
+        "vecway://pair?v=1&code=T_CODE&t=tunnel&tn=https%3A%2F%2Fdemo.trycloudflare.com"
+    );
+
+    // IPv6 target sets t="ipv6" and omits absent tunnel.
+    let (dual_v6, app_v6) = super::build_pairing_urls(
+        "https://home.example.com:7789",
+        "V6_CODE",
+        PairingTarget::Ipv6,
+        Some("https://192.168.1.10:7790"),
+        Some(fp),
+        Some("https://home.example.com:7789"),
+        None,
+    );
+    let (_, v6_b64) = dual_v6.split_once("#app=").unwrap();
+    let v6_payload: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(v6_b64)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v6_payload["t"].as_str(), Some("ipv6"));
+    assert!(v6_payload.get("tn").is_none());
+    assert!(!app_v6.unwrap().contains("&tn="));
+
+    // No https:// channel (or insecure http:// candidate) omits #app= and app_url completely.
+    let (plain_only, no_app) = super::build_pairing_urls(
+        "http://192.168.1.10:7788",
+        "PLAIN",
+        PairingTarget::Lan,
+        Some("http://192.168.1.10:7790"),
+        Some(fp),
+        None,
+        None,
+    );
+    assert_eq!(plain_only, "http://192.168.1.10:7788/pair?code=PLAIN");
+    assert!(no_app.is_none());
+}
+
+async fn call_bytes(
+    h: &Harness,
+    req: Request<Body>,
+) -> (StatusCode, axum::http::HeaderMap, axum::body::Bytes) {
+    let res = server::router(h.ctx.clone()).oneshot(req).await.unwrap();
+    let status = res.status();
+    let headers = res.headers().clone();
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, body)
+}
+
+fn gunzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Read as _;
+    let mut dec = flate2::read::GzDecoder::new(bytes);
+    let mut out = Vec::new();
+    dec.read_to_end(&mut out).expect("valid gzip stream");
+    out
+}
+
+#[tokio::test]
+async fn gzip_compresses_large_json_and_static_js_with_vary_and_skips_q0_and_small() {
+    let h = harness();
+    let cookie = pair(&h).await;
+    let large_text = "vecway mobile gzip payload "
+        .repeat(120)
+        .trim_end()
+        .to_string();
+    let entry = json!({
+        "id": "e1",
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [{ "type": "text", "text": large_text }]
+        }
+    });
+    std::fs::write(&h.ctx.backend.file, format!("{entry}\n")).unwrap();
+
+    // Large JSON API response compresses when client accepts gzip.
+    let req = Request::get("/api/sessions/a/transcript")
+        .header(header::COOKIE, &cookie)
+        .header(header::ACCEPT_ENCODING, "deflate, gzip")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = call_bytes(&h, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_ENCODING], "gzip");
+    assert_eq!(headers[header::VARY], "Accept-Encoding");
+    assert_eq!(headers[header::CONTENT_LENGTH], body.len().to_string());
+    let plain = gunzip(&body);
+    assert!(body.len() < plain.len());
+    let page: Value = serde_json::from_slice(&plain).unwrap();
+    assert_eq!(page["items"][0]["text"].as_str(), Some(large_text.as_str()));
+
+    // `gzip;q=0` explicitly opts out of gzip while retaining Vary.
+    let q0_req = Request::get("/api/sessions/a/transcript")
+        .header(header::COOKIE, &cookie)
+        .header(header::ACCEPT_ENCODING, "gzip;q=0")
+        .body(Body::empty())
+        .unwrap();
+    let (q0_status, q0_headers, q0_body) = call_bytes(&h, q0_req).await;
+    assert_eq!(q0_status, StatusCode::OK);
+    assert!(!q0_headers.contains_key(header::CONTENT_ENCODING));
+    assert_eq!(q0_headers[header::VARY], "Accept-Encoding");
+    let q0_page: Value = serde_json::from_slice(&q0_body).unwrap();
+    assert_eq!(
+        q0_page["items"][0]["text"].as_str(),
+        Some(large_text.as_str())
+    );
+
+    // Small JSON responses (< 1024 bytes) skip gzip while still setting Vary.
+    let small_req = Request::get("/api/device")
+        .header(header::COOKIE, &cookie)
+        .header(header::ACCEPT_ENCODING, "gzip")
+        .body(Body::empty())
+        .unwrap();
+    let (small_status, small_headers, small_body) = call_bytes(&h, small_req).await;
+    assert_eq!(small_status, StatusCode::OK);
+    assert!(!small_headers.contains_key(header::CONTENT_ENCODING));
+    assert_eq!(small_headers[header::VARY], "Accept-Encoding");
+    assert!(small_body.len() < 1024);
+
+    // Static JS compresses via the same gzip middleware; binary assets are untouched.
+    let large_js = "export function mobileChunk() { return 'vecway-mobile'; }\n".repeat(60);
+    let large_js_expected = large_js.clone();
+    let static_app = axum::Router::new()
+        .route(
+            "/static/app.js",
+            axum::routing::get(move || {
+                let js = large_js.clone();
+                async move {
+                    (
+                        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                        js,
+                    )
+                }
+            }),
+        )
+        .route(
+            "/static/logo.png",
+            axum::routing::get(|| async {
+                ([(header::CONTENT_TYPE, "image/png")], vec![0x89u8; 2048])
+            }),
+        )
+        .layer(axum::middleware::from_fn(server::gzip_middleware));
+
+    let js_res = static_app
+        .clone()
+        .oneshot(
+            Request::get("/static/app.js")
+                .header(header::ACCEPT_ENCODING, "br, gzip;q=0.8")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(js_res.status(), StatusCode::OK);
+    assert_eq!(js_res.headers()[header::CONTENT_ENCODING], "gzip");
+    assert_eq!(js_res.headers()[header::VARY], "Accept-Encoding");
+    let js_cl = js_res.headers()[header::CONTENT_LENGTH]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let js_body = js_res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(js_cl, js_body.len().to_string());
+    assert!(js_body.len() < large_js_expected.len());
+    assert_eq!(gunzip(&js_body), large_js_expected.as_bytes());
+
+    let png_res = static_app
+        .oneshot(
+            Request::get("/static/logo.png")
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(png_res.status(), StatusCode::OK);
+    assert!(!png_res.headers().contains_key(header::CONTENT_ENCODING));
+    assert!(!png_res.headers().contains_key(header::VARY));
+    let png_body = png_res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(png_body.len(), 2048);
+}
+
+#[tokio::test]
+async fn gzip_never_compresses_or_buffers_sse_events() {
+    let h = harness();
+    let cookie = pair(&h).await;
+    let req = Request::get("/api/events")
+        .header(header::COOKIE, &cookie)
+        .header(header::ACCEPT_ENCODING, "gzip, deflate")
+        .body(Body::empty())
+        .unwrap();
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        server::router(h.ctx.clone()).oneshot(req),
+    )
+    .await
+    .expect("SSE response must return immediately without body buffering")
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()[header::CONTENT_TYPE], "text/event-stream");
+    assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+    assert!(!res.headers().contains_key(header::VARY));
+
+    let mut body = res.into_body();
+    let _ = h.ctx.backend.bus.send(AppEvent::TodosChanged);
+    let mut text = String::new();
+    while !text.contains("event: todos") {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(3), body.frame())
+            .await
+            .expect("live SSE frame without buffering")
+            .unwrap()
+            .unwrap();
+        if let Ok(data) = frame.into_data() {
+            text.push_str(&String::from_utf8_lossy(&data));
+        }
+    }
+    assert!(text.contains("event: hello"));
+    assert!(text.contains("event: todos"));
+
+    h.shutdown.send(true).unwrap();
+    let end = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while let Some(Ok(_)) = body.frame().await {}
+    })
+    .await;
+    assert!(end.is_ok(), "SSE stream ends cleanly on shutdown");
+}
+
+#[tokio::test]
+async fn transcript_tail_pagination_and_legacy_backwards_compatibility() {
+    let h = harness();
+    let cookie = pair(&h).await;
+
+    let line = |id: &str, role: &str, text: &str| {
+        format!(
+            "{}\n",
+            json!({
+                "id": id,
+                "type": "message",
+                "message": {
+                    "role": role,
+                    "content": [{ "type": "text", "text": text }]
+                }
+            })
+        )
+    };
+    let initial = [
+        line("e0", "user", "msg-0"),
+        line("h1", "developer", "hidden-system"),
+        line("e1", "assistant", "msg-1"),
+        line("e2", "user", "msg-2"),
+        line("e3", "assistant", "msg-3"),
+        line("e4", "user", "msg-4"),
+    ]
+    .concat();
+    std::fs::write(&h.ctx.backend.file, &initial).unwrap();
+    let initial_len = initial.len() as u64;
+
+    let item_ids = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Legacy call without `limit` returns all visible items without pagination metadata.
+    let (s, _, body) = call(&h, get("/api/sessions/a/transcript", Some(&cookie))).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let legacy: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(item_ids(&legacy), vec!["e0", "e1", "e2", "e3", "e4"]);
+    assert_eq!(legacy["nextOffset"].as_u64(), Some(initial_len));
+    assert_eq!(legacy["tailId"].as_str(), Some("e4"));
+    assert!(legacy.get("hasMore").is_none());
+    assert!(legacy.get("oldestIndex").is_none());
+    assert!(legacy.get("totalItems").is_none());
+
+    // Tail window (`?limit=2`) returns the last 2 visible items and keeps EOF `nextOffset`.
+    let (s, _, body) = call(&h, get("/api/sessions/a/transcript?limit=2", Some(&cookie))).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let p1: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(item_ids(&p1), vec!["e3", "e4"]);
+    assert_eq!(p1["hasMore"], json!(true));
+    assert_eq!(p1["oldestIndex"], json!(3));
+    assert_eq!(p1["totalItems"], json!(5));
+    assert_eq!(p1["nextOffset"].as_u64(), Some(initial_len));
+    assert_eq!(p1["tailId"].as_str(), Some("e4"));
+
+    // Load older page (`?before=3&limit=2`).
+    let (s, _, body) = call(
+        &h,
+        get("/api/sessions/a/transcript?before=3&limit=2", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let p2: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(item_ids(&p2), vec!["e1", "e2"]);
+    assert_eq!(p2["hasMore"], json!(true));
+    assert_eq!(p2["oldestIndex"], json!(1));
+    assert_eq!(p2["totalItems"], json!(5));
+
+    // Load final older page (`?before=1&limit=2`).
+    let (s, _, body) = call(
+        &h,
+        get("/api/sessions/a/transcript?before=1&limit=2", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let p3: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(item_ids(&p3), vec!["e0"]);
+    assert_eq!(p3["hasMore"], json!(false));
+    assert_eq!(p3["oldestIndex"], json!(0));
+    assert_eq!(p3["totalItems"], json!(5));
+
+    // `before=0` returns empty page cleanly.
+    let (s, _, body) = call(
+        &h,
+        get("/api/sessions/a/transcript?before=0&limit=2", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let p_empty: Value = serde_json::from_str(&body).unwrap();
+    assert!(item_ids(&p_empty).is_empty());
+    assert_eq!(p_empty["hasMore"], json!(false));
+    assert_eq!(p_empty["oldestIndex"], json!(0));
+    assert_eq!(p_empty["totalItems"], json!(5));
+
+    // Incremental append (`from > 0`) uses EOF `nextOffset` and ignores `limit`.
+    let appended = line("e5", "assistant", "msg-5");
+    std::fs::write(&h.ctx.backend.file, format!("{initial}{appended}")).unwrap();
+    let (s, _, body) = call(
+        &h,
+        get(
+            &format!("/api/sessions/a/transcript?from={initial_len}&tail=e4&limit=2"),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let inc: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(item_ids(&inc), vec!["e5"]);
+    assert_eq!(inc["reset"], json!(false));
+    assert_eq!(inc["tailId"].as_str(), Some("e5"));
+    assert_eq!(
+        inc["nextOffset"].as_u64(),
+        Some(initial_len + appended.len() as u64)
+    );
+    assert!(inc.get("hasMore").is_none());
+}
+
+#[test]
+fn tls_server_config_advertises_h2_and_http11_alpn() {
+    let dir = std::env::temp_dir().join(format!("omp-tls-alpn-{}", uuid::Uuid::new_v4()));
+    let ident = super::tls::ensure_tls_identity_in(&dir, None).unwrap();
+    assert_eq!(
+        ident.server_config.alpn_protocols,
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pairing_url_includes_lan_tls_and_fingerprint_for_tunnel_target_and_trims_slashes() {
+    use crate::contracts::PairingTarget;
+    use base64::Engine as _;
+
+    let fp = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+    let (dual, app) = super::build_pairing_urls(
+        "https://demo.trycloudflare.com/",
+        "TN_CODE",
+        PairingTarget::Tunnel,
+        Some("https://192.168.1.10:7790/"),
+        Some(fp),
+        None,
+        Some("https://demo.trycloudflare.com/"),
+    );
+    let (_, encoded) = dual.split_once("#app=").expect("dual URL has #app=");
+    let payload: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        payload,
+        json!({
+            "v": 1,
+            "t": "tunnel",
+            "lt": "https://192.168.1.10:7790",
+            "fp": fp,
+            "tn": "https://demo.trycloudflare.com"
+        })
+    );
+    let app_url = app.expect("app URL present");
+    assert!(app_url.contains("&lt=https%3A%2F%2F192.168.1.10%3A7790"));
+    assert!(app_url.contains("&fp=AA%3ABB%3ACC"));
+    assert!(app_url.contains("&tn=https%3A%2F%2Fdemo.trycloudflare.com"));
+}

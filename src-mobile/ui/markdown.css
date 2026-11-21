@@ -53,10 +53,11 @@
 	font-size: 0.86em;
 }
 .m-md :not(pre) > code {
-	padding: 0.15em 0.45em;
+	padding: 0.14em 0.44em;
 	border-radius: 6px;
 	background: var(--m-inline-code-bg);
 	color: var(--m-inline-code-text);
+	border: 1px solid var(--m-border);
 	overflow-wrap: anywhere;
 }
 .m-md pre code { font-size: inherit; }

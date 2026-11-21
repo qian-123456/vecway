@@ -1,22 +1,22 @@
-import { Camera, FolderOpen, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, Target } from "lucide-react";
+import { Camera, ChevronDown, Folder, FolderOpen, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, Target } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage } from "../../core/api";
+import { baseName } from "../../core/lib/format";
 import { nav, paths, type PageProps } from "../../core/nav";
 import { useSessions } from "../../core/stores/sessions";
 import { AppMark, BottomSheet, MenuRow, Switch, toast } from "../../ui";
+import { ActionTile } from "../../ui/ActionTile";
 import { ChatHeader } from "../chat/components/ChatHeader";
-import { ActionTile } from "../chat/components/Composer";
 import { ComposerCapsule, type ComposerApi } from "../chat/components/ComposerCapsule";
+import { useKeyboardOpen } from "../chat/components/ComposerToolbar";
 import { ModelThinkingSheet } from "../chat/components/ModelThinkingSheet";
 import type { ModelSource } from "../chat/components/useModelFacts";
 import { draftBook, queueComposerAction, queueFirstSend, type ComposerAction } from "../chat/lib/drafts";
 import { parseModelRef, type ModelFacts, type ModelOpt } from "../chat/lib/models";
 import { MenuSheet } from "./MenuSheet";
 import { abbreviateHomePath, NewSessionSheet, setCachedHomeDir } from "./NewSessionSheet";
-import { startTodosSync } from "./todos";
-import { startTreeSync, useTree } from "./treeStore";
+import { useTree } from "./treeStore";
 import type { DirEntry } from "./tree";
-
 export function HomePage(_props: PageProps) {
 	const [newOpen, setNewOpen] = useState(false);
 	const [menuOpen, setMenuOpen] = useState(false);
@@ -24,6 +24,7 @@ export function HomePage(_props: PageProps) {
 	const [modelOpen, setModelOpen] = useState(false);
 	const [sending, setSending] = useState(false);
 	const mode = useTree((s) => s.mode);
+	const kbOpen = useKeyboardOpen();
 	const [directoryOpen, setDirectoryOpen] = useState(false);
 	const [directory, setDirectory] = useState<DirEntry | null>(null);
 	const [homeDir, setHomeDir] = useState<string | null>(null);
@@ -57,16 +58,6 @@ export function HomePage(_props: PageProps) {
 			return next;
 		},
 	}), []);
-
-	useEffect(() => {
-		void useTree.getState().load();
-		const offTree = startTreeSync();
-		const offTodos = startTodosSync();
-		return () => {
-			offTree();
-			offTodos();
-		};
-	}, []);
 
 	useEffect(() => {
 		let alive = true;
@@ -152,22 +143,41 @@ export function HomePage(_props: PageProps) {
 		} finally { submitting.current = false; setSending(false); }
 	};
 
+	const dirName = directory ? directory.label || baseName(directory.path) : directoryError ? "目录加载失败" : "选择工作目录";
+	const dirSub = directory ? abbreviateHomePath(directory.path, homeDir) : directoryError ? "点击重试或切换目录" : "点击选择项目目录";
+
 	return (
 		<div className="relative flex min-h-0 flex-1 flex-col bg-m-bg">
-			<div className="pointer-events-none absolute inset-0" style={{ background: "var(--m-glow)" }} aria-hidden />
 			<ChatHeader
-				title="新对话"
-				subtitle={directory ? abbreviateHomePath(directory.path, homeDir) : directoryError ? "目录加载失败，点击重试" : "选择当前目录"}
-				ariaLabel={directory ? `当前目录：${directory.path}，点击切换` : "选择当前目录"}
-				onTitleClick={() => setDirectoryOpen(true)}
+				title="Vecway"
 				onMenu={() => setMenuOpen(true)}
 				onNew={() => setNewOpen(true)}
 			/>
-			<div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-5 pb-12 text-center">
-				<AppMark size={40} />
-				<h1 className="text-m-display font-normal text-m-text">今天想做点什么？</h1>
+			<div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 pb-8 text-center">
+				<div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-m-border bg-m-card shadow-m-card">
+					<AppMark size={30} />
+				</div>
+				<button
+					type="button"
+					aria-label={directory ? `当前目录：${directory.path}，点击切换` : "选择当前目录"}
+					onClick={() => setDirectoryOpen(true)}
+					className="flex min-h-11 max-w-[min(100%,320px)] items-center gap-2.5 rounded-m-pill border border-m-border bg-m-card px-4 py-2 text-left shadow-m-card transition-colors duration-(--m-dur-fast) active:bg-m-surface"
+				>
+					<Folder size={16} strokeWidth={1.85} className="shrink-0 text-m-text-2" aria-hidden />
+					<span className="min-w-0 flex-1">
+						<span className="block truncate text-m-sm font-medium text-m-text">{dirName}</span>
+						<span className="block truncate font-m-mono text-[11px] leading-tight text-m-text-3">{dirSub}</span>
+					</span>
+					<ChevronDown size={15} strokeWidth={2} className="shrink-0 text-m-text-3" aria-hidden />
+				</button>
 			</div>
-			<div className="relative shrink-0 px-4" style={{ paddingBottom: "max(12px, var(--m-safe-bottom))" }}>
+			<div
+				className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3.5 pt-2"
+				style={{
+					paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)",
+					transition: "padding-bottom var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1)",
+				}}
+			>
 				<ComposerCapsule
 					apiRef={apiRef}
 					placeholder="今天想做点什么？"
@@ -178,7 +188,6 @@ export function HomePage(_props: PageProps) {
 					thinking={facts.thinkingLevel}
 					onModel={() => setModelOpen(true)}
 					onThinking={() => setModelOpen(true)}
-					contextText="0%"
 				/>
 			</div>
 			<input ref={fileRef} type="file" multiple hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) void openAction(undefined, files); }} />

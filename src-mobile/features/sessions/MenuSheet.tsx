@@ -1,12 +1,22 @@
-import { Bell, Check, Clock, Filter, Gauge, Lightbulb, Search, Settings, SquarePen, X } from "lucide-react";
+import { Bell, ChevronRight, Clock, Gauge, Lightbulb, Search, Settings, SquarePen, Wifi, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
-import { api } from "../../core/api";
-import { events } from "../../core/sse";
+import { api, errorMessage } from "../../core/api";
+import {
+	NATIVE_CHANNEL_LABEL,
+	getNativeBridge,
+	isNativeApp,
+	nativeHaptic,
+	notifyNativeConnectionStatus,
+	subscribeNativeConnectionStatus,
+	type NativeEndpointStatus,
+} from "../../core/nativeBridge";
 import { nav, paths } from "../../core/nav";
-import { AppMark, IconButton } from "../../ui";
+import { events, reconnectEvents } from "../../core/sse";
+import { AppMark, IconButton, toast } from "../../ui";
 import { useOverlay, usePresence } from "../../ui/overlay";
+import { ConnectionSheet, type MobileInfo } from "../settings/sheets/ConnectionSheet";
 import { useSessionActions } from "./ActionSheets";
 import { ChronologicalView } from "./ChronologicalView";
 import { inboxCount, type InboxData } from "./inbox";
@@ -23,82 +33,39 @@ const VIEW_OPTIONS = [
 	{ value: "time", label: "按时间" },
 ] as const;
 
-function ViewModeFilter({
+function ViewModeSegment({
 	value,
 	onChange,
 }: {
 	value: LeftNavViewMode;
 	onChange: (v: LeftNavViewMode) => void;
 }) {
-	const [open, setOpen] = useState(false);
-	const ref = useRef<HTMLDivElement>(null);
-
-	useEffect(() => {
-		if (!open) return;
-		const dismiss = (e: PointerEvent) => {
-			if (!ref.current?.contains(e.target as Node)) setOpen(false);
-		};
-		const key = (e: KeyboardEvent) => {
-			if (e.key === "Escape") {
-				e.stopImmediatePropagation();
-				setOpen(false);
-				ref.current?.querySelector<HTMLButtonElement>("button")?.focus();
-			}
-		};
-		document.addEventListener("pointerdown", dismiss);
-		document.addEventListener("keydown", key, true);
-		return () => {
-			document.removeEventListener("pointerdown", dismiss);
-			document.removeEventListener("keydown", key, true);
-		};
-	}, [open]);
-
-	const currentLabel = value === "project" ? "按项目" : "按时间";
-
 	return (
-		<div ref={ref} className="relative ml-auto shrink-0">
-			<button
-				type="button"
-				aria-haspopup="menu"
-				aria-expanded={open}
-				aria-label={`视图筛选，当前：${currentLabel}，点击切换`}
-				title={`视图：${currentLabel}`}
-				onClick={() => setOpen((v) => !v)}
-				className="flex min-h-11 min-w-11 items-center justify-center px-1 text-m-text"
-			>
-				<Filter size={17} strokeWidth={1.75} />
-			</button>
-			{open && (
-				<div
-					role="menu"
-					aria-label="切换视图"
-					className="absolute right-1 top-full z-(--z-banner) mt-1 w-36 rounded-m-lg border border-m-border bg-m-bg/95 backdrop-blur-xl p-1.5 shadow-lg"
-				>
-					<div className="px-2 py-1 text-m-xs text-m-text-3">切换视图</div>
-					{VIEW_OPTIONS.map((opt) => (
-						<button
-							key={opt.value}
-							type="button"
-							role="menuitemradio"
-							aria-checked={value === opt.value}
-							onClick={() => {
-								onChange(opt.value);
-								setOpen(false);
-							}}
-							className={`flex min-h-10 w-full items-center justify-between gap-2 rounded-m-md px-2.5 text-left text-m-sm whitespace-nowrap active:bg-m-surface-hover ${
-								value === opt.value ? "bg-m-surface font-medium text-m-accent" : "text-m-text-2"
-							}`}
-						>
-							<span>{opt.label}</span>
-							{value === opt.value && <Check size={16} className="text-m-accent" />}
-						</button>
-					))}
-				</div>
-			)}
+		<div
+			role="radiogroup"
+			aria-label="切换视图"
+			className="ml-auto inline-flex shrink-0 items-center rounded-m-pill bg-m-surface p-0.5"
+		>
+			{VIEW_OPTIONS.map((opt) => {
+				const active = value === opt.value;
+				return (
+					<button
+						key={opt.value}
+						type="button"
+						role="radio"
+						aria-checked={active}
+						onClick={() => onChange(opt.value)}
+						className={`min-h-8 rounded-m-pill px-2.5 text-m-xs whitespace-nowrap transition-colors duration-(--m-dur-fast) ${
+							active ? "bg-m-segment-on font-medium text-m-text shadow-xs" : "text-m-text-2"
+						}`}
+					>
+						{opt.label}
+					</button>
+				);
+			})}
 		</div>
 	);
 }
-
 const ANIM_MS = 300;
 /** Horizontal swipe distance (px) or flick velocity (px/ms) that closes the drawer. */
 const SWIPE_CLOSE_PX = 90;
@@ -121,8 +88,13 @@ export function MenuSheet({
 }) {
 	const { mounted, visible } = usePresence(open, ANIM_MS);
 	useOverlay(open, onClose);
+	const native = isNativeApp();
 	const [viewMode, setViewMode] = useState<LeftNavViewMode>("project");
 	const [inbox, setInbox] = useState<InboxData | null>(null);
+	const [nativeStatus, setNativeStatus] = useState<NativeEndpointStatus | null>(null);
+	const [switchingLan, setSwitchingLan] = useState(false);
+	const [connOpen, setConnOpen] = useState(false);
+	const [mobileInfo, setMobileInfo] = useState<MobileInfo>({});
 	const todos = useTodos((s) => s.todos);
 	const openSession = useCallback((s: TreeSession) => {
 		onClose();
@@ -171,6 +143,63 @@ export function MenuSheet({
 			offTodos();
 		};
 	}, [open]);
+
+	useEffect(() => {
+		if (!open || !native) return;
+		const bridge = getNativeBridge();
+		if (!bridge) return;
+		let active = true;
+		void bridge
+			.getConnectionStatus()
+			.then((status) => {
+				if (active) setNativeStatus(status);
+			})
+			.catch(() => {});
+		const unsub = subscribeNativeConnectionStatus((status) => {
+			if (active) setNativeStatus(status);
+		});
+		return () => {
+			active = false;
+			unsub();
+		};
+	}, [open, native]);
+
+	useEffect(() => {
+		if (!connOpen || !native) return;
+		let active = true;
+		void api<{ mobile?: MobileInfo }>("GET", "/left/settings")
+			.then((res) => {
+				if (active && res?.mobile) setMobileInfo(res.mobile);
+			})
+			.catch(() => {});
+		return () => {
+			active = false;
+		};
+	}, [connOpen, native]);
+
+	const quickSwitchToLan = async () => {
+		const bridge = getNativeBridge();
+		if (!bridge?.switchChannel || switchingLan) return;
+		setSwitchingLan(true);
+		try {
+			const next = await bridge.switchChannel("lan_tls");
+			setNativeStatus(next);
+			notifyNativeConnectionStatus(next);
+			if (next.paired && !next.pinMismatch) reconnectEvents();
+			nativeHaptic(next.activeChannel === "lan_tls" ? "success" : "warning");
+			toast(
+				next.activeChannel === "lan_tls"
+					? "已切换至局域网直连"
+					: "未检测到局域网直连，请确认与电脑在同一 Wi-Fi",
+				{ kind: next.activeChannel === "lan_tls" ? "success" : "info" },
+			);
+		} catch (e) {
+			nativeHaptic("error");
+			toast(`切换失败：${errorMessage(e)}`, { kind: "error" });
+		} finally {
+			setSwitchingLan(false);
+		}
+	};
 
 	if (!mounted) return null;
 
@@ -253,14 +282,14 @@ export function MenuSheet({
 				onTouchMove={onTouchMove}
 				onTouchEnd={onTouchEnd}
 				onTouchCancel={resetSwipe}
-				className={`absolute inset-y-0 left-0 flex w-full touch-pan-y flex-col bg-m-bg text-m-text outline-none transition-transform duration-300 ease-m-sheet ${
+				className={`absolute inset-y-0 left-0 flex w-[85vw] max-w-[340px] touch-pan-y flex-col border-r border-m-border bg-m-drawer-bg text-m-text shadow-m-pop outline-none transition-transform duration-300 ease-m-sheet ${
 					visible ? "translate-x-0" : "-translate-x-full"
 				}`}
 				style={{ paddingTop: "var(--m-safe-top)", paddingBottom: "calc(var(--m-safe-bottom) + 6px)" }}
 			>
-				<header className="flex h-12 shrink-0 items-center gap-2 px-3">
+				<header className="flex h-13 shrink-0 items-center gap-2 px-3">
 					<AppMark size={24} />
-					<span className="min-w-0 flex-1 text-m-md font-medium whitespace-nowrap">OMP</span>
+					<span className="min-w-0 flex-1 text-m-md font-semibold tracking-[-0.01em] whitespace-nowrap">Vecway</span>
 					<IconButton variant="plain" size="sm" icon={<Search {...I} />} label="搜索会话" onClick={() => go(paths.search())} />
 					<div className="relative">
 						<IconButton variant="plain" size="sm" icon={<Bell {...I} />} label={badge > 0 ? `收件箱，${badge} 项待处理` : "收件箱"} onClick={() => go(paths.inbox())} />
@@ -270,40 +299,39 @@ export function MenuSheet({
 				</header>
 
 				<div className="shrink-0">
-					<div className="flex flex-wrap gap-1 px-3">
+					<div className="flex flex-wrap gap-1.5 px-3 pb-1">
 						<button
 							type="button"
 							onClick={() => {
 								onClose();
 								onNewSession?.();
 							}}
-							className="flex min-h-11 w-full items-center gap-2.5 rounded-m-md bg-m-surface px-3 text-left text-m-md text-m-text transition-colors duration-(--m-dur-fast) active:bg-m-surface-2"
+							className="flex min-h-11 w-full items-center gap-2.5 rounded-m-md border border-m-border bg-m-card px-3.5 text-left text-m-md font-medium text-m-text shadow-m-card transition-colors duration-(--m-dur-fast) active:bg-m-surface"
 						>
-							<SquarePen {...I} size={20} className="shrink-0 text-m-text-2" />
+							<SquarePen {...I} size={19} className="shrink-0 text-m-accent" />
 							<span className="whitespace-nowrap">发起新对话</span>
 						</button>
 						<button
 							type="button"
 							onClick={() => go(paths.schedules())}
-							className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-m-md px-2 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+							className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-m-md border border-m-border/70 bg-m-bg-elev/70 px-2.5 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
 						>
-							<Clock {...I} size={18} className="shrink-0 text-m-text-2" />
+							<Clock {...I} size={17} className="shrink-0 text-m-text-2" />
 							<span className="whitespace-nowrap">自动化</span>
 						</button>
-						<span aria-hidden="true" className="my-auto h-5 w-px shrink-0 bg-m-border" />
 						<button
 							type="button"
 							onClick={() => go(paths.ideas())}
-							className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-m-md px-2 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+							className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-m-md border border-m-border/70 bg-m-bg-elev/70 px-2.5 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
 						>
-							<Lightbulb {...I} size={18} className="shrink-0 text-m-text-2" />
+							<Lightbulb {...I} size={17} className="shrink-0 text-m-text-2" />
 							<span className="whitespace-nowrap">灵感收件箱</span>
 						</button>
 					</div>
 
-					<div className="flex flex-wrap items-center gap-x-2 px-3 py-1">
+					<div className="flex items-center gap-2 px-3 py-1.5">
 						<ModeSwitch />
-						<ViewModeFilter value={viewMode} onChange={setViewMode} />
+						<ViewModeSegment value={viewMode} onChange={setViewMode} />
 					</div>
 				</div>
 				<div className="m-noscrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
@@ -315,6 +343,37 @@ export function MenuSheet({
 					)}
 				</div>
 
+				{native && nativeStatus?.paired && (
+					<div className="flex shrink-0 items-center gap-2 border-t border-m-border px-3 py-2">
+						<button
+							type="button"
+							aria-label="切换连接方式"
+							onClick={() => setConnOpen(true)}
+							className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-m-md px-2 text-left text-m-xs text-m-text-2 active:bg-m-surface-hover"
+						>
+							<span
+								aria-hidden="true"
+								className={`h-2 w-2 shrink-0 rounded-full ${nativeStatus.activeChannel ? "bg-m-success" : "bg-m-warn"}`}
+							/>
+							<Wifi size={14} strokeWidth={1.85} className="shrink-0 text-m-text-3" aria-hidden />
+							<span className="min-w-0 flex-1 truncate text-m-text">
+								{nativeStatus.activeChannel ? NATIVE_CHANNEL_LABEL[nativeStatus.activeChannel] : "未连接"}
+							</span>
+							<ChevronRight size={14} className="shrink-0 text-m-text-3" aria-hidden />
+						</button>
+						{nativeStatus.candidates.lanTls && nativeStatus.certSha256 && nativeStatus.activeChannel === "tunnel" && (
+							<button
+								type="button"
+								disabled={switchingLan}
+								onClick={() => void quickSwitchToLan()}
+								className="min-h-8 shrink-0 rounded-m-pill bg-m-accent-soft px-3 text-m-xs font-medium whitespace-nowrap text-m-accent-soft-text active:opacity-80 disabled:opacity-40"
+							>
+								{switchingLan ? "切换中" : "切回局域网"}
+							</button>
+						)}
+					</div>
+				)}
+
 				<nav aria-label="更多入口" className="flex shrink-0 items-center border-t border-m-border px-3">
 					<button type="button" onClick={() => go(paths.settings())} className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-m-md px-2 text-m-sm text-m-text-2 active:bg-m-surface-hover"><Settings size={18} strokeWidth={1.75} />设置</button>
 					<span aria-hidden="true" className="h-5 w-px shrink-0 bg-m-border" />
@@ -322,6 +381,7 @@ export function MenuSheet({
 				</nav>
 			</div>
 			{node}
+			{native && <ConnectionSheet open={connOpen} onClose={() => setConnOpen(false)} mobile={mobileInfo} />}
 		</div>,
 		document.body,
 	);

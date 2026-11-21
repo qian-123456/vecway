@@ -1,3 +1,4 @@
+export { ActionTile } from "./ActionTile";
 export { AppMark } from "./AppMark";
 export { BottomSheet } from "./BottomSheet";
 export { Button } from "./Button";
@@ -16,13 +17,7 @@ export type { IconButtonVariant } from "./IconButton";
 export { ImageViewerHost, openImage } from "./ImageViewer";
 export type { ViewerImage } from "./ImageViewer";
 export { ListGroup, ListRow, MenuRow } from "./ListRow";
-export { Markdown, safeHref, safeSrc } from "./Markdown";
-export type { MarkdownProps } from "./Markdown";
-export { MermaidBlock } from "./MermaidBlock";
-export { VisualizeBlock } from "./visualize";
-export type { VisualizeBlockProps } from "./visualize";
 export { PageHeader, TopBar } from "./PageHeader";
-export { placeholderPage } from "./PlaceholderPage";
 export { PULL_THRESHOLD, PullToRefresh, pullDistance } from "./PullToRefresh";
 export { Spinner } from "./Spinner";
 export { toast, ToastHost } from "./Toast";

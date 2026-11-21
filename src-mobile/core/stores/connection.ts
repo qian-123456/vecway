@@ -8,6 +8,8 @@ interface ConnectionState {
 	error: string | null;
 	setPhase: (phase: ConnectionPhase, error?: string | null) => void;
 	setError: (error: string | null) => void;
+	/** Explicit reset after in-place re-pairing; the only transition out of "unauthorized". */
+	reset: () => void;
 }
 
 export const useConnection = create<ConnectionState>((set, get) => ({
@@ -22,6 +24,9 @@ export const useConnection = create<ConnectionState>((set, get) => ({
 	setError: (error) => {
 		if (get().phase === "unauthorized") return;
 		if (get().error !== error) set({ error });
+	},
+	reset: () => {
+		set({ phase: "idle", error: null });
 	},
 }));
 

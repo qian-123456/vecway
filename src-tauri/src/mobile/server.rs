@@ -2,17 +2,20 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::io::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Body;
+use axum::body::{Body, HttpBody as _};
 use axum::extract::{Form, FromRequest, Path, Query, Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use futures_util::stream::{self, Stream, StreamExt as _};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
@@ -145,6 +148,127 @@ pub fn router<B: Backend>(ctx: Arc<Ctx<B>>) -> Router {
         .route("/sw.js", get(service_worker))
         .nest("/api", api)
         .with_state(ctx)
+        .layer(middleware::from_fn(gzip_middleware))
+}
+
+/// Minimum payload size in bytes before applying gzip compression.
+const GZIP_MIN_BYTES: usize = 1024;
+
+/// True when `Accept-Encoding` advertises `gzip` with a positive quality value.
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    for raw in headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+    {
+        for item in raw.split(',') {
+            let mut parts = item.split(';');
+            let coding = parts.next().map_or("", str::trim);
+            if !coding.eq_ignore_ascii_case("gzip") {
+                continue;
+            }
+            let mut allowed = true;
+            for param in parts {
+                let Some((k, v)) = param.split_once('=') else {
+                    continue;
+                };
+                if k.trim().eq_ignore_ascii_case("q")
+                    && !v.trim().parse::<f32>().is_ok_and(|q| q > 0.0)
+                {
+                    allowed = false;
+                    break;
+                }
+            }
+            if allowed {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True for finite text/JSON/JS/CSS/SVG/manifest payloads; explicitly excludes SSE.
+fn is_compressible_content_type(headers: &HeaderMap) -> bool {
+    let Some(ct) = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let mime = ct.split(';').next().map_or("", str::trim);
+    if mime.eq_ignore_ascii_case("text/event-stream") {
+        return false;
+    }
+    mime.eq_ignore_ascii_case("text/html")
+        || mime.eq_ignore_ascii_case("text/css")
+        || mime.eq_ignore_ascii_case("text/javascript")
+        || mime.eq_ignore_ascii_case("application/javascript")
+        || mime.eq_ignore_ascii_case("application/json")
+        || mime.eq_ignore_ascii_case("image/svg+xml")
+        || mime.eq_ignore_ascii_case("application/manifest+json")
+        || mime.eq_ignore_ascii_case("text/plain")
+}
+
+fn append_vary_accept_encoding(headers: &mut HeaderMap) {
+    let already_present = headers
+        .get_all(header::VARY)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|s| s.split(','))
+        .map(str::trim)
+        .any(|token| token == "*" || token.eq_ignore_ascii_case("accept-encoding"));
+    if !already_present {
+        headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    }
+}
+
+pub(crate) async fn gzip_middleware(req: Request, next: Next) -> Response {
+    let client_accepts_gzip = accepts_gzip(req.headers());
+    let is_head = req.method() == axum::http::Method::HEAD;
+    let mut res = next.run(req).await;
+
+    if !is_compressible_content_type(res.headers()) {
+        return res;
+    }
+
+    append_vary_accept_encoding(res.headers_mut());
+
+    if is_head || !client_accepts_gzip || res.headers().contains_key(header::CONTENT_ENCODING) {
+        return res;
+    }
+
+    if res
+        .body()
+        .size_hint()
+        .exact()
+        .is_some_and(|n| n < GZIP_MIN_BYTES as u64)
+    {
+        return res;
+    }
+
+    let (mut parts, body) = res.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
+        return Response::from_parts(parts, Body::empty());
+    };
+    if bytes.len() < GZIP_MIN_BYTES {
+        return Response::from_parts(parts, Body::from(bytes));
+    }
+
+    let mut encoder = GzEncoder::new(Vec::with_capacity(bytes.len() / 2), Compression::fast());
+    if encoder.write_all(&bytes).is_err() {
+        return Response::from_parts(parts, Body::from(bytes));
+    }
+    let Ok(compressed) = encoder.finish() else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+
+    parts
+        .headers
+        .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    parts
+        .headers
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(compressed.len()));
+    Response::from_parts(parts, Body::from(compressed))
 }
 
 async fn static_asset(Path(path): Path<String>) -> Response {
@@ -217,6 +341,28 @@ fn origin_matches(expected_auth: &str, expected_scheme: &str, url: &str) -> bool
         && effective_port(actual_port, scheme) == effective_port(exp_port, expected_scheme)
 }
 
+/// True when the request arrived over native TLS or an HTTPS-terminating proxy
+/// (`X-Forwarded-Proto: https` or Cloudflare `CF-Visitor: {"scheme":"https"}`).
+fn is_https_request(headers: &HeaderMap, is_tls: bool) -> bool {
+    if is_tls {
+        return true;
+    }
+    if headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.split(',').next())
+        .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"))
+    {
+        return true;
+    }
+    headers
+        .get("cf-visitor")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|v| v.get("scheme").and_then(|s| s.as_str()).map(str::to_owned))
+        .is_some_and(|s| s.eq_ignore_ascii_case("https"))
+}
+
 pub(crate) fn verify_csrf(headers: &HeaderMap, is_tls: bool) -> Result<(), ApiError> {
     if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
         if site.eq_ignore_ascii_case("cross-site") {
@@ -234,12 +380,7 @@ pub(crate) fn verify_csrf(headers: &HeaderMap, is_tls: bool) -> Result<(), ApiEr
         .map(str::trim);
     // The expected side's scheme comes from the connection itself, not from a
     // spoofable header: TLS here, or a trusted proxy's forwarded proto.
-    let expected_scheme = if is_tls
-        || headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|p| p.eq_ignore_ascii_case("https"))
-    {
+    let expected_scheme = if is_https_request(headers, is_tls) {
         "https"
     } else {
         "http"
@@ -287,19 +428,17 @@ async fn require_auth<B: Backend>(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let (token, device_id) = match auth::token_from_headers(req.headers()) {
-        Some(t) => {
-            let db = ctx.db.lock();
-            match auth::authenticate(&db, &t, chrono::Utc::now()) {
-                Some(id) => (t, id),
-                None => {
-                    return ApiError(StatusCode::UNAUTHORIZED, "未配对或已被撤销".into())
-                        .into_response()
-                }
+    let Some(source) = auth::auth_from_headers(req.headers()) else {
+        return ApiError(StatusCode::UNAUTHORIZED, "未配对或已被撤销".into()).into_response();
+    };
+    let device_id = {
+        let db = ctx.db.lock();
+        match auth::authenticate(&db, source.token(), chrono::Utc::now()) {
+            Some(id) => id,
+            None => {
+                return ApiError(StatusCode::UNAUTHORIZED, "未配对或已被撤销".into())
+                    .into_response()
             }
-        }
-        None => {
-            return ApiError(StatusCode::UNAUTHORIZED, "未配对或已被撤销".into()).into_response()
         }
     };
     // Every state-changing verb (the web app also uses PUT/PATCH/DELETE), not just POST.
@@ -307,12 +446,28 @@ async fn require_auth<B: Backend>(
         *req.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
     ) {
-        let is_tls = req.extensions().get::<TlsConnection>().is_some();
-        if let Err(err) = verify_csrf(req.headers(), is_tls) {
-            return err.into_response();
+        let bearer_only =
+            matches!(source, auth::AuthSource::Bearer(_)) && !auth::has_auth_cookie(req.headers());
+        if bearer_only {
+            if let Some(site) = req
+                .headers()
+                .get("sec-fetch-site")
+                .and_then(|v| v.to_str().ok())
+            {
+                if site.eq_ignore_ascii_case("cross-site") {
+                    return ApiError(StatusCode::FORBIDDEN, "禁止跨站请求 (CSRF)".into())
+                        .into_response();
+                }
+            }
+        } else {
+            let is_tls = req.extensions().get::<TlsConnection>().is_some();
+            if let Err(err) = verify_csrf(req.headers(), is_tls) {
+                return err.into_response();
+            }
         }
     }
-    req.extensions_mut().insert(auth::Token(token));
+    req.extensions_mut()
+        .insert(auth::Token(source.into_token()));
     super::work::with_origin(device_id, next.run(req)).await
 }
 
@@ -320,6 +475,8 @@ async fn require_auth<B: Backend>(
 struct PairQuery {
     code: Option<String>,
     name: Option<String>,
+    #[serde(default, rename = "returnToken")]
+    return_token: bool,
 }
 
 /// Link previews and prefetchers may GET this URL, but cannot consume a code.
@@ -396,8 +553,28 @@ async fn pair<B: Backend>(
             Err(err) => return err.into_response(),
         }
     };
+    let https = is_https_request(&headers, tls_ext.is_some());
+    let return_token = json && q.return_token;
+    if return_token && !https {
+        return ApiError(
+            StatusCode::FORBIDDEN,
+            "App 令牌配对仅允许通过 HTTPS/TLS 连接".into(),
+        )
+        .into_response();
+    }
+    let pair_invalid = || {
+        if return_token {
+            ApiError(
+                StatusCode::FORBIDDEN,
+                "配对码无效、已使用或已过期（5 分钟有效）".into(),
+            )
+            .into_response()
+        } else {
+            pair_failed_page()
+        }
+    };
     let Some(code) = q.code.filter(|c| !c.is_empty()) else {
-        return pair_failed_page();
+        return pair_invalid();
     };
     let ua = headers
         .get(header::USER_AGENT)
@@ -413,23 +590,45 @@ async fn pair<B: Backend>(
         .chars()
         .take(120)
         .collect();
-    let token = {
+    let (token, device) = {
         let db = ctx.db.lock();
-        match auth::redeem(&db, &code, &name, chrono::Utc::now()) {
+        let t = match auth::redeem(&db, &code, &name, chrono::Utc::now()) {
             Ok(Some(t)) => {
                 if auth::set_user_agent(&db, &t, &ua).is_err() {
-                    return pair_failed_page();
+                    return pair_invalid();
                 }
                 t
             }
-            _ => return pair_failed_page(),
-        }
+            _ => return pair_invalid(),
+        };
+        let device = if return_token {
+            match auth::device_for_token(&db, &t) {
+                Ok(Some(d)) => Some(d),
+                Ok(None) => {
+                    return ApiError(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "无法读取新配对设备信息".into(),
+                    )
+                    .into_response();
+                }
+                Err(e) => {
+                    return ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                        .into_response();
+                }
+            }
+        } else {
+            None
+        };
+        (t, device)
     };
-    let https = tls_ext.is_some()
-        || headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|p| p.eq_ignore_ascii_case("https"));
+    if return_token {
+        return (
+            StatusCode::OK,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(json!({ "token": token, "device": device })),
+        )
+            .into_response();
+    }
     let cookie = format!(
         "{}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{}",
         auth::COOKIE,
@@ -689,6 +888,23 @@ struct TranscriptQuery {
     from: Option<u64>,
     /// `tailId` of the previous page (see `read_page`).
     tail: Option<String>,
+    /// Optional tail-window size (clamped to 1..=500); applies only when `from == 0`.
+    limit: Option<usize>,
+    /// Optional exclusive upper index into visible items for loading older pages.
+    before: Option<usize>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptResponse {
+    #[serde(flatten)]
+    page: crate::contracts::TranscriptPage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    has_more: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oldest_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_items: Option<usize>,
 }
 
 /// Cap on tool output / tool arguments sent to the phone; the desktop keeps the full text.
@@ -707,7 +923,7 @@ async fn transcript<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Path(id): Path<String>,
     Query(q): Query<TranscriptQuery>,
-) -> ApiResult<Value> {
+) -> ApiResult<TranscriptResponse> {
     validate_id(&id)?;
     let meta = find_session(&ctx, &id).await?;
     let file = std::path::PathBuf::from(&meta.file);
@@ -728,14 +944,28 @@ async fn transcript<B: Backend>(
     .map_err(|e| bad_gateway(format!("读取记录失败: {e}")))?;
     let mut page = page;
     page.items.retain(|i| !i.hidden);
+    let (has_more, oldest_index, total_items) = match (from, q.limit) {
+        (0, Some(raw_limit)) => {
+            let limit = raw_limit.clamp(1, 500);
+            let total = page.items.len();
+            let end = q.before.map_or(total, |b| b.min(total));
+            let start = end.saturating_sub(limit);
+            page.items.truncate(end);
+            if start > 0 {
+                page.items.drain(..start);
+            }
+            (Some(start > 0), Some(start), Some(total))
+        }
+        _ => (None, None, None),
+    };
     for item in &mut page.items {
         if let Some(r) = item.tool_result.as_mut() {
             cap_chars(&mut r.text, MOBILE_TOOL_TEXT_CAP);
             r.details = None;
         }
         for c in &mut item.tool_calls {
-            if c.args.to_string().chars().count() > MOBILE_TOOL_TEXT_CAP {
-                let mut s = c.args.to_string();
+            let mut s = c.args.to_string();
+            if s.chars().count() > MOBILE_TOOL_TEXT_CAP {
                 cap_chars(&mut s, MOBILE_TOOL_TEXT_CAP);
                 c.args = Value::String(s);
             }
@@ -743,7 +973,12 @@ async fn transcript<B: Backend>(
         // usage/duration/ttft/completedAt are kept: the phone renders the same
         // per-request stats line as the desktop.
     }
-    Ok(Json(json!(page)))
+    Ok(Json(TranscriptResponse {
+        page,
+        has_more,
+        oldest_index,
+        total_items,
+    }))
 }
 
 /// Frame types the phone page renders (omp wire events, payloads passed
@@ -923,14 +1158,16 @@ fn app_service(router: Router) -> AppService {
     router.map_request(into_body as fn(Request<Incoming>) -> Request<Body>)
 }
 
-/// hyper builder shared by both listeners: request-header timeout and the
-/// timer it needs, so a silent client cannot hold a connection forever.
+/// hyper builder shared by both listeners: HTTP/1 header timeout and HTTP/2
+/// timer, so a silent client cannot hold a connection forever while TLS
+/// clients negotiating ALPN `h2` speak HTTP/2 seamlessly.
 fn conn_builder() -> auto::Builder<TokioExecutor> {
     let mut builder = auto::Builder::new(TokioExecutor::new());
     builder
         .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(HEADER_READ_TIMEOUT);
+    builder.http2().timer(TokioTimer::new());
     builder
 }
 
@@ -1008,7 +1245,16 @@ async fn drain_connections(tasks: &mut tokio::task::JoinSet<()>) {
 ///
 /// Same guards as the TLS listener (header-read timeout, connection cap, stop
 /// grace) so a plain-HTTP client cannot stall the accept loop or pin sockets.
+#[cfg(test)]
 pub async fn serve<B: Backend>(listener: tokio::net::TcpListener, ctx: Arc<Ctx<B>>) {
+    serve_notifying(listener, ctx, None).await;
+}
+
+pub(crate) async fn serve_notifying<B: Backend>(
+    listener: tokio::net::TcpListener,
+    ctx: Arc<Ctx<B>>,
+    on_unbind: Option<tokio::sync::oneshot::Sender<()>>,
+) {
     let mut sd = ctx.shutdown.clone();
     let app = app_service(router(ctx));
     let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
@@ -1020,6 +1266,10 @@ pub async fn serve<B: Backend>(listener: tokio::net::TcpListener, ctx: Arc<Ctx<B
         let builder = builder.clone();
         tasks.spawn(serve_conn(tcp, app, addr, builder, permit));
     }
+    drop(listener);
+    if let Some(tx) = on_unbind {
+        let _ = tx.send(());
+    }
     drain_connections(&mut tasks).await;
 }
 
@@ -1029,10 +1279,20 @@ pub async fn serve<B: Backend>(listener: tokio::net::TcpListener, ctx: Arc<Ctx<B
 /// (a silent client cannot stall the accept loop), hyper timeouts are armed,
 /// concurrent connections are capped, and stop force-closes stragglers after a
 /// short grace period.
+#[cfg(test)]
 pub async fn serve_tls<B: Backend>(
     listener: tokio::net::TcpListener,
     acceptor: tokio_rustls::TlsAcceptor,
     ctx: Arc<Ctx<B>>,
+) {
+    serve_tls_notifying(listener, acceptor, ctx, None).await;
+}
+
+pub(crate) async fn serve_tls_notifying<B: Backend>(
+    listener: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+    ctx: Arc<Ctx<B>>,
+    on_unbind: Option<tokio::sync::oneshot::Sender<()>>,
 ) {
     let mut sd = ctx.shutdown.clone();
     let app = app_service(router(ctx).layer(axum::Extension(TlsConnection)));
@@ -1060,6 +1320,10 @@ pub async fn serve_tls<B: Backend>(
                 };
             serve_conn(stream, app, addr, builder, permit).await;
         });
+    }
+    drop(listener);
+    if let Some(tx) = on_unbind {
+        let _ = tx.send(());
     }
     drain_connections(&mut tasks).await;
 }

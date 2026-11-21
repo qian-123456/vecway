@@ -15,7 +15,7 @@ import rehypeKatex from "rehype-katex";
 import remarkCjkFriendly from "remark-cjk-friendly";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { normalizeMath } from "../../src/features/chat/mathNormalize";
+import { normalizeMath } from "./mathNormalize";
 import { CodeBlock } from "./CodeBlock";
 import { useHighlightPlugins } from "./highlight";
 import { openImage } from "./ImageViewer";
@@ -244,9 +244,9 @@ const MarkdownSegment = memo(function MarkdownSegment({
 	onSendFollowUp?: (prompt: string) => void;
 	visualizeEnabled?: boolean;
 }) {
-	const highlightPlugins = useHighlightPlugins(!streaming);
-	const rehypePlugins = useMemo(() => [KATEX_PLUGIN, ...highlightPlugins], [highlightPlugins]);
 	const normalizedText = useMemo(() => normalizeMath(text), [text]);
+	const highlightPlugins = useHighlightPlugins(!streaming, normalizedText);
+	const rehypePlugins = useMemo(() => [KATEX_PLUGIN, ...highlightPlugins], [highlightPlugins]);
 	const ctxValue = useMemo<MarkdownContextValue>(
 		() => ({
 			sourceText: normalizedText,

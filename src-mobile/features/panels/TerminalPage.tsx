@@ -2,6 +2,8 @@ import { Plus, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ApiError, api, apiUrl, errorMessage } from "../../core/api";
+import { createEventSource } from "../../core/nativeBridge";
+import type { EventSourceLike } from "../../core/sse";
 import type { PageProps } from "../../core/nav";
 import { isUnauthorized, useConnection } from "../../core/stores/connection";
 import { Button, EmptyState, IconButton, PageHeader, confirm, toast } from "../../ui";
@@ -85,7 +87,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 	const term = useRef<XTerm | null>(null);
 	const fit = useRef<Fit | null>(null);
 	const termId = useRef<string | null>(null);
-	const source = useRef<EventSource | null>(null);
+	const source = useRef<EventSourceLike | null>(null);
 	const retries = useRef(0);
 	const retryTimer = useRef(0);
 	const exited = useRef(false);
@@ -119,7 +121,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 		const id = termId.current;
 		if (!id || !alive.current || isUnauthorized()) return;
 		source.current?.close();
-		const es = new EventSource(apiUrl(`/terminal/${id}/stream`));
+		const es = createEventSource(apiUrl(`/terminal/${id}/stream`));
 		source.current = es;
 		es.onopen = () => {
 			if (source.current !== es || isUnauthorized()) return;
@@ -132,7 +134,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 		es.addEventListener("data", (ev) => {
 			if (source.current !== es || isUnauthorized()) return;
 			try {
-				term.current?.write(decodeChunk((ev as MessageEvent<string>).data));
+				term.current?.write(decodeChunk(ev.data));
 			} catch (err) {
 				console.error("terminal data", err);
 			}
@@ -142,7 +144,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 			exited.current = true;
 			es.close();
 			if (source.current === es) source.current = null;
-			const code = parseExit((ev as MessageEvent<string>).data);
+			const code = parseExit(ev.data);
 			setPhase("exited");
 			setDetail(code !== null ? `退出码 ${code}` : "");
 		});
@@ -331,7 +333,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 				t.options.theme = c;
 				setBg(c.background);
 			});
-			schemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme"] });
+			schemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-theme"] });
 			setBg(terminalColors().background);
 			cleanup = () => {
 				document.removeEventListener("visibilitychange", onVisible);
