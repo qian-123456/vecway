@@ -23,14 +23,14 @@
 	--m-heading-size: var(--m-fs-display);
 	--m-heading-weight: 500;
 
-	/* Shape (Direction A: soft native radii) */
-	--m-r-sm: 12px;
-	--m-r-md: 16px;
-	--m-r-lg: 20px;
-	--m-r-xl: 28px;
+	/* Shape (Desktop-parity crisp radii, rounded composer & user bubbles) */
+	--m-r-sm: 8px;
+	--m-r-md: 12px;
+	--m-r-lg: 16px;
+	--m-r-xl: 22px;
 	--m-r-pill: 9999px;
-	--m-bubble-radius: 20px 20px 6px 20px;
-	--m-composer-radius: 26px;
+	--m-bubble-radius: 20px;
+	--m-composer-radius: 22px;
 	--m-user-bubble-max: 84%;
 
 	/* Space (4-pt grid) */

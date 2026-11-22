@@ -46,11 +46,11 @@ describe("Session surface DOM accessibility (not layout measurement)", () => {
   expect(screen.getByRole("button", { name: "语音输入" })).toBeTruthy();
  });
 
- it("exposes a modal navigation dialog with an explicit close action", () => {
-  const onClose = vi.fn();
-  render(<MenuSheet open onClose={onClose} />);
-  expect(screen.getByRole("dialog", { name: "导航" }).getAttribute("aria-modal")).toBe("true");
-  fireEvent.click(screen.getByRole("button", { name: "关闭导航" }));
-  expect(onClose).toHaveBeenCalledTimes(1);
- });
+	it("exposes a modal navigation dialog that closes on Escape", () => {
+		const onClose = vi.fn();
+		render(<MenuSheet open onClose={onClose} />);
+		expect(screen.getByRole("dialog", { name: "导航" }).getAttribute("aria-modal")).toBe("true");
+		fireEvent.keyDown(document, { key: "Escape" });
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
 });

@@ -26,12 +26,12 @@ export function ModeSwitch({ onChange }: { onChange?: () => void }) {
 		<div ref={ref} className="relative shrink-0">
 			<button type="button" aria-haspopup="menu" aria-expanded={open}
 				aria-label={`${modeLabel(mode)}空间${sessions ? `，${sessions.length} 个会话${busyCount ? `，${busyCount} 个运行中或待回复` : ""}` : ""}，点击切换`}
-				onClick={() => setOpen((v) => !v)} className="flex min-h-11 items-center px-1">
-				<span className="m-glass-btn relative inline-flex h-9 items-center gap-1.5 rounded-m-pill px-3 text-m-sm font-medium whitespace-nowrap text-m-text">
-					<Icon size={16} strokeWidth={1.75} />
+				onClick={() => setOpen((v) => !v)} className="flex min-h-10 items-center rounded-lg px-2 text-m-md font-semibold text-m-text transition-colors active:bg-m-surface-hover">
+				<span className="relative inline-flex items-center gap-1.5 whitespace-nowrap">
+					<Icon size={16} strokeWidth={1.85} className="shrink-0 text-m-accent" />
 					<span>{modeLabel(mode)}</span>
-					<ChevronDown size={14} className="text-m-text-3" />
-					{busyCount > 0 && <span aria-label="当前空间有运行中或待回复的会话" className="size-2 shrink-0 rounded-m-pill bg-m-accent m-pulse" />}
+					<ChevronDown size={14} className="shrink-0 text-m-text-3" />
+					{busyCount > 0 && <span aria-label="当前空间有运行中或待回复的会话" className="size-2 shrink-0 rounded-full bg-m-accent m-pulse" />}
 				</span>
 			</button>
 			{open && <div role="menu" aria-label="切换空间" className="absolute left-1 top-full z-(--z-banner) mt-1 w-52 max-w-[calc(100vw-24px)] rounded-m-lg border border-m-border bg-m-bg/95 backdrop-blur-xl p-1.5 shadow-lg">

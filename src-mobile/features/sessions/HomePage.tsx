@@ -1,10 +1,10 @@
-import { Camera, ChevronDown, Folder, FolderOpen, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, Target } from "lucide-react";
+import { Camera, FolderOpen, FolderPlus, History, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, Target } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage } from "../../core/api";
-import { baseName } from "../../core/lib/format";
+import { baseName, relTime, sessionName } from "../../core/lib/format";
 import { nav, paths, type PageProps } from "../../core/nav";
 import { useSessions } from "../../core/stores/sessions";
-import { AppMark, BottomSheet, MenuRow, Switch, toast } from "../../ui";
+import { BottomSheet, MenuRow, Switch, toast } from "../../ui";
 import { ActionTile } from "../../ui/ActionTile";
 import { ChatHeader } from "../chat/components/ChatHeader";
 import { ComposerCapsule, type ComposerApi } from "../chat/components/ComposerCapsule";
@@ -24,6 +24,7 @@ export function HomePage(_props: PageProps) {
 	const [modelOpen, setModelOpen] = useState(false);
 	const [sending, setSending] = useState(false);
 	const mode = useTree((s) => s.mode);
+	const allSessions = useSessions((s) => s.list);
 	const kbOpen = useKeyboardOpen();
 	const [directoryOpen, setDirectoryOpen] = useState(false);
 	const [directory, setDirectory] = useState<DirEntry | null>(null);
@@ -143,40 +144,73 @@ export function HomePage(_props: PageProps) {
 		} finally { submitting.current = false; setSending(false); }
 	};
 
-	const dirName = directory ? directory.label || baseName(directory.path) : directoryError ? "目录加载失败" : "选择工作目录";
-	const dirSub = directory ? abbreviateHomePath(directory.path, homeDir) : directoryError ? "点击重试或切换目录" : "点击选择项目目录";
+	const dirName = directory ? directory.label || baseName(directory.path) : directoryError ? "目录加载失败" : "选择项目目录";
+	const dirSub = directory ? abbreviateHomePath(directory.path, homeDir) : directoryError ? "点击重试或切换目录" : "准备就绪";
+	const recentSessions = useMemo(() => {
+		const active = allSessions
+			.filter((s) => !s.archived && (!s.mode || s.mode === mode))
+			.sort((a, b) => Date.parse(String(b.updatedAt ?? "")) - Date.parse(String(a.updatedAt ?? "")));
+		const matching = directory?.path ? active.filter((s) => s.cwd === directory.path) : active;
+		return (matching.length > 0 ? matching : active).slice(0, 2);
+	}, [allSessions, directory?.path, mode]);
 
 	return (
 		<div className="relative flex min-h-0 flex-1 flex-col bg-m-bg">
 			<ChatHeader
 				title="Vecway"
 				onMenu={() => setMenuOpen(true)}
-				onNew={() => setNewOpen(true)}
 			/>
-			<div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 pb-8 text-center">
-				<div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-m-border bg-m-card shadow-m-card">
-					<AppMark size={30} />
+			<div className="m-kb-lift relative flex min-h-0 flex-1 flex-col justify-center px-6 pb-8">
+				<div className="text-center">
+					<h1 className="inline-flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[23px] font-semibold leading-snug tracking-[-0.02em] text-m-text">
+						<span>在</span>
+						<button
+							type="button"
+							aria-label={directory ? `当前目录：${directory.path}，点击切换` : "选择当前目录"}
+							onClick={() => setDirectoryOpen(true)}
+							className="inline-flex max-w-full items-center gap-1.5 border-b border-dashed border-m-border-strong pb-0.5 text-m-text transition-opacity active:opacity-70"
+						>
+							{directory ? (
+								<FolderOpen size={19} strokeWidth={1.85} className="shrink-0 text-m-accent" aria-hidden />
+							) : (
+								<FolderPlus size={19} strokeWidth={1.85} className="shrink-0 text-m-accent" aria-hidden />
+							)}
+							<span className="truncate">{dirName}</span>
+						</button>
+						<span>中开始</span>
+					</h1>
+					<p className="mt-2 truncate font-m-mono text-[12px] leading-relaxed text-m-text-3 tabular-nums">
+						{dirSub}
+					</p>
 				</div>
-				<button
-					type="button"
-					aria-label={directory ? `当前目录：${directory.path}，点击切换` : "选择当前目录"}
-					onClick={() => setDirectoryOpen(true)}
-					className="flex min-h-11 max-w-[min(100%,320px)] items-center gap-2.5 rounded-m-pill border border-m-border bg-m-card px-4 py-2 text-left shadow-m-card transition-colors duration-(--m-dur-fast) active:bg-m-surface"
-				>
-					<Folder size={16} strokeWidth={1.85} className="shrink-0 text-m-text-2" aria-hidden />
-					<span className="min-w-0 flex-1">
-						<span className="block truncate text-m-sm font-medium text-m-text">{dirName}</span>
-						<span className="block truncate font-m-mono text-[11px] leading-tight text-m-text-3">{dirSub}</span>
-					</span>
-					<ChevronDown size={15} strokeWidth={2} className="shrink-0 text-m-text-3" aria-hidden />
-				</button>
+
+				{recentSessions.length > 0 && (
+					<div className="mx-auto mt-8 w-full max-w-[360px] border-t border-m-border pt-3">
+						<div className="pb-1 text-[11.5px] font-medium text-m-text-3">继续最近对话</div>
+						<div className="divide-y divide-m-border">
+							{recentSessions.map((item) => (
+								<button
+									key={item.id}
+									type="button"
+									onClick={() => nav.push(paths.chat(item.id))}
+									className="flex min-h-10 w-full items-center justify-between gap-3 py-2 text-left text-m-sm text-m-text transition-opacity active:opacity-65"
+								>
+									<span className="inline-flex min-w-0 items-center gap-2">
+										<History size={14} strokeWidth={1.75} className="shrink-0 text-m-text-3" aria-hidden />
+										<span className="truncate">{sessionName(item)}</span>
+									</span>
+									<span className="shrink-0 text-[11.5px] whitespace-nowrap text-m-text-3 tabular-nums">
+										{relTime(item.updatedAt)}
+									</span>
+								</button>
+							))}
+						</div>
+					</div>
+				)}
 			</div>
 			<div
-				className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3.5 pt-2"
-				style={{
-					paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)",
-					transition: "padding-bottom var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1)",
-				}}
+				className="m-kb-dock relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3 pt-2"
+				style={{ paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)" }}
 			>
 				<ComposerCapsule
 					apiRef={apiRef}

@@ -159,13 +159,21 @@ describe("Composer send and stop controls", () => {
 		expect(screen.getByRole("button", { name: "发送" })).toBeTruthy();
 	});
 
- it("keeps independent send and stop controls during a run", async () => {
+	it("shows Stop in the primary slot when idle-running and exposes both Send and Stop while typing", async () => {
 		const c = new ChatController("s1");
 		render(wrap(c, <Composer sessionId="s1" />));
 
 		await act(async () => c.store.setState({ working: true }));
 		expect(screen.getByRole("button", { name: "停止" })).toBeTruthy();
-  expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
+		expect(screen.queryByRole("button", { name: "发送" })).toBeNull();
+
+		const field = screen.getByRole("textbox");
+		await act(async () => {
+			fireEvent.input(field, { target: { value: "追问" } });
+			await new Promise((resolve) => requestAnimationFrame(resolve));
+		});
+		expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
+		expect(screen.getByRole("button", { name: "停止" })).toBeTruthy();
 	});
 });
 

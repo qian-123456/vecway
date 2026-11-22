@@ -154,10 +154,12 @@ export function ChatPage({ route }: PageProps) {
 					onOpenPath={() => setPathOpen(true)}
 				/>
 				<MessageList sessionId={id} />
-				<PendingCards />
-				<ResumeBar sessionId={id} />
-				<TurnNotices sessionId={id} />
-				<Composer sessionId={id} onOpenPicker={() => setPickerOpen(true)} />
+				<div className="m-kb-dock relative z-(--z-composer) shrink-0">
+					<PendingCards />
+					<ResumeBar sessionId={id} />
+					<TurnNotices sessionId={id} />
+					<Composer sessionId={id} onOpenPicker={() => setPickerOpen(true)} />
+				</div>
 			</div>
 			<MessageActionsSheet target={target} onClose={() => setTarget(null)} controller={controller} />
 			<StatCard stat={stat} onClose={() => setStat(null)} />

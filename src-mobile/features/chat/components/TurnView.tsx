@@ -60,7 +60,7 @@ export function Images({ sessionId, images }: { sessionId: string; images: reado
 }
 
 const BUBBLE =
-	"m-selectable max-w-[var(--m-user-bubble-max)] whitespace-pre-wrap break-words rounded-(--m-bubble-radius) border border-m-bubble-user-border bg-m-bubble-user-bg px-4 py-2.5 text-m-body leading-[1.54] text-m-bubble-user-text [overflow-wrap:anywhere]";
+	"m-selectable max-w-[var(--m-user-bubble-max)] whitespace-pre-wrap break-words rounded-(--m-bubble-radius) bg-m-bubble-user-bg px-4 py-2.5 text-m-body leading-[1.54] text-m-bubble-user-text [overflow-wrap:anywhere]";
 
 export const UserBubble = memo(function UserBubble({ item, sessionId }: { item: Item; sessionId: string }) {
 	const { openActions } = useChatUi();
@@ -173,7 +173,7 @@ function ProcessFold({
 
 	const current = running && !open ? (liveThinking ? null : [...steps].reverse().find((s) => s.kind === "tool")) : null;
 	return (
-		<div className="mb-3 overflow-hidden rounded-m-lg border border-m-border bg-m-bg-elev/80">
+		<div className="mb-3">
 			<button
 				type="button"
 				onClick={() => {
@@ -181,24 +181,21 @@ function ProcessFold({
 					setOverride(!open);
 				}}
 				aria-expanded={open}
-				className="flex min-h-11 w-full items-center gap-2.5 px-3.5 py-2 text-left text-m-xs font-medium text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+				className="flex min-h-9 w-full items-center gap-2 py-1 text-left text-m-xs font-medium text-m-text-3 transition-colors duration-(--m-dur-fast) active:text-m-text"
 			>
-				<span
-					aria-hidden
-					className={`size-2 shrink-0 rounded-full ${running ? "bg-m-accent m-pulse" : "bg-m-success"}`}
-				/>
-				<span className={running ? "m-shimmer min-w-0 flex-1 whitespace-nowrap" : "min-w-0 flex-1 whitespace-nowrap"}>
+				<span className={running ? "m-shimmer shrink-0 whitespace-nowrap" : "shrink-0 whitespace-nowrap"}>
 					{running ? <RunningLabel turn={turn} /> : foldLabel({ ...turn, steps }, false, 0)}
 				</span>
 				<ChevronRight
-					size={15}
+					size={13}
 					strokeWidth={1.85}
 					aria-hidden
 					className={`shrink-0 text-m-text-3 transition-transform duration-(--m-dur-fast) ${open ? "rotate-90" : ""}`}
 				/>
+				<span aria-hidden className="h-px flex-1 bg-m-border" />
 			</button>
 			{open && (
-				<div className="border-t border-m-border px-3 py-2">
+				<div className="pt-1 pb-1">
 					<div className="m-timeline space-y-0.5">
 						{steps.map((s) => (
 							<StepView key={s.key} step={s} running={running} onStat={openStat} />
@@ -208,7 +205,7 @@ function ProcessFold({
 				</div>
 			)}
 			{!open && running && (live || current) && (
-				<div className="border-t border-m-border px-3 py-1.5">
+				<div className="pt-1 pb-1">
 					{live ?? (current && <StepView step={current} running={running} onStat={openStat} />)}
 				</div>
 			)}

@@ -1,4 +1,4 @@
-import { Bell, ChevronRight, Clock, Gauge, Lightbulb, Search, Settings, SquarePen, Wifi, X } from "lucide-react";
+import { Bell, Check, Clock, FolderPlus, Gauge, Lightbulb, ListFilter, Search, Settings, SquarePen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
@@ -14,7 +14,7 @@ import {
 } from "../../core/nativeBridge";
 import { nav, paths } from "../../core/nav";
 import { events, reconnectEvents } from "../../core/sse";
-import { AppMark, IconButton, toast } from "../../ui";
+import { IconButton, toast } from "../../ui";
 import { useOverlay, usePresence } from "../../ui/overlay";
 import { ConnectionSheet, type MobileInfo } from "../settings/sheets/ConnectionSheet";
 import { useSessionActions } from "./ActionSheets";
@@ -28,50 +28,11 @@ import type { TreeSession } from "./tree";
 
 export type LeftNavViewMode = "project" | "time";
 
-const VIEW_OPTIONS = [
-	{ value: "project", label: "按项目" },
-	{ value: "time", label: "按时间" },
-] as const;
-
-function ViewModeSegment({
-	value,
-	onChange,
-}: {
-	value: LeftNavViewMode;
-	onChange: (v: LeftNavViewMode) => void;
-}) {
-	return (
-		<div
-			role="radiogroup"
-			aria-label="切换视图"
-			className="ml-auto inline-flex shrink-0 items-center rounded-m-pill bg-m-surface p-0.5"
-		>
-			{VIEW_OPTIONS.map((opt) => {
-				const active = value === opt.value;
-				return (
-					<button
-						key={opt.value}
-						type="button"
-						role="radio"
-						aria-checked={active}
-						onClick={() => onChange(opt.value)}
-						className={`min-h-8 rounded-m-pill px-2.5 text-m-xs whitespace-nowrap transition-colors duration-(--m-dur-fast) ${
-							active ? "bg-m-segment-on font-medium text-m-text shadow-xs" : "text-m-text-2"
-						}`}
-					>
-						{opt.label}
-					</button>
-				);
-			})}
-		</div>
-	);
-}
 const ANIM_MS = 300;
 /** Horizontal swipe distance (px) or flick velocity (px/ms) that closes the drawer. */
 const SWIPE_CLOSE_PX = 90;
 const SWIPE_CLOSE_V = 0.5;
 
-const I = { size: 22, strokeWidth: 1.75 } as const;
 
 /**
  * Navigation drawer (docs/MOBILE_DESIGN.md §4.3): slides in from the left; scrim, ✕, back or a
@@ -90,10 +51,12 @@ export function MenuSheet({
 	useOverlay(open, onClose);
 	const native = isNativeApp();
 	const [viewMode, setViewMode] = useState<LeftNavViewMode>("project");
+	const [filterOpen, setFilterOpen] = useState(false);
 	const [inbox, setInbox] = useState<InboxData | null>(null);
 	const [nativeStatus, setNativeStatus] = useState<NativeEndpointStatus | null>(null);
 	const [switchingLan, setSwitchingLan] = useState(false);
 	const [connOpen, setConnOpen] = useState(false);
+	const filterRef = useRef<HTMLDivElement>(null);
 	const [mobileInfo, setMobileInfo] = useState<MobileInfo>({});
 	const todos = useTodos((s) => s.todos);
 	const openSession = useCallback((s: TreeSession) => {
@@ -114,14 +77,22 @@ export function MenuSheet({
 
 	useEffect(() => {
 		if (!open) {
+			setFilterOpen(false);
 			resetSwipe();
 			return;
 		}
-		if (!mounted) return;
 		const frame = requestAnimationFrame(() => panelRef.current?.focus({ preventScroll: true }));
 		return () => cancelAnimationFrame(frame);
 	}, [open, mounted, resetSwipe]);
 
+	useEffect(() => {
+		if (!filterOpen) return;
+		const dismiss = (e: PointerEvent) => {
+			if (!filterRef.current?.contains(e.target as Node)) setFilterOpen(false);
+		};
+		document.addEventListener("pointerdown", dismiss);
+		return () => document.removeEventListener("pointerdown", dismiss);
+	}, [filterOpen]);
 	useEffect(() => {
 		if (!open) return;
 		if (!useTree.getState().data) void useTree.getState().load();
@@ -287,55 +258,119 @@ export function MenuSheet({
 				}`}
 				style={{ paddingTop: "var(--m-safe-top)", paddingBottom: "calc(var(--m-safe-bottom) + 6px)" }}
 			>
-				<header className="flex h-13 shrink-0 items-center gap-2 px-3">
-					<AppMark size={24} />
-					<span className="min-w-0 flex-1 text-m-md font-semibold tracking-[-0.01em] whitespace-nowrap">Vecway</span>
-					<IconButton variant="plain" size="sm" icon={<Search {...I} />} label="搜索会话" onClick={() => go(paths.search())} />
-					<div className="relative">
-						<IconButton variant="plain" size="sm" icon={<Bell {...I} />} label={badge > 0 ? `收件箱，${badge} 项待处理` : "收件箱"} onClick={() => go(paths.inbox())} />
-						{badge > 0 && <span aria-hidden="true" className="pointer-events-none absolute right-0 top-0 rounded-m-pill bg-m-danger px-1 text-[10px] leading-4 text-m-bg">{badge > 99 ? "99+" : badge}</span>}
+				<header className="flex h-12 shrink-0 items-center justify-between gap-2 px-2.5">
+					<ModeSwitch />
+					<div className="flex shrink-0 items-center gap-0.5">
+						<IconButton variant="plain" size="sm" icon={<Search size={19} strokeWidth={1.8} />} label="搜索会话" onClick={() => go(paths.search())} />
+						<div className="relative">
+							<IconButton variant="plain" size="sm" icon={<Bell size={19} strokeWidth={1.8} />} label={badge > 0 ? `收件箱，${badge} 项待处理` : "收件箱"} onClick={() => go(paths.inbox())} />
+							{badge > 0 && <span aria-hidden="true" className="pointer-events-none absolute right-1 top-1 rounded-m-pill bg-m-danger px-1 text-[10px] leading-4 text-m-bg">{badge > 99 ? "99+" : badge}</span>}
+						</div>
 					</div>
-					<IconButton variant="plain" size="sm" icon={<X {...I} />} label="关闭导航" onClick={onClose} />
 				</header>
 
-				<div className="shrink-0">
-					<div className="flex flex-wrap gap-1.5 px-3 pb-1">
+				<nav aria-label="主导航" className="shrink-0 space-y-0.5 border-b border-m-border px-2.5 pb-2">
+					<button
+						type="button"
+						onClick={() => {
+							onClose();
+							onNewSession?.();
+						}}
+						className="flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-m-sm font-medium text-m-text transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+					>
+						<SquarePen size={17} strokeWidth={1.8} className="shrink-0 text-m-text-2" />
+						<span className="whitespace-nowrap">发起新对话</span>
+					</button>
+					<button
+						type="button"
+						onClick={() => go(paths.schedules())}
+						className="flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-m-sm font-medium text-m-text transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+					>
+						<Clock size={17} strokeWidth={1.8} className="shrink-0 text-m-text-2" />
+						<span className="whitespace-nowrap">自动化</span>
+					</button>
+					<button
+						type="button"
+						onClick={() => go(paths.ideas())}
+						className="flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-m-sm font-medium text-m-text transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+					>
+						<Lightbulb size={17} strokeWidth={1.8} className="shrink-0 text-m-text-2" />
+						<span className="whitespace-nowrap">灵感收件箱</span>
+					</button>
+				</nav>
+
+				<div ref={filterRef} className="relative flex shrink-0 items-center justify-between px-3.5 pt-2.5 pb-1">
+					<span className="text-[12px] font-medium text-m-text-3">
+						{viewMode === "project" ? "项目" : "全部对话"}
+					</span>
+					<div className="flex shrink-0 items-center gap-0.5">
 						<button
 							type="button"
+							aria-label="切换视图"
+							aria-haspopup="menu"
+							aria-expanded={filterOpen}
+							onClick={() => setFilterOpen((v) => !v)}
+							className={`inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+								filterOpen ? "bg-m-surface text-m-text" : "text-m-text-3 active:bg-m-surface-hover active:text-m-text"
+							}`}
+						>
+							<ListFilter size={15} strokeWidth={1.85} />
+						</button>
+						<button
+							type="button"
+							aria-label="添加项目目录"
 							onClick={() => {
+								setFilterOpen(false);
 								onClose();
 								onNewSession?.();
 							}}
-							className="flex min-h-11 w-full items-center gap-2.5 rounded-m-md border border-m-border bg-m-card px-3.5 text-left text-m-md font-medium text-m-text shadow-m-card transition-colors duration-(--m-dur-fast) active:bg-m-surface"
+							className="inline-flex h-8 w-8 items-center justify-center rounded-md text-m-text-3 transition-colors active:bg-m-surface-hover active:text-m-text"
 						>
-							<SquarePen {...I} size={19} className="shrink-0 text-m-accent" />
-							<span className="whitespace-nowrap">发起新对话</span>
-						</button>
-						<button
-							type="button"
-							onClick={() => go(paths.schedules())}
-							className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-m-md border border-m-border/70 bg-m-bg-elev/70 px-2.5 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
-						>
-							<Clock {...I} size={17} className="shrink-0 text-m-text-2" />
-							<span className="whitespace-nowrap">自动化</span>
-						</button>
-						<button
-							type="button"
-							onClick={() => go(paths.ideas())}
-							className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-m-md border border-m-border/70 bg-m-bg-elev/70 px-2.5 text-left text-m-sm text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
-						>
-							<Lightbulb {...I} size={17} className="shrink-0 text-m-text-2" />
-							<span className="whitespace-nowrap">灵感收件箱</span>
+							<FolderPlus size={15} strokeWidth={1.85} />
 						</button>
 					</div>
-
-					<div className="flex items-center gap-2 px-3 py-1.5">
-						<ModeSwitch />
-						<ViewModeSegment value={viewMode} onChange={setViewMode} />
-					</div>
+					{filterOpen && (
+						<div
+							role="menu"
+							aria-label="视图方式"
+							className="absolute right-3 top-full z-(--z-banner) mt-1 w-40 rounded-[10px] border border-m-border bg-m-bg-elev p-1 shadow-m-pop"
+						>
+							<div className="px-2 py-1 text-[11px] text-m-text-3">分组方式</div>
+							<button
+								type="button"
+								role="menuitemradio"
+								aria-checked={viewMode === "project"}
+								onClick={() => {
+									setViewMode("project");
+									setFilterOpen(false);
+								}}
+								className={`flex min-h-9 w-full items-center justify-between rounded-md px-2 text-left text-m-xs active:bg-m-surface-hover ${
+									viewMode === "project" ? "bg-m-surface font-medium text-m-text" : "text-m-text-2"
+								}`}
+							>
+								<span>按项目</span>
+								{viewMode === "project" && <Check size={14} className="text-m-accent" />}
+							</button>
+							<button
+								type="button"
+								role="menuitemradio"
+								aria-checked={viewMode === "time"}
+								onClick={() => {
+									setViewMode("time");
+									setFilterOpen(false);
+								}}
+								className={`flex min-h-9 w-full items-center justify-between rounded-md px-2 text-left text-m-xs active:bg-m-surface-hover ${
+									viewMode === "time" ? "bg-m-surface font-medium text-m-text" : "text-m-text-2"
+								}`}
+							>
+								<span>按时间</span>
+								{viewMode === "time" && <Check size={14} className="text-m-accent" />}
+							</button>
+						</div>
+					)}
 				</div>
-				<div className="m-noscrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
 
+				<div className="m-noscrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
 					{viewMode === "project" ? (
 						<TreeView onMore={openActions} onOpen={openSession} />
 					) : (
@@ -343,42 +378,44 @@ export function MenuSheet({
 					)}
 				</div>
 
-				{native && nativeStatus?.paired && (
-					<div className="flex shrink-0 items-center gap-2 border-t border-m-border px-3 py-2">
-						<button
-							type="button"
-							aria-label="切换连接方式"
-							onClick={() => setConnOpen(true)}
-							className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-m-md px-2 text-left text-m-xs text-m-text-2 active:bg-m-surface-hover"
-						>
-							<span
-								aria-hidden="true"
-								className={`h-2 w-2 shrink-0 rounded-full ${nativeStatus.activeChannel ? "bg-m-success" : "bg-m-warn"}`}
-							/>
-							<Wifi size={14} strokeWidth={1.85} className="shrink-0 text-m-text-3" aria-hidden />
-							<span className="min-w-0 flex-1 truncate text-m-text">
-								{nativeStatus.activeChannel ? NATIVE_CHANNEL_LABEL[nativeStatus.activeChannel] : "未连接"}
-							</span>
-							<ChevronRight size={14} className="shrink-0 text-m-text-3" aria-hidden />
-						</button>
-						{nativeStatus.candidates.lanTls && nativeStatus.certSha256 && nativeStatus.activeChannel === "tunnel" && (
-							<button
-								type="button"
-								disabled={switchingLan}
-								onClick={() => void quickSwitchToLan()}
-								className="min-h-8 shrink-0 rounded-m-pill bg-m-accent-soft px-3 text-m-xs font-medium whitespace-nowrap text-m-accent-soft-text active:opacity-80 disabled:opacity-40"
-							>
-								{switchingLan ? "切换中" : "切回局域网"}
-							</button>
+				<footer aria-label="更多入口" className="flex shrink-0 items-center justify-between gap-2 border-t border-m-border px-2.5 pt-1.5">
+					<div className="flex min-w-0 flex-1 items-center gap-1.5">
+						{native && nativeStatus?.paired ? (
+							<>
+								<button
+									type="button"
+									aria-label="切换连接方式"
+									onClick={() => setConnOpen(true)}
+									className="flex min-h-10 min-w-0 items-center gap-2 rounded-lg px-2 text-left text-m-xs text-m-text-2 active:bg-m-surface-hover"
+								>
+									<span
+										aria-hidden="true"
+										className={`h-2 w-2 shrink-0 rounded-full ${nativeStatus.activeChannel ? "bg-m-success" : "bg-m-warn"}`}
+									/>
+									<span className="truncate text-m-text">
+										{nativeStatus.activeChannel ? NATIVE_CHANNEL_LABEL[nativeStatus.activeChannel] : "未连接"}
+									</span>
+								</button>
+								{nativeStatus.candidates.lanTls && nativeStatus.certSha256 && nativeStatus.activeChannel === "tunnel" && (
+									<button
+										type="button"
+										disabled={switchingLan}
+										onClick={() => void quickSwitchToLan()}
+										className="min-h-8 shrink-0 rounded-md px-2 text-m-xs font-medium whitespace-nowrap text-m-accent active:bg-m-surface-hover disabled:opacity-40"
+									>
+										{switchingLan ? "切换中" : "切回局域网"}
+									</button>
+								)}
+							</>
+						) : (
+							<span className="px-2 text-m-xs text-m-text-3">Vecway</span>
 						)}
 					</div>
-				)}
-
-				<nav aria-label="更多入口" className="flex shrink-0 items-center border-t border-m-border px-3">
-					<button type="button" onClick={() => go(paths.settings())} className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-m-md px-2 text-m-sm text-m-text-2 active:bg-m-surface-hover"><Settings size={18} strokeWidth={1.75} />设置</button>
-					<span aria-hidden="true" className="h-5 w-px shrink-0 bg-m-border" />
-					<button type="button" onClick={() => go(paths.quota())} className="flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-m-md px-2 text-m-sm text-m-text-2 active:bg-m-surface-hover"><Gauge size={18} strokeWidth={1.75} />订阅与配额</button>
-				</nav>
+					<div className="flex shrink-0 items-center gap-0.5">
+						<IconButton variant="plain" size="sm" icon={<Gauge size={18} strokeWidth={1.75} />} label="订阅与配额" onClick={() => go(paths.quota())} />
+						<IconButton variant="plain" size="sm" icon={<Settings size={18} strokeWidth={1.75} />} label="设置" onClick={() => go(paths.settings())} />
+					</div>
+				</footer>
 			</div>
 			{node}
 			{native && <ConnectionSheet open={connOpen} onClose={() => setConnOpen(false)} mobile={mobileInfo} />}

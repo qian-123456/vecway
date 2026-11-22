@@ -53,7 +53,7 @@ export function Segmented<T extends string>({
 	className?: string;
 }) {
 	return (
-		<div role="radiogroup" aria-label={label} className={`flex rounded-m-pill bg-m-surface p-1 ${className}`}>
+		<div role="radiogroup" aria-label={label} className={`flex rounded-[10px] border border-m-border/70 bg-m-surface p-0.5 ${className}`}>
 			{options.map((o) => {
 				const on = value === o.value;
 				return (
@@ -64,8 +64,8 @@ export function Segmented<T extends string>({
 						aria-checked={on}
 						disabled={disabled}
 						onClick={() => !on && onChange(o.value)}
-						className={`min-h-11 min-w-11 flex-1 rounded-m-pill px-3 text-m-sm whitespace-nowrap transition-colors duration-(--m-dur-fast) disabled:opacity-40 ${
-							on ? "bg-m-segment-on font-medium text-m-text shadow-[0_1px_4px_rgb(0_0_0/0.18)]" : "text-m-text-2"
+						className={`min-h-10 min-w-11 flex-1 rounded-[8px] px-3 text-m-sm whitespace-nowrap transition-colors duration-(--m-dur-fast) disabled:opacity-40 ${
+							on ? "bg-m-segment-on font-medium text-m-text shadow-xs" : "text-m-text-2"
 						}`}
 					>
 						{o.label}
@@ -97,7 +97,7 @@ export function Stepper({
 	disabled?: boolean;
 }) {
 	const v = value ?? 0;
-	const btn = "flex h-11 w-11 shrink-0 items-center justify-center rounded-m-pill bg-m-surface text-m-text active:bg-m-surface-2 disabled:opacity-35";
+	const btn = "flex h-11 w-11 shrink-0 items-center justify-center rounded-[8px] border border-m-border bg-m-surface text-m-text active:bg-m-surface-2 disabled:opacity-35";
 	return (
 		<div className="flex items-center gap-1.5">
 			<button type="button" aria-label="减少" className={btn} disabled={disabled || (value != null && v <= min)} onClick={() => onCommit(Math.max(min, v - step))}>

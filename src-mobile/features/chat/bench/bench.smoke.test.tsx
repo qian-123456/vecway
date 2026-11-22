@@ -66,24 +66,24 @@ describe("chat bench harness", () => {
 			act(() => controller.store.setState({ live: { ...live, text: "流式第一段，继续输出" } }));
 			expect(screen.getByText("流式第一段，继续输出")).toBeTruthy();
 			expect(input.value).toBe("ni");
-			expect(send.disabled).toBe(true);
+			expect(screen.getByRole("button", { name: "停止" })).toBeTruthy();
 
 			fireEvent.input(input, { target: { value: "你好" } });
 			fireEvent.compositionEnd(input);
 			await act(async () => { vi.advanceTimersToNextFrame(); });
 			expect(input.value).toBe("你好");
-			expect(send.disabled).toBe(false);
+			expect((screen.getByLabelText("发送") as HTMLButtonElement).disabled).toBe(false);
 			fireEvent.input(input, { target: { value: "你好，补充说明" } });
 			await act(async () => { vi.advanceTimersToNextFrame(); });
 			expect(input.value).toBe("你好，补充说明");
-			expect(send.disabled).toBe(false);
+			expect((screen.getByLabelText("发送") as HTMLButtonElement).disabled).toBe(false);
 			act(() => controller.store.setState({ live: { ...live, text: "流式第一段，继续输出，完成" } }));
 			expect(screen.getByText("流式第一段，继续输出，完成")).toBeTruthy();
 			expect(input.value).toBe("你好，补充说明");
 
-			await act(async () => { fireEvent.click(send); });
+			await act(async () => { fireEvent.click(screen.getByLabelText("发送")); });
 			expect(input.value).toBe("");
-			expect(send.disabled).toBe(true);
+			expect(screen.getByRole("button", { name: "停止" })).toBeTruthy();
 			expect(screen.getByText("你好，补充说明")).toBeTruthy();
 		} finally {
 			view.unmount();

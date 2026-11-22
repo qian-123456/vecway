@@ -43,10 +43,10 @@ export function IconButton({
 			aria-pressed={pressed}
 			disabled={disabled}
 			onClick={onClick}
-			className={`group/icon-button relative flex h-11 min-w-11 shrink-0 items-center justify-center rounded-m-pill disabled:opacity-35 ${className}`}
+			className={`group/icon-button relative flex h-11 min-w-11 shrink-0 items-center justify-center rounded-[10px] disabled:opacity-35 ${className}`}
 		>
 			<span
-				className={`flex ${disc} items-center justify-center rounded-m-pill transition-colors duration-(--m-dur-fast) ${VARIANTS[variant]}`}
+				className={`flex ${disc} items-center justify-center rounded-[10px] transition-colors duration-(--m-dur-fast) ${VARIANTS[variant]}`}
 			>
 				{icon}
 			</span>

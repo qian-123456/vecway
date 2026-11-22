@@ -87,7 +87,7 @@ export function PageHeader({
 
 	const back = onBack === undefined ? goBack : onBack;
 	const leftNode =
-		left != null ? left : back !== false ? <IconButton variant="filled" icon={<ChevronLeft size={22} />} label="返回" onClick={back} /> : null;
+		left != null ? left : back !== false ? <IconButton variant="plain" icon={<ChevronLeft size={22} />} label="返回" onClick={back} /> : null;
 	return (
 		<header
 			ref={headerRef}

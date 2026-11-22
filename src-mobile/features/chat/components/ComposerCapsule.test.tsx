@@ -16,7 +16,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
 describe("ComposerCapsule", () => {
-	it("renders a stable desktop-style 2-row composer and keeps toolbar controls mounted on focus", () => {
+	it("renders a stable desktop-style 2-row composer with unified model-thinking and compact context ring", () => {
 		const onModel = vi.fn();
 		const onThinking = vi.fn();
 		const onContext = vi.fn();
@@ -25,28 +25,27 @@ describe("ComposerCapsule", () => {
 		);
 		expect(container.querySelector(".m-glass-panel, .m-glass-btn")).toBeNull();
 		expect(screen.getByRole("textbox").closest(".bg-m-composer-bg")).not.toBeNull();
-		for (const name of [/当前模型/, /当前思考强度/, /上下文用量/]) {
-			const button = screen.getByRole("button", { name });
-			expect(button.className).toContain("rounded-lg");
-			fireEvent.click(button);
-		}
+		const modelBtn = screen.getByRole("button", { name: "当前模型：gpt-5，思考强度：High，点击切换" });
+		expect(modelBtn.className).toContain("rounded-lg");
+		expect(modelBtn.textContent).toContain("gpt-5");
+		expect(modelBtn.textContent).toContain("High");
+		fireEvent.click(modelBtn);
 		expect(onModel).toHaveBeenCalledTimes(1);
-		expect(onThinking).toHaveBeenCalledTimes(1);
-		expect(onContext).toHaveBeenCalledTimes(1);
+
 		const context = screen.getByRole("button", { name: "上下文用量：15%" });
-		expect(context.textContent).toBe("15%");
+		fireEvent.click(context);
+		expect(onContext).toHaveBeenCalledTimes(1);
 		const circles = context.querySelectorAll("circle");
 		expect(circles).toHaveLength(2);
 		expect(Number(circles[1].getAttribute("stroke-dashoffset"))).toBeCloseTo(2 * Math.PI * 7 * 0.85);
 		const mic = screen.getByRole("button", { name: "语音输入" });
-		expect(mic.className).toContain("h-9 w-9");
+		expect(mic.className).toContain("h-8 w-8");
 		expect(mic.className).not.toContain("bg-m-danger");
 		const send = screen.getByRole("button", { name: "发送" });
 		expect(send.className).toContain("bg-m-surface-2");
 		fireEvent.focus(screen.getByRole("textbox"));
 		// Toolbar stays mounted with zero button jumping or unmounting on focus.
 		expect(screen.getByRole("button", { name: /当前模型/ })).toBeTruthy();
-		expect(screen.getByRole("button", { name: /当前思考强度/ })).toBeTruthy();
 		expect(screen.getByRole("button", { name: /上下文用量/ })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "添加" })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "语音输入" })).toBe(mic);
@@ -136,7 +135,7 @@ describe("ComposerCapsule", () => {
   expect(onStop).toHaveBeenCalledTimes(1);
 	});
 
-	it("keeps model and thinking controls separate and truncates long model names cleanly", () => {
+	it("unifies model and English thinking trigger while truncating only long model names", () => {
 		const onModel = vi.fn();
 		const onThinking = vi.fn();
 		render(
@@ -152,19 +151,14 @@ describe("ComposerCapsule", () => {
 				onThinking={onThinking}
 			/>,
 		);
-		const modelBtn = screen.getByRole("button", { name: "当前模型：very-long-custom-model-slug，点击切换" });
+		const modelBtn = screen.getByRole("button", { name: "当前模型：very-long-custom-model-slug，思考强度：High，点击切换" });
 		expect(modelBtn.textContent).toContain("very-long-custom-model-slug");
+		expect(modelBtn.textContent).toContain("High");
 		expect(modelBtn.querySelector(".truncate")).not.toBeNull();
 		fireEvent.click(modelBtn);
 		expect(onModel).toHaveBeenCalledTimes(1);
 
-		const thinkBtn = screen.getByRole("button", { name: "当前思考强度：High，点击切换" });
-		expect(thinkBtn.textContent).toContain("High");
-		fireEvent.click(thinkBtn);
-		expect(onThinking).toHaveBeenCalledTimes(1);
-
 		const contextBtn = screen.getByRole("button", { name: "上下文用量：25%" });
-		expect(contextBtn.textContent).toBe("25%");
 		expect(contextBtn.querySelectorAll("circle")).toHaveLength(2);
 	});
 });

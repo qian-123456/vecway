@@ -55,15 +55,15 @@ function workspaceColour(id: string) {
 /** Compact, single-line status counts on collapsed group headers. */
 function Bubbles({ c }: { c: StatusCounts }) {
 	const entries = [
-		{ key: "working", value: c.working, label: "运行中", tone: "bg-m-accent-soft text-m-accent-soft-text" },
-		{ key: "awaiting", value: c.awaiting, label: "待回复", tone: "bg-m-warn-bg text-m-warn" },
-		{ key: "error", value: c.error, label: "出错", tone: "bg-m-danger-bg text-m-danger" },
-		{ key: "unread", value: c.unread, label: "未读", tone: "bg-m-success-bg text-m-success" },
+		{ key: "working", value: c.working, label: "运行中", tone: "text-m-accent" },
+		{ key: "awaiting", value: c.awaiting, label: "待回复", tone: "text-m-warn" },
+		{ key: "error", value: c.error, label: "出错", tone: "text-m-danger" },
+		{ key: "unread", value: c.unread, label: "未读", tone: "text-m-success" },
 	];
 	return (
-		<span aria-hidden="true" className="flex shrink-0 flex-nowrap items-center gap-1">
+		<span aria-hidden="true" className="flex shrink-0 flex-nowrap items-center gap-1.5">
 			{entries.filter((entry) => entry.value > 0).map((entry) => (
-				<span key={entry.key} title={`${entry.value} ${entry.label}`} className={`inline-flex min-w-5 items-center justify-center rounded-m-pill px-1.5 text-m-xs font-medium leading-5 tabular-nums ${entry.tone}`}>
+				<span key={entry.key} title={`${entry.value} ${entry.label}`} className={`inline-flex items-center text-[11px] font-medium leading-none tabular-nums ${entry.tone}`}>
 					{entry.value}
 				</span>
 			))}

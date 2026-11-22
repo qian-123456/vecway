@@ -1,5 +1,5 @@
 import { ArrowUp, ChevronDown, Mic, Plus, Square } from "lucide-react";
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Spinner } from "../../../ui";
 import { desktopThinkingLabel, shortModel } from "../lib/models";
 import { ContextIndicator } from "./ContextIndicator";
@@ -39,6 +39,8 @@ export function ComposerCapsule({
 	onInput,
 	onSync,
 	onUnmount,
+	onCanSendChange,
+	externalStopBar = false,
 	onFocusChange,
 	model,
 	thinking,
@@ -70,6 +72,10 @@ export function ComposerCapsule({
 	onSync?: (value: string) => void;
 	/** Final text when the capsule unmounts (save the unsent draft). */
 	onUnmount?: (value: string) => void;
+	/** Notifies parent when sendable state changes (used by outer ear bar for Stop placement). */
+	onCanSendChange?: (canSend: boolean) => void;
+	/** Parent renders an external Stop control when `working && canSend`. */
+	externalStopBar?: boolean;
 	onFocusChange?: (focused: boolean) => void;
 	model?: string | null;
 	thinking?: string | null;
@@ -85,9 +91,8 @@ export function ComposerCapsule({
 	const composing = useRef(false);
 	const raf = useRef(0);
 	const [hasText, setHasText] = useState(() => initialText.trim() !== "");
-	const [taWidth, setTaWidth] = useState(0);
-	const cb = useRef({ onSync, onInput, onUnmount });
-	cb.current = { onSync, onInput, onUnmount };
+	const cb = useRef({ onSync, onInput, onUnmount, onCanSendChange });
+	cb.current = { onSync, onInput, onUnmount, onCanSendChange };
 
 	/** Size textarea at its exact displayed width. */
 	const measure = useCallback(() => {
@@ -132,11 +137,9 @@ export function ComposerCapsule({
 		const el = ta.current;
 		if (!el) return;
 		let width = el.clientWidth;
-		setTaWidth(width);
 		const observer = new ResizeObserver(() => {
 			if (el.clientWidth === width) return;
 			width = el.clientWidth;
-			setTaWidth(width);
 			measure();
 		});
 		observer.observe(el);
@@ -197,7 +200,11 @@ export function ComposerCapsule({
 
 	const { recording, transcribing, toggleRecording } = useVoiceInput({ onTranscribed: insert });
 	const canSend = (hasText || hasExtra) && !busy;
-	const showStop = working && onStop != null;
+	const showPrimaryStop = working && onStop != null && !canSend;
+	const showInlineStopBar = working && onStop != null && canSend && !externalStopBar;
+	useEffect(() => {
+		cb.current.onCanSendChange?.(canSend);
+	}, [canSend]);
 	const submit = () => {
 		const text = ta.current?.value ?? "";
 		// A stale second click on Send must never become an implicit Stop request.
@@ -208,12 +215,26 @@ export function ComposerCapsule({
 	const thinkName = desktopThinkingLabel(thinking);
 	const hasModel = onModel != null || model != null;
 	const hasThinking = onThinking != null || thinking != null;
-	const compactContext = taWidth > 0 && taWidth < 340;
+	const modelTriggerLabel = hasThinking
+		? `当前模型：${modelName}，思考强度：${thinkName}，点击切换`
+		: `当前模型：${modelName}，点击切换`;
 
 	return (
-		<div className="relative flex flex-col rounded-(--m-composer-radius) border border-m-composer-border bg-m-composer-bg shadow-m-composer transition-[border-color,box-shadow,background-color] duration-(--m-dur-fast) focus-within:border-m-border-strong">
-			{top != null && <div className="p-2.5 pb-0">{top}</div>}
-
+		<>
+			{showInlineStopBar && (
+				<div className="mb-1.5 flex items-center justify-end px-2.5 text-m-xs">
+					<button
+						type="button"
+						aria-label="停止"
+						onClick={onStop}
+						className="px-1 py-0.5 font-medium whitespace-nowrap text-m-danger active:opacity-70"
+					>
+						停止
+					</button>
+				</div>
+			)}
+			<div className="relative flex flex-col rounded-(--m-composer-radius) border border-m-composer-border bg-m-composer-bg shadow-m-composer transition-[border-color,box-shadow,background-color] duration-(--m-dur-fast) focus-within:border-m-border-strong">
+				{top != null && <div className="p-2.5 pb-0">{top}</div>}
 			{/* Top Row: full-width auto-growing textarea only */}
 			<textarea
 				ref={ta}
@@ -250,41 +271,37 @@ export function ComposerCapsule({
 				className="m-selectable min-h-[42px] w-full min-w-0 resize-none bg-transparent px-4 pt-3 pb-1.5 text-m-md leading-6 text-m-text outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 placeholder:text-m-text-3"
 			/>
 
-			{/* Bottom Toolbar Row: always mounted so controls never jump or unmount on keyboard changes */}
+			{/* Bottom Toolbar Row: left (+, unified model+thinking), right (context ring, mic, single primary circle) */}
 			<div className="flex items-center justify-between gap-1.5 px-2.5 pt-0.5 pb-2 text-xs">
-				<div className="m-noscrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap">
+				<div className="flex min-w-0 flex-1 items-center gap-0.5">
 					<button
 						type="button"
 						aria-label="添加"
 						onClick={onPlus}
-						className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-m-text-2 transition-colors hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
+						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-m-text-2 transition-colors hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
 					>
-						<Plus size={19} strokeWidth={2} />
+						<Plus size={18} strokeWidth={2} />
 					</button>
 
-					{hasModel && (
+					{(hasModel || hasThinking) && (
 						<button
 							type="button"
-							aria-label={`当前模型：${modelName}，点击切换`}
-							onClick={onModel}
-							disabled={!onModel}
-							className="flex h-9 min-w-0 shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium whitespace-nowrap text-m-text transition-colors hover:bg-m-surface active:bg-m-surface-2 disabled:cursor-default"
+							aria-label={modelTriggerLabel}
+							onClick={onModel ?? onThinking}
+							disabled={!onModel && !onThinking}
+							className="flex h-8 min-w-0 max-w-full flex-initial items-center gap-1 rounded-lg px-2 text-left transition-colors hover:bg-m-surface active:bg-m-surface-2 disabled:cursor-default"
 						>
-							<span className="max-w-[132px] truncate">{modelName}</span>
-							<ChevronDown size={13} className="shrink-0 text-m-text-3" aria-hidden />
-						</button>
-					)}
-
-					{hasThinking && (
-						<button
-							type="button"
-							aria-label={`当前思考强度：${thinkName}，点击切换`}
-							onClick={onThinking ?? onModel}
-							disabled={!onThinking && !onModel}
-							className="flex h-9 shrink-0 items-center gap-1 rounded-lg px-2 text-xs whitespace-nowrap text-m-text-2 transition-colors hover:bg-m-surface active:bg-m-surface-2 disabled:cursor-default"
-						>
-							<span>{thinkName}</span>
-							<ChevronDown size={13} className="shrink-0 text-m-text-3" aria-hidden />
+							{hasModel && (
+								<span className="min-w-0 truncate text-[12.5px] font-medium text-m-text">
+									{modelName}
+								</span>
+							)}
+							{hasThinking && (
+								<span className="shrink-0 text-[11.5px] whitespace-nowrap text-m-text-3">
+									{thinkName}
+								</span>
+							)}
+							<ChevronDown size={12} className="shrink-0 text-m-text-3" aria-hidden />
 						</button>
 					)}
 
@@ -296,11 +313,12 @@ export function ComposerCapsule({
 						<button
 							type="button"
 							aria-label={`上下文用量：${contextText}`}
+							title={`上下文用量：${contextText}`}
 							onClick={onContext}
 							disabled={!onContext}
-							className={`flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs whitespace-nowrap transition-colors hover:bg-m-surface active:bg-m-surface-2 disabled:opacity-60 ${contextToneClass}`}
+							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-m-surface active:bg-m-surface-2 disabled:opacity-60 ${contextToneClass}`}
 						>
-							<ContextIndicator text={contextText} percent={contextPercent} compact={compactContext} />
+							<ContextIndicator text={contextText} percent={contextPercent} compact />
 						</button>
 					)}
 
@@ -310,43 +328,44 @@ export function ComposerCapsule({
 						aria-pressed={recording}
 						disabled={transcribing}
 						onClick={() => void toggleRecording()}
-						className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors ${
+						className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors ${
 							recording
 								? "m-pulse bg-m-danger text-white"
 								: "text-m-text-2 hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
 						}`}
 					>
-						{transcribing ? <Spinner size={16} /> : recording ? <Square size={13} fill="currentColor" /> : <Mic size={18} />}
+						{transcribing ? <Spinner size={15} /> : recording ? <Square size={12} fill="currentColor" /> : <Mic size={17} />}
 					</button>
 
-					{showStop && (
+					{showPrimaryStop ? (
 						<button
 							key="stop"
 							type="button"
 							aria-label="停止"
 							onClick={onStop}
-							className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-m-danger-bg text-m-danger transition-transform active:scale-95"
+							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-m-text text-m-bg transition-transform active:scale-95"
 						>
-							<Square size={13} fill="currentColor" />
+							<Square size={11} fill="currentColor" />
+						</button>
+					) : (
+						<button
+							key="send"
+							type="button"
+							aria-label="发送"
+							disabled={!canSend}
+							onClick={submit}
+							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
+								canSend
+									? "cursor-pointer bg-m-text text-m-bg shadow-xs active:scale-95"
+									: "cursor-not-allowed bg-m-surface-2 text-m-text-3"
+							}`}
+						>
+							{busy ? <Spinner size={15} /> : <ArrowUp size={16} strokeWidth={2.25} />}
 						</button>
 					)}
-
-					<button
-						key="send"
-						type="button"
-						aria-label="发送"
-						disabled={!canSend}
-						onClick={submit}
-						className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
-							canSend
-								? "cursor-pointer bg-m-text text-m-bg shadow-xs active:scale-95"
-								: "cursor-not-allowed bg-m-surface-2 text-m-text-3"
-						}`}
-					>
-						{busy ? <Spinner size={16} /> : <ArrowUp size={17} strokeWidth={2.25} />}
-					</button>
 				</div>
 			</div>
 		</div>
+		</>
 	);
 }

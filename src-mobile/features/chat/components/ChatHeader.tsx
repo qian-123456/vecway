@@ -24,7 +24,7 @@ export function ChatHeader({
 	onTitleClick?: () => void;
 	ariaLabel?: string;
 	onMenu: () => void;
-	onNew: () => void;
+	onNew?: () => void;
 	onTools?: () => void;
 	model?: string | null;
 	thinking?: string | null;
@@ -60,7 +60,7 @@ export function ChatHeader({
 			}
 			right={
 				<>
-					<IconButton variant="plain" size="md" icon={<SquarePen size={19} strokeWidth={1.85} />} label="新建对话" onClick={onNew} />
+					{onNew && <IconButton variant="plain" size="md" icon={<SquarePen size={19} strokeWidth={1.85} />} label="新建对话" onClick={onNew} />}
 					{onTools && <IconButton variant="plain" size="md" icon={<MoreHorizontal size={21} strokeWidth={1.85} />} label="工具菜单" onClick={onTools} />}
 				</>
 			}

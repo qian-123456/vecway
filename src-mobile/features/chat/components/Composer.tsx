@@ -4,7 +4,7 @@ import { api, errorMessage } from "../../../core/api";
 import { baseName } from "../../../core/lib/format";
 import { usePref } from "../../../core/stores/prefs";
 import { useSession } from "../../../core/stores/sessions";
-import { BottomSheet, Chip, IconButton, MenuRow, Spinner, Switch, toast } from "../../../ui";
+import { BottomSheet, IconButton, MenuRow, Spinner, Switch, toast } from "../../../ui";
 import { ActionTile } from "../../../ui/ActionTile";
 import { useChat, useChatUi } from "../ChatContext";
 import { contextTone, formatContextPercent, queueChipText, resolveContextPercent } from "../lib/context";
@@ -38,6 +38,7 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 	const [slashQuery, setSlashQuery] = useState<string | null>(null);
 	const [sheet, setSheet] = useState<Sheet>(null);
 	const [sketch, setSketch] = useState(false);
+	const [canSend, setCanSend] = useState(false);
 	const apiRef = useRef<ComposerApi | null>(null);
 	const saveTimer = useRef<number | undefined>(undefined);
 	const fileAny = useRef<HTMLInputElement>(null);
@@ -142,13 +143,12 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 			</div>
 		) : undefined;
 
+	const showEarBar = working || planOn || Boolean(goal) || Boolean(queued);
+
 	return (
 		<div
-			className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3.5 pt-2"
-			style={{
-				paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)",
-				transition: "padding-bottom var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1)",
-			}}
+			className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3 pt-1.5"
+			style={{ paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)" }}
 		>
 			{slashQuery !== null && sheet === null && <SlashPopup sessionId={sessionId} query={slashQuery} onPick={pickCommand} />}
 
@@ -174,6 +174,59 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 				</div>
 			)}
 
+			{showEarBar && (
+				<div className="mb-1.5 flex items-center justify-between gap-2 px-2.5 text-m-xs">
+					<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+						{working && (
+							<button
+								type="button"
+								aria-label={`发送方式：${BEHAVIOR_LABEL[behavior]}，点击切换`}
+								title={BEHAVIOR_HINT[behavior]}
+								onClick={() => setBehavior(behavior === "followUp" ? "steer" : "followUp")}
+								className="inline-flex items-center gap-1.5 font-medium whitespace-nowrap text-m-text active:opacity-70"
+							>
+								<span aria-hidden className="size-1.5 shrink-0 rounded-full bg-m-accent m-pulse" />
+								<span>{BEHAVIOR_LABEL[behavior]} ⇄</span>
+							</button>
+						)}
+						{planOn && (
+							<button
+								type="button"
+								onClick={() => void togglePlan()}
+								className="inline-flex items-center gap-1 whitespace-nowrap text-m-text-2 active:text-m-text"
+							>
+								<Lightbulb size={12} className="shrink-0 text-m-accent" aria-hidden />
+								<span>规划模式</span>
+								<X size={11} className="shrink-0 text-m-text-3" aria-hidden />
+							</button>
+						)}
+						{goal && (
+							<button
+								type="button"
+								onClick={() => setSheet("goal")}
+								className="inline-flex items-center gap-1 whitespace-nowrap text-m-text-2 active:text-m-text"
+							>
+								<Target size={12} className="shrink-0 text-m-text-3" aria-hidden />
+								<span>目标</span>
+							</button>
+						)}
+						{queued && (
+							<span className="whitespace-nowrap text-m-accent">{queued}</span>
+						)}
+					</div>
+					{working && canSend && (
+						<button
+							type="button"
+							aria-label="停止"
+							onClick={() => void controller.stop()}
+							className="shrink-0 px-1 py-0.5 font-medium whitespace-nowrap text-m-danger active:opacity-70"
+						>
+							停止
+						</button>
+					)}
+				</div>
+			)}
+
 			<ComposerCapsule
 				apiRef={apiRef}
 				initialText={controller.initialText}
@@ -187,6 +240,8 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 				onInput={onInput}
 				onSync={onSync}
 				onUnmount={onUnmount}
+				onCanSendChange={setCanSend}
+				externalStopBar
 				model={cstate?.model}
 				thinking={cstate?.thinkingLevel}
 				onModel={onOpenPicker}
@@ -195,39 +250,7 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 				contextPercent={pct}
 				contextToneClass={TONE_TEXT[tone]}
 				onContext={() => setSheet("context")}
-				extraLeft={
-					<>
-						{planOn && (
-							<Chip tone="accent" icon={<Lightbulb size={13} />} onClick={() => void togglePlan()} className="shrink-0 pr-2">
-								规划模式
-								<X size={13} aria-hidden />
-							</Chip>
-						)}
-						{queued && (
-							<Chip tone="accent" className="shrink-0">
-								{queued}
-							</Chip>
-						)}
-						{goal && (
-							<Chip icon={<Target size={13} />} onClick={() => setSheet("goal")} className="shrink-0">
-								目标
-							</Chip>
-						)}
-						{working && (
-							<button
-								type="button"
-								aria-label={`发送方式：${BEHAVIOR_LABEL[behavior]}，点击切换`}
-								title={BEHAVIOR_HINT[behavior]}
-								onClick={() => setBehavior(behavior === "followUp" ? "steer" : "followUp")}
-								className="flex h-8 shrink-0 items-center rounded-lg bg-m-accent-soft px-2 text-xs font-medium text-m-accent-soft-text active:opacity-80"
-							>
-								<span>{BEHAVIOR_LABEL[behavior]} ⇄</span>
-							</button>
-						)}
-					</>
-				}
 			/>
-
 			<input ref={fileAny} type="file" multiple hidden onChange={(e) => pickFiles(e, controller)} />
 			<input ref={fileCamera} type="file" accept="image/*" capture="environment" hidden onChange={(e) => pickFiles(e, controller, true)} />
 			<input ref={fileGallery} type="file" accept="image/*" multiple hidden onChange={(e) => pickFiles(e, controller, true)} />

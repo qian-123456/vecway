@@ -156,7 +156,7 @@ export function ModelThinkingSheet({
 					)}
 				</section>
 
-				<label className="mx-4 mt-6 flex min-h-12 items-center gap-3 rounded-m-pill bg-m-surface py-0.5 pr-1 pl-4">
+				<label className="mx-4 mt-6 flex min-h-11 items-center gap-3 rounded-[10px] border border-m-border bg-m-surface py-0.5 pr-1 pl-3.5">
 					<Search size={18} className="shrink-0 text-m-text-3" aria-hidden />
 					<input
 						type="search"

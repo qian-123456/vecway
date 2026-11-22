@@ -73,20 +73,18 @@ describe("MenuSheet (Left Navigation Sheet)", () => {
 		fireEvent.click(screen.getByRole("button", { name: "灵感收件箱" }));
 		expect(pushMock).toHaveBeenCalledWith("/ideas");
 
-		// 2. Middle section: Space selector & visible "按项目 / 按时间" segmented switch
-		const viewSwitch = screen.getByRole("radiogroup", { name: "切换视图" });
-		expect(viewSwitch).not.toBeNull();
-		const projectTab = screen.getByRole("radio", { name: "按项目" });
-		const timeTab = screen.getByRole("radio", { name: "按时间" });
-		expect(projectTab.getAttribute("aria-checked")).toBe("true");
-		expect(timeTab.getAttribute("aria-checked")).toBe("false");
+		// 2. Middle section: Desktop-parity Projects header with filter menu ("按项目 / 按时间")
+		const filterBtn = screen.getByRole("button", { name: "切换视图" });
+		expect(filterBtn).not.toBeNull();
+		fireEvent.click(filterBtn);
+		const projectItem = screen.getByRole("menuitemradio", { name: "按项目" });
+		const timeItem = screen.getByRole("menuitemradio", { name: "按时间" });
+		expect(projectItem.getAttribute("aria-checked")).toBe("true");
+		expect(timeItem.getAttribute("aria-checked")).toBe("false");
 
-		// Toggle view mode directly without dropdown
-		fireEvent.click(timeTab);
-		expect(timeTab.getAttribute("aria-checked")).toBe("true");
-		expect(projectTab.getAttribute("aria-checked")).toBe("false");
+		fireEvent.click(timeItem);
+		expect(screen.getByText("全部对话")).not.toBeNull();
 		const inboxBtn = screen.getByRole("button", { name: "收件箱" });
-		expect(inboxBtn).not.toBeNull();
 		fireEvent.click(inboxBtn);
 		expect(pushMock).toHaveBeenCalledWith("/inbox");
 
@@ -121,8 +119,9 @@ describe("MenuSheet (Left Navigation Sheet)", () => {
 		fireEvent.keyDown(document, { key: "Escape" });
 		expect(screen.queryByRole("menu", { name: "切换空间" })).toBeNull();
 		expect(onClose).not.toHaveBeenCalled();
-		const bottom = screen.getByRole("navigation", { name: "更多入口" });
-		expect(bottom.textContent).toBe("设置订阅与配额");
+		const bottom = screen.getByRole("contentinfo", { name: "更多入口" });
+		expect(bottom.contains(screen.getByRole("button", { name: "设置" }))).toBe(true);
+		expect(bottom.contains(screen.getByRole("button", { name: "订阅与配额" }))).toBe(true);
 		expect(bottom.contains(screen.getByRole("button", { name: "收件箱" }))).toBe(false);
 	});
 

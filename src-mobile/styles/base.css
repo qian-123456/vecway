@@ -169,14 +169,25 @@ body {
 	display: flex;
 	flex-direction: column;
 	height: var(--m-vh, 100dvh);
-	transition: height var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1);
 	transform: translateY(var(--m-vv-top, 0px));
 	min-height: 0;
 	overflow: hidden;
 	background: var(--m-bg);
 }
 html[data-kb-native="1"] .m-app {
+	height: 100dvh;
 	transform: none;
+}
+/* GPU-composited keyboard dock: translates without per-frame layout reflow. */
+html[data-kb-native="1"] .m-kb-dock {
+	transform: translate3d(0, calc(-1 * var(--m-kb, 0px)), 0);
+	transition: transform var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1);
+	will-change: transform;
+}
+html[data-kb-native="1"] .m-kb-lift {
+	transform: translate3d(0, calc(-0.32 * var(--m-kb, 0px)), 0);
+	transition: transform var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1);
+	will-change: transform;
 }
 .m-page {
 	flex: 1 1 auto;

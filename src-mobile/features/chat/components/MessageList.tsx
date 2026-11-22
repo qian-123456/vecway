@@ -304,7 +304,7 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 				</section>
 			)}
 			<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]">
-				<div ref={contentRef} className="pt-1 pb-4">
+				<div ref={contentRef} className="pt-1" style={{ paddingBottom: "calc(var(--m-kb, 0px) + 16px)" }}>
 					{showLoadOlder && (
 						<div className="flex justify-center py-3">
 							<Button size="sm" busy={loadingOlder} onClick={handleLoadOlder}>
