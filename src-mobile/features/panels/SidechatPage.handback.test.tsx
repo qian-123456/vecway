@@ -45,15 +45,17 @@ const status = (next: MobileSession["status"]) => {
 };
 const conclusion = () => screen.getByRole("textbox", { name: "结论" }) as HTMLTextAreaElement;
 // Button's status spinner contributes its loading label to the accessible name while busy.
-const summarize = () => screen.getByRole("button", { name: /^(?:加载中)?(让 AI 整理|重新整理)$/ }) as HTMLButtonElement;
+const summarize = () => screen.getByRole("button", { name: /^(?:加载中)?(AI 总结|重新 AI 总结)$/ }) as HTMLButtonElement;
 const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
 
 async function openSummary() {
 	render(<SidechatPage route={{ name: "sidechat", path: "/s/parent/sidechat", params: { id: "parent" }, query: {} }} />);
 	await flush();
-	fireEvent.click(screen.getByRole("button", { name: /方案讨论/ }));
+	fireEvent.click(button("发回主对话"));
 	await flush();
-	fireEvent.click(button("整理结论发回主对话"));
+	// Opening handback separates manual editing from AI summarize and must NOT auto-trigger a model turn.
+	expect(requests).toBe(0);
+	fireEvent.click(summarize());
 	await flush();
 	expect(summarize().getAttribute("aria-busy")).toBe("true");
 }

@@ -1,8 +1,8 @@
 import { CalendarClock, FolderGit2, History, Pencil, Play, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api, errorMessage } from "../../core/api";
 import { nav, paths } from "../../core/nav";
-import { BottomSheet, Button, Chip, confirm, EmptyState, IconButton, ListGroup, MenuRow, PageHeader, PullToRefresh, Switch, toast } from "../../ui";
+import { AnchoredPopover, Button, Chip, confirm, EmptyState, IconButton, ListGroup, MenuRow, PageHeader, PullToRefresh, Switch, toast } from "../../ui";
 import type { ChipTone } from "../../ui";
 import { LoadState, useLoad } from "./controls";
 import { cadenceText, LIFECYCLE_LABEL, scheduleMeta } from "./schedule";
@@ -14,12 +14,12 @@ const ICON = { size: 22, strokeWidth: 1.75 } as const;
 const lifecycleTone = (s: Schedule): ChipTone =>
 	s.lifecycle === "active" ? (s.enabled ? "success" : "neutral") : s.lifecycle === "paused" ? "warn" : "neutral";
 
-function ScheduleRow({ s, busy, onOpen, onToggle }: { s: Schedule; busy: boolean; onOpen: () => void; onToggle: () => void }) {
+function ScheduleRow({ s, busy, onOpen, onToggle }: { s: Schedule; busy: boolean; onOpen: (anchorEl: HTMLElement) => void; onToggle: () => void }) {
 	const meta = scheduleMeta(s);
 	return (
 		<div className="m-list-row flex w-full items-stretch pl-5" data-testid="schedule-card">
 			<div className="m-list-sep flex min-w-0 flex-1 items-center gap-2 pr-3">
-				<button type="button" onClick={onOpen} className="min-w-0 flex-1 py-3.5 text-left active:opacity-60">
+				<button type="button" onClick={(e) => onOpen(e.currentTarget)} className="min-w-0 flex-1 py-3.5 text-left active:opacity-60">
 					<span className="block text-m-md font-medium break-words text-m-text">{s.name}</span>
 					<span className="mt-0.5 block text-m-sm break-words text-m-text-2">{cadenceText(s.cadence)}</span>
 					<span className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -43,8 +43,10 @@ function ScheduleRow({ s, busy, onOpen, onToggle }: { s: Schedule; busy: boolean
 export function SchedulesPage() {
 	const { data, setData, error, loading, reload } = useLoad(() => api<Schedule[]>("GET", "/left/schedules"));
 	const [busy, setBusy] = useState<string | null>(null);
-	const [menuId, setMenuId] = useState<string | null>(null);
-	const menu = data?.find((s) => s.id === menuId) ?? null;
+	const [menuState, setMenuState] = useState<{ id: string; anchorEl: HTMLElement | null } | null>(null);
+	const lastAnchorRef = useRef<HTMLElement | null>(null);
+	const menu = data?.find((s) => s.id === menuState?.id) ?? null;
+	if (menuState?.anchorEl) lastAnchorRef.current = menuState.anchorEl;
 
 	const run = async (s: Schedule, action: () => Promise<unknown>, ok: string, fail: string) => {
 		setBusy(s.id);
@@ -63,17 +65,17 @@ export function SchedulesPage() {
 		return run(s, () => api("POST", `/left/schedules/${enc(s.id)}/enabled`, { enabled: !s.enabled }), "", "操作失败");
 	};
 	const runNow = async (s: Schedule) => {
-		setMenuId(null);
+		setMenuState(null);
 		if (!(await confirm({ title: "立即运行", message: `立即运行「${s.name}」一次？将创建新的会话执行该任务。`, confirmText: "运行" }))) return;
 		await run(s, () => api("POST", `/left/schedules/${enc(s.id)}/run`), "已触发运行", "运行失败");
 	};
 	const del = async (s: Schedule) => {
-		setMenuId(null);
+		setMenuState(null);
 		if (!(await confirm({ title: "删除自动化", message: `删除自动化「${s.name}」？此操作不可撤销。`, danger: true, confirmText: "删除" }))) return;
 		await run(s, () => api("DELETE", `/left/schedules/${enc(s.id)}`), "已删除", "删除失败");
 	};
 	const go = (path: string) => {
-		setMenuId(null);
+		setMenuState(null);
 		nav.push(path);
 	};
 
@@ -104,22 +106,31 @@ export function SchedulesPage() {
 						{error && <p className="m-selectable px-8 pb-2 text-m-sm break-words text-m-danger">刷新失败：{error}</p>}
 						<ListGroup note="轻点任务查看操作，开关控制是否按计划运行">
 							{data.map((s) => (
-								<ScheduleRow key={s.id} s={s} busy={busy === s.id} onOpen={() => setMenuId(s.id)} onToggle={() => void toggle(s)} />
+								<ScheduleRow key={s.id} s={s} busy={busy === s.id} onOpen={(el) => setMenuState({ id: s.id, anchorEl: el })} onToggle={() => void toggle(s)} />
 							))}
 						</ListGroup>
 					</div>
 				)}
 			</PullToRefresh>
-			<BottomSheet open={!!menu} onClose={() => setMenuId(null)} title={menu?.name} subtitle={menu ? cadenceText(menu.cadence) : undefined}>
+			<AnchoredPopover
+				open={!!menu}
+				onClose={() => setMenuState(null)}
+				anchorEl={menuState?.anchorEl ?? lastAnchorRef.current}
+				placement="bottom-start"
+				title={menu?.name}
+				subtitle={menu ? cadenceText(menu.cadence) : undefined}
+				maxWidth={320}
+				minWidth={220}
+			>
 				{menu && (
-					<div className="pb-2">
+					<div className="py-1.5">
 						<MenuRow icon={<Pencil {...ICON} />} label="编辑" onClick={() => go(paths.schedule(menu.id))} />
 						<MenuRow icon={<Play {...ICON} />} label="立即运行" hint="新建一个会话执行一次" disabled={busy === menu.id} onClick={() => void runNow(menu)} />
 						<MenuRow icon={<History {...ICON} />} label="运行记录" onClick={() => go(paths.scheduleRuns(menu.id))} />
 						<MenuRow icon={<Trash2 {...ICON} />} label="删除" danger disabled={busy === menu.id} onClick={() => void del(menu)} />
 					</div>
 				)}
-			</BottomSheet>
+			</AnchoredPopover>
 		</div>
 	);
 }

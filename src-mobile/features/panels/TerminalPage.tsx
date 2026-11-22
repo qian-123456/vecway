@@ -1,86 +1,189 @@
-import { Plus, RefreshCw, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import {
+	ArrowLeft,
+	Check,
+	Eraser,
+	Keyboard,
+	MessageSquarePlus,
+	MessagesSquare,
+	Plus,
+	RefreshCw,
+	Sparkles,
+	X,
+} from "lucide-react";
+import type { FitAddon as Fit } from "@xterm/addon-fit";
+import type { Terminal as XTerm } from "@xterm/xterm";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, apiUrl, errorMessage } from "../../core/api";
 import { createEventSource } from "../../core/nativeBridge";
+import { nav, paths, type PageProps } from "../../core/nav";
 import { events, type EventSourceLike } from "../../core/sse";
-import type { PageProps } from "../../core/nav";
 import { isUnauthorized, useConnection } from "../../core/stores/connection";
-import { Button, EmptyState, IconButton, PageHeader, confirm, toast } from "../../ui";
+import { Button, EmptyState, IconButton, PageHeader, confirm, inputCls, toast } from "../../ui";
+import { useKeyboardOpen } from "../chat/components/ComposerToolbar";
+import { abbreviateHomePath } from "../sessions/NewSessionSheet";
+import { SIDECHAT_DRAFT_PREFIX } from "./SidechatPage";
+import { fenced } from "./pure";
+import { useRightDrawer } from "./rightDrawerStore";
 import {
 	InputQueue,
-	TERMINAL_KEYS,
 	applyCtrl,
 	decodeChunk,
 	isTerminalGone,
 	isTerminalLimit,
 	parseExit,
 	reconnectDelay,
+	segmentTerminalBlocks,
+	stripAnsi,
+	type TerminalBlock,
 } from "./terminalPure";
-import { WorkspacePanelBar } from "./WorkspacePanelBar";
 
 type Phase = "connecting" | "connected" | "reconnecting" | "dropped" | "exited" | "error";
-type XTerm = import("@xterm/xterm").Terminal;
-type Fit = import("@xterm/addon-fit").FitAddon;
 
-const PHASE_LABEL: Record<Phase, string> = {
-	connecting: "连接中",
-	connected: "已连接",
-	reconnecting: "连接中断，重连中",
-	dropped: "连接断开，点击重连",
-	exited: "进程已退出",
-	error: "打开失败",
-};
+const MAX_CAPTURE_CHARS = 120_000;
+
+const COMPACT_SPECIAL_KEYS: ReadonlyArray<{ id: string; label: string; seq: string }> = [
+	{ id: "tab", label: "Tab", seq: "\t" },
+	{ id: "esc", label: "Esc", seq: "\x1b" },
+	{ id: "up", label: "↑", seq: "\x1b[A" },
+	{ id: "down", label: "↓", seq: "\x1b[B" },
+	{ id: "ctrl-c", label: "Ctrl+C", seq: "\x03" },
+];
 
 function cssVar(name: string, fallback: string): string {
 	return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
-/**
- * The terminal is dark in both schemes: in light mode the inverse text/page tokens give a dark
- * canvas with light text, in dark mode the code tokens do.
- */
+/** Follow active light/dark `--m-*` palette tokens without forcing pure black in light themes. */
 function terminalColors(): { background: string; foreground: string; cursor: string } {
 	const light = document.documentElement.dataset.scheme === "light";
-	const background = cssVar(light ? "--m-text" : "--m-code-bg", "black");
-	const foreground = cssVar(light ? "--m-bg" : "--m-code-text", "white");
-	return { background, foreground, cursor: foreground };
+	const background = cssVar(light ? "--m-card" : "--m-code-bg", cssVar("--m-bg", light ? "white" : "black"));
+	const foreground = cssVar("--m-text", light ? "black" : "white");
+	const cursor = cssVar("--m-accent", foreground);
+	return { background, foreground, cursor };
 }
 
-export function TerminalPage({ route }: PageProps) {
-	const sessionId = route.params.id;
+function statusDisplay(phase: Phase, hasOutput: boolean): { label: string; tone: "ok" | "wait" | "bad" } {
+	if (phase === "connected") {
+		return hasOutput ? { label: "已就绪", tone: "ok" } : { label: "等待终端响应…", tone: "wait" };
+	}
+	if (phase === "connecting") return { label: "连接中", tone: "wait" };
+	if (phase === "exited") return { label: "已退出", tone: "bad" };
+	return { label: "输出流断开 · 重连", tone: "bad" };
+}
+
+export function TerminalPanel({
+	sessionId,
+	embedded = false,
+	visible = true,
+}: {
+	sessionId: string;
+	embedded?: boolean;
+	visible?: boolean;
+}) {
 	const nextId = useRef(1);
 	const [tabs, setTabs] = useState([1]);
 	const tabsRef = useRef(tabs);
 	const [active, setActive] = useState(1);
+
 	const addTab = () => {
-		if (tabsRef.current.length >= 4) { toast("最多同时打开 4 个终端，请先关闭一个终端", { kind: "error" }); return; }
+		if (tabsRef.current.length >= 4) {
+			toast("最多同时打开 4 个终端，请先关闭一个终端", { kind: "error" });
+			return;
+		}
 		const id = ++nextId.current;
 		tabsRef.current = [...tabsRef.current, id];
 		setTabs(tabsRef.current);
 		setActive(id);
 	};
+
 	const removeTab = (id: number) => {
 		const remaining = tabsRef.current.filter((tab) => tab !== id);
 		tabsRef.current = remaining;
 		setTabs(remaining);
-		setActive((current) => current === id ? remaining[remaining.length - 1] ?? 0 : current);
+		setActive((current) => (current === id ? remaining[remaining.length - 1] ?? 0 : current));
 	};
+
+	const tabBar = (
+		<div className="flex shrink-0 items-center justify-between gap-2 border-b border-m-border px-3 py-1.5">
+			<div role="tablist" aria-label="终端实例" className="m-noscrollbar flex min-w-0 flex-1 gap-1.5 overflow-x-auto">
+				{tabs.map((id) => (
+					<button
+						key={id}
+						id={`terminal-tab-${id}`}
+						type="button"
+						role="tab"
+						aria-selected={active === id}
+						aria-controls={`terminal-pane-${id}`}
+						onClick={() => setActive(id)}
+						className={`min-h-8 shrink-0 rounded-m-pill px-3 text-m-xs font-medium whitespace-nowrap ${
+							active === id ? "bg-m-accent-soft text-m-accent-soft-text" : "bg-m-surface text-m-text-2"
+						}`}
+					>
+						终端 {id}
+					</button>
+				))}
+			</div>
+			{embedded && (
+				<IconButton variant="filled" size="sm" icon={<Plus size={17} strokeWidth={2} />} label="新终端" onClick={addTab} />
+			)}
+		</div>
+	);
+
+	const body = (
+		<div className="flex min-h-0 flex-1 flex-col bg-m-bg">
+			{tabBar}
+			{tabs.map((id) => (
+				<TerminalPane
+					key={id}
+					sessionId={sessionId}
+					tabId={id}
+					active={active === id && visible}
+					embedded={embedded}
+					onClosed={() => removeTab(id)}
+				/>
+			))}
+			{tabs.length === 0 && (
+				<EmptyState
+					title="终端已关闭"
+					hint="新建终端会启动独立的真实终端进程"
+					action={<Button onClick={addTab}>新终端</Button>}
+				/>
+			)}
+		</div>
+	);
+
+	if (embedded) return body;
+
 	return (
 		<div className="flex h-full flex-col bg-m-bg">
-			<PageHeader title="终端" right={<IconButton variant="filled" icon={<Plus size={22} strokeWidth={1.75} />} label="新终端" onClick={addTab} />} />
-			<WorkspacePanelBar sessionId={sessionId} current="terminal" />
-			<div role="tablist" aria-label="终端实例" className="m-noscrollbar flex shrink-0 gap-2 overflow-x-auto px-4 py-1">
-				{tabs.map((id) => <button key={id} id={`terminal-tab-${id}`} type="button" role="tab" aria-selected={active === id} aria-controls={`terminal-pane-${id}`} onClick={() => setActive(id)} className={`min-h-11 min-w-11 shrink-0 rounded-m-pill px-4 text-m-sm whitespace-nowrap ${active === id ? "bg-m-accent-soft text-m-accent-soft-text" : "bg-m-surface text-m-text-2"}`}>终端 {id}</button>)}
-			</div>
-			{tabs.map((id) => <TerminalPane key={id} sessionId={sessionId} tabId={id} active={active === id} onClosed={() => removeTab(id)} />)}
-			{tabs.length === 0 && <EmptyState title="终端已关闭" hint="新建终端会启动独立的真实终端进程" action={<Button onClick={addTab}>新终端</Button>} />}
+			<PageHeader
+				title="终端"
+				onBack={() => nav.back()}
+				right={<IconButton variant="filled" icon={<Plus size={22} strokeWidth={1.75} />} label="新终端" onClick={addTab} />}
+			/>
+			{body}
 		</div>
 	);
 }
 
-/** Each mounted pane owns one PTY; switching tabs does not recreate that process. */
-function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: string; tabId: number; active: boolean; onClosed: () => void }) {
+export function TerminalPage({ route }: PageProps) {
+	return <TerminalPanel sessionId={route.params.id} />;
+}
+
+/** Each mounted pane owns one PTY; switching tabs or collapsing the drawer keeps that process alive. */
+function TerminalPane({
+	sessionId,
+	tabId,
+	active,
+	embedded,
+	onClosed,
+}: {
+	sessionId: string;
+	tabId: number;
+	active: boolean;
+	embedded: boolean;
+	onClosed: () => void;
+}) {
 	const activeRef = useRef(active);
 	activeRef.current = active;
 	const host = useRef<HTMLDivElement>(null);
@@ -96,15 +199,33 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 	const lastSize = useRef("");
 	const queue = useRef<InputQueue | null>(null);
 	const ctrlRef = useRef(false);
+	const streamOpenRef = useRef(false);
+	const decoderRef = useRef<TextDecoder | null>(null);
+	const outputBufferRef = useRef("");
+
+	const kbOpen = useKeyboardOpen();
+	const [focused, setFocused] = useState(false);
 	const [ctrl, setCtrlState] = useState(false);
 	const [phase, setPhase] = useState<Phase>("connecting");
 	const [detail, setDetail] = useState("");
+	const [cwd, setCwd] = useState<string | null>(null);
+	const [hasOutput, setHasOutput] = useState(false);
+	const [streamOpen, setStreamOpen] = useState(false);
 	const [bg, setBg] = useState<string | null>(null);
-	const [fontSize, setFontSize] = useState(13);
+
+	const [selectMode, setSelectMode] = useState(false);
+	const [blocks, setBlocks] = useState<TerminalBlock[]>([]);
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+	const [comment, setComment] = useState("");
 
 	const setCtrl = (v: boolean) => {
 		ctrlRef.current = v;
 		setCtrlState(v);
+	};
+
+	const setStreamState = (open: boolean) => {
+		streamOpenRef.current = open;
+		setStreamOpen(open);
 	};
 
 	const sendResize = useCallback(() => {
@@ -121,20 +242,32 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 		const id = termId.current;
 		if (!id || !alive.current || isUnauthorized()) return;
 		source.current?.close();
+		setStreamState(false);
 		const es = createEventSource(apiUrl(`/terminal/${id}/stream`));
 		source.current = es;
 		es.onopen = () => {
 			if (source.current !== es || isUnauthorized()) return;
 			retries.current = 0;
-			// The server replays its backlog on every (re)attach: start from a clean screen.
+			// The server replays its backlog on every (re)attach: reset terminal and capture buffer cleanly.
 			term.current?.reset();
+			outputBufferRef.current = "";
+			decoderRef.current = typeof TextDecoder !== "undefined" ? new TextDecoder("utf-8") : null;
+			setHasOutput(false);
+			setStreamState(true);
 			setPhase("connected");
 			setDetail("");
 		};
 		es.addEventListener("data", (ev) => {
 			if (source.current !== es || isUnauthorized()) return;
 			try {
-				term.current?.write(decodeChunk(ev.data));
+				const bytes = decodeChunk(ev.data);
+				term.current?.write(bytes);
+				if (bytes.length > 0) setHasOutput(true);
+				const decoded = decoderRef.current ? decoderRef.current.decode(bytes, { stream: true }) : String.fromCharCode(...bytes);
+				if (decoded) {
+					const next = outputBufferRef.current + decoded;
+					outputBufferRef.current = next.length > MAX_CAPTURE_CHARS ? next.slice(next.length - MAX_CAPTURE_CHARS) : next;
+				}
 			} catch (err) {
 				console.error("terminal data", err);
 			}
@@ -142,6 +275,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 		es.addEventListener("exit", (ev) => {
 			if (source.current !== es || isUnauthorized()) return;
 			exited.current = true;
+			setStreamState(false);
 			es.close();
 			if (source.current === es) source.current = null;
 			const code = parseExit(ev.data);
@@ -151,6 +285,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 		es.onerror = (ev) => {
 			if (source.current !== es || isUnauthorized()) return;
 			if (exited.current || !alive.current) return;
+			setStreamState(false);
 			es.close();
 			if (source.current === es) source.current = null;
 			if (ev instanceof Error && ev.message === "channel_switched") {
@@ -166,7 +301,10 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 				return;
 			}
 			retries.current += 1;
-			if (!activeRef.current || document.visibilityState === "hidden") { setPhase("dropped"); return; }
+			if (!activeRef.current || document.visibilityState === "hidden") {
+				setPhase("dropped");
+				return;
+			}
 			const delay = reconnectDelay(retries.current);
 			if (delay === null) {
 				setPhase("dropped");
@@ -185,6 +323,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 		window.clearTimeout(retryTimer.current);
 		source.current?.close();
 		source.current = null;
+		setStreamState(false);
 		queue.current?.clear();
 		termId.current = null;
 	}, []);
@@ -196,6 +335,8 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 		const generation = authGeneration.current;
 		exited.current = false;
 		retries.current = 0;
+		setHasOutput(false);
+		setStreamState(false);
 		setPhase("connecting");
 		setDetail("");
 		try {
@@ -204,13 +345,14 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 			/* host not laid out yet; defaults are used */
 		}
 		try {
-			const res = await api<{ termId: string }>("POST", "/terminal", { sessionId, cols: t.cols, rows: t.rows });
+			const res = await api<{ termId: string; cwd?: string }>("POST", "/terminal", { sessionId, cols: t.cols, rows: t.rows });
 			if (isUnauthorized() || generation !== authGeneration.current) return;
 			if (!alive.current) {
 				api("DELETE", `/terminal/${res.termId}`).catch(() => {});
 				return;
 			}
 			termId.current = res.termId;
+			if (res.cwd) setCwd(res.cwd);
 			lastSize.current = `${t.cols}x${t.rows}`;
 			attach();
 		} catch (e) {
@@ -225,6 +367,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 		try {
 			await closeTerm();
 			term.current?.reset();
+			outputBufferRef.current = "";
 			await open();
 		} catch (e) {
 			setPhase("error");
@@ -253,7 +396,6 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 	const reconnect = useCallback(async () => {
 		const t = term.current;
 		if (!termId.current || exited.current || !t) return openNew();
-		// The server reaps a detached PTY after 60 s (e.g. the tab was suspended): probe it first.
 		try {
 			await api("POST", `/terminal/${termId.current}/resize`, { cols: t.cols, rows: t.rows });
 		} catch (e) {
@@ -271,6 +413,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 			window.clearTimeout(retryTimer.current);
 			source.current?.close();
 			source.current = null;
+			setStreamState(false);
 			queue.current?.clear();
 			termId.current = null;
 			setPhase("dropped");
@@ -293,13 +436,14 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 			]);
 			const el = host.current;
 			if (!alive.current || !el) return;
+			const colors = terminalColors();
 			const t = new Terminal({
 				fontFamily: cssVar("--m-font-mono", "monospace"),
 				fontSize: 13,
 				cursorBlink: true,
 				scrollback: 3000,
 				allowProposedApi: false,
-				theme: terminalColors(),
+				theme: colors,
 			});
 			const f = new FitAddon();
 			t.loadAddon(f);
@@ -309,17 +453,29 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 			queue.current = new InputQueue(
 				(data) => {
 					const id = termId.current;
-					if (!id || exited.current) return Promise.reject(new Error("终端未连接"));
+					if (!id || exited.current || !streamOpenRef.current) {
+						return Promise.reject(new Error("终端输出流未连接"));
+					}
 					return api("POST", `/terminal/${id}/input`, { data });
 				},
 				(e) => toast(`发送失败：${errorMessage(e)}`, { kind: "error" }),
 			);
-			// xterm's hidden textarea handles IME composition; onData only fires with committed text.
+			// Gate input when SSE stream is disconnected so invisible commands are never sent silently.
 			const dataSub = t.onData((raw) => {
+				if (!streamOpenRef.current || !termId.current || exited.current) {
+					toast("输出流未连接，请先重连", { kind: "error" });
+					return;
+				}
 				const { data, consumed } = applyCtrl(raw, ctrlRef.current);
 				if (consumed) setCtrl(false);
 				queue.current?.push(data);
 			});
+			const textarea = t.textarea;
+			const onFocus = () => setFocused(true);
+			const onBlur = () => setFocused(false);
+			textarea?.addEventListener("focus", onFocus);
+			textarea?.addEventListener("blur", onBlur);
+
 			let frame = 0;
 			const ro = new ResizeObserver(() => {
 				if (frame) return;
@@ -336,8 +492,14 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 			});
 			ro.observe(el);
 			const onVisible = () => {
-				if (document.visibilityState === "hidden") { window.clearTimeout(retryTimer.current); return; }
-				if (activeRef.current && termId.current && !exited.current && !source.current) { retries.current = 0; attach(); }
+				if (document.visibilityState === "hidden") {
+					window.clearTimeout(retryTimer.current);
+					return;
+				}
+				if (activeRef.current && termId.current && !exited.current && !source.current) {
+					retries.current = 0;
+					attach();
+				}
 			};
 			document.addEventListener("visibilitychange", onVisible);
 			const offResync = events.on("resync", () => {
@@ -355,12 +517,14 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 				setBg(c.background);
 			});
 			schemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-theme"] });
-			setBg(terminalColors().background);
+			setBg(colors.background);
 			cleanup = () => {
 				offResync();
 				document.removeEventListener("visibilitychange", onVisible);
 				schemeObserver.disconnect();
 				ro.disconnect();
+				textarea?.removeEventListener("focus", onFocus);
+				textarea?.removeEventListener("blur", onBlur);
 				if (frame) cancelAnimationFrame(frame);
 				dataSub.dispose();
 				t.dispose();
@@ -385,85 +549,339 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 	}, [open, attach, closeTerm, sendResize]);
 
 	useEffect(() => {
-		if (!active) { window.clearTimeout(retryTimer.current); return; }
+		if (!active) {
+			window.clearTimeout(retryTimer.current);
+			return;
+		}
 		const frame = requestAnimationFrame(() => {
 			const t = term.current;
 			if (!t) return;
-			t.options.fontSize = fontSize;
-			try { fit.current?.fit(); } catch { /* The host may still be laying out. */ }
+			try {
+				fit.current?.fit();
+			} catch {
+				/* The host may still be laying out. */
+			}
 			sendResize();
 			if (termId.current && !exited.current && !source.current && document.visibilityState === "visible") attach();
 		});
 		return () => cancelAnimationFrame(frame);
-	}, [active, fontSize, attach, sendResize]);
+	}, [active, attach, sendResize]);
 
 	const paste = async () => {
 		try {
 			if (!navigator.clipboard?.readText) throw new Error("浏览器不支持读取剪贴板，请长按终端粘贴");
 			const text = await navigator.clipboard.readText();
-			if (!termId.current || exited.current) throw new Error("终端未连接");
+			if (!termId.current || exited.current || !streamOpenRef.current) throw new Error("终端输出流未连接");
 			if (text) term.current?.paste(text);
 			term.current?.focus();
-		} catch (e) { toast(`粘贴失败：${errorMessage(e)}`, { kind: "error" }); }
+		} catch (e) {
+			toast(`粘贴失败：${errorMessage(e)}`, { kind: "error" });
+		}
 	};
 
 	const sendKey = (seq: string) => {
-		if (!termId.current || exited.current) {
-			toast("终端未连接", { kind: "error" });
+		if (!termId.current || exited.current || !streamOpenRef.current) {
+			toast("输出流未连接，请先重连", { kind: "error" });
 			return;
 		}
 		queue.current?.push(seq);
 	};
 
-	const bad = phase === "dropped" || phase === "error" || phase === "reconnecting" || phase === "exited";
-	return (
-		<div id={`terminal-pane-${tabId}`} role="tabpanel" aria-labelledby={`terminal-tab-${tabId}`} hidden={!active} className="min-h-0 flex-1 flex-col" style={{ display: active ? "flex" : "none", paddingBottom: "calc(var(--m-safe-bottom) + 100px)" }}>
-			<div className="flex shrink-0 items-center justify-between gap-2 px-5 pt-1 pb-2">
-				<div role="status" className={`flex min-w-0 flex-wrap items-center gap-2 text-m-xs ${bad ? "text-m-danger" : "text-m-text-3"}`}>
-					<span aria-hidden className={`h-2 w-2 shrink-0 rounded-m-pill ${phase === "connected" ? "bg-m-success" : bad ? "bg-m-danger" : "m-pulse bg-m-accent"}`} />
-					<span>{PHASE_LABEL[phase]}</span>
+	const openBlockSelect = () => {
+		const cleaned = stripAnsi(outputBufferRef.current);
+		const parsed = segmentTerminalBlocks(cleaned);
+		setBlocks(parsed);
+		setSelectedIds(new Set());
+		setComment("");
+		setSelectMode(true);
+	};
+
+	const selectedBlocks = useMemo(() => blocks.filter((b) => selectedIds.has(b.id)), [blocks, selectedIds]);
+
+	const dispatchAnnotation = (target: "main" | "sidechat") => {
+		if (selectedBlocks.length === 0) return;
+		const combined = selectedBlocks.map((b) => b.text).join("\n\n");
+		const payload = {
+			quote: fenced(combined, "text"),
+			...(comment.trim() ? { comment: comment.trim() } : {}),
+			sourceLabel: "终端输出",
+		};
+		setSelectMode(false);
+		setSelectedIds(new Set());
+		setComment("");
+		if (target === "main") {
+			useRightDrawer.getState().sendToMainChat(sessionId, payload);
+			if (!embedded) nav.push(paths.chat(sessionId));
+		} else {
+			if (embedded) {
+				useRightDrawer.getState().openSidechatWithAnnotation(sessionId, payload);
+			} else {
+				const quoted = payload.quote.split("\n").map((l) => `> ${l}`).join("\n");
+				const text = payload.comment ? `[来自：终端输出]\n${quoted}\n\n${payload.comment}` : `[来自：终端输出]\n${quoted}\n\n`;
+				sessionStorage.setItem(`${SIDECHAT_DRAFT_PREFIX}${sessionId}`, text);
+				nav.push(paths.sidechat(sessionId));
+			}
+		}
+	};
+
+	const status = statusDisplay(phase, hasOutput);
+	const bad = status.tone === "bad";
+	const inputActive = kbOpen || focused;
+	const disconnected = !streamOpen && (phase === "dropped" || phase === "reconnecting" || phase === "error" || phase === "exited");
+
+	if (selectMode) {
+		return (
+			<div
+				id={`terminal-pane-${tabId}`}
+				role="tabpanel"
+				aria-labelledby={`terminal-tab-${tabId}`}
+				hidden={!active}
+				className="min-h-0 flex-1 flex-col bg-m-bg"
+				style={{ display: active ? "flex" : "none" }}
+			>
+				<div className="flex shrink-0 items-center justify-between gap-2 border-b border-m-border px-3 py-2">
+					<button
+						type="button"
+						onClick={() => setSelectMode(false)}
+						className="inline-flex min-h-9 items-center gap-1 rounded-m-pill px-2 text-m-xs font-medium whitespace-nowrap text-m-accent active:bg-m-surface"
+					>
+						<ArrowLeft size={16} />
+						返回终端
+					</button>
+					<span className="text-m-xs font-medium whitespace-nowrap text-m-text-2">已选 {selectedIds.size} 段</span>
+					{blocks.length > 0 && (
+						<button
+							type="button"
+							onClick={() =>
+								setSelectedIds((prev) =>
+									prev.size === blocks.length ? new Set() : new Set(blocks.map((b) => b.id)),
+								)
+							}
+							className="min-h-9 rounded-m-pill px-2.5 text-m-xs font-medium whitespace-nowrap text-m-accent active:bg-m-surface"
+						>
+							{selectedIds.size === blocks.length ? "取消全选" : "全选"}
+						</button>
+					)}
 				</div>
-				<div className="flex shrink-0 gap-1">
-					{bad && <IconButton variant="plain" icon={<RefreshCw size={20} strokeWidth={1.75} />} label="重连终端" onClick={() => void reconnect()} />}
-					<IconButton variant="plain" icon={<X size={20} strokeWidth={1.75} />} label={`关闭终端 ${tabId}`} onClick={() => void handleClose()} />
+				<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+					{blocks.length === 0 ? (
+						<EmptyState
+							title="还没有可发送的终端输出"
+							hint="在终端运行命令并产生输出后，这里会自动按命令与输出分段"
+						/>
+					) : (
+						<div className="space-y-2.5">
+							{blocks.map((b) => {
+								const checked = selectedIds.has(b.id);
+								return (
+									<button
+										key={b.id}
+										type="button"
+										aria-pressed={checked}
+										onClick={() =>
+											setSelectedIds((prev) => {
+												const next = new Set(prev);
+												if (next.has(b.id)) next.delete(b.id);
+												else next.add(b.id);
+												return next;
+											})
+										}
+										className={`block w-full rounded-m-lg border p-3 text-left transition-colors ${
+											checked ? "border-m-accent bg-m-accent-soft/25" : "border-m-border bg-m-card"
+										}`}
+									>
+										<div className="mb-1.5 flex items-center justify-between gap-2">
+											<span className="min-w-0 truncate font-m-mono text-m-xs font-medium text-m-text-2">
+												{b.command ? `$ ${b.command}` : `输出片段（${b.lineCount} 行）`}
+											</span>
+											<span
+												aria-hidden
+												className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
+													checked ? "border-m-accent bg-m-accent text-m-accent-text" : "border-m-border-strong bg-m-surface"
+												}`}
+											>
+												{checked && <Check size={13} strokeWidth={2.5} />}
+											</span>
+										</div>
+										<pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-all font-m-mono text-m-xs leading-5 text-m-text">
+											{b.text}
+										</pre>
+									</button>
+								);
+							})}
+						</div>
+					)}
 				</div>
-			</div>
-			{detail && <p role={bad ? "status" : undefined} className={`m-selectable px-5 pb-2 text-m-sm break-words ${bad ? "text-m-danger" : "text-m-text-3"}`}>{detail}</p>}
-			<div className="min-h-0 flex-1 px-3 pb-1">
-				<div className="h-full overflow-hidden rounded-m-lg p-3" style={bg ? { background: bg } : undefined}>
-					<div ref={host} onClick={() => term.current?.focus()} className="h-full w-full overflow-hidden" />
-				</div>
-			</div>
-			{active && createPortal(
-				<div className="fixed inset-x-0 z-20 bg-m-bg px-3 pt-1" style={{ bottom: "var(--m-kb, 0px)", paddingBottom: "calc(var(--m-safe-bottom) + 4px)" }}>
-					<div className="m-noscrollbar flex items-center gap-2 overflow-x-auto">
-						<KeyButton onPress={() => void paste()}>粘贴</KeyButton>
-						<KeyButton onPress={() => term.current?.clear()}>清屏</KeyButton>
-						<KeyButton onPress={() => setFontSize((size) => Math.max(11, size - 1))}>字号−</KeyButton>
-						<KeyButton onPress={() => setFontSize((size) => Math.min(22, size + 1))}>字号＋</KeyButton>
-						<KeyButton onPress={() => term.current?.blur()}>收起键盘</KeyButton>
+				<div className="shrink-0 space-y-2 border-t border-m-border bg-m-bg px-3 pt-2.5" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 8px)" }}>
+					<input
+						type="text"
+						value={comment}
+						onChange={(e) => setComment(e.target.value)}
+						aria-label="批注说明"
+						placeholder="添加批注说明（可选）..."
+						className={`${inputCls} rounded-m-lg py-2 text-m-sm`}
+					/>
+					<div className="flex gap-2">
+						<Button
+							variant="tonal"
+							className="flex-1"
+							icon={<MessageSquarePlus size={16} />}
+							disabled={selectedIds.size === 0}
+							onClick={() => dispatchAnnotation("main")}
+						>
+							批注
+						</Button>
+						<Button
+							variant="primary"
+							className="flex-1"
+							icon={<MessagesSquare size={16} />}
+							disabled={selectedIds.size === 0}
+							onClick={() => dispatchAnnotation("sidechat")}
+						>
+							批注到辅助对话
+						</Button>
 					</div>
-					<div className="m-noscrollbar flex items-center gap-2 overflow-x-auto">
-						{TERMINAL_KEYS.map((key) => (
-							<span key={key.id} className="flex shrink-0 items-center gap-2">
+				</div>
+			</div>
+		);
+	}
+
+	return (
+		<div
+			id={`terminal-pane-${tabId}`}
+			role="tabpanel"
+			aria-labelledby={`terminal-tab-${tabId}`}
+			hidden={!active}
+			className="min-h-0 flex-1 flex-col"
+			style={{ display: active ? "flex" : "none" }}
+		>
+			<div className="flex shrink-0 items-center justify-between gap-2 px-3 pt-1.5 pb-1">
+				<div className="flex min-w-0 flex-1 items-center gap-2">
+					{cwd && (
+						<span className="min-w-0 truncate rounded-m-pill bg-m-surface px-2.5 py-0.5 font-m-mono text-m-xs text-m-text-2">
+							{abbreviateHomePath(cwd)}
+						</span>
+					)}
+					<div role="status" className={`flex shrink-0 items-center gap-1.5 text-m-xs whitespace-nowrap ${bad ? "text-m-danger" : "text-m-text-3"}`}>
+						<span
+							aria-hidden
+							className={`h-2 w-2 shrink-0 rounded-full ${
+								status.tone === "ok" ? "bg-m-success" : bad ? "bg-m-danger" : "m-pulse bg-m-accent"
+							}`}
+						/>
+						<span>{status.label}</span>
+					</div>
+				</div>
+				<div className="flex shrink-0 items-center gap-0.5">
+					{bad && (
+						<IconButton variant="plain" size="sm" icon={<RefreshCw size={17} strokeWidth={1.75} />} label="重连终端" onClick={() => void reconnect()} />
+					)}
+					<IconButton variant="plain" size="sm" icon={<X size={17} strokeWidth={1.75} />} label={`关闭终端 ${tabId}`} onClick={() => void handleClose()} />
+				</div>
+			</div>
+
+			{detail && (
+				<p role={bad ? "status" : undefined} className={`m-selectable shrink-0 px-3 pb-1 text-m-xs break-words ${bad ? "text-m-danger" : "text-m-text-3"}`}>
+					{detail}
+				</p>
+			)}
+
+			{disconnected && (
+				<div role="status" className="mx-3 mb-1.5 flex shrink-0 items-center justify-between gap-2 rounded-m-md bg-m-warn-bg px-3 py-1.5 text-m-xs text-m-warn">
+					<span className="min-w-0 flex-1">{phase === "exited" ? "终端进程已退出，输入已暂停" : "输出流已断开，暂不可输入"}</span>
+					<Button size="sm" variant="tonal" onClick={() => void reconnect()}>
+						{phase === "exited" ? "重启" : "重连"}
+					</Button>
+				</div>
+			)}
+
+			<div className="min-h-0 flex-1 px-3 pb-1.5">
+				<div
+					onClick={() => {
+						term.current?.focus();
+						setFocused(true);
+					}}
+					className="relative h-full overflow-hidden rounded-m-lg border border-m-border p-2.5"
+					style={bg ? { background: bg } : undefined}
+				>
+					<div ref={host} className="h-full w-full overflow-hidden" />
+					{!hasOutput && (phase === "connecting" || phase === "connected") && (
+						<div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+							<span className="m-shimmer rounded-m-pill bg-m-bg-elev/90 px-3.5 py-1.5 text-m-xs text-m-text-2 shadow-m-card">
+								{phase === "connecting" ? "正在启动终端…" : "等待终端响应…"}
+							</span>
+						</div>
+					)}
+					{hasOutput && streamOpen && !focused && (
+						<div className="pointer-events-none absolute right-2.5 bottom-2.5">
+							<span className="rounded-m-pill bg-m-bg-elev/90 px-2.5 py-1 text-m-xs text-m-text-3 shadow-m-card">
+								轻点终端区域开始输入
+							</span>
+						</div>
+					)}
+				</div>
+			</div>
+
+			<div className="shrink-0 border-t border-m-border bg-m-bg px-3 pt-1.5" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 6px)" }}>
+				{!inputActive ? (
+					<div className="m-noscrollbar flex items-center gap-1.5 overflow-x-auto pb-0.5">
+						<KeyButton
+							onPress={() => {
+								term.current?.focus();
+								setFocused(true);
+							}}
+						>
+							<Keyboard size={14} className="mr-1" />
+							键盘/输入
+						</KeyButton>
+						<KeyButton onPress={openBlockSelect}>
+							<Sparkles size={14} className="mr-1" />
+							发给 AI
+						</KeyButton>
+						<KeyButton onPress={() => term.current?.clear()}>
+							<Eraser size={14} className="mr-1" />
+							清屏
+						</KeyButton>
+						<KeyButton onPress={() => void reconnect()}>
+							<RefreshCw size={14} className="mr-1" />
+							重连
+						</KeyButton>
+					</div>
+				) : (
+					<div className="m-noscrollbar flex items-center gap-1.5 overflow-x-auto pb-0.5">
+						{COMPACT_SPECIAL_KEYS.map((key) => (
+							<span key={key.id} className="flex shrink-0 items-center gap-1.5">
 								<KeyButton onPress={() => sendKey(key.seq)}>{key.label}</KeyButton>
-								{key.id === "esc" && <KeyButton active={ctrl} onPress={() => setCtrl(!ctrlRef.current)}>Ctrl</KeyButton>}
+								{key.id === "esc" && (
+									<KeyButton active={ctrl} onPress={() => setCtrl(!ctrlRef.current)}>
+										Ctrl
+									</KeyButton>
+								)}
 							</span>
 						))}
+						<KeyButton onPress={() => void paste()}>粘贴</KeyButton>
+						<KeyButton onPress={openBlockSelect}>发给 AI</KeyButton>
+						<KeyButton
+							onPress={() => {
+								term.current?.blur();
+								setFocused(false);
+							}}
+						>
+							收起
+						</KeyButton>
 					</div>
-				</div>, document.body,
-			)}
+				)}
+			</div>
 		</div>
 	);
 }
 
-/** 36px tonal capsule with a 44px hit area. */
 function KeyButton({
 	children,
 	onPress,
 	active = false,
 }: {
-	children: string;
+	children: ReactNode;
 	onPress: () => void;
 	active?: boolean;
 }) {
@@ -474,10 +892,10 @@ function KeyButton({
 			// Keep the soft keyboard up: do not steal focus from xterm's textarea.
 			onPointerDown={(e) => e.preventDefault()}
 			onClick={onPress}
-			className="flex min-h-11 shrink-0 items-center"
+			className="flex min-h-10 shrink-0 items-center"
 		>
 			<span
-				className={`flex h-9 min-w-12 items-center justify-center rounded-m-pill px-4 text-m-sm font-medium whitespace-nowrap ${
+				className={`flex h-8 items-center justify-center rounded-m-pill px-3 text-m-xs font-medium whitespace-nowrap ${
 					active ? "bg-m-accent text-m-accent-text" : "bg-m-surface text-m-text active:bg-m-surface-2"
 				}`}
 			>

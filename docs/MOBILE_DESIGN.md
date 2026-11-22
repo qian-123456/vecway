@@ -12,8 +12,9 @@ other third-party brand asset. System fonts + `lucide-react` icons + our own `Ap
 
 ## 1. Personality
 
-**Gemini iOS look, ChatGPT iOS interaction logic.**
+**Agentic coding & AI-first workbench; Gemini iOS look, ChatGPT iOS interaction logic.**
 
+- **Agentic coding & AI-first** (see [`AGENTS.md`](../AGENTS.md#product-direction)): this mobile client is built for directing, reviewing, annotating, and steering AI coding agents—not as a traditional manual-coding IDE. Do not carry over legacy manual-coding IDE chrome; keep workspace surfaces focused on review, annotation, steering, and verification.
 - Calm, borderless, generous. Separation comes from surface tone and spacing, not outlines.
   Hairline borders only for inset list separators and inputs.
 - Big round shapes: default 44px circle icon buttons (small discs can sit inside the same hit
@@ -23,10 +24,13 @@ other third-party brand asset. System fonts + `lucide-react` icons + our own `Ap
 - Content first: assistant text is plain full-width text on the page; the user's message is a
   soft capsule bubble on the right. Machine detail (tools, thinking) is one quiet line that
   expands on tap.
-- ChatGPT interaction logic: plus button opens an attachment/actions sheet; model title opens a
-  picker sheet; tap a collapsed line to expand; long-press a message for actions; swipe from
-  the left edge (or tap ≡) for the drawer; floating ↓ button when scrolled up. Stop stays
-  available while generating; a new draft can expose Send beside it rather than replacing it.
+- Contextual & drawer interaction logic: top-bar and inline triggers open `AnchoredPopover`
+  pull-down/contextual popovers from the trigger origin (no bottom-sheet-for-everything); the
+  plus button opens a composer actions sheet; tap a collapsed line to expand; long-press a
+  message or select text for contextual actions; swipe from the left edge (or tap ≡) for the
+  session drawer; swipe from the right edge (or tap the right drawer button) for
+  `RightWorkspaceDrawer`; floating ↓ button when scrolled up. Stop stays available while
+  generating; a new draft can expose Send beside it rather than replacing it.
 
 ## 2. Tokens (`styles/tokens.css`)
 
@@ -104,6 +108,7 @@ Elevation: `--m-shadow-card` is `none` in dark mode and a subtle
 | `TopBar` | 56px row under safe area: left slot, flexible centre, right slot; page background, no border | used by home + chat |
 | `PageHeader` | sub-page header: filled circle back button, 17/600 centred title (+ optional subtitle), right slot; `large` adds a 28px left-aligned title below the bar | `onBack={false}` hides back |
 | `BottomSheet` | `--m-bg-elev`, top radius 28, grab handle 36×5. Default (menu) sheet: auto height, centred 17/600 title. `fullHeight`: visual viewport height minus safe top and 12px; handle, close circle top-right, large left title | drag header down / scrim / back closes |
+| `AnchoredPopover` | pull-down / contextual popover anchored to `anchorEl` or `anchorRect`, clamped inside viewport, `z-(--z-popover)` / `z-(--z-menu)` | top-bar pickers, inline controls, selection actions; replaces bottom-sheet-for-everything |
 | `ListGroup` + `ListRow` | 24-radius `--m-card` card; rows ≥ 56px: 22px icon in `--m-text-2`, 17px label, optional 13px subtitle, right value + chevron; separators inset to the label start | `ListGroup title?` renders the 13px grey section label above |
 | `MenuRow` | flat row for action sheets (no card): icon + label (+ hint), ≥ 52px | ChatGPT-style menus |
 | `Switch`, `Segmented`, `Stepper` | switch: 51×31 track in a ≥44px-high target; segmented: `--m-surface` track, `--m-segment-on` selected pill, ≥44×44px segments; stepper: non-shrinking 44×44 circle ± buttons and a 44px-high numeric input with ≥44px width | shared `controls.tsx` |
@@ -113,25 +118,34 @@ Elevation: `--m-shadow-card` is `none` in dark mode and a subtle
 | `Dialog` / `confirm()` | centred 28-radius `--m-bg-elev` card, 20px title, body, capsule buttons | |
 | `toast()` | inverse capsule (`--m-text` bg) floating above the composer | |
 | `EmptyState` | 56px `--m-surface` circle icon, 17/600 title, 15px grey hint, optional Button | |
+| `ImageViewer` | full-screen lightbox (`z-(--z-lightbox)`) with pinch/pan, double-tap 1×/2.5×, and swipeable multi-image gallery | `openImage(image, gallery?, index?)`; single-arg `openImage(img)` remains valid |
 | `AppMark` | our gradient four-point star (blue → violet → rose), sizes 24–48 | home greeting, drawer title |
 
 ## 4. Screens
 
 ### 4.1 Top bar (home + chat)
-`[≡ filled]  模型名 思考档 ⌄ (plain text button, 17px; model in --m-text, effort in --m-text-3)`
-`… flex … [新对话 filled] [工具 filled]`. The title button opens the model + thinking sheet.
-On home the 工具 button is hidden (no session yet). No status text under the title.
+`[≡ filled]  [left-aligned title ⌄]  … flex …  [新对话 filled] [工作区抽屉 filled]`
+- Left-aligned title sits immediately next to the left menu button (`≡`): in chat, displays the
+  active 「模型名 · 思考档 ⌄」 trigger (`--m-text` / `--m-text-3`, full readable label with
+  `whitespace-nowrap` on chips/controls) opening the two-pane picker inside `AnchoredPopover`; on
+  home/empty chat, shows the app/workspace title cleanly.
+- Right slot holds **at most 2 icons**: New Chat (`新对话`) and the `RightWorkspaceDrawer` toggle
+  (replacing the old `…` bottom-sheet trigger and separate tool-page jumps). No status text
+  under the title.
 
-### 4.2 Home
-Black (or white) canvas; dark mode gets a very soft blue radial glow rising from the bottom
-(like the reference), light mode a faint pastel one. Centre: `AppMark` 40px + greeting
-「今天想做点什么？」 in `--m-fs-display`. No starter suggestions, mode tabs or username.
-Above the composer, a compact current-workspace pill shows the selected directory and opens
-the directory/worktree picker. Selecting a directory does not create a session. Send and
-file actions revalidate the exact selected `cwd`; they must not silently substitute the
-default or main project directory. Home plan mode is local draft state until sending.
-Bottom: the same composer as chat (§4.4). Sending creates the session in the selected
-directory and replaces the route with chat; the user's text appears optimistically.
+### 4.2 Home & empty chat starter canvas
+Home and any empty newly-created chat share the **same starter canvas**:
+Black (or white) canvas; dark mode gets a very soft blue radial glow rising from the bottom,
+light mode a faint pastel one. Centre: `AppMark` 40px + greeting 「今天想做点什么？」 in
+`--m-fs-display`. No starter suggestions, mode tabs or username.
+Above the composer, an active project directory pill/switch shows the selected directory and
+opens the directory/worktree picker via anchored popover. Selecting a directory on Home does not
+create a session prematurely. Send and file actions revalidate the exact selected `cwd`; they must
+not silently substitute the default or main project directory. Home plan mode is local draft
+state until sending.
+Bottom: the unified composer (§4.4) with the same prompt placeholder across Home and empty chat.
+Sending on Home creates the session in the selected directory and replaces the route with chat;
+the user's text appears optimistically.
 
 ### 4.3 Drawer (left panel with scrim)
 The `--m-bg` panel is 88% of the viewport, capped at 360px, leaving a translucent
@@ -183,6 +197,9 @@ viewport and buttons remain on the bottom row.
 - Send: 40px visible circle inside a ≥44px target, `--m-accent-soft`; disabled when empty.
   While generating, Stop remains visible and clickable. A nonempty draft or attachments
   exposes Send beside Stop, preserving the follow-up/interruption choice.
+- Image attachments: match desktop's native image block pipeline; both composer previews and
+  thread messages render **filename-free square numbered thumbnails** (`1`, `2`, …). Tapping any
+  thumbnail opens `ImageViewer` at that index in swipeable multi-image gallery mode.
 - Status row above the capsule: a stable, single-line horizontally scrollable strip contains
   the working-directory selector, optional 「规划模式 ✕」 chip and compact
   「后续提问」 / 「插话打断」 control. Plan mode never replaces the directory selector.
@@ -201,7 +218,12 @@ viewport and buttons remain on the bottom row.
   tool row has a disclosure arrow; structured/code output uses `CodeBlock`, results have
   Copy, and full errors remain readable rather than clipped.
 - Turn footer: plain copy/retry/more actions plus quiet time/token stats. The message actions
-  sheet includes 「引用回复」 to insert a quotation into the composer without sending it.
+  menu includes 「引用回复」 to insert a quotation into the composer without sending it.
+- Selection annotation (unified desktop & mobile): selecting text in a message thread suppresses
+  the native iOS selection callout (`-webkit-touch-callout: none`) and presents a custom
+  contextual toolbar/popover with **「批注」** (stages quote to main chat composer),
+  **「批注到辅助对话」** (opens `RightWorkspaceDrawer` on the `sidechat` tab with the quote),
+  **「复制」**, and **「全选」**. No inbox/collector flow.
 - Plan, question and approval cards use 24-radius `--m-surface` cards and capsule actions.
   Questions show progress and explicit single/multiple-choice hints; focused answers scroll
   into view above the keyboard. Long-path approval actions stack rather than clip labels.
@@ -217,14 +239,18 @@ viewport and buttons remain on the bottom row.
   「停止当前回合」 requires confirmation and stops the parent session's current turn,
   not just the displayed child; a rejected stop remains an error, not a success notice.
 
-### 4.6 Sheets and pickers
-- Model + thinking sheet: catalog thinking levels appear above provider/model rows; search
-  flattens results and can be cleared. The provider-back control stays in the sticky header.
-- The tools menu and shared workspace bar expose 文件, Git, 终端, 辅助对话 and 服务.
-  「计划」 is conditional on the approved snapshot's `status === "executing"`, independent
-  of whether planning mode is enabled. An already-open plan page retains its own entry
-  when execution completes; ordinary chat/tools must not show a plan entry merely because
-  plan mode is on. Opening the page is a read-only action, not approval or execution.
+### 4.6 Popovers, sheets and pickers
+- **Anchored pull-downs over bottom-sheet-for-everything**: top-bar triggers and inline
+  row/composer triggers open `AnchoredPopover` from their trigger origin. `BottomSheet` is
+  reserved for bottom-originated flows (such as the composer `+` actions sheet).
+- **Two-pane model & provider picker**: uses a mobile-optimized desktop-style two-pane layout
+  inside `AnchoredPopover` — left pane lists **Recents (最近使用)** + configured **Providers
+  (供应商)**; right pane lists clean readable model names (with capability-derived thinking-level
+  selection and an explicit context-overflow warning when a smaller-context model is selected or
+  previewed). Replaces the old flat list and provider-back stack.
+- **Plan visibility**: `计划` appears in `RightWorkspaceDrawer` whenever a plan exists for the
+  session (active/saved plan snapshot or executing plan), independent of whether planning mode is
+  currently toggled on. Opening/viewing the plan is a read-only action, not approval or execution.
 - Action sheets use `MenuRow`s, with destructive actions in danger colour at the end.
 
 ### 4.7 Settings (`/settings`)
@@ -258,29 +284,44 @@ current value; sub-pages push with `PageHeader` + grouped cards.
   information. A failed refresh retains the previous real data and timestamp with an
   explicit stale notice, full error and Retry; unknown metrics are never invented.
 
-### 4.8 Tool pages (files, git, terminal, side chat, services, plan)
-`PageHeader` + shared `WorkspacePanelBar` + content. The bar switches between
-对话 · 文件 · Git · 终端 · 辅助 · 服务, with the conditional plan entry defined in §4.6.
-It remains available in Git diff and side-chat thread views using the parent session ID.
-Loaded content remains visible during refresh or refresh errors; changing resources clears
-stale data and cancels the old request. Lists use `ListGroup`; code/diffs use shared renderers.
-- Files render source directly with `CodeBlock`, not generated Markdown fences.
-- Git pins its commit field/actions outside the scroller above the safe bottom. Commit
-  submits only currently staged changes; per-file actions and all-visible pending/staged
-  actions state their scope and count explicitly. Errors remain visible.
-- Terminal uses real page-owned PTY tabs (maximum four). Switching preserves each mounted
-  terminal, stream and input; confirmed close removes only the target after server success.
-  Leaving the page closes owned instances. The keyboard-aware accessory bar is fixed above
-  `--m-kb` with safe-area padding and reserved content space. Tab/Esc/Ctrl/arrows, clipboard
-  Paste, display-only Clear, font size 11–22 with fit/resize, and Hide Keyboard retain ≥44px
-  targets; clearing the display must not secretly send a shell command.
-- Side chat reuses `ComposerCapsule`, including voice insertion and real uploads. First-send
-  uploads belong to the parent; native images use the additive `imagePaths` create field.
-  Later uploads/prompts belong to the child, with native image blocks and follow-up mode
-  while working. Generic files keep real uploaded-path tokens. Only successful delivery
-  clears the draft/attachments; failures retain retry/remove controls and cancel/revoke
-  owned upload resources on teardown. No send modifies the main chat's draft/store.
-  The summary/hand-back entry lives in the header's right slot, not a duplicate bottom CTA.
+### 4.8 Right Workspace Drawer & workspace panels (`RightWorkspaceDrawer`)
+Replacing the old `…` bottom sheet and separate route jumps, `RightWorkspaceDrawer` mirrors
+desktop's right sidebar with **1-tap** (top-right drawer icon) or **1-swipe** (`useRightEdgeSwipe`
+from the right edge) access.
+- **Session-scoped alive state** (`useRightDrawer` in `src-mobile/features/panels/rightDrawerStore.ts`):
+  tracks `tabBySession` and `visitedBySession` so reopening returns to the last active tab in
+  1 tap and visited workspace tabs (`sidechat`, `git`, `files`, `terminal`, `services`, `plan`)
+  remain mounted and alive while the drawer is collapsed. Direct tool routes remain compatible
+  for deep links, while primary workspace navigation lives inside `RightWorkspaceDrawer`.
+- Loaded content remains visible during refresh or refresh errors; changing resources clears
+  stale data and cancels the old request. Lists use `ListGroup`; code/diffs use shared renderers.
+- **辅助对话 (`sidechat`)**: reuses `ComposerCapsule`, including voice insertion and real uploads.
+  First-send uploads belong to the parent; native images use the additive `imagePaths` create
+  field. Later uploads/prompts belong to the child, with native image blocks and follow-up mode
+  while working. Generic files keep real uploaded-path tokens. Only successful delivery clears
+  the draft/attachments; failures retain retry/remove controls and cancel/revoke owned upload
+  resources on teardown. No send modifies the main chat's draft/store. Receives
+  「批注到辅助对话」 payloads (`openSidechatWithAnnotation`) and exposes a header hand-back action
+  (`sendToMainChat`) to summarize and return conclusions to the main chat composer.
+- **Git (`git`)**: review-first layout with diffs, single/batch staging, Commit history, AI
+  commit message generation, and local commit (no destructive discard button). Branch switching
+  and advanced git controls stay collapsed in a disclosure by default. Commit submits only
+  currently staged changes; per-file actions and all-visible pending/staged actions state their
+  scope and count explicitly. Errors remain visible.
+- **文件 (`files`)**: AI-first file view prioritizing files referenced or modified by the AI in
+  the session, alongside read-only workspace directory browsing and direct `CodeBlock` preview
+  (not generated Markdown fences; no general-purpose manual code editor).
+- **终端 (`terminal`)**: theme-aware xterm PTY tabs (maximum four, synced with `--m-*`
+  dark/light scheme). Switching preserves each mounted terminal, stream and input; confirmed close
+  removes only the target after server success. Supports **indivisible block multi-select
+  annotation**: users select atomic command/output blocks (never torn mid-line) to trigger
+  「批注」 or 「批注到辅助对话」. The keyboard-aware accessory bar is fixed above `--m-kb` with
+  safe-area padding and reserved content space (`Tab`/`Esc`/`Ctrl`/arrows, Paste, display-only
+  Clear, font size 11–22 with fit/resize, Hide Keyboard, all ≥44px targets; Clear never sends a
+  shell command).
+- **服务 (`services`)**: local Dev Server port/PID monitor, service preview, and confirmed stop.
+- **计划 (`plan`)**: shown whenever a plan exists for the session; read-only view with copy and
+  `.md` download.
 
 ### 4.9 Inbox, search and new-session picker
 - Inbox read actions use right swipe or compact overflow rather than a wide inline button.
@@ -294,9 +335,11 @@ stale data and cancels the old request. Lists use `ListGroup`; code/diffs use sh
   「直接创建」 is primary; 「选择模型」 is the secondary path.
 
 ### 4.10 Media, code and sketch controls
-- Image viewer: double tap toggles 1×/2.5× zoom; a delayed single tap toggles close-button
-  chrome, not dismissal. Pinch/pan/cancel suppress tap actions. Downward dismissal requires
-  a single pointer remaining at 1× throughout the gesture.
+- Image viewer & gallery: filename-free square numbered thumbnails open `ImageViewer` in
+  multi-image swipeable gallery mode (`openImage(image, gallery?, index?)`). Double tap toggles
+  1×/2.5× zoom; a delayed single tap toggles close-button chrome, not dismissal. Pinch/pan/cancel
+  suppress tap actions. Downward dismissal requires a single pointer remaining at 1× throughout
+  the gesture.
 - Code/diff line numbers are opt-in; word wrap defaults off (an explicit code `wrap` prop
   remains respected). Beyond 24 logical lines, the initial preview shows 24 with expand/
   collapse controls and full raw Copy. Expanded content over 400 lines retains grouped

@@ -9,6 +9,7 @@ const createSessionMock = vi.fn();
 
 vi.mock("../../core/api", () => ({
 	api: (...args: unknown[]) => apiMock(...args),
+	upload: vi.fn(),
 	errorMessage: (e: unknown) => String(e),
 }));
 
@@ -53,9 +54,11 @@ vi.mock("../../core/stores/sessions", () => ({
 import { HomePage } from "./HomePage";
 import { MenuSheet } from "./MenuSheet";
 import { useTree } from "./treeStore";
+import { useRightDrawer } from "../panels/rightDrawerStore";
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	useRightDrawer.setState({ open: false, sessionId: null, tabBySession: {}, visitedBySession: {}, pendingSidechat: null, pendingMain: null });
 	useTree.setState({ data: null, error: null, loading: false, mode: "code", open: {}, expanded: {} });
 	createSessionMock.mockResolvedValue({ id: "mobile-draft-1" });
 	apiMock.mockImplementation(async (_method: string, path: string) => {
@@ -88,22 +91,13 @@ describe("Session surface DOM accessibility (not layout measurement)", () => {
 		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 
-	it("opens Home HeaderMenu from the top-right tools button, disables sidechat, and navigates via draft creation", async () => {
+	it("toggles RightWorkspaceDrawer from the top-right 工作区 button", async () => {
 		render(<HomePage route={{ name: "home", path: "/", params: {}, query: {} }} />);
-		const toolsBtn = screen.getByRole("button", { name: "工具菜单" });
+		const toolsBtn = screen.getByRole("button", { name: "工作区" });
 		fireEvent.click(toolsBtn);
 
-		const dialog = screen.getByRole("dialog", { name: "工具" });
-		expect(dialog).toBeTruthy();
-
-		const sidechatBtn = screen.getByRole("button", { name: /辅助对话/ }) as HTMLButtonElement;
-		expect(sidechatBtn.disabled).toBe(true);
-		expect(screen.getByText("发送第一条消息后可用")).toBeTruthy();
-
-		fireEvent.click(screen.getByRole("button", { name: /文件/ }));
+		expect(useRightDrawer.getState().open).toBe(true);
 		await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(1));
-		await waitFor(() => expect(navPushMock).toHaveBeenCalledWith("/s/mobile-draft-1/files"));
-		await waitFor(() => expect(screen.queryByRole("dialog", { name: "工具" })).toBeNull());
 	});
 
 	it("opens directory picker from + -> 在项目中工作 without creating a draft", async () => {

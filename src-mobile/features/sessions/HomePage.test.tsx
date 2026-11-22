@@ -3,11 +3,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMock = vi.fn();
+const uploadMock = vi.fn();
 const createSessionMock = vi.fn();
 const replaceMock = vi.fn();
 
 vi.mock("../../core/api", () => ({
 	api: (...a: unknown[]) => apiMock(...a),
+	upload: (...a: unknown[]) => uploadMock(...a),
 	errorMessage: (e: unknown) => String((e as Error)?.message ?? e),
 }));
 vi.mock("../../core/nav", () => ({
@@ -30,7 +32,8 @@ vi.mock("../../core/stores/sessions", () => ({
 }));
 
 import { HomePage } from "./HomePage";
-import { takeFirstSend } from "../chat/lib/drafts";
+import { draftBook, takeFirstSend } from "../chat/lib/drafts";
+import { useRightDrawer } from "../panels/rightDrawerStore";
 
 vi.mock("../chat/components/useVoiceInput", () => ({
 	useVoiceInput: ({ onTranscribed }: { onTranscribed: (text: string) => void }) => ({ recording: false, transcribing: false, toggleRecording: async () => onTranscribed("语音转写内容") }),
@@ -47,7 +50,13 @@ const typeMessage = async (text: string) => {
 };
 
 beforeEach(() => {
- vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+	vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+	vi.stubGlobal("URL", class extends URL {
+		static createObjectURL(file: File) { return `blob:${file.name}`; }
+		static revokeObjectURL = vi.fn();
+	});
+	useRightDrawer.setState({ open: false, sessionId: null, tabBySession: {}, visitedBySession: {}, pendingSidechat: null, pendingMain: null });
+	uploadMock.mockResolvedValue({ path: "/uploads/doc.txt" });
 	apiMock.mockImplementation(async (_m: string, path: string) => {
 		if (path === "/left/dirs") {
 			return {
@@ -157,5 +166,51 @@ describe("HomePage", () => {
 			await waitFor(() => expect(createSessionMock).toHaveBeenCalledWith({ cwd: selected.path, mode: "code" }));
 			expect(takeFirstSend("mobile-draft-1")).toBe("选定工作树的消息");
 		}
+	});
+
+	it("stages images in place on Home with numbered thumbnails and supports image-only send without leaving early", async () => {
+		const { container } = render(<HomePage route={{ name: "home", path: "/", params: {}, query: {} }} />);
+		const galleryInput = container.querySelector('input[type="file"][accept="image/*"][multiple]') as HTMLInputElement;
+		expect(galleryInput).toBeTruthy();
+
+		const img1 = new File(["png1"], "one.png", { type: "image/png" });
+		const img2 = new File(["png2"], "two.png", { type: "image/png" });
+		await act(async () => {
+			fireEvent.change(galleryInput, { target: { files: [img1, img2] } });
+		});
+
+		// Stays on Home without eagerly creating a draft or navigating
+		expect(createSessionMock).not.toHaveBeenCalled();
+		expect(replaceMock).not.toHaveBeenCalled();
+		expect(await screen.findByRole("button", { name: "预览图片 1" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "预览图片 2" })).toBeTruthy();
+		expect(screen.getByText("1")).toBeTruthy();
+		expect(screen.getByText("2")).toBeTruthy();
+		expect(screen.queryByText("one.png")).toBeNull();
+
+		// Removing second image leaves first ready; send button enables for image-only send
+		const removeBtns = screen.getAllByRole("button", { name: "移除附件" });
+		expect(removeBtns).toHaveLength(2);
+		fireEvent.click(removeBtns[1]);
+		expect(screen.queryByRole("button", { name: "预览图片 2" })).toBeNull();
+
+		const sendBtn = screen.getByRole("button", { name: "发送" }) as HTMLButtonElement;
+		await waitFor(() => expect(sendBtn.disabled).toBe(false));
+		await act(async () => {
+			fireEvent.click(sendBtn);
+		});
+
+		expect(createSessionMock).toHaveBeenCalledWith({ cwd: "/project/workspace", mode: "code" });
+		expect(replaceMock).toHaveBeenCalledWith("/s/mobile-draft-1");
+		expect(takeFirstSend("mobile-draft-1")).toBe("");
+		expect(draftBook.restore("mobile-draft-1")?.atts).toHaveLength(1);
+		draftBook.forget("mobile-draft-1");
+	});
+
+	it("toggles RightWorkspaceDrawer from the top-right 工作区 button", () => {
+		render(<HomePage route={{ name: "home", path: "/", params: {}, query: {} }} />);
+		const btn = screen.getByRole("button", { name: "工作区" });
+		fireEvent.click(btn);
+		expect(useRightDrawer.getState().open).toBe(true);
 	});
 });

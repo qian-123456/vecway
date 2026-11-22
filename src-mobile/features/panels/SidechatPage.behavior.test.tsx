@@ -26,6 +26,7 @@ function deferred<T>() {
 }
 let page: TranscriptPage;
 let prompt: (path: string, body: unknown) => Promise<unknown>;
+let sidechats: (path: string) => Promise<MobileSession[]>;
 let create: () => Promise<unknown>;
 let readTranscript: () => Promise<TranscriptPage>;
 let abort: () => Promise<unknown>;
@@ -37,8 +38,13 @@ async function type(text: string) {
 async function openThread() {
 	const view = render(<SidechatPage route={route} />);
 	await flush();
-	fireEvent.click(screen.getByRole("button", { name: /方案讨论/ }));
+	return view;
+}
+async function openNewSidechat() {
+	const view = render(<SidechatPage route={route} />);
 	await flush();
+	fireEvent.click(screen.getByRole("button", { name: "切换辅助对话" }));
+	fireEvent.click(screen.getByRole("button", { name: "新建辅助对话" }));
 	return view;
 }
 function refetch() { act(() => events.emit("rpc", { sessionId: "thread", frame: { type: "message_end" } })); }
@@ -52,12 +58,14 @@ beforeEach(() => {
 	sessionStorage.clear();
 	page = { items: [boundary], reset: true, nextOffset: 1, tailId: "first" };
 	prompt = async () => ({});
+	sidechats = async () => [thread];
 	create = async () => ({ sessionId: "thread" });
 	abort = async () => ({});
 	readTranscript = async () => ({ ...page, items: [...page.items] });
 	useSessions.setState({ list: [thread], byId: { thread }, loaded: true, loading: false });
 	vi.spyOn(apiModule, "api").mockImplementation(async (method, path, body) => {
-		if (method === "GET" && (path.endsWith("/sidechats") || path === "/sessions")) return [thread];
+		if (method === "GET" && path.endsWith("/sidechats")) return sidechats(path);
+		if (method === "GET" && path === "/sessions") return [thread];
 		if (method === "GET" && path.includes("/transcript?")) return readTranscript();
 		if (method === "GET" && path.endsWith("/composer-state")) return { planMode: false };
 		if (method === "POST" && path.endsWith("/sidechats")) return create();
@@ -97,8 +105,7 @@ describe("sidechat message delivery", () => {
 
 	it("hands off the first question while the new transcript is still inherited history", async () => {
 		page.items = [{ id: "parent", kind: "assistant", text: "父会话回答" }];
-		render(<SidechatPage route={route} />);
-		await flush();
+		await openNewSidechat();
 		await type("首个问题");
 		fireEvent.click(screen.getByRole("button", { name: "发送" }));
 		await flush();
@@ -111,7 +118,7 @@ describe("sidechat message delivery", () => {
 
 	it("carries a newer creation draft into the child composer", async () => {
 		const ack = deferred<unknown>(); create = () => ack.promise;
-		render(<SidechatPage route={route} />); await flush();
+		await openNewSidechat();
 		await type("首个问题");
 		fireEvent.click(screen.getByRole("button", { name: "发送" }));
 		await type("创建期间的新草稿");
@@ -122,18 +129,21 @@ describe("sidechat message delivery", () => {
 
 	it("never opens a completed creation after navigating to another parent", async () => {
 		const ack = deferred<unknown>(); create = () => ack.promise;
-		const view = render(<SidechatPage route={route} />); await flush();
+		sidechats = async (path) => (path.includes("/sessions/other/") ? [] : [thread]);
+		const view = await openNewSidechat();
 		await type("旧父会话问题");
 		fireEvent.click(screen.getByRole("button", { name: "发送" }));
 		view.rerender(<SidechatPage route={{ ...route, params: { id: "other" } }} />); await flush();
-		await act(async () => ack.resolve({ sessionId: "thread" }));
+		await act(async () => ack.resolve({ sessionId: "created-old" }));
 		expect(screen.getByPlaceholderText("问一个问题，开始辅助对话")).toBeTruthy();
-		expect(apiModule.api).not.toHaveBeenCalledWith("GET", expect.stringContaining("/sessions/thread/transcript"));
+		expect(apiModule.api).not.toHaveBeenCalledWith("GET", expect.stringContaining("/sessions/created-old/transcript"));
 	});
 
 	it("closes an old child when the parent route changes and sends only to the newly selected child", async () => {
 		const view = await openThread();
 		view.rerender(<SidechatPage route={{ ...route, params: { id: "other" } }} />); await flush();
+		fireEvent.click(screen.getByRole("button", { name: "切换辅助对话" }));
+		fireEvent.click(screen.getByRole("button", { name: "新建辅助对话" }));
 		expect(screen.getByPlaceholderText("问一个问题，开始辅助对话")).toBeTruthy();
 		create = async () => ({ sessionId: "new-thread" });
 		await type("新父会话问题");

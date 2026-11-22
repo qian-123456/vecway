@@ -8,6 +8,10 @@ Tauri 2 + React 19 + TS + Vite + Tailwind v4 desktop workbench for OMP agent ses
 DB schema (§6), file layout (§2), and cross-module APIs (§9) are pinned there.
 Do not change a contract silently — report any needed diff under "Contract changes".
 
+## Product direction
+
+- **Agentic coding & AI-first**: Vecway is an Agentic coding and AI-core workbench for directing, reviewing, and steering AI coding agents—not a traditional manual-coding IDE. Do not carry over legacy manual-coding IDE features that are unnecessary in AI coding; prioritize agent review, annotation, steering, and verification flows.
+
 ## Upstream reference
 
 OMP upstream repository (`https://github.com/can1357/oh-my-pi`) is the canonical truth.

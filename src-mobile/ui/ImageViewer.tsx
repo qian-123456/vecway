@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ImageOff, RotateCcw, X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
@@ -9,10 +9,15 @@ export interface ViewerImage {
 	alt?: string;
 }
 
-let current: ViewerImage | null = null;
+interface ViewerState {
+	gallery: ViewerImage[];
+	index: number;
+}
+
+let current: ViewerState | null = null;
 const listeners = new Set<() => void>();
 
-function setCurrent(next: ViewerImage | null): void {
+function setCurrent(next: ViewerState | null): void {
 	current = next;
 	for (const l of listeners) l();
 }
@@ -20,14 +25,30 @@ function subscribe(fn: () => void): () => void {
 	listeners.add(fn);
 	return () => listeners.delete(fn);
 }
-function getCurrent(): ViewerImage | null {
-	return current;
+
+export function openImage(
+	image: string | ViewerImage,
+	gallery?: readonly ViewerImage[],
+	index?: number,
+): void {
+	const primary: ViewerImage = typeof image === "string" ? { src: image } : image;
+	const items = gallery && gallery.length > 0 ? [...gallery] : [primary];
+	let startIndex = 0;
+	if (typeof index === "number" && Number.isInteger(index) && index >= 0 && index < items.length) {
+		startIndex = index;
+	} else if (gallery && gallery.length > 0) {
+		const found = items.findIndex((item) => item.src === primary.src);
+		startIndex = found >= 0 ? found : 0;
+	}
+	setCurrent({ gallery: items, index: startIndex });
 }
 
-export function openImage(src: string | ViewerImage): void {
-	setCurrent(typeof src === "string" ? { src } : src);
+function setViewerIndex(next: number): void {
+	if (!current) return;
+	const index = Math.max(0, Math.min(next, current.gallery.length - 1));
+	if (index === current.index) return;
+	setCurrent({ ...current, index });
 }
-
 const MIN_SCALE = 1;
 const MAX_SCALE = 6;
 const TAP_SCALE = 2.5;
@@ -52,9 +73,11 @@ interface Gesture {
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
 export function ImageViewerHost() {
-	const item = useSyncExternalStore(subscribe, getCurrent, getCurrent);
-	const open = item !== null;
+	const state = useSyncExternalStore(subscribe, () => current, () => current);
+	const open = state !== null;
 	const [chromeVisible, setChromeVisible] = useState(true);
+	const [failed, setFailed] = useState(false);
+	const [retryKey, setRetryKey] = useState(0);
 	const tapTimer = useRef<number | undefined>(undefined);
 	const lastTap = useRef<{ at: number; x: number; y: number } | null>(null);
 	const clearTap = () => {
@@ -68,10 +91,13 @@ export function ImageViewerHost() {
 	};
 	const { mounted, visible } = usePresence(open, 200);
 	useOverlay(open, close);
-	// Keep the last image mounted while the exit transition plays.
-	const lastRef = useRef<ViewerImage | null>(null);
-	if (item) lastRef.current = item;
-	const shown = item ?? lastRef.current;
+	// Keep the last gallery mounted while the exit transition plays.
+	const lastRef = useRef<ViewerState | null>(null);
+	if (state) lastRef.current = state;
+	const active = state ?? lastRef.current;
+	const count = active?.gallery.length ?? 0;
+	const activeIndex = active ? clamp(active.index, 0, Math.max(0, count - 1)) : 0;
+	const shown = active?.gallery[activeIndex] ?? null;
 
 	const imgRef = useRef<HTMLImageElement>(null);
 	const g = useRef<Gesture>({
@@ -97,10 +123,12 @@ export function ImageViewerHost() {
 		img.style.transform = `translate3d(${s.x}px,${s.y}px,0) scale(${s.scale})`;
 	};
 
-	const src = item?.src;
+	const src = state?.gallery[activeIndex]?.src;
 	useEffect(() => {
 		clearTap();
 		setChromeVisible(true);
+		setFailed(open && !src);
+		setRetryKey(0);
 		const s = g.current;
 		s.scale = 1;
 		s.x = 0;
@@ -109,11 +137,21 @@ export function ImageViewerHost() {
 		s.prevMid = null;
 		s.multiTouch = false;
 		apply(false);
-	}, [src]);
+	}, [src, activeIndex, open]);
+
+	useEffect(() => {
+		if (!open || count <= 1) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "ArrowLeft") setViewerIndex(activeIndex - 1);
+			else if (e.key === "ArrowRight") setViewerIndex(activeIndex + 1);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [open, count, activeIndex]);
+
 	useEffect(() => () => window.clearTimeout(tapTimer.current), []);
 
 	if (!mounted || !shown) return null;
-
 	const center = () => ({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
 
 	/** Re-anchors so the content point that was under `from` ends up under `to`, scaling by `ratio`. */
@@ -143,7 +181,8 @@ export function ImageViewerHost() {
 	};
 
 	const onDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-		if (!open || e.button !== 0 || (e.target as Element).closest("button")) return;
+		const target = e.target as Element;
+		if (!open || e.button !== 0 || target.closest("button") || target.closest("[data-viewer-strip]")) return;
 		const s = g.current;
 		e.currentTarget.setPointerCapture(e.pointerId);
 		s.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -198,8 +237,16 @@ export function ImageViewerHost() {
 		s.prevDist = m.dist;
 		if (!wasTap) {
 			clearTap();
-			if (!cancelled && !s.multiTouch && s.pointers.size === 0 && s.startScale === 1 && s.scale === 1
-				&& dy > 100 && dy > Math.abs(dx) * 1.5) close();
+			if (!cancelled && !s.multiTouch && s.pointers.size === 0 && s.startScale === 1 && s.scale === 1) {
+				if (dy > 100 && dy > Math.abs(dx) * 1.5) {
+					close();
+					return;
+				}
+				if (count > 1 && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+					if (dx < 0 && activeIndex < count - 1) setViewerIndex(activeIndex + 1);
+					else if (dx > 0 && activeIndex > 0) setViewerIndex(activeIndex - 1);
+				}
+			}
 			return;
 		}
 		const previous = lastTap.current;
@@ -234,23 +281,101 @@ export function ImageViewerHost() {
 			onPointerCancel={onUp}
 			onLostPointerCapture={onUp}
 		>
-			<img
-				ref={imgRef}
-				src={shown.src}
-				alt={shown.alt ?? ""}
-				draggable={false}
-				className="max-h-full max-w-full object-contain will-change-transform"
-			/>
+			{failed ? (
+				<div className="flex flex-col items-center gap-3 rounded-m-lg border border-m-border bg-m-bg-elev px-6 py-5 text-center shadow-m-pop">
+					<ImageOff size={28} className="text-m-text-3" aria-hidden />
+					<span className="text-m-sm font-medium text-m-text">图片加载失败</span>
+					<button
+						type="button"
+						onClick={() => {
+							setFailed(false);
+							setRetryKey((k) => k + 1);
+						}}
+						className="inline-flex min-h-9 items-center gap-1.5 rounded-m-pill bg-m-surface px-4 text-m-xs font-medium whitespace-nowrap text-m-text ring-1 ring-m-border active:scale-95"
+					>
+						<RotateCcw size={13} aria-hidden />
+						<span>重试</span>
+					</button>
+				</div>
+			) : (
+				<img
+					key={`${shown.src}-${retryKey}`}
+					ref={imgRef}
+					src={shown.src}
+					alt={shown.alt ?? ""}
+					draggable={false}
+					onLoad={() => setFailed(false)}
+					onError={() => setFailed(true)}
+					className="max-h-full max-w-full object-contain will-change-transform"
+				/>
+			)}
 			{chromeVisible && (
-			<button
-				type="button"
-				aria-label="关闭"
-				onClick={close}
-				className="absolute right-2 flex min-h-11 min-w-11 items-center justify-center rounded-m-pill bg-m-surface text-m-text"
-				style={{ top: "calc(var(--m-safe-top) + 8px)" }}
-			>
-				<X size={22} />
-			</button>
+				<>
+					<div
+						className="pointer-events-none absolute inset-x-0 flex items-center justify-between px-3"
+						style={{ top: "calc(var(--m-safe-top) + 8px)" }}
+					>
+						{count > 1 ? (
+							<span className="pointer-events-auto rounded-m-pill bg-m-bg-elev/90 px-3 py-1 font-m-mono text-m-xs font-medium whitespace-nowrap text-m-text ring-1 ring-m-border">
+								{activeIndex + 1} / {count}
+							</span>
+						) : (
+							<span />
+						)}
+						<button
+							type="button"
+							aria-label="关闭"
+							onClick={close}
+							className="pointer-events-auto flex min-h-11 min-w-11 items-center justify-center rounded-m-pill bg-m-bg-elev/90 text-m-text ring-1 ring-m-border active:scale-95"
+						>
+							<X size={22} />
+						</button>
+					</div>
+					{count > 1 && (
+						<>
+							<button
+								type="button"
+								aria-label="上一张"
+								disabled={activeIndex === 0}
+								onClick={() => setViewerIndex(activeIndex - 1)}
+								className="absolute top-1/2 left-2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-m-pill bg-m-bg-elev/85 text-m-text ring-1 ring-m-border transition-opacity active:scale-95 disabled:opacity-35"
+							>
+								<ChevronLeft size={20} />
+							</button>
+							<button
+								type="button"
+								aria-label="下一张"
+								disabled={activeIndex === count - 1}
+								onClick={() => setViewerIndex(activeIndex + 1)}
+								className="absolute top-1/2 right-2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-m-pill bg-m-bg-elev/85 text-m-text ring-1 ring-m-border transition-opacity active:scale-95 disabled:opacity-35"
+							>
+								<ChevronRight size={20} />
+							</button>
+							<div
+								data-viewer-strip
+								className="m-noscrollbar absolute left-1/2 flex max-w-[calc(100vw-32px)] -translate-x-1/2 items-center gap-1.5 overflow-x-auto rounded-m-lg border border-m-border bg-m-bg-elev/90 p-1.5 shadow-m-pop"
+								style={{ bottom: "calc(var(--m-safe-bottom) + 12px)" }}
+							>
+								{active?.gallery.map((item, i) => (
+									<button
+										key={`${i}-${item.src}`}
+										type="button"
+										aria-label={`切换到第 ${i + 1} 张`}
+										aria-current={i === activeIndex ? "true" : undefined}
+										onClick={() => setViewerIndex(i)}
+										className={`h-10 w-10 shrink-0 overflow-hidden rounded-m-sm border transition-all ${
+											i === activeIndex
+												? "border-m-accent opacity-100 ring-2 ring-m-accent"
+												: "border-m-border opacity-60 hover:opacity-90"
+										}`}
+									>
+										<img src={item.src} alt="" className="h-full w-full object-cover" />
+									</button>
+								))}
+							</div>
+						</>
+					)}
+				</>
 			)}
 		</div>,
 		document.body,

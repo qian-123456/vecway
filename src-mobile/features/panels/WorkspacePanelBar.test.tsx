@@ -11,16 +11,18 @@ const status = (value: ApprovedStatus) => ({ ...PLAN_OFF, approved: { planFile: 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe("workspace plan navigation", () => {
- it("uses authoritative approved execution, not planning enabled, with no context-side loader", async () => {
+ it("surfaces plan tab whenever any real plan exists (planning, review, executing, completed)", async () => {
   const request = vi.spyOn(apiModule, "api").mockResolvedValue({});
   const controller = new ChatController("fixture-context");
-  controller.store.setState({ cstate: { planMode: true, planStatus: { ...PLAN_OFF, enabled: true } } });
+  controller.store.setState({ cstate: { planMode: false, planStatus: PLAN_OFF } });
   const view = render(<ChatCtx.Provider value={{ controller, openActions() {}, openStat() {} }}><WorkspacePanelBar sessionId={controller.id} current="files" /></ChatCtx.Provider>);
   expect(screen.queryByRole("link", { name: "计划" })).toBeNull();
+  await act(async () => controller.store.setState({ cstate: { planMode: true, planStatus: { ...PLAN_OFF, enabled: true } } }));
+  expect(screen.getByRole("link", { name: "计划" }).getAttribute("href")).toBe("#/s/fixture-context/plan");
   await act(async () => controller.store.setState({ cstate: { planMode: false, planStatus: status("executing") } }));
   expect(screen.getByRole("link", { name: "计划" }).getAttribute("href")).toBe("#/s/fixture-context/plan");
   await act(async () => controller.store.setState({ cstate: { planStatus: status("completed") } }));
-  expect(screen.queryByRole("link", { name: "计划" })).toBeNull();
+  expect(screen.getByRole("link", { name: "计划" })).toBeTruthy();
   view.rerender(<ChatCtx.Provider value={{ controller, openActions() {}, openStat() {} }}><WorkspacePanelBar sessionId={controller.id} current="plan" /></ChatCtx.Provider>);
   expect(screen.getByRole("link", { name: "计划" }).getAttribute("aria-current")).toBe("page");
   expect(request).not.toHaveBeenCalled();

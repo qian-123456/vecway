@@ -1,13 +1,25 @@
 import { ChevronLeft, ChevronRight, Copy, GitBranch, Pencil, Quote, RotateCcw } from "lucide-react";
 import { copyText } from "../../../core/lib/format";
-import { BottomSheet, MenuRow, toast } from "../../../ui";
+import { AnchoredPopover, MenuRow, toast, type AnchorBox } from "../../../ui";
 import type { MessageTarget } from "../ChatContext";
 import type { ChatController } from "../chatStore";
 
 const ICON = { size: 22, strokeWidth: 1.75 } as const;
 
 /** Long-press / 「更多操作」 sheet of one message (ChatGPT-style flat menu). */
-export function MessageActionsSheet({ target, onClose, controller }: { target: MessageTarget | null; onClose: () => void; controller: ChatController }) {
+export function MessageActionsSheet({
+	target,
+	onClose,
+	controller,
+	anchorEl,
+	anchorRect,
+}: {
+	target: MessageTarget | null;
+	onClose: () => void;
+	controller: ChatController;
+	anchorEl?: HTMLElement | null;
+	anchorRect?: AnchorBox | null;
+}) {
 	const t = target;
 	// Version group of this entry, computed while the sheet is open.
 	const versions = t?.entryId ? controller.versionsFor(t.entryId) : null;
@@ -16,7 +28,16 @@ export function MessageActionsSheet({ target, onClose, controller }: { target: M
 		fn();
 	};
 	return (
-		<BottomSheet open={t !== null} onClose={onClose} title="消息操作">
+		<AnchoredPopover
+			open={t !== null}
+			onClose={onClose}
+			anchorEl={anchorEl}
+			anchorRect={anchorRect}
+			placement="bottom-center"
+			title="消息操作"
+			maxWidth={320}
+			minWidth={220}
+		>
 			{t && (
 				<div className="pb-2">
 					<MenuRow
@@ -73,6 +94,6 @@ export function MessageActionsSheet({ target, onClose, controller }: { target: M
 					)}
 				</div>
 			)}
-		</BottomSheet>
+		</AnchoredPopover>
 	);
 }

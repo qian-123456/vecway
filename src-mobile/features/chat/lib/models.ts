@@ -4,6 +4,7 @@ export interface ModelOpt {
 	name?: string;
 	thinking?: string[];
 	contextWindow?: number;
+	reasoning?: boolean | null;
 }
 
 export interface ModelFacts {
@@ -108,11 +109,12 @@ export function groupByProvider(models: ModelOpt[]): ProviderGroup[] {
 }
 
 /** Every whitespace-separated token must match provider, id or name (case-insensitive). */
-export function filterModels(models: ModelOpt[], query: string): ModelOpt[] {
+export function filterModels(models: ModelOpt[], query: string, providerLabels?: Record<string, string>): ModelOpt[] {
 	const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
 	if (!terms.length) return models;
 	return models.filter((m) => {
-		const hay = `${m.provider}/${m.id} ${m.name ?? ""}`.toLowerCase();
+		const label = providerLabels?.[m.provider] ?? "";
+		const hay = `${m.provider}/${m.id} ${label} ${m.name ?? ""}`.toLowerCase();
 		return terms.every((t) => hay.includes(t));
 	});
 }
@@ -157,4 +159,168 @@ export function shortModel(text: string): string {
 	// Strip trailing release/snapshot dates like -20250219 or -2024-08-06
 	s = s.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
 	return s;
+}
+
+export function modelKey(m: Pick<ModelOpt, "provider" | "id">): string {
+	return `${m.provider}/${m.id}`;
+}
+
+export const RECENT_MODELS_STORAGE_KEY = "omp-workspace.recentModels";
+export const RECENT_MODELS_CAP = 5;
+
+function isRecordableKey(key: string): boolean {
+	const k = key.trim();
+	if (!k || k.startsWith("__") || k.startsWith("@")) return false;
+	const slash = k.indexOf("/");
+	return slash > 0 && slash < k.length - 1;
+}
+
+function writeRecentList(list: readonly string[]): void {
+	try {
+		localStorage.setItem(RECENT_MODELS_STORAGE_KEY, JSON.stringify(list));
+	} catch {
+		// Ignore storage errors (private mode / quota exceeded / non-DOM test env).
+	}
+}
+
+/** Load persisted recent `provider/id` picks (most-recent-first, deduplicated, capped at 5). */
+export function loadRecentModels(): string[] {
+	try {
+		const raw = localStorage.getItem(RECENT_MODELS_STORAGE_KEY);
+		if (!raw) return [];
+		const parsed: unknown = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const item of parsed) {
+			if (typeof item !== "string") continue;
+			const k = item.trim();
+			if (!isRecordableKey(k) || seen.has(k)) continue;
+			seen.add(k);
+			out.push(k);
+			if (out.length >= RECENT_MODELS_CAP) break;
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
+/** Record a model pick at the front of recents, deduplicating and capping at 5. */
+export function recordRecentModel(key: string): string[] {
+	const current = loadRecentModels();
+	const k = key.trim();
+	if (!isRecordableKey(k)) return current;
+	const next = [k, ...current.filter((item) => item !== k)].slice(0, RECENT_MODELS_CAP);
+	writeRecentList(next);
+	return next;
+}
+
+/** Remove a `provider/id` entry from persisted recents. */
+export function removeRecentModel(key: string): string[] {
+	const next = loadRecentModels().filter((item) => item !== key);
+	writeRecentList(next);
+	return next;
+}
+
+/** Resolve recent `provider/id` keys against the active model catalog in recent order. */
+export function resolveRecentModels(models: readonly ModelOpt[], recentKeys: readonly string[]): ModelOpt[] {
+	if (!models.length || !recentKeys.length) return [];
+	const byKey = new Map<string, ModelOpt>();
+	for (const m of models) {
+		const k = modelKey(m);
+		if (!byKey.has(k)) byKey.set(k, m);
+	}
+	const out: ModelOpt[] = [];
+	for (const k of recentKeys) {
+		const hit = byKey.get(k);
+		if (hit) out.push(hit);
+	}
+	return out;
+}
+
+export interface ProviderInventoryRow {
+	id: string;
+	displayName?: string | null;
+	enabled?: boolean;
+	authNone?: boolean;
+	key?: { kind?: string; envVar?: string | null; envSet?: boolean | null };
+}
+
+/** Whether a `/left/providers` row is enabled and has usable credentials (or requires none). */
+export function isProviderConfigured(row: ProviderInventoryRow): boolean {
+	if (row.enabled === false) return false;
+	if (row.authNone) return true;
+	const kind = row.key?.kind;
+	if (kind === "none") return true;
+	if (kind === "envVar") return row.key?.envSet !== false;
+	if (kind === "plaintext" || kind === "command" || kind === "oauth" || kind === "loginStored") return true;
+	return row.key?.envSet === true;
+}
+
+/** Group models by provider while preserving first-seen catalog order (matching desktop). */
+export function groupModelsInOrder(models: readonly ModelOpt[]): ProviderGroup[] {
+	const order: string[] = [];
+	const by = new Map<string, ModelOpt[]>();
+	for (const m of models) {
+		let list = by.get(m.provider);
+		if (!list) {
+			list = [];
+			by.set(m.provider, list);
+			order.push(m.provider);
+		}
+		list.push(m);
+	}
+	return order.map((provider) => ({ provider, models: by.get(provider) ?? [] }));
+}
+
+/**
+ * Partition provider groups into configured/enabled vs unconfigured providers.
+ * Falls back to treating all groups as configured when inventory is unavailable or yields none.
+ */
+export function splitProviderGroups(
+	groups: readonly ProviderGroup[],
+	configuredProviders: ReadonlySet<string> | null | undefined,
+	providerOrder?: readonly string[],
+): { configured: ProviderGroup[]; unconfigured: ProviderGroup[] } {
+	if (!configuredProviders || configuredProviders.size === 0) {
+		return { configured: [...groups], unconfigured: [] };
+	}
+	const configured: ProviderGroup[] = [];
+	const unconfigured: ProviderGroup[] = [];
+	for (const g of groups) {
+		if (configuredProviders.has(g.provider)) configured.push(g);
+		else unconfigured.push(g);
+	}
+	if (configured.length === 0) {
+		return { configured: [...groups], unconfigured: [] };
+	}
+	if (providerOrder && providerOrder.length > 0) {
+		const rank = new Map<string, number>();
+		providerOrder.forEach((id, i) => rank.set(id, i));
+		configured.sort((a, b) => {
+			const ra = rank.get(a.provider);
+			const rb = rank.get(b.provider);
+			if (ra !== undefined && rb !== undefined) return ra - rb;
+			if (ra !== undefined) return -1;
+			if (rb !== undefined) return 1;
+			return 0;
+		});
+	}
+	unconfigured.sort((a, b) => (a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0));
+	return { configured, unconfigured };
+}
+
+/** True when session `contextTokens` exceeds the model's declared `contextWindow`. */
+export function isModelContextTooSmall(
+	model: Pick<ModelOpt, "contextWindow">,
+	contextTokens: number | null | undefined,
+): boolean {
+	return (
+		typeof contextTokens === "number" &&
+		contextTokens > 0 &&
+		typeof model.contextWindow === "number" &&
+		model.contextWindow > 0 &&
+		contextTokens > model.contextWindow
+	);
 }

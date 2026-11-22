@@ -1,10 +1,10 @@
-import { CheckCheck, Inbox, MoreHorizontal } from "lucide-react";
+import { CheckCheck, Inbox } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { api, errorMessage } from "../../core/api";
 import { nav, paths, type PageProps } from "../../core/nav";
 import { relTime, sessionName } from "../../core/lib/format";
 import { events } from "../../core/sse";
-import { BottomSheet, Button, EmptyState, IconButton, ListGroup, MenuRow, PageHeader, PullToRefresh, Spinner, toast } from "../../ui";
+import { Button, EmptyState, ListGroup, PageHeader, PullToRefresh, Spinner, toast } from "../../ui";
 import { INBOX_TITLES, inboxSections, type InboxData } from "./inbox";
 import { STATUS_DOT, statusLine } from "./SessionRow";
 import { TodosPane } from "./TodosPane";
@@ -14,7 +14,6 @@ import { refreshAll } from "./treeStore";
 
 /** Swipe right to read; the action sheet provides the same keyboard-accessible action. */
 function InboxRow({ s, onOpen, onSeen }: { s: TreeSession; onOpen: () => void; onSeen?: () => Promise<void> }) {
-	const [actionsOpen, setActionsOpen] = useState(false);
 	const [reading, setReading] = useState(false);
 	const [offset, setOffset] = useState(0);
 	const pending = useRef(false);
@@ -28,7 +27,6 @@ function InboxRow({ s, onOpen, onSeen }: { s: TreeSession; onOpen: () => void; o
 		setReading(true);
 		try {
 			await onSeen();
-			setActionsOpen(false);
 		} finally {
 			pending.current = false;
 			setReading(false);
@@ -44,7 +42,6 @@ function InboxRow({ s, onOpen, onSeen }: { s: TreeSession; onOpen: () => void; o
 		if (e.type === "pointerup" && g.axis === "x" && g.dx >= 80) void markRead();
 	};
 	return (
-		<>
 			<div
 				className="m-list-row relative overflow-hidden"
 				style={{ touchAction: "pan-y pinch-zoom" }}
@@ -85,14 +82,24 @@ function InboxRow({ s, onOpen, onSeen }: { s: TreeSession; onOpen: () => void; o
 							<span className="block text-m-md break-words text-m-text">{sessionName(s)}</span>
 							{line && <span className="mt-0.5 block text-m-xs break-words text-m-text-3">{line}</span>}
 						</button>
-						{onSeen && <span data-inbox-actions><IconButton icon={<MoreHorizontal size={20} />} label={`会话操作：${sessionName(s)}`} disabled={reading} onClick={() => setActionsOpen(true)} /></span>}
+						{onSeen && (
+							<span data-inbox-actions className="shrink-0">
+								<button
+									type="button"
+									disabled={reading}
+									aria-busy={reading || undefined}
+									aria-label={`标记已读：${sessionName(s)}`}
+									onClick={() => void markRead()}
+									className="relative inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-[10px] border border-m-border bg-m-surface px-4 text-m-sm font-medium whitespace-nowrap text-m-text transition-[opacity,background-color] duration-(--m-dur-fast) active:bg-m-surface-2 disabled:opacity-40"
+								>
+									{reading ? <Spinner size={16} /> : null}
+									已读
+								</button>
+							</span>
+						)}
 					</span>
 				</div>
 			</div>
-			<BottomSheet open={actionsOpen} onClose={() => setActionsOpen(false)} title="会话操作">
-				<MenuRow icon={<CheckCheck size={22} />} label="标记已读" disabled={reading} onClick={() => void markRead()} />
-			</BottomSheet>
-		</>
 	);
 }
 

@@ -1,27 +1,30 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
 import { nav } from "../../core/nav";
 import type { PendingEntry } from "../../core/types";
 
 const apiMock = vi.fn();
+const uploadMock = vi.fn();
 vi.mock("../../core/api", async (orig) => {
 	const real = await orig<typeof import("../../core/api")>();
-	return { ...real, api: (...a: unknown[]) => apiMock(...a), upload: vi.fn() };
+	return { ...real, api: (...a: unknown[]) => apiMock(...a), upload: (...a: unknown[]) => uploadMock(...a) };
 });
 
+import { ImageViewerHost } from "../../ui";
 import { ChatCtx } from "./ChatContext";
 import { ChatPage } from "./ChatPage";
 import { ChatController } from "./chatStore";
 import { Composer } from "./components/Composer";
 import { PendingCards } from "./components/PendingCards";
 import { SelectionToolbar } from "./components/SelectionToolbar";
-import { TurnView } from "./components/TurnView";
+import { PendingBubble, TurnView } from "./components/TurnView";
 import type { Turn } from "./lib/turns";
 import { draftBook, queueFirstSend } from "./lib/drafts";
+import { useRightDrawer } from "../panels/rightDrawerStore";
+import { useSessions } from "../../core/stores/sessions";
 import { PLAN_OFF } from "../../../src/features/chat/plan/planStatus";
-
 class RO {
 	observe() {}
 	disconnect() {}
@@ -31,9 +34,11 @@ class RO {
 beforeEach(() => {
 	vi.stubGlobal("ResizeObserver", RO);
 	apiMock.mockReset();
+	uploadMock.mockReset();
 	apiMock.mockResolvedValue({});
 	localStorage.clear();
 	sessionStorage.clear();
+	useRightDrawer.setState({ open: false, sessionId: null, tabBySession: {}, visitedBySession: {}, pendingSidechat: null, pendingMain: null });
 });
 
 afterEach(() => {
@@ -53,9 +58,9 @@ describe("Top Bar (Change 1)", () => {
 		render(<ChatPage route={{ name: "chat", path: "/s/s1", params: { id: "s1" }, query: {} }} />);
 		// Left: Menu
 		expect(screen.getByRole("button", { name: "菜单" })).toBeTruthy();
-		// Right: 新建对话 icon and 工具菜单 icon
+		// Right: 新建对话 icon and 工作区 icon
 		expect(screen.getByRole("button", { name: "新建对话" })).toBeTruthy();
-		expect(screen.getByRole("button", { name: "工具菜单" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "工作区" })).toBeTruthy();
 
 		// Composer toolbar below composer input contains Model & Thinking level
 		const modelBtn = screen.getByRole("button", { name: /当前模型/ });
@@ -76,6 +81,28 @@ describe("Top Bar (Change 1)", () => {
 		expect(screen.queryByText("会话不存在")).toBeNull();
 		expect(apiMock).toHaveBeenCalledWith("POST", "/sessions/mobile-draft-home/prompt-ex", { text: "从首页开始", images: [] });
 		expect(apiMock.mock.calls.filter(([, path]) => String(path).endsWith("/prompt-ex"))).toHaveLength(1);
+	});
+
+	it("creates a fresh draft session in 1 tap from 新建对话 and shows EmptyChatCanvas", async () => {
+		const createSpy = vi.spyOn(useSessions.getState(), "createSession").mockResolvedValue({ id: "mobile-draft-new", mode: "code", cwd: "/repo/a" });
+		const pushSpy = vi.spyOn(nav, "push").mockImplementation(() => {});
+		useSessions.setState({
+			list: [{ id: "s1", label: "#1", title: "旧对话", status: "idle", live: false, updatedAt: "2026-10-27T10:00:00Z", cwd: "/repo/a", mode: "code" }],
+			byId: { s1: { id: "s1", label: "#1", title: "旧对话", status: "idle", live: false, updatedAt: "2026-10-27T10:00:00Z", cwd: "/repo/a", mode: "code" } },
+		});
+		try {
+			render(<ChatPage route={{ name: "chat", path: "/s/s1", params: { id: "s1" }, query: {} }} />);
+			expect(screen.queryByText("还没有消息")).toBeNull();
+			expect(await screen.findByText(/中开始/)).toBeTruthy();
+			await act(async () => {
+				fireEvent.click(screen.getByRole("button", { name: "新建对话" }));
+			});
+			expect(createSpy).toHaveBeenCalledWith({ cwd: "/repo/a", mode: "code" });
+			expect(pushSpy).toHaveBeenCalledWith("/s/mobile-draft-new");
+		} finally {
+			createSpy.mockRestore();
+			pushSpy.mockRestore();
+		}
 	});
 });
 
@@ -383,7 +410,7 @@ describe("Chat UI at 390x844 viewport", () => {
 		expect(screen.getByRole("button", { name: "菜单" })).toBeTruthy();
 		expect(screen.getByRole("button", { name: /当前模型/ })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "新建对话" })).toBeTruthy();
-		expect(screen.getByRole("button", { name: "工具菜单" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "工作区" })).toBeTruthy();
 		expect(screen.getByLabelText("消息输入框")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "语音输入" })).toBeTruthy();
 	});
@@ -439,5 +466,122 @@ describe("First-send recovery & draft plan-mode promotion", () => {
 			draftBook.forget(realId);
 			c.dispose();
 		}
+	});
+});
+
+describe("Image and composer parity", () => {
+	it("uses the unified default placeholder and separates numbered image thumbnails from file chips", () => {
+		const c = new ChatController("s1");
+		c.store.setState({
+			atts: [
+				{ id: 1, name: "first.png", isImage: true, url: "blob:first", status: "ok", path: "/tmp/first.png", image: { mime: "image/png", data: "QQ==" } },
+				{ id: 2, name: "second.png", isImage: true, url: "blob:second", status: "err", err: "network", file: new File(["x"], "second.png", { type: "image/png" }) },
+				{ id: 3, name: "spec.md", isImage: false, url: "", status: "ok", path: "/tmp/spec.md" },
+			],
+		});
+
+		render(
+			<>
+				{wrap(c, <Composer sessionId="s1" />)}
+				<ImageViewerHost />
+			</>,
+		);
+
+		expect(screen.getByPlaceholderText("今天想做点什么？")).toBeTruthy();
+		expect(screen.queryByText("first.png")).toBeNull();
+		expect(screen.queryByText("second.png")).toBeNull();
+		expect(screen.getByText("spec.md")).toBeTruthy();
+
+		// Tap first image to open multi-image gallery (includes ready/previewable images)
+		fireEvent.click(screen.getByRole("button", { name: "预览图片 first.png" }));
+		expect(screen.getByText("1 / 2")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "下一张" }));
+		expect(screen.getByText("2 / 2")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+
+		// Tap failed image to retry upload
+		uploadMock.mockResolvedValueOnce({ path: "/tmp/second.png" });
+		fireEvent.click(screen.getByRole("button", { name: "重试上传 second.png" }));
+		expect(uploadMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("strips residual image markers in user & pending bubbles and opens multi-image gallery", () => {
+		const c = new ChatController("s1");
+		const turn: Turn = {
+			type: "turn",
+			id: "t-img",
+			user: {
+				id: "u-img",
+				role: "user",
+				kind: "user",
+				parentId: null,
+				text: "[Image #1: /tmp/a.png] [Image #2: /tmp/b.png] 看下这两张图",
+				thinking: "",
+				tools: [],
+				images: [
+					{ id: "i1", mime: "image/png", path: "/tmp/a.png", marker: "#1", width: null, height: null },
+					{ id: "i2", mime: "image/png", path: "/tmp/b.png", marker: "#2", width: null, height: null },
+				],
+				ts: null,
+				streaming: false,
+			},
+			steps: [],
+			answer: null,
+			answerStat: null,
+			start: 0,
+			end: 0,
+			lastAssistantId: null,
+			src: [],
+		};
+
+		render(
+			<>
+				{wrap(
+					c,
+					<>
+						<TurnView turn={turn} isLast={false} sessionId="s1" />
+						<PendingBubble text="[Image #1: /tmp/pending.png] 待发送" imageUrls={["blob:p1", "blob:p2"]} />
+					</>,
+				)}
+				<ImageViewerHost />
+			</>,
+		);
+
+		expect(screen.getByText("看下这两张图")).toBeTruthy();
+		expect(screen.queryByText(/\[Image #1/)).toBeNull();
+		expect(screen.getByText("待发送")).toBeTruthy();
+
+		// Tapping the second image opens gallery directly at index 1 (2 / 2)
+		const previewButtons = screen.getAllByRole("button", { name: "预览图片 #2" });
+		fireEvent.click(previewButtons[0]);
+		expect(screen.getByText("2 / 2")).toBeTruthy();
+
+		// Simulate image load error and verify fallback + retry button
+		const mainImg = within(screen.getByRole("dialog")).getByRole("img", { name: "#2" });
+		fireEvent.error(mainImg);
+		expect(screen.getByText("图片加载失败")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "重试" }));
+		expect(screen.queryByText("图片加载失败")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+	});
+
+	it("sends native images payload without [Image #N] markers and keeps optimistic text clean", async () => {
+		const c = new ChatController("s1");
+		c.store.setState({
+			atts: [
+				{ id: 1, name: "shot.png", isImage: true, url: "blob:shot", status: "ok", path: "/tmp/shot.png", image: { mime: "image/png", data: "QQ==" } },
+				{ id: 2, name: "notes.txt", isImage: false, url: "", status: "ok", path: "/tmp/notes.txt" },
+			],
+		});
+
+		await c.send("分析一下", "followUp");
+		expect(apiMock).toHaveBeenCalledWith("POST", "/sessions/s1/prompt-ex", {
+			text: "[文件 #1: /tmp/notes.txt] 分析一下",
+			images: [{ mime: "image/png", data: "QQ==" }],
+		});
+		expect(c.state.optimistic[0]).toMatchObject({
+			text: "[文件 #1: /tmp/notes.txt] 分析一下",
+			imageUrls: ["blob:shot"],
+		});
 	});
 });

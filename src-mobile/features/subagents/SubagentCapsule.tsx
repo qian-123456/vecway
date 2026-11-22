@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { nav, paths } from "../../core/nav";
-import { BottomSheet, Button } from "../../ui";
+import { AnchoredPopover, Button } from "../../ui";
 import { buildTree, countRows, flattenTree } from "./model";
 import type { Counts } from "./model";
 import { useCapsuleVisible } from "./settings";
@@ -40,6 +40,7 @@ export function SubagentCapsule({ sessionId }: { sessionId: string }) {
 	const visible = useCapsuleVisible();
 	const { rows } = useWatchSubagents(sessionId);
 	const [sheetOpen, setSheetOpen] = useState(false);
+	const capsuleRef = useRef<HTMLButtonElement>(null);
 
 	const c = countRows(rows);
 	const now = useNow(c.running + c.queued > 0);
@@ -57,6 +58,7 @@ export function SubagentCapsule({ sessionId }: { sessionId: string }) {
 	return (
 		<>
 			<button
+				ref={capsuleRef}
 				type="button"
 				aria-label={`子代理：${text}`}
 				aria-haspopup="dialog"
@@ -68,26 +70,30 @@ export function SubagentCapsule({ sessionId }: { sessionId: string }) {
 				<span className="truncate">{text}</span>
 			</button>
 
-			<BottomSheet
+			<AnchoredPopover
 				open={sheetOpen}
 				onClose={() => setSheetOpen(false)}
+				anchorEl={capsuleRef.current}
+				placement="bottom-end"
 				title="子代理"
 				subtitle={`已结束 ${finished} / ${rows.length}`}
-				footer={
-					<Button block onClick={() => open(paths.subagents(sessionId))}>
-						查看全部子代理
-					</Button>
-				}
+				maxWidth={340}
+				minWidth={240}
 			>
-				<div className="px-4 pt-2 pb-2">
+				<div className="px-4 pt-2.5 pb-3">
 					<p className="mb-3 flex flex-wrap gap-x-3 gap-y-1 px-1 text-m-xs text-m-text-2">
 						{PARTS.filter((part) => c[part.key] > 0).map((part) => (
 							<span key={part.key} className="whitespace-nowrap">{c[part.key]} {part.label}</span>
 						))}
 					</p>
 					<SubagentTree key={sessionId} rows={flat} now={now} onOpen={(id) => open(paths.subagent(sessionId, id))} />
+					<div className="mt-3 border-t border-m-border pt-3">
+						<Button block onClick={() => open(paths.subagents(sessionId))}>
+							查看全部子代理
+						</Button>
+					</div>
 				</div>
-			</BottomSheet>
+			</AnchoredPopover>
 		</>
 	);
 }

@@ -83,10 +83,11 @@ function runActionDefault(a: HeaderAction): void {
 }
 
 const HeaderView = memo(
-	function HeaderView({ row, onAction }: { row: HeaderRow; onAction?: (a: HeaderAction) => void }) {
+	function HeaderView({ row, onAction }: { row: HeaderRow; onAction?: (a: HeaderAction, anchorEl?: HTMLElement | null) => void }) {
 		const sec = row.level === "sec";
 		const branch = row.icon === "worktree" || row.icon === "branch";
 		const [details, setDetails] = useState(false);
+		const headerBtnRef = useRef<HTMLButtonElement | null>(null);
 		const press = useRef<{ timer: number; x: number; y: number } | null>(null);
 		const held = useRef(false);
 		const cancel = () => { window.clearTimeout(press.current?.timer); press.current = null; };
@@ -95,7 +96,7 @@ const HeaderView = memo(
 		return (
 			<>
 			<div className={`flex items-center gap-1 pr-2 ${sec ? "border-t border-m-border" : ""} ${row.dim ? "opacity-70" : ""}`} style={{ marginLeft: 8 + row.depth * 12 }}>
-				<button type="button" aria-expanded={row.open} title={[row.title, row.hint].filter(Boolean).join("\n")}
+				<button ref={headerBtnRef} type="button" aria-expanded={row.open} title={[row.title, row.hint].filter(Boolean).join("\n")}
 					aria-label={[row.title, row.hint].filter(Boolean).join("，")}
 					aria-description={[!row.open && row.bubbles ? bubbleDescription(row.bubbles) : "", "长按查看完整名称和路径"].filter(Boolean).join("；")}
 					onPointerDown={(e) => {
@@ -117,14 +118,33 @@ const HeaderView = memo(
 					{row.count != null && !row.open && <span className="shrink-0 text-m-xs text-m-text-3 tabular-nums">{row.count}</span>}
 					<ChevronRight size={14} aria-hidden className={`shrink-0 text-m-text-3 ${row.open ? "rotate-90" : ""}`} />
 				</button>
-				{row.actions.map((a) => <IconButton key={a.kind} size="sm" variant="plain"
-					label={a.kind === "plus" ? `在 ${a.label} 新建会话` : a.kind === "addws" ? `将 ${a.cwd} 添加为工作区` : a.label}
-					onClick={() => (onAction ? onAction(a) : runActionDefault(a))}
-					icon={a.kind === "plus" ? <Plus size={20} /> : a.kind === "archive" ? <Archive size={18} /> : <FolderPlus size={18} />}
-				/>)}
+				{row.actions.map((a) => (
+					<span
+						key={a.kind}
+						onClick={(e) => {
+							const btn = (e.currentTarget as HTMLElement).querySelector("button");
+							if (onAction) onAction(a, btn);
+							else runActionDefault(a);
+						}}
+					>
+						<IconButton
+							size="sm"
+							variant="plain"
+							label={a.kind === "plus" ? `在 ${a.label} 新建会话` : a.kind === "addws" ? `将 ${a.cwd} 添加为工作区` : a.label}
+							icon={a.kind === "plus" ? <Plus size={20} /> : a.kind === "archive" ? <Archive size={18} /> : <FolderPlus size={18} />}
+						/>
+					</span>
+				))}
 			</div>
-			<ActionSheet open={details} onClose={() => setDetails(false)} title={<span className="break-words">{row.title}</span>} subtitle={row.hint ? <span className="m-selectable break-all">{row.hint}</span> : undefined}
-				items={row.actions.map((a) => ({ key: a.kind, label: a.kind === "plus" ? "新建会话" : a.label, run: () => onAction ? onAction(a) : runActionDefault(a) }))} />
+			<ActionSheet
+				open={details}
+				onClose={() => setDetails(false)}
+				anchorEl={headerBtnRef.current}
+				placement="bottom-start"
+				title={<span className="break-words">{row.title}</span>}
+				subtitle={row.hint ? <span className="m-selectable break-all">{row.hint}</span> : undefined}
+				items={row.actions.map((a) => ({ key: a.kind, label: a.kind === "plus" ? "新建会话" : a.label, run: () => onAction ? onAction(a, headerBtnRef.current) : runActionDefault(a) }))}
+			/>
 			</>
 		);
 	},
@@ -179,6 +199,7 @@ function AssignSheet({ sessions, onClose }: { sessions: TreeSession[] | null; on
 	}));
 	return (
 		<ActionSheet
+			mode="sheet"
 			open={sessions !== null && dirs !== null && dirs.length > 0}
 			title="归入工作区"
 			subtitle={`${sessions?.length ?? 0} 个会话`}
@@ -209,8 +230,8 @@ export function TreeView({
 	const open = useTree((s) => s.open);
 	const expanded = useTree((s) => s.expanded);
 	const [assigning, setAssigning] = useState<TreeSession[] | null>(null);
-	const [plusTarget, setPlusTarget] = useState<{ cwd: string; label: string } | null>(null);
-	const [wtChoices, setWtChoices] = useState<DirEntry[] | null>(null);
+	const [plusTarget, setPlusTarget] = useState<{ cwd: string; label: string; anchorEl: HTMLElement | null } | null>(null);
+	const [wtChoices, setWtChoices] = useState<{ dirs: DirEntry[]; anchorEl: HTMLElement | null } | null>(null);
 	const flat = useMemo(() => {
 		if (!data) return null;
 		if (searching && !filterIds) return null;
@@ -218,8 +239,8 @@ export function TreeView({
 		return flattenTree(d, { searching, open, expanded, curId });
 	}, [data, searching, filterIds, open, expanded, curId]);
 	// Stable so memoized header rows do not re-render on every parent render.
-	const onAction = useCallback((a: HeaderAction) => {
-		if (a.kind === "plus") setPlusTarget({ cwd: a.cwd, label: a.label });
+	const onAction = useCallback((a: HeaderAction, anchorEl?: HTMLElement | null) => {
+		if (a.kind === "plus") setPlusTarget({ cwd: a.cwd, label: a.label, anchorEl: anchorEl ?? null });
 		else runActionDefault(a);
 	}, []);
 
@@ -237,7 +258,7 @@ export function TreeView({
 			const matching = (res.dirs ?? []).filter((d) => d.kind === "worktree" &&
 				project != null && d.workspaceId === project.workspace.id);
 			if (matching.length === 1) void newSessionIn(matching[0].path);
-			else if (matching.length > 1) setWtChoices(matching);
+			else if (matching.length > 1) setWtChoices({ dirs: matching, anchorEl: plusTarget?.anchorEl ?? null });
 			else toast("这个项目还没有独立工作树，请先在电脑端创建", { kind: "info" });
 		} catch (e) {
 			toast(`新建失败：${errorMessage(e)}`, { kind: "error" });
@@ -316,6 +337,8 @@ export function TreeView({
 				open={plusTarget !== null}
 				title="新建会话"
 				subtitle={plusTarget?.label}
+				anchorEl={plusTarget?.anchorEl}
+				placement="bottom-end"
 				onClose={() => setPlusTarget(null)}
 				items={
 					plusTarget
@@ -341,8 +364,10 @@ export function TreeView({
 			<ActionSheet
 				open={wtChoices !== null}
 				title="选择工作树"
+				anchorEl={wtChoices?.anchorEl}
+				placement="bottom-end"
 				onClose={() => setWtChoices(null)}
-				items={(wtChoices ?? []).map((w) => ({
+				items={(wtChoices?.dirs ?? []).map((w) => ({
 					key: w.path,
 					icon: <GitBranch {...I} />,
 					label: w.label || w.path,

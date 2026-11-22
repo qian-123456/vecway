@@ -6,6 +6,7 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { PlanStatus } from "../../../src/features/chat/plan/planStatus";
 import { api, errorMessage, LONG_TIMEOUT_MS, upload } from "../../core/api";
+import { imageFromBlob, toDataUrl, type PromptImage } from "../../core/lib/images";
 import { nav, paths } from "../../core/nav";
 import { buildPendingResponse, doneOption, nextMultiChoice, type PendingAnswer } from "../../core/pendingUi";
 import { events } from "../../core/sse";
@@ -17,8 +18,7 @@ import { attention } from "./lib/attention";
 import { isFinalReply, matchRequest, resolveRequest, type AskAnswer, type AskDriverState, type AskSpec } from "./lib/askDriver";
 import { isBatchApprovable, showApproveAll } from "./lib/approvals";
 import { createDebounce, DRAFT_ACTIVITY_DEBOUNCE_MS, draftActivityBody, draftBook } from "./lib/drafts";
-import { attachmentBlocker, buildPrompt, buildPromptBody, sendIntent, type StreamBehavior } from "./lib/prompt";
-import { loadSlashCommands, parseSlashInput, type SlashCmd } from "./lib/slash";
+import { attachmentBlocker, buildPrompt, buildPromptBody, buildPromptImages, sendIntent, stripImageMarkers, type StreamBehavior } from "./lib/prompt";
 import {
 	clearLiveMain,
 	clearLiveStale,
@@ -32,6 +32,7 @@ import {
 	type LiveSnapshotBody,
 } from "./lib/liveSnapshot";
 import { contentPersisted, livePersisted, pruneLive, reduceFrame, type StreamState } from "./lib/stream";
+import { loadSlashCommands, parseSlashInput, type SlashCmd } from "./lib/slash";
 import {
 	EMPTY_TRANSCRIPT,
 	mergePage,
@@ -54,6 +55,8 @@ export interface Attachment {
 	status: "up" | "ok" | "err";
 	path?: string;
 	err?: string;
+	image?: PromptImage;
+	file?: File;
 }
 
 export interface LocalOut {
@@ -233,6 +236,8 @@ export class ChatController {
 	private disposed = false;
 	/** First prompt carried over from a draft; re-registered if this page is torn down before it persisted (StrictMode, fast back). */
 	private handoffText: string | null = null;
+	/** Blob URLs handed off to a materialized real session (never revoke from the retiring draft). */
+	private handedOffImageUrls = new Set<string>();
 	/** Draft-book ownership follows unsent content to the real session, not the submitted snapshot. */
 	private ownsDraftStash = false;
 	private draftTransferred = false;
@@ -250,7 +255,9 @@ export class ChatController {
 		const handoff = draftBook.takeHandoff(id);
 		const stash = draftBook.restore(id);
 		const status = useSessions.getState().byId[id]?.status;
-		const opt: OptimisticMsg[] = handoff ? [{ id: `o${++this.optSeq}`, text: handoff.text, imageUrls: [] }] : [];
+		const opt: OptimisticMsg[] = handoff
+			? [{ id: `o${++this.optSeq}`, text: handoff.text, imageUrls: handoff.imageUrls ?? [] }]
+			: [];
 		const working = status === "working" || !!handoff;
 		this.stream = { live: null, working };
 		this.initialText = stash ? stash.text : loadUnsent(id);
@@ -354,19 +361,39 @@ export class ChatController {
 		clearTimeout(this.approvalTimer);
 		if (this.rafId) cancelAnimationFrame(this.rafId);
 		this.touchDraft.cancel();
+		let rehandedUrls: Set<string> | null = null;
 		const pendingHandoff = this.handoffText;
-		if (pendingHandoff !== null && this.state.optimistic.some((o) => o.text === pendingHandoff)) {
-			draftBook.handoff(this.id, this.id, pendingHandoff);
+		const handoffOpt = pendingHandoff !== null ? this.state.optimistic.find((o) => o.text === pendingHandoff) : undefined;
+		if (handoffOpt) {
+			draftBook.handoff(this.id, this.id, handoffOpt.text, handoffOpt.imageUrls);
+			rehandedUrls = new Set(handoffOpt.imageUrls);
 		}
 		const { atts } = this.state;
-		for (const o of this.state.optimistic) for (const url of o.imageUrls) URL.revokeObjectURL(url);
-		for (const a of this.state.delivery?.atts ?? []) if (a.url) URL.revokeObjectURL(a.url);
+		// An in-flight send owns its preview URLs until sendPrompt either hands them off to a
+		// materialized real session or revokes them on non-handoff completion / error.
+		const inFlightUrls = new Set(
+			this.state.delivery?.phase === "sending"
+				? this.state.delivery.atts.map((a) => a.url).filter((u): u is string => Boolean(u))
+				: [],
+		);
+		for (const o of this.state.optimistic) {
+			for (const url of o.imageUrls) {
+				if (url.startsWith("blob:") && !this.handedOffImageUrls.has(url) && !rehandedUrls?.has(url) && !inFlightUrls.has(url)) {
+					URL.revokeObjectURL(url);
+				}
+			}
+		}
+		for (const a of this.state.delivery?.atts ?? []) {
+			if (a.url && a.url.startsWith("blob:") && !this.handedOffImageUrls.has(a.url) && !inFlightUrls.has(a.url)) {
+				URL.revokeObjectURL(a.url);
+			}
+		}
 		if (this.ownsDraftStash && !this.draftTransferred) {
 			const text = this.composer?.get() ?? this.lastText;
 			const meaningful = draftBook.stash(this.id, text, atts);
 			this.draftActivity(false, meaningful);
 		} else if (!this.draftTransferred) {
-			for (const a of atts) if (a.url) URL.revokeObjectURL(a.url);
+			for (const a of atts) if (a.url && a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
 		}
 	}
 
@@ -537,7 +564,9 @@ export class ChatController {
 		const recovering = new Set((this.state.delivery?.atts ?? []).map((a) => a.url));
 		for (const o of before) {
 			if (kept.has(o.id)) continue;
-			for (const url of o.imageUrls) if (!recovering.has(url)) URL.revokeObjectURL(url);
+			for (const url of o.imageUrls) {
+				if (url.startsWith("blob:") && !recovering.has(url) && !this.handedOffImageUrls.has(url)) URL.revokeObjectURL(url);
+			}
 		}
 	}
 
@@ -1113,7 +1142,7 @@ export class ChatController {
 			this.composer?.set(cur ? `${pending.text}\n${cur}` : pending.text);
 			this.set({ atts: [...pending.atts.map((a) => ({ ...a, id: ++this.attSeq })), ...this.state.atts] });
 		} else {
-			for (const a of pending.atts) if (a.url) URL.revokeObjectURL(a.url);
+			for (const a of pending.atts) if (a.url && a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
 		}
 		this.set({ delivery: null });
 	}
@@ -1121,14 +1150,30 @@ export class ChatController {
 	private async sendPrompt(text: string, behavior: StreamBehavior): Promise<boolean> {
 		const id = this.id;
 		const wasWorking = this.stream.working;
-		const prompt = buildPrompt(text, this.state.atts);
 		const savedAtts = this.state.atts;
+		const prompt = buildPrompt(text, savedAtts);
+		const images = buildPromptImages(savedAtts);
 		const delivery: PromptDeliveryState = { text, prompt, atts: savedAtts, phase: "sending" };
-		// Persist before dispatch: a reload while awaiting HTTP is ambiguous too.
-		try { localStorage.setItem(deliveryKey(id), JSON.stringify({ ...delivery, atts: savedAtts.map((a) => ({ ...a, url: "" })) })); }
-		catch { toast("无法保存发送状态，消息尚未发送，请检查浏览器存储", { kind: "error" }); return false; }
+		// Persist before dispatch: omit blob URLs, File objects, and base64 payloads so localStorage quota is never exceeded.
+		try {
+			localStorage.setItem(
+				deliveryKey(id),
+				JSON.stringify({
+					...delivery,
+					atts: savedAtts.map((a) => ({ ...a, url: "", file: undefined, image: undefined })),
+				}),
+			);
+		} catch {
+			toast("无法保存发送状态，消息尚未发送，请检查浏览器存储", { kind: "error" });
+			return false;
+		}
 		this.set({ delivery, ...(this.state.treeEdit ? { treeEdit: null } : {}) });
-		const opt: OptimisticMsg = { id: `o${++this.optSeq}`, text: prompt, imageUrls: savedAtts.filter((a) => a.isImage && a.url).map((a) => a.url) };
+		const imageUrls = savedAtts
+			.filter((a) => a.isImage)
+			.map((a) => a.url || (a.image ? toDataUrl(a.image) : ""))
+			.filter(Boolean);
+		const optText = stripImageMarkers(prompt);
+		const opt: OptimisticMsg = { id: `o${++this.optSeq}`, text: optText, imageUrls };
 		this.composer?.set("");
 		this.lastText = "";
 		clearUnsent(id);
@@ -1140,13 +1185,22 @@ export class ChatController {
 		this.stashUnsent();
 		let r: { sessionId?: string };
 		try {
-			r = await api<{ sessionId?: string }>("POST", `/sessions/${id}/prompt-ex`, buildPromptBody(prompt, wasWorking, behavior));
+			r = await api<{ sessionId?: string }>(
+				"POST",
+				`/sessions/${id}/prompt-ex`,
+				buildPromptBody(prompt, wasWorking, behavior, images),
+			);
 		} catch (e) {
 			// HTTP failure is ambiguous even when the server reports a validation-like error.
 			// A frame or session update received after dispatch owns the working flag now.
 			if (activity === this.activitySequence) this.stream = { ...this.stream, working: wasWorking };
 			this.set({ delivery: { ...delivery, phase: "unknown" }, optimistic: this.state.optimistic.filter((o) => o.id !== opt.id), working: this.stream.working });
 			this.syncStatePolling();
+			if (this.disposed) {
+				for (const a of savedAtts) {
+					if (a.url && a.url.startsWith("blob:") && !this.handedOffImageUrls.has(a.url)) URL.revokeObjectURL(a.url);
+				}
+			}
 			toast(`送达状态未知：${errorMessage(e)}。请核对记录后再决定是否重发`, { kind: "error" });
 			return true;
 		}
@@ -1156,7 +1210,8 @@ export class ChatController {
 		if (r && r.sessionId && r.sessionId !== id) {
 			// A disposed draft may have remounted while HTTP was pending; its current book entry wins.
 			if (!this.disposed) this.stashUnsent();
-			draftBook.handoff(id, r.sessionId, prompt);
+			draftBook.handoff(id, r.sessionId, opt.text, opt.imageUrls);
+			for (const url of opt.imageUrls) this.handedOffImageUrls.add(url);
 			this.draftTransferred = true;
 			const unsent = draftBook.restore(r.sessionId);
 			if (unsent) saveUnsent(r.sessionId, unsent.text);
@@ -1167,7 +1222,7 @@ export class ChatController {
 		}
 		// The optimistic bubble still owns its preview URLs until persistence takes over.
 		if (this.disposed || !this.state.optimistic.some((o) => o.id === opt.id)) {
-			for (const a of savedAtts) if (a.url) URL.revokeObjectURL(a.url);
+			for (const a of savedAtts) if (a.url && a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
 		}
 		this.scheduleFetch(300);
 		return true;
@@ -1371,27 +1426,42 @@ export class ChatController {
 				isImage,
 				url: isImage ? URL.createObjectURL(f) : "",
 				status: "up",
+				file: f,
 			};
 			this.set({ atts: [...this.state.atts, att] });
 			this.noteEdit();
-			upload<{ path: string }>(`/sessions/${this.id}/upload`, f, { name: att.name })
-				.then((r) => this.patchAtt(att, { status: "ok", path: r.path }))
-				.catch((e: unknown) => {
-					this.patchAtt(att, { status: "err", err: errorMessage(e) });
-					toast(`上传失败：${errorMessage(e)}`, { kind: "error" });
-				});
+			void this.uploadAtt(att, f);
 		}
 	}
-	private patchAtt(attachment: Attachment, p: Partial<Attachment>): void {
+	retryAtt(id: number): void {
+		const current = this.state.atts.find((a) => a.id === id);
+		if (!current || current.status !== "err" || !current.file) return;
+		const retrying = this.patchAtt(current, { status: "up", err: undefined });
+		void this.uploadAtt(retrying, current.file);
+	}
+	private async uploadAtt(att: Attachment, file: File): Promise<void> {
+		try {
+			const [r, image] = await Promise.all([
+				upload<{ path: string }>(`/sessions/${this.id}/upload`, file, { name: att.name }),
+				att.isImage && !att.image ? imageFromBlob(file) : Promise.resolve(att.image),
+			]);
+			this.patchAtt(att, { status: "ok", path: r.path, image, err: undefined });
+		} catch (e: unknown) {
+			this.patchAtt(att, { status: "err", err: errorMessage(e) });
+			toast(`上传失败：${errorMessage(e)}`, { kind: "error" });
+		}
+	}
+	private patchAtt(attachment: Attachment, p: Partial<Attachment>): Attachment {
 		const updated = { ...attachment, ...p };
 		// The original page may be disposed or handed off; update only the stash still owning this object.
 		draftBook.replaceAttachment(attachment, updated);
-		if (this.disposed || this.draftTransferred) return;
+		if (this.disposed || this.draftTransferred) return updated;
 		this.set({ atts: this.state.atts.map((a) => a === attachment ? updated : a) });
+		return updated;
 	}
 	removeAtt(id: number): void {
 		const a = this.state.atts.find((x) => x.id === id);
-		if (a?.url) URL.revokeObjectURL(a.url);
+		if (a?.url && a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
 		this.set({ atts: this.state.atts.filter((x) => x.id !== id) });
 		this.noteEdit();
 	}

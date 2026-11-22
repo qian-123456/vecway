@@ -1,27 +1,36 @@
-import { Camera, FolderOpen, FolderPlus, History, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, Target } from "lucide-react";
+import { Camera, FileText, FolderOpen, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, Target, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, errorMessage } from "../../core/api";
-import { baseName, relTime, sessionName } from "../../core/lib/format";
+import { api, errorMessage, upload } from "../../core/api";
+import { baseName } from "../../core/lib/format";
+import { imageFromBlob } from "../../core/lib/images";
 import { nav, paths, type PageProps } from "../../core/nav";
 import { useSessions } from "../../core/stores/sessions";
-import { BottomSheet, MenuRow, Switch, toast } from "../../ui";
+import { BottomSheet, MenuRow, openImage, Spinner, Switch, toast, type ViewerImage } from "../../ui";
 import { ActionTile } from "../../ui/ActionTile";
+import { quoteMarkdown, type Attachment } from "../chat/chatStore";
 import { ChatHeader } from "../chat/components/ChatHeader";
 import { ComposerCapsule, type ComposerApi } from "../chat/components/ComposerCapsule";
 import { useKeyboardOpen } from "../chat/components/ComposerToolbar";
-import { HeaderMenu } from "../chat/components/HeaderMenu";
+import { EmptyChatCanvas } from "../chat/components/EmptyChatCanvas";
 import { ModelThinkingSheet } from "../chat/components/ModelThinkingSheet";
+import { SketchPad } from "../chat/components/SketchPad";
 import type { ModelSource } from "../chat/components/useModelFacts";
 import { draftBook, queueComposerAction, queueFirstSend, type ComposerAction } from "../chat/lib/drafts";
 import { parseModelRef, type ModelFacts, type ModelOpt } from "../chat/lib/models";
+import { attachmentBlocker } from "../chat/lib/prompt";
+import { useRightDrawer } from "../panels/rightDrawerStore";
+import { RightWorkspaceDrawer, useRightEdgeSwipe } from "../panels/RightWorkspaceDrawer";
 import { MenuSheet } from "./MenuSheet";
 import { abbreviateHomePath, NewSessionSheet, setCachedHomeDir } from "./NewSessionSheet";
 import { useTree } from "./treeStore";
 import type { DirEntry } from "./tree";
+
+const MAX_BYTES = 20 * 1024 * 1024;
 export function HomePage(_props: PageProps) {
 	const [newOpen, setNewOpen] = useState(false);
 	const [menuOpen, setMenuOpen] = useState(false);
-	const [toolMenu, setToolMenu] = useState(false);
+	const [sketchOpen, setSketchOpen] = useState(false);
+	const [atts, setAtts] = useState<Attachment[]>([]);
 	const [plusOpen, setPlusOpen] = useState(false);
 	const [modelOpen, setModelOpen] = useState(false);
 	const [sending, setSending] = useState(false);
@@ -44,6 +53,11 @@ export function HomePage(_props: PageProps) {
 	const cameraRef = useRef<HTMLInputElement>(null);
 	const galleryRef = useRef<HTMLInputElement>(null);
 	const creating = useRef<Promise<string> | null>(null);
+	const attSeq = useRef(0);
+	const attsRef = useRef(atts);
+	attsRef.current = atts;
+	const transferredUrls = useRef(new Set<string>());
+	const pendingMain = useRightDrawer((s) => s.pendingMain);
 	const modelSource = useMemo<ModelSource>(() => ({
 		load: async () => {
 			const r = await api<{ models?: ModelOpt[] }>("GET", "/left/roles");
@@ -83,6 +97,66 @@ export function HomePage(_props: PageProps) {
 		}).catch((error) => { if (!controller.signal.aborted) setDirectoryError(errorMessage(error)); });
 		return () => controller.abort();
 	}, [mode]);
+	useEffect(() => {
+		return () => {
+			for (const a of attsRef.current) {
+				if (a.url && !transferredUrls.current.has(a.url)) URL.revokeObjectURL(a.url);
+			}
+		};
+	}, []);
+
+	useEffect(() => {
+		if (!pendingMain) return;
+		const payload = useRightDrawer.getState().consumeMainAnnotation(pendingMain.sessionId);
+		if (!payload) return;
+		const block = quoteMarkdown(payload.quote);
+		const formatted = payload.comment?.trim() ? `${block}\n\n${payload.comment.trim()}` : `${block}\n\n`;
+		const cur = apiRef.current?.get() ?? "";
+		const next = cur ? `${cur.replace(/\s+$/, "")}\n\n${formatted}` : formatted;
+		apiRef.current?.set(next, true);
+	}, [pendingMain]);
+
+	useRightEdgeSwipe(() => useRightDrawer.getState().openDrawer(""), true);
+
+	const addFiles = (files: readonly File[], forceImage = false) => {
+		for (const f of files) {
+			if (f.size > MAX_BYTES) {
+				toast(`「${f.name}」超过 20MB 上限，无法上传`);
+				continue;
+			}
+			const isImage = forceImage || f.type.startsWith("image/");
+			const attId = ++attSeq.current;
+			const url = isImage ? URL.createObjectURL(f) : "";
+			const att: Attachment = {
+				id: attId,
+				name: f.name || (isImage ? "image.jpg" : "file"),
+				isImage,
+				url,
+				status: isImage ? "up" : "ok",
+				file: f,
+			};
+			setAtts((prev) => [...prev, att]);
+			if (isImage) {
+				void imageFromBlob(f)
+					.then((image) => {
+						setAtts((prev) => prev.map((a) => (a.id === attId ? { ...a, status: "ok", image } : a)));
+					})
+					.catch((e: unknown) => {
+						const err = errorMessage(e);
+						setAtts((prev) => prev.map((a) => (a.id === attId ? { ...a, status: "err", err } : a)));
+						toast(`读取图片失败：${err}`, { kind: "error" });
+					});
+			}
+		}
+	};
+
+	const removeAtt = (attId: number) => {
+		setAtts((prev) => {
+			const target = prev.find((a) => a.id === attId);
+			if (target?.url) URL.revokeObjectURL(target.url);
+			return prev.filter((a) => a.id !== attId);
+		});
+	};
 
 	const ensureDraft = (): Promise<string> => {
 		if (creating.current) return creating.current;
@@ -118,19 +192,50 @@ export function HomePage(_props: PageProps) {
 
 	const handleSend = async (value: string) => {
 		const text = value.trim();
-		if (!text || submitting.current) return;
+		const currentAtts = attsRef.current;
+		if ((!text && currentAtts.length === 0) || submitting.current) return;
+		const blocker = attachmentBlocker(currentAtts);
+		if (blocker) {
+			toast(blocker);
+			return;
+		}
 		submitting.current = true;
 		setSending(true);
 		try {
 			const id = await prepareDraft();
-			queueFirstSend(id, text);
+			let finalAtts = currentAtts;
+			if (currentAtts.some((a) => !a.isImage && a.file && !a.path)) {
+				const uploaded: Attachment[] = [];
+				for (const a of currentAtts) {
+					if (!a.isImage && a.file && !a.path) {
+						try {
+							const res = await upload<{ path: string }>(`/sessions/${id}/upload`, a.file, { name: a.name });
+							uploaded.push({ ...a, status: "ok", path: res.path });
+						} catch (e) {
+							const err = errorMessage(e);
+							setAtts((prev) => prev.map((x) => (x.id === a.id ? { ...x, status: "err", err } : x)));
+							toast(`上传失败：${err}`, { kind: "error" });
+							return;
+						}
+					} else {
+						uploaded.push(a);
+					}
+				}
+				finalAtts = uploaded;
+			}
+			for (const a of finalAtts) if (a.url) transferredUrls.current.add(a.url);
 			const cur = apiRef.current?.get();
+			let extra = "";
 			if (cur === value) {
 				apiRef.current?.clear();
 			} else if (cur !== undefined) {
-				const extra = cur.startsWith(value) ? cur.slice(value.length) : cur;
-				draftBook.stash(id, extra, []);
+				extra = cur.startsWith(value) ? cur.slice(value.length) : cur;
 			}
+			if (finalAtts.length > 0 || extra !== "") {
+				draftBook.stash(id, extra, finalAtts);
+			}
+			setAtts([]);
+			queueFirstSend(id, text);
 			nav.replace(paths.chat(id));
 		} catch (e) {
 			toast(`创建会话失败：${errorMessage(e)}`, { kind: "error" });
@@ -161,62 +266,90 @@ export function HomePage(_props: PageProps) {
 		const matching = directory?.path ? active.filter((s) => s.cwd === directory.path) : active;
 		return (matching.length > 0 ? matching : active).slice(0, 2);
 	}, [allSessions, directory?.path, mode]);
+	const imageAtts = atts.filter((a) => a.isImage);
+	const fileAtts = atts.filter((a) => !a.isImage);
+	const imageGallery: ViewerImage[] = imageAtts.filter((a) => a.url).map((a) => ({ src: a.url, alt: a.name }));
+	const attachments =
+		atts.length > 0 ? (
+			<div className="flex flex-col gap-1.5 px-1 pt-1 pb-2">
+				{imageAtts.length > 0 && (
+					<div className="flex flex-wrap gap-2">
+						{imageAtts.map((a, idx) => {
+							const galleryIndex = imageGallery.findIndex((g) => g.src === a.url);
+							return (
+								<div
+									key={a.id}
+									className={`relative h-13 w-13 shrink-0 overflow-hidden rounded-m-md bg-m-surface-2 ${a.status === "err" ? "ring-1 ring-m-danger" : ""}`}
+								>
+									{a.url && (
+										<button
+											type="button"
+											aria-label={`预览图片 ${idx + 1}`}
+											onClick={() => openImage({ src: a.url, alt: a.name }, imageGallery, galleryIndex >= 0 ? galleryIndex : 0)}
+											className="block h-full w-full"
+										>
+											<img src={a.url} alt={a.name} className="h-full w-full object-cover" />
+										</button>
+									)}
+									<span className="pointer-events-none absolute top-1 left-1 flex h-4 min-w-4 items-center justify-center rounded-m-pill bg-m-scrim/75 px-1 text-[10px] font-medium text-white tabular-nums">
+										{idx + 1}
+									</span>
+									{a.status === "up" && (
+										<span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-m-scrim/40 text-white">
+											<Spinner size={14} />
+										</span>
+									)}
+									<button
+										type="button"
+										aria-label="移除附件"
+										onClick={() => removeAtt(a.id)}
+										className="absolute top-0.5 right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-m-scrim/75 text-white active:opacity-80"
+									>
+										<X size={12} strokeWidth={2} />
+									</button>
+								</div>
+							);
+						})}
+					</div>
+				)}
+				{fileAtts.length > 0 && (
+					<div className="m-noscrollbar flex gap-2 overflow-x-auto">
+						{fileAtts.map((a) => (
+							<div key={a.id} className={`relative flex shrink-0 items-center gap-2 rounded-m-md bg-m-surface-2 py-1.5 pr-8 pl-2 ${a.status === "err" ? "ring-1 ring-m-danger" : ""}`}>
+								<span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-m-sm bg-m-surface text-m-text-2">
+									<FileText size={16} />
+								</span>
+								<span className="max-w-36 truncate text-m-xs text-m-text">{a.name}</span>
+								<button
+									type="button"
+									aria-label="移除附件"
+									onClick={() => removeAtt(a.id)}
+									className="absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-m-text-3 active:bg-m-surface-hover"
+								>
+									<X size={14} />
+								</button>
+							</div>
+						))}
+					</div>
+				)}
+			</div>
+		) : undefined;
 
 	return (
 		<div className="relative flex min-h-0 flex-1 flex-col bg-m-bg">
 			<ChatHeader
 				title="Vecway"
 				onMenu={() => setMenuOpen(true)}
-				onTools={() => setToolMenu(true)}
+				onTools={() => useRightDrawer.getState().toggleDrawer("")}
 			/>
-			<div className="m-kb-lift relative flex min-h-0 flex-1 flex-col justify-center px-6 pb-8">
-				<div className="text-center">
-					<h1 className="inline-flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[23px] font-semibold leading-snug tracking-[-0.02em] text-m-text">
-						<span>在</span>
-						<button
-							type="button"
-							aria-label={directory ? `当前目录：${directory.path}，点击切换` : "选择当前目录"}
-							onClick={() => setDirectoryOpen(true)}
-							className="inline-flex max-w-full items-center gap-1.5 border-b border-dashed border-m-border-strong pb-0.5 text-m-text transition-opacity active:opacity-70"
-						>
-							{directory ? (
-								<FolderOpen size={19} strokeWidth={1.85} className="shrink-0 text-m-accent" aria-hidden />
-							) : (
-								<FolderPlus size={19} strokeWidth={1.85} className="shrink-0 text-m-accent" aria-hidden />
-							)}
-							<span className="truncate">{dirName}</span>
-						</button>
-						<span>中开始</span>
-					</h1>
-					<p className="mt-2 truncate font-m-mono text-[12px] leading-relaxed text-m-text-3 tabular-nums">
-						{dirSub}
-					</p>
-				</div>
-
-				{recentSessions.length > 0 && (
-					<div className="mx-auto mt-8 w-full max-w-[360px] border-t border-m-border pt-3">
-						<div className="pb-1 text-[11.5px] font-medium text-m-text-3">继续最近对话</div>
-						<div className="divide-y divide-m-border">
-							{recentSessions.map((item) => (
-								<button
-									key={item.id}
-									type="button"
-									onClick={() => nav.push(paths.chat(item.id))}
-									className="flex min-h-10 w-full items-center justify-between gap-3 py-2 text-left text-m-sm text-m-text transition-opacity active:opacity-65"
-								>
-									<span className="inline-flex min-w-0 items-center gap-2">
-										<History size={14} strokeWidth={1.75} className="shrink-0 text-m-text-3" aria-hidden />
-										<span className="truncate">{sessionName(item)}</span>
-									</span>
-									<span className="shrink-0 text-[11.5px] whitespace-nowrap text-m-text-3 tabular-nums">
-										{relTime(item.updatedAt)}
-									</span>
-								</button>
-							))}
-						</div>
-					</div>
-				)}
-			</div>
+			<EmptyChatCanvas
+				dirName={dirName}
+				dirSub={dirSub}
+				hasDirectory={Boolean(directory)}
+				directoryPath={directory?.path ?? null}
+				onPickDirectory={() => setDirectoryOpen(true)}
+				recentSessions={recentSessions}
+			/>
 			<div
 				className="m-kb-dock relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3 pt-2"
 				style={{ paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)" }}
@@ -225,6 +358,8 @@ export function HomePage(_props: PageProps) {
 					apiRef={apiRef}
 					placeholder="今天想做点什么？"
 					busy={sending}
+					hasExtra={atts.length > 0}
+					top={attachments}
 					onPlus={() => setPlusOpen(true)}
 					onSend={(text) => void handleSend(text)}
 					model={facts.current?.id}
@@ -233,16 +368,16 @@ export function HomePage(_props: PageProps) {
 					onThinking={() => setModelOpen(true)}
 				/>
 			</div>
-			<input ref={fileRef} type="file" multiple hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) void openAction(undefined, files); }} />
-			<input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) void openAction(undefined, files); }} />
-			<input ref={galleryRef} type="file" accept="image/*" multiple hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) void openAction(undefined, files); }} />
+			<input ref={fileRef} type="file" multiple hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) { setPlusOpen(false); addFiles(files); } }} />
+			<input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) { setPlusOpen(false); addFiles(files, true); } }} />
+			<input ref={galleryRef} type="file" accept="image/*" multiple hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) { setPlusOpen(false); addFiles(files, true); } }} />
 			<BottomSheet open={plusOpen} onClose={() => setPlusOpen(false)}>
 				<div className="grid grid-cols-3 gap-3 px-4 pt-1">
 					<ActionTile icon={<Paperclip size={24} />} label="文件" onClick={() => fileRef.current?.click()} />
 					<ActionTile icon={<Camera size={24} />} label="拍照" onClick={() => cameraRef.current?.click()} />
 					<ActionTile icon={<ImagePlus size={24} />} label="相册" onClick={() => galleryRef.current?.click()} />
 					<ActionTile icon={<Monitor size={24} />} label="电脑端选中项" onClick={() => void openAction("finder")} />
-					<ActionTile icon={<PenLine size={24} />} label="草图" onClick={() => void openAction("sketch")} />
+					<ActionTile icon={<PenLine size={24} />} label="草图" onClick={() => { setPlusOpen(false); setSketchOpen(true); }} />
 				</div>
 				<div className="pt-3 pb-3">
 					<MenuRow icon={<FolderOpen size={22} />} label="在项目中工作" hint="选择项目目录" onClick={() => { setPlusOpen(false); setDirectoryOpen(true); }} />
@@ -251,13 +386,21 @@ export function HomePage(_props: PageProps) {
 				</div>
 			</BottomSheet>
 			<MenuSheet open={menuOpen} onClose={() => setMenuOpen(false)} onNewSession={() => setNewOpen(true)} />
-			<HeaderMenu open={toolMenu} onClose={() => setToolMenu(false)} resolveSessionId={ensureDraft} />
+			<RightWorkspaceDrawer resolveSessionId={ensureDraft} />
 			<NewSessionSheet open={newOpen} onClose={() => setNewOpen(false)} defaultCwd={directory?.path} />
 			<NewSessionSheet open={directoryOpen} onClose={() => setDirectoryOpen(false)} defaultCwd={directory?.path} onSelectDirectory={(dir) => {
 				if (dir.path !== directory?.path) { creating.current = null; appliedPlan.current = false; }
 				setDirectory(dir);
 			}} />
 			<ModelThinkingSheet open={modelOpen} onClose={() => setModelOpen(false)} source={modelSource} currentLevel={facts.thinkingLevel} onFacts={(next) => setFacts(next)} />
+			<SketchPad
+				open={sketchOpen}
+				onClose={() => setSketchOpen(false)}
+				onDone={(blob) => {
+					setSketchOpen(false);
+					addFiles([new File([blob], `sketch-${Date.now()}.png`, { type: "image/png" })], true);
+				}}
+			/>
 		</div>
 	);
 }

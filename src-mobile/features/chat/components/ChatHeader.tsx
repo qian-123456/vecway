@@ -1,4 +1,5 @@
-import { ChevronDown, Menu, MoreHorizontal, SquarePen } from "lucide-react";
+import { ChevronDown, Menu, PanelRight, SquarePen } from "lucide-react";
+import type { Ref } from "react";
 import { IconButton, TopBar } from "../../../ui";
 import { shortModel, thinkLabel } from "../lib/models";
 
@@ -10,6 +11,7 @@ import { shortModel, thinkLabel } from "../lib/models";
 export function ChatHeader({
 	title,
 	subtitle,
+	titleButtonRef,
 	onTitleClick,
 	ariaLabel,
 	onMenu,
@@ -21,6 +23,7 @@ export function ChatHeader({
 }: {
 	title?: string;
 	subtitle?: string | null;
+	titleButtonRef?: Ref<HTMLButtonElement>;
 	onTitleClick?: () => void;
 	ariaLabel?: string;
 	onMenu: () => void;
@@ -39,11 +42,12 @@ export function ChatHeader({
 			left={<IconButton variant="plain" size="md" icon={<Menu size={21} strokeWidth={1.85} />} label="菜单" onClick={onMenu} />}
 			center={
 				<button
+					ref={titleButtonRef}
 					type="button"
 					aria-label={ariaLabel ?? (displaySubtitle ? `${displayTitle}，${displaySubtitle}` : displayTitle)}
 					onClick={onTitleClick ?? onModel}
 					disabled={!clickable}
-					className="flex min-h-11 min-w-0 max-w-full flex-col items-center justify-center rounded-m-md px-2.5 py-1 text-center transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover disabled:cursor-default disabled:active:bg-transparent"
+					className="flex min-h-11 min-w-0 max-w-full flex-col items-start justify-center rounded-m-md px-2 py-1 text-left transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover disabled:cursor-default disabled:active:bg-transparent"
 				>
 					<span className="flex max-w-full items-center gap-1">
 						<span className="min-w-0 truncate text-m-sm font-semibold tracking-[-0.01em] whitespace-nowrap text-m-text">
@@ -61,7 +65,7 @@ export function ChatHeader({
 			right={
 				<>
 					{onNew && <IconButton variant="plain" size="md" icon={<SquarePen size={19} strokeWidth={1.85} />} label="新建对话" onClick={onNew} />}
-					{onTools && <IconButton variant="plain" size="md" icon={<MoreHorizontal size={21} strokeWidth={1.85} />} label="工具菜单" onClick={onTools} />}
+					{onTools && <IconButton variant="plain" size="md" icon={<PanelRight size={20} strokeWidth={1.85} />} label="工作区" onClick={onTools} />}
 				</>
 			}
 		/>

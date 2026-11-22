@@ -1,22 +1,30 @@
 import { Inbox } from "lucide-react";
 import { nav, paths } from "../../../core/nav";
-import { ListGroup, ListRow } from "../../../ui";
-import { SettingsSheet } from "../rows";
+import { AnchoredPopover, MenuRow } from "../../../ui";
 
-export function InboxSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function InboxSheet({ open, onClose, anchorEl }: { open: boolean; onClose: () => void; anchorEl?: HTMLElement | null }) {
 	return (
-		<SettingsSheet open={open} onClose={onClose} title="收件箱">
-			<ListGroup note="收件箱汇总所有会话里等你处理的事：审批、提问、完成的回答和出错的会话。整理规则在电脑上设置。">
-				<ListRow
-					icon={<Inbox size={22} strokeWidth={1.75} />}
-					title="打开收件箱"
-					chevron
+		<AnchoredPopover
+			open={open}
+			onClose={onClose}
+			anchorEl={anchorEl}
+			placement="bottom-end"
+			title="收件箱"
+			subtitle="整理规则在电脑上设置"
+			maxWidth={320}
+			minWidth={220}
+		>
+			<div className="py-1.5">
+				<MenuRow
+					icon={<Inbox size={20} strokeWidth={1.75} />}
+					label="打开收件箱"
+					hint="查看审批、提问、完成的回答和出错的会话"
 					onClick={() => {
 						onClose();
 						nav.push(paths.inbox());
 					}}
 				/>
-			</ListGroup>
-		</SettingsSheet>
+			</div>
+		</AnchoredPopover>
 	);
 }

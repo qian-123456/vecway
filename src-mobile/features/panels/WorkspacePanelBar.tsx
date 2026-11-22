@@ -14,7 +14,7 @@ const PANELS: ReadonlyArray<{ current: Panel; label: string; to: (id: string) =>
 
 export function WorkspacePanelBar({ sessionId, current }: { sessionId: string; current: Panel }) {
 	const execution = usePlanExecution(sessionId);
-	const panels = execution.executing || current === "plan"
+	const panels = execution.hasPlan || current === "plan"
 		? [...PANELS, { current: "plan" as const, label: "计划", to: paths.plan }]
 		: PANELS;
 	return (

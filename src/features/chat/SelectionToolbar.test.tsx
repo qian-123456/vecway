@@ -104,21 +104,27 @@ function selectRange(start: number, end: number) {
 	sel.addRange(range);
 	fireEvent.mouseUp(stream);
 }
-function openCommentBox(): HTMLTextAreaElement {
+function openCommentBox(actionLabel: "批注" | "批注到辅助对话" = "批注"): HTMLTextAreaElement {
 	selectRange(6, 11);
-	fireEvent.click(screen.getByRole("button", { name: "批注" }));
+	fireEvent.click(screen.getByRole("button", { name: actionLabel }));
 	return screen.getByRole("textbox", { name: "添加批注" }) as HTMLTextAreaElement;
 }
 
 describe("SelectionToolbar actions", () => {
-	it("clicking 记到收集箱 opens quick-capture modal and discards bubble", () => {
+	it("shows 批注 and 批注到辅助对话 without 记到收集箱", () => {
 		render(<Host />);
 		selectRange(6, 11);
-		const btn = screen.getByRole("button", { name: "记到收集箱" });
-		expect(btn).toBeTruthy();
-		fireEvent.click(btn);
-		expect(openModal).toHaveBeenCalledWith("quick-capture", { text: "world", sessionId: "sess-1" });
+		expect(screen.getByRole("button", { name: "批注" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "批注到辅助对话" })).toBeTruthy();
 		expect(screen.queryByRole("button", { name: "记到收集箱" })).toBeNull();
+	});
+
+	it("hides 批注到辅助对话 when side chat nesting reaches max depth", () => {
+		h.sessions = { "sess-1": { forkDepth: 3, kind: "side" } };
+		render(<Host />);
+		selectRange(6, 11);
+		expect(screen.getByRole("button", { name: "批注" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "批注到辅助对话" })).toBeNull();
 	});
 });
 
@@ -190,10 +196,10 @@ describe("SelectionToolbar comment box", () => {
 		expect(annsOf("sess-1")).toHaveLength(2);
 	});
 
-	it("main selection: choosing 辅助对话 stages for the side chat and reveals a blank new tab", () => {
+	it("main selection: clicking 批注到辅助对话 stages for the side chat and reveals a blank new tab", () => {
 		render(<Host />);
-		const ta = openCommentBox();
-		fireEvent.click(screen.getByRole("radio", { name: "辅助对话" }));
+		const ta = openCommentBox("批注到辅助对话");
+		expect(screen.queryByRole("radio")).toBeNull();
 		expect(useComposer.getState().annotationTarget).toBe("sidechat");
 		expect(localStorage.getItem("ompws:annotation-target")).toBe("sidechat");
 		fireEvent.change(ta, { target: { value: "侧聊批注" } });
@@ -206,9 +212,8 @@ describe("SelectionToolbar comment box", () => {
 
 	it("main selection: reuses the open side-chat thread's composer", () => {
 		h.openChild = { "sess-1": "child-9" };
-		useComposer.getState().setAnnotationTarget("sidechat");
 		render(<Host />);
-		const ta = openCommentBox();
+		const ta = openCommentBox("批注到辅助对话");
 		fireEvent.change(ta, { target: { value: "x" } });
 		fireEvent.click(screen.getByRole("button", { name: "确认批注" }));
 		expect(annsOf("child-9")).toHaveLength(1);
@@ -217,21 +222,25 @@ describe("SelectionToolbar comment box", () => {
 		expect(h.openNewSideChat).not.toHaveBeenCalled();
 	});
 
-	it("main selection defaults to the main composer", () => {
+	it("main selection: clicking 批注 stages into the main composer without radio toggle", () => {
+		useComposer.getState().setAnnotationTarget("sidechat");
 		render(<Host />);
-		const ta = openCommentBox();
-		expect(screen.getByRole("radio", { name: "主对话" })).toBeTruthy();
+		const ta = openCommentBox("批注");
+		expect(screen.queryByRole("radio")).toBeNull();
 		fireEvent.change(ta, { target: { value: "主" } });
 		fireEvent.click(screen.getByRole("button", { name: "确认批注" }));
 		expect(annsOf("sess-1")).toHaveLength(1);
 		expect(h.openNewSideChat).not.toHaveBeenCalled();
 	});
 
-	it("selection inside the right-panel side chat shows no chooser and stages into its own session", () => {
+	it("selection inside the right-panel side chat hides 批注到辅助对话 and stages into its own session", () => {
 		h.sessions = { "sess-1": { forkDepth: 1, kind: "side" } };
 		useComposer.getState().setAnnotationTarget("sidechat");
 		render(<Host compact />);
-		const ta = openCommentBox();
+		selectRange(6, 11);
+		expect(screen.queryByRole("button", { name: "批注到辅助对话" })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "批注" }));
+		const ta = screen.getByRole("textbox", { name: "添加批注" }) as HTMLTextAreaElement;
 		expect(screen.queryByRole("radio")).toBeNull();
 		fireEvent.change(ta, { target: { value: "当前对话批注" } });
 		fireEvent.click(screen.getByRole("button", { name: "确认批注" }));
@@ -242,11 +251,12 @@ describe("SelectionToolbar comment box", () => {
 		expect(h.revealSideChat).not.toHaveBeenCalled();
 	});
 
-	it("a side-chat session shown in the main area still offers the target choice", () => {
+	it("a side-chat session shown in the main area still offers 批注到辅助对话", () => {
 		h.sessions = { "sess-1": { forkDepth: 1, kind: "side" } };
 		render(<Host />);
-		openCommentBox();
-		expect(screen.getAllByRole("radio").length).toBe(2);
+		selectRange(6, 11);
+		expect(screen.getByRole("button", { name: "批注" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "批注到辅助对话" })).toBeTruthy();
 	});
 
 	it("Esc discards the typed comment instead of staging it", () => {

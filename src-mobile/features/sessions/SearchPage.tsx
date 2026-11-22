@@ -19,7 +19,7 @@ export function SearchPage(_props: PageProps) {
 	const [result, setResult] = useState<(SearchResult & { query: string; mode: SpaceMode; archived: boolean }) | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
-	const [chooser, setChooser] = useState<{ title: string; items: SheetItem[] } | null>(null);
+	const [chooser, setChooser] = useState<{ title: string; items: SheetItem[]; anchorEl: HTMLElement | null } | null>(null);
 	const mode = useTree((s) => s.mode);
 	const seq = useRef(0);
 	const request = useRef<AbortController | null>(null);
@@ -66,7 +66,7 @@ export function SearchPage(_props: PageProps) {
 		};
 	}, [query, search]);
 
-	const openBranch = (b: BranchHit) => {
+	const openBranch = (b: BranchHit, anchorEl: HTMLElement | null) => {
 		const c = branchChoice(b);
 		if (c.kind === "open") {
 			nav.push(paths.chat(c.id));
@@ -75,6 +75,7 @@ export function SearchPage(_props: PageProps) {
 		const names = new Map((result?.sessions ?? []).map((s) => [s.id, sessionName(s)]));
 		setChooser({
 			title: c.title,
+			anchorEl,
 			items: c.ids.map((id) => ({ key: id, label: names.get(id) || id, run: () => nav.push(paths.chat(id)) })),
 		});
 	};
@@ -140,7 +141,7 @@ export function SearchPage(_props: PageProps) {
 							<div key={`${b.workspaceId ?? ""}|${b.branch}`} className="px-2">
 								<button
 									type="button"
-									onClick={() => openBranch(b)}
+									onClick={(e) => openBranch(b, e.currentTarget)}
 									className="flex min-h-12 w-full items-center gap-3 rounded-m-md px-3 py-2.5 text-left active:bg-m-surface-hover"
 								>
 									<GitBranch size={20} strokeWidth={1.75} className="shrink-0 text-m-text-2" />
@@ -160,7 +161,14 @@ export function SearchPage(_props: PageProps) {
 				)}
 				</div>
 			</PullToRefresh>
-			<ActionSheet open={chooser !== null} title={chooser?.title} items={chooser?.items ?? []} onClose={() => setChooser(null)} />
+			<ActionSheet
+				open={chooser !== null}
+				title={chooser?.title}
+				items={chooser?.items ?? []}
+				anchorEl={chooser?.anchorEl}
+				placement="bottom-start"
+				onClose={() => setChooser(null)}
+			/>
 			{node}
 		</div>
 	);

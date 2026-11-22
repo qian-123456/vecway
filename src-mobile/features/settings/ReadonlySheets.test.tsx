@@ -19,14 +19,14 @@ describe("desktop-managed settings without mobile read APIs", () => {
  ])("discloses unavailable data for $title and offers no fabricated editing", ({ title, Sheet }) => {
   const request = vi.spyOn(apiModule, "api"); const close = vi.fn();
   render(<Sheet open onClose={close} />);
-  expect(screen.getByRole("heading", { name: title })).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: title })).toBeTruthy();
   expect(screen.getByText("由电脑管理")).toBeTruthy();
   expect(screen.getByText(/手机端尚无.*读取接口/)).toBeTruthy();
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(screen.queryByRole("switch")).toBeNull();
   expect(screen.queryByRole("button", { name: /保存|创建|添加|生成/ })).toBeNull();
   expect(request).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+  fireEvent.keyDown(document, { key: "Escape" });
   expect(close).toHaveBeenCalledOnce();
  });
 });

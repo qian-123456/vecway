@@ -1,12 +1,14 @@
-import { Camera, FileText, FolderOpen, GitBranch, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, Target, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Camera, FileText, FolderOpen, GitBranch, ImageOff, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, RotateCcw, Target, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { api, errorMessage } from "../../../core/api";
 import { baseName } from "../../../core/lib/format";
+import { toDataUrl } from "../../../core/lib/images";
 import { nav, paths } from "../../../core/nav";
 import { usePref } from "../../../core/stores/prefs";
 import { useSession, useSessions } from "../../../core/stores/sessions";
-import { BottomSheet, IconButton, MenuRow, Spinner, Switch, toast } from "../../../ui";
+import { BottomSheet, IconButton, MenuRow, openImage, Spinner, Switch, toast, type ViewerImage } from "../../../ui";
 import { ActionTile } from "../../../ui/ActionTile";
+import type { Attachment } from "../chatStore";
 import { useChat, useChatUi } from "../ChatContext";
 import { contextTone, formatContextPercent, queueChipText, resolveContextPercent } from "../lib/context";
 import { draftBook, takeComposerAction } from "../lib/drafts";
@@ -40,12 +42,13 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 	const [sheet, setSheet] = useState<Sheet>(null);
 	const [sketch, setSketch] = useState(false);
 	const [canSend, setCanSend] = useState(false);
+	const composerRef = useRef<HTMLDivElement>(null);
 	const apiRef = useRef<ComposerApi | null>(null);
+	const [contextAnchor, setContextAnchor] = useState<HTMLElement | null>(null);
 	const saveTimer = useRef<number | undefined>(undefined);
 	const fileAny = useRef<HTMLInputElement>(null);
 	const fileCamera = useRef<HTMLInputElement>(null);
 	const fileGallery = useRef<HTMLInputElement>(null);
-
 	const onInput = useCallback(() => {
 		clearTimeout(saveTimer.current);
 		saveTimer.current = window.setTimeout(() => saveUnsent(sessionId, apiRef.current?.get() ?? ""), UNSENT_DEBOUNCE_MS);
@@ -125,33 +128,132 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 	const queued = queueChipText(cstate?.queue);
 	const close = () => setSheet(null);
 
+	const imageAtts = atts.filter((a) => a.isImage);
+	const fileAtts = atts.filter((a) => !a.isImage);
+	const openComposerPreview = (target: Attachment) => {
+		const gallery: ViewerImage[] = [];
+		let startIndex = -1;
+		for (let i = 0; i < imageAtts.length; i++) {
+			const item = imageAtts[i];
+			const src = item.url || (item.image ? toDataUrl(item.image) : "");
+			if (!src) continue;
+			if (item.id === target.id) startIndex = gallery.length;
+			gallery.push({ src, alt: item.name || `图片 #${i + 1}` });
+		}
+		if (startIndex >= 0 && gallery.length > 0) {
+			openImage(gallery[startIndex], gallery, startIndex);
+		}
+	};
+
 	const attachments =
 		atts.length > 0 ? (
-			<div className="m-noscrollbar flex gap-2 overflow-x-auto px-1 pt-1 pb-2">
-				{atts.map((a) => (
-					<div key={a.id} className={`relative flex shrink-0 items-center gap-2 rounded-m-md bg-m-surface-2 py-1.5 pr-10 pl-1.5 ${a.status === "err" ? "ring-1 ring-m-danger" : ""}`}>
-						{a.isImage && a.url ? (
-							<img src={a.url} alt="" className="h-11 w-11 rounded-m-sm object-cover" />
-						) : (
-							<span className="flex h-11 w-11 items-center justify-center rounded-m-sm bg-m-surface text-m-text-2">
-								<FileText size={20} />
-							</span>
-						)}
-						<span className="flex max-w-40 flex-col">
-							<span className="text-m-xs break-all text-m-text">{a.name}</span>
-							{a.status === "up" && (
-								<span className="flex items-center gap-1 text-m-xs whitespace-nowrap text-m-text-3">
-									<Spinner size={12} />
-									上传中
-								</span>
-							)}
-							{a.status === "err" && <span className="text-m-xs break-words text-m-danger">{a.err ? `上传失败：${a.err}` : "上传失败"}</span>}
-						</span>
-						<span className="absolute top-0 right-0">
-							<IconButton size="sm" icon={<X size={16} />} label="移除附件" onClick={() => controller.removeAtt(a.id)} />
-						</span>
+			<div className="flex flex-col gap-1.5 px-1 pt-0.5 pb-1">
+				{imageAtts.length > 0 && (
+					<div className="flex flex-wrap items-center gap-1.5">
+						{imageAtts.map((a, idx) => {
+							const src = a.url || (a.image ? toDataUrl(a.image) : "");
+							const isErr = a.status === "err";
+							const isUp = a.status === "up";
+							return (
+								<div
+									key={a.id}
+									className={`relative h-[52px] w-[52px] shrink-0 overflow-hidden rounded-m-md border bg-m-surface-2 ${
+										isErr ? "border-m-danger ring-2 ring-m-danger" : "border-m-border"
+									}`}
+								>
+									<button
+										type="button"
+										aria-label={isErr ? `重试上传 ${a.name}` : `预览图片 ${a.name}`}
+										title={isErr ? (a.err ? `上传失败：${a.err}（点击重试）` : "上传失败（点击重试）") : a.name}
+										onClick={() => (isErr ? controller.retryAtt(a.id) : openComposerPreview(a))}
+										className="block h-full w-full overflow-hidden active:opacity-80"
+									>
+										{src ? (
+											<img src={src} alt={a.name} className="block h-full w-full object-cover" />
+										) : (
+											<span className="flex h-full w-full items-center justify-center text-m-text-3">
+												<ImageOff size={18} aria-hidden />
+											</span>
+										)}
+									</button>
+									<span className="pointer-events-none absolute top-0.5 left-0.5 flex h-4 min-w-4 items-center justify-center rounded-m-sm bg-m-bg-elev/90 px-1 font-m-mono text-[10px] font-semibold leading-none text-m-text ring-1 ring-m-border">
+										{idx + 1}
+									</span>
+									{isUp && (
+										<span
+											role="status"
+											aria-label="上传中"
+											className="pointer-events-none absolute inset-0 flex items-center justify-center bg-m-scrim/60 text-m-text"
+										>
+											<Spinner size={15} />
+										</span>
+									)}
+									{isErr && (
+										<span className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-0.5 bg-m-danger-bg/85 text-m-danger">
+											<RotateCcw size={13} aria-hidden />
+											<span className="text-[9px] font-medium whitespace-nowrap">重试</span>
+										</span>
+									)}
+									<button
+										type="button"
+										aria-label="移除附件"
+										onClick={(e) => {
+											e.stopPropagation();
+											controller.removeAtt(a.id);
+										}}
+										className="absolute top-0.5 right-0.5 flex h-4.5 w-4.5 items-center justify-center rounded-m-pill bg-m-bg-elev/90 text-m-text ring-1 ring-m-border active:scale-95"
+									>
+										<X size={11} strokeWidth={2.5} />
+									</button>
+								</div>
+							);
+						})}
 					</div>
-				))}
+				)}
+				{fileAtts.length > 0 && (
+					<div className="flex flex-wrap items-center gap-1.5">
+						{fileAtts.map((a) => (
+							<div
+								key={a.id}
+								title={a.status === "err" && a.err ? a.err : a.name}
+								className={`relative flex max-w-[220px] shrink-0 items-center gap-2 rounded-m-md border bg-m-surface-2 py-1.5 pr-7 pl-2 ${
+									a.status === "err" ? "border-m-danger ring-1 ring-m-danger" : "border-m-border"
+								}`}
+							>
+								<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-m-sm bg-m-surface text-m-text-2">
+									<FileText size={16} />
+								</span>
+								<span className="flex min-w-0 flex-1 flex-col">
+									<span className="truncate text-m-xs text-m-text">{a.name}</span>
+									{a.status === "up" && (
+										<span className="flex items-center gap-1 text-[11px] whitespace-nowrap text-m-text-3">
+											<Spinner size={11} />
+											上传中
+										</span>
+									)}
+									{a.status === "err" && (
+										<button
+											type="button"
+											onClick={() => controller.retryAtt(a.id)}
+											className="inline-flex items-center gap-1 text-left text-[11px] font-medium whitespace-nowrap text-m-danger active:opacity-75"
+										>
+											<RotateCcw size={10} aria-hidden />
+											<span>上传失败，点击重试</span>
+										</button>
+									)}
+								</span>
+								<button
+									type="button"
+									aria-label="移除附件"
+									onClick={() => controller.removeAtt(a.id)}
+									className="absolute top-1 right-1 flex h-4.5 w-4.5 items-center justify-center rounded-m-pill bg-m-bg-elev/90 text-m-text-2 ring-1 ring-m-border active:scale-95"
+								>
+									<X size={11} strokeWidth={2.5} />
+								</button>
+							</div>
+						))}
+					</div>
+				)}
 			</div>
 		) : undefined;
 
@@ -159,6 +261,7 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 
 	return (
 		<div
+			ref={composerRef}
 			className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3 pt-1.5"
 			style={{ paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)" }}
 		>
@@ -242,13 +345,13 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 			<ComposerCapsule
 				apiRef={apiRef}
 				initialText={controller.initialText}
-				placeholder={forkFrom ? "输入分支后的第一条消息" : treeEdit ? "编辑这条消息后发送" : "问问 OMP"}
-				working={working}
+				placeholder={forkFrom ? "输入分支后的第一条消息" : treeEdit ? "编辑这条消息后发送" : "今天想做点什么？"}
 				hasExtra={atts.length > 0}
 				top={attachments}
 				onPlus={() => setSheet("plus")}
 				onSend={(v) => void controller.send(v, behavior)}
 				onStop={() => void controller.stop()}
+				working={working}
 				onInput={onInput}
 				onSync={onSync}
 				onUnmount={onUnmount}
@@ -261,7 +364,14 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 				contextText={formatContextPercent(pct) ?? "未知"}
 				contextPercent={pct}
 				contextToneClass={TONE_TEXT[tone]}
-				onContext={() => setSheet("context")}
+				onContext={(ev?: ReactMouseEvent<HTMLElement>) => {
+					setContextAnchor(
+						ev?.currentTarget ??
+							composerRef.current?.querySelector<HTMLElement>('button[aria-label^="上下文用量"]') ??
+							null,
+					);
+					setSheet("context");
+				}}
 			/>
 			<input ref={fileAny} type="file" multiple hidden onChange={(e) => pickFiles(e, controller)} />
 			<input ref={fileCamera} type="file" accept="image/*" capture="environment" hidden onChange={(e) => pickFiles(e, controller, true)} />
@@ -317,7 +427,7 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 			</BottomSheet>
 
 			<GoalSheet open={sheet === "goal"} onClose={close} sessionId={sessionId} goal={goal} onGoal={(g) => controller.patchState({ goal: g })} />
-			<ContextSheet open={sheet === "context"} onClose={close} cstate={cstate} compacting={compacting} controller={controller} />
+			<ContextSheet open={sheet === "context"} onClose={close} anchorEl={contextAnchor} cstate={cstate} compacting={compacting} controller={controller} />
 			<RemoteFilePickerSheet
 				open={sheet === "finder"}
 				onClose={close}

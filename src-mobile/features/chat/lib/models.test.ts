@@ -1,12 +1,22 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it } from "vitest";
 import {
 	currentModelOpt,
 	filterModels,
 	groupByProvider,
+	groupModelsInOrder,
 	isCurrentModel,
+	isModelContextTooSmall,
+	isProviderConfigured,
+	loadRecentModels,
 	modelLabel,
+	RECENT_MODELS_STORAGE_KEY,
+	recordRecentModel,
+	removeRecentModel,
+	resolveRecentModels,
 	resolveThinkingLevels,
 	shortModel,
+	splitProviderGroups,
 	type ModelOpt,
 } from "./models";
 
@@ -75,5 +85,66 @@ describe("labels", () => {
 		expect(shortModel("gpt-5")).toBe("gpt-5");
 		expect(shortModel("anthropic/claude-3-7-sonnet-20250219")).toBe("claude-3-7-sonnet");
 		expect(shortModel("openai/gpt-4o-2024-08-06")).toBe("gpt-4o");
+	});
+});
+
+describe("recent model picks", () => {
+	beforeEach(() => localStorage.clear());
+
+	it("records deduplicated provider/id entries most-recent-first capped at 5", () => {
+		for (const key of ["a/1", "b/2", "c/3", "d/4", "e/5", "f/6", "b/2"]) {
+			recordRecentModel(key);
+		}
+		expect(loadRecentModels()).toEqual(["b/2", "f/6", "e/5", "d/4", "c/3"]);
+		expect(JSON.parse(localStorage.getItem(RECENT_MODELS_STORAGE_KEY) ?? "[]")).toEqual(["b/2", "f/6", "e/5", "d/4", "c/3"]);
+	});
+
+	it("ignores non-catalog keys and removes entries cleanly", () => {
+		recordRecentModel("__recent__");
+		recordRecentModel("@smol");
+		recordRecentModel("openai/gpt-5");
+		recordRecentModel("anthropic/opus");
+		expect(loadRecentModels()).toEqual(["anthropic/opus", "openai/gpt-5"]);
+		expect(removeRecentModel("openai/gpt-5")).toEqual(["anthropic/opus"]);
+		expect(resolveRecentModels(ms, loadRecentModels()).map((m) => m.id)).toEqual(["opus"]);
+	});
+});
+
+describe("provider configuration & splitting", () => {
+	it("detects configured/enabled vs unconfigured/disabled providers", () => {
+		expect(isProviderConfigured({ id: "openai", enabled: true, key: { kind: "plaintext" } })).toBe(true);
+		expect(isProviderConfigured({ id: "ollama", enabled: true, authNone: true, key: { kind: "none" } })).toBe(true);
+		expect(isProviderConfigured({ id: "local", enabled: true, key: { kind: "none" } })).toBe(true);
+		expect(isProviderConfigured({ id: "env-ok", enabled: true, key: { kind: "envVar", envSet: true } })).toBe(true);
+		expect(isProviderConfigured({ id: "env-miss", enabled: true, key: { kind: "envVar", envSet: false } })).toBe(false);
+		expect(isProviderConfigured({ id: "no-key", enabled: true, key: { kind: "missing" } })).toBe(false);
+		expect(isProviderConfigured({ id: "disabled", enabled: false, key: { kind: "plaintext" } })).toBe(false);
+	});
+
+	it("splits configured providers in priority order and sorts unconfigured separately", () => {
+		const groups = groupModelsInOrder([
+			{ provider: "zai", id: "z1" },
+			{ provider: "openai", id: "o1" },
+			{ provider: "anthropic", id: "a1" },
+			{ provider: "bedrock", id: "b1" },
+		]);
+		const { configured, unconfigured } = splitProviderGroups(groups, new Set(["anthropic", "openai"]), ["anthropic", "openai"]);
+		expect(configured.map((g) => g.provider)).toEqual(["anthropic", "openai"]);
+		expect(unconfigured.map((g) => g.provider)).toEqual(["bedrock", "zai"]);
+	});
+
+	it("falls back to all providers when inventory is null or empty", () => {
+		const groups = groupModelsInOrder(ms);
+		expect(splitProviderGroups(groups, null).configured.map((g) => g.provider)).toEqual(["openai", "anthropic"]);
+		expect(splitProviderGroups(groups, new Set()).unconfigured).toEqual([]);
+	});
+});
+
+describe("isModelContextTooSmall", () => {
+	it("flags models whose contextWindow is smaller than active contextTokens", () => {
+		expect(isModelContextTooSmall({ contextWindow: 8000 }, 12000)).toBe(true);
+		expect(isModelContextTooSmall({ contextWindow: 12000 }, 12000)).toBe(false);
+		expect(isModelContextTooSmall({ contextWindow: undefined }, 12000)).toBe(false);
+		expect(isModelContextTooSmall({ contextWindow: 8000 }, null)).toBe(false);
 	});
 });

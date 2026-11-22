@@ -1,16 +1,16 @@
 import { CloudOff, KeyRound } from "lucide-react";
-import { useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode, type Ref } from "react";
 import { errorMessage } from "../core/api";
 import { getNativeBridge, isNativeApp, nativeHaptic, notifyNativeConnectionStatus } from "../core/nativeBridge";
 import { reconnectEvents } from "../core/sse";
 import { useConnection } from "../core/stores/connection";
 import { useSessions } from "../core/stores/sessions";
-import { BottomSheet } from "../ui/BottomSheet";
+import { AnchoredPopover } from "../ui/AnchoredPopover";
 import { Spinner } from "../ui/Spinner";
 import { toast } from "../ui/Toast";
 
 /** Floating capsule just below the top bar; never covers the bar's buttons. */
-function Pill({ role, tone, icon, text, action, onAction }: { role: "alert" | "status"; tone: "warn" | "danger"; icon: ReactNode; text: string; action: string; onAction: () => void }) {
+function Pill({ role, tone, icon, text, action, onAction, actionRef }: { role: "alert" | "status"; tone: "warn" | "danger"; icon: ReactNode; text: string; action: string; onAction: () => void; actionRef?: Ref<HTMLButtonElement> }) {
 	return (
 		<div className="pointer-events-none fixed inset-x-0 z-(--z-banner) flex justify-center px-4" style={{ top: "calc(var(--m-safe-top) + 60px)" }}>
 			<div
@@ -21,7 +21,7 @@ function Pill({ role, tone, icon, text, action, onAction }: { role: "alert" | "s
 			>
 				<span className="shrink-0">{icon}</span>
 				<span className="min-w-0 break-words">{text}</span>
-				<button type="button" onClick={onAction} className="min-h-11 min-w-11 shrink-0 rounded-m-pill px-3 font-medium whitespace-nowrap active:bg-m-surface-hover">
+				<button ref={actionRef} type="button" onClick={onAction} className="min-h-11 min-w-11 shrink-0 rounded-m-pill px-3 font-medium whitespace-nowrap active:bg-m-surface-hover">
 					{action}
 				</button>
 			</div>
@@ -35,6 +35,7 @@ export function ConnectionBanner() {
 	const error = useConnection((s) => s.error);
 	const [guide, setGuide] = useState(false);
 	const [pairing, setPairing] = useState(false);
+	const repairBtnRef = useRef<HTMLButtonElement>(null);
 	const sawClosed = useRef(false);
 	if (phase === "closed") sawClosed.current = true;
 	if (phase === "open") sawClosed.current = false;
@@ -77,15 +78,23 @@ export function ConnectionBanner() {
 		}
 		return (
 			<>
-				<Pill role="alert" tone="danger" icon={<KeyRound size={16} />} text="配对已失效" action="重新配对" onAction={() => setGuide(true)} />
-				<BottomSheet open={guide} onClose={() => setGuide(false)} title="重新配对">
-					<ol className="m-selectable list-decimal space-y-3 px-5 pt-2 pb-6 pl-10 text-m-md text-m-text-2">
+				<Pill role="alert" tone="danger" icon={<KeyRound size={16} />} text="配对已失效" action="重新配对" onAction={() => setGuide(true)} actionRef={repairBtnRef} />
+				<AnchoredPopover
+					open={guide}
+					onClose={() => setGuide(false)}
+					anchorEl={repairBtnRef.current}
+					placement="bottom-center"
+					title="重新配对"
+					maxWidth={320}
+					minWidth={240}
+				>
+					<ol className="m-selectable list-decimal space-y-2.5 px-4 py-3 pl-9 text-m-sm text-m-text-2">
 						<li>在电脑上打开 Vecway，进入「设置 → 连接与设备」。</li>
 						<li>点击「生成配对二维码」。</li>
 						<li>用手机相机扫描二维码，或直接打开配对链接。</li>
 						<li>配对成功后这里会自动恢复。</li>
 					</ol>
-				</BottomSheet>
+				</AnchoredPopover>
 			</>
 		);
 	}

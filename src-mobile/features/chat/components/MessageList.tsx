@@ -1,10 +1,14 @@
-import { ArrowDown, MessageSquare } from "lucide-react";
+import { ArrowDown } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { Button, EmptyState } from "../../../ui";
+import { baseName } from "../../../core/lib/format";
+import { useSession } from "../../../core/stores/sessions";
+import { Button } from "../../../ui";
 import { Markdown } from "../../../ui/Markdown";
 import { useChat, useChatUi } from "../ChatContext";
 import type { Item } from "../../../core/types";
 import type { Block, Step, Turn } from "../lib/turns";
+import { abbreviateHomePath, getCachedHomeDir } from "../../sessions/NewSessionSheet";
+import { EmptyChatCanvas } from "./EmptyChatCanvas";
 import { SubagentCapsule } from "../../subagents";
 import { SelectionToolbar } from "./SelectionToolbar";
 import { Thinking } from "./Thinking";
@@ -136,8 +140,9 @@ const MobileStreamingRow = memo(function MobileStreamingRow({
 	);
 });
 
-export function MessageList({ sessionId }: { sessionId: string }) {
+export function MessageList({ sessionId, onPickDirectory }: { sessionId: string; onPickDirectory?: () => void }) {
 	const { controller } = useChatUi();
+	const session = useSession(sessionId);
 	const blocks = useChat((s) => s.blocks);
 	const optimistic = useChat((s) => s.optimistic);
 	const localOut = useChat((s) => s.localOut);
@@ -304,7 +309,7 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 				</section>
 			)}
 			<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]">
-				<div ref={contentRef} className="m-kb-pad pt-1">
+				<div ref={contentRef} className={`m-kb-pad pt-1 ${empty && !syntheticLive ? "flex min-h-full flex-col" : ""}`}>
 					{showLoadOlder && (
 						<div className="flex justify-center py-3">
 							<Button size="sm" busy={loadingOlder} onClick={handleLoadOlder}>
@@ -338,7 +343,15 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 							</div>
 						</div>
 					))}
-					{empty && !syntheticLive && <EmptyState icon={<MessageSquare size={24} strokeWidth={1.75} />} title="还没有消息" hint="在下方发送消息，开始这段对话" />}
+					{empty && !syntheticLive && (
+						<EmptyChatCanvas
+							dirName={session?.cwd ? baseName(session.cwd) : "当前对话"}
+							dirSub={session?.cwd ? abbreviateHomePath(session.cwd, getCachedHomeDir()) : "在下方发送消息，开始这段对话"}
+							hasDirectory={Boolean(session?.cwd)}
+							directoryPath={session?.cwd ?? null}
+							onPickDirectory={onPickDirectory}
+						/>
+					)}
 				</div>
 			</div>
 			<div className="m-kb-dock pointer-events-none absolute inset-x-0 bottom-2 z-(--z-banner) flex justify-center">

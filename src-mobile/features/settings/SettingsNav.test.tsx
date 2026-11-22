@@ -274,13 +274,23 @@ describe("SettingsPage navigation and groups", () => {
 	it.each([
 		{ row: "规则文件", title: "规则文件" },
 		{ row: "子代理", title: "子代理管理" },
-	])("opens desktop-managed $row without fabricated editable records", async ({ row, title }) => {
+	])("opens desktop-managed $row popover without fabricated editable records", async ({ row, title }) => {
 		render(<SettingsPage />);
 		fireEvent.click(await screen.findByText(row));
-		expect(await screen.findByRole("heading", { name: title })).toBeTruthy();
+		expect(await screen.findByRole("dialog", { name: title })).toBeTruthy();
 		expect(screen.getByText("由电脑管理")).toBeTruthy();
 		expect(screen.queryByRole("button", { name: "新建子代理" })).toBeNull();
 		expect(screen.queryByRole("textbox")).toBeNull();
+	});
+
+	it("navigates directly to 收件箱 and shows desktop-managed status inline", async () => {
+		const pushSpy = vi.spyOn(navModule.nav, "push").mockImplementation(() => {});
+		render(<SettingsPage />);
+
+		const inboxRow = await screen.findByText("收件箱");
+		fireEvent.click(inboxRow);
+		expect(pushSpy).toHaveBeenCalledWith("/inbox");
+		expect(screen.getAllByText("电脑端管理").length).toBeGreaterThanOrEqual(6);
 	});
 
 	it("navigates to named routes when tapping routing items", async () => {

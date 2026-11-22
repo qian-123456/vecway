@@ -1,4 +1,5 @@
-/** Prompt assembly for `POST /sessions/{id}/prompt-ex`: attachment tokens, steer/queue payload, optimistic rows. */
+/** Prompt assembly for `POST /sessions/{id}/prompt-ex`: attachment tokens, native images, steer/queue payload, optimistic rows. */
+import type { PromptImage } from "../../../core/lib/images";
 
 export type StreamBehavior = "steer" | "followUp";
 
@@ -6,31 +7,69 @@ export interface AttachmentLike {
 	isImage: boolean;
 	status: "up" | "ok" | "err";
 	path?: string;
+	image?: PromptImage;
 }
 
-/** Uploaded attachments become `[Image #n: path]` / `[文件 #n: path]` tokens in front of the text. */
+/**
+ * Non-image files become `[文件 #n: path]` tokens in front of the text.
+ * Images encoded for native `images` delivery omit `[Image #n: path]` markers;
+ * path-only legacy images fall back to `[Image #n: path]` so nothing is lost.
+ */
 export function buildPrompt(text: string, atts: readonly AttachmentLike[]): string {
 	let ni = 0;
 	let nf = 0;
-	const toks = atts
-		.filter((a) => a.status === "ok" && a.path)
-		.map((a) => (a.isImage ? `[Image #${++ni}: ${a.path}]` : `[文件 #${++nf}: ${a.path}]`));
+	const toks: string[] = [];
+	for (const a of atts) {
+		if (a.status !== "ok") continue;
+		if (a.isImage) {
+			if (!a.image && a.path) toks.push(`[Image #${++ni}: ${a.path}]`);
+		} else if (a.path) {
+			toks.push(`[文件 #${++nf}: ${a.path}]`);
+		}
+	}
 	return (toks.join(" ") + (toks.length && text ? " " : "") + text).trim();
+}
+
+/** Collect native `{ mime, data }` payloads from ready image attachments. */
+export function buildPromptImages(atts: readonly AttachmentLike[]): PromptImage[] {
+	const out: PromptImage[] = [];
+	for (const a of atts) {
+		if (a.status === "ok" && a.isImage && a.image) out.push(a.image);
+	}
+	return out;
+}
+
+/** Remove residual `[Image #N: ...]` / `[图片 #N]` / `🖼️#N` markers from display text. */
+export function stripImageMarkers(text: string): string {
+	return text
+		.replace(
+			/\[\d+\]\s*\([^)]*?\.(?:png|jpe?g|gif|webp|svg|bmp)[^)]*\)\s*\n?>?\s*(?:\[图片:[^\]]+\])?/gi,
+			"",
+		)
+		.replace(
+			/\[(?:Image|图片)\s*#\d+(?:,\s*\d+x\d+)?(?::\s*[^\]]+)?\]|\[图片(?::\s*[^\]]+)?\]|🖼️\s*#\d+/gu,
+			"",
+		)
+		.trim();
 }
 
 export interface PromptBody {
 	text: string;
-	images: never[];
+	images: PromptImage[];
 	/** Only present while a turn is streaming. */
 	streamingBehavior?: StreamBehavior;
 }
 
-export function buildPromptBody(text: string, streaming: boolean, behavior: StreamBehavior): PromptBody {
-	const body: PromptBody = { text, images: [] };
+export function buildPromptBody(
+	text: string,
+	streaming: boolean,
+	behavior: StreamBehavior,
+	images: readonly PromptImage[] = [],
+): PromptBody {
+	const body: PromptBody = { text, images: [...images] };
 	if (streaming) body.streamingBehavior = behavior;
 	return body;
 }
-
 /** Pre-send validation shared by the composer: returns a toast message or null when sending may proceed. */
 export function attachmentBlocker(atts: readonly AttachmentLike[]): string | null {
 	if (atts.some((a) => a.status === "up")) return "附件上传中，请稍候";

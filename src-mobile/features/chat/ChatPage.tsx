@@ -1,17 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
-import type { PageProps } from "../../core/nav";
-import { errorMessage } from "../../core/api";
+import { useEffect, useMemo, useRef, useState, type Ref } from "react";
+import { nav, paths, type PageProps } from "../../core/nav";
+import { api, errorMessage } from "../../core/api";
 import { startViewingPresence } from "../../core/presence";
-import { useSession } from "../../core/stores/sessions";
-import { Spinner, toast } from "../../ui";
+import { useSession, useSessions } from "../../core/stores/sessions";
+import { Spinner, toast, type AnchorBox } from "../../ui";
 import { STATUS_LABEL } from "../../core/types";
 import { MenuSheet } from "../sessions/MenuSheet";
 import { NewSessionSheet } from "../sessions";
+import type { DirEntry } from "../sessions/tree";
 import "./chat.css";
 import { ChatCtx, type ChatUi, type MessageTarget } from "./ChatContext";
 import { ChatController, isDeadStatus } from "./chatStore";
 import { Composer } from "./components/Composer";
-import { HeaderMenu } from "./components/HeaderMenu";
+import { WorkspacePickerSheet } from "./components/WorkspacePickerSheet";
+import { useRightDrawer } from "../panels/rightDrawerStore";
+import { RightWorkspaceDrawer, useRightEdgeSwipe } from "../panels/RightWorkspaceDrawer";
 import { ChatHeader } from "./components/ChatHeader";
 import { PathSheet } from "./components/PathSheet";
 import { abbreviateHomePath } from "../sessions/NewSessionSheet";
@@ -28,6 +31,7 @@ import { useChat, useChatUi as useUi } from "./ChatContext";
 
 function Header({
 	sessionId,
+	titleButtonRef,
 	onOpenMenu,
 	onOpenPicker,
 	onNew,
@@ -35,6 +39,7 @@ function Header({
 	onOpenPath,
 }: {
 	sessionId: string;
+	titleButtonRef?: Ref<HTMLButtonElement>;
 	onOpenMenu: () => void;
 	onOpenPicker: () => void;
 	onNew: () => void;
@@ -49,6 +54,7 @@ function Header({
 		<ChatHeader
 			title={title}
 			subtitle={subtitle}
+			titleButtonRef={titleButtonRef}
 			onTitleClick={onOpenPath}
 			onMenu={onOpenMenu}
 			onNew={onNew}
@@ -103,15 +109,20 @@ export function ChatPage({ route }: PageProps) {
 	const [controller, setController] = useState<ChatController | null>(null);
 	const [target, setTarget] = useState<MessageTarget | null>(null);
 	const [stat, setStat] = useState<RequestStat | null>(null);
-	const [toolMenu, setToolMenu] = useState(false);
 	const [menuSheet, setMenuSheet] = useState(false);
 	const [pickerOpen, setPickerOpen] = useState(false);
 	const [newOpen, setNewOpen] = useState(false);
+	const [workspaceOpen, setWorkspaceOpen] = useState(false);
 	const session = useSession(id);
 
 	const [pathOpen, setPathOpen] = useState(false);
+	const titleBtnRef = useRef<HTMLButtonElement | null>(null);
+	const creatingNew = useRef(false);
+	const [targetAnchor, setTargetAnchor] = useState<{ el: HTMLElement | null; rect: AnchorBox | null } | null>(null);
+	const [statAnchor, setStatAnchor] = useState<{ el: HTMLElement | null; rect: AnchorBox | null } | null>(null);
+	const lastTriggerRef = useRef<{ el: HTMLElement | null; rect: AnchorBox | null; at: number } | null>(null);
 	const modelSource = useMemo(() => sessionModelSource(id), [id]);
-
+	const pendingMain = useRightDrawer((s) => s.pendingMain);
 	useEffect(() => {
 		if (!controller || controller.id !== id) return;
 		const first = takeFirstSend(id);
@@ -137,8 +148,74 @@ export function ChatPage({ route }: PageProps) {
 		};
 	}, [id]);
 
+	useEffect(() => {
+		if (!controller || controller.id !== id || !pendingMain || pendingMain.sessionId !== id) return;
+		const payload = useRightDrawer.getState().consumeMainAnnotation(id);
+		if (!payload) return;
+		controller.stageAnnotation(payload.quote, payload.comment);
+	}, [controller, id, pendingMain]);
+
+	useRightEdgeSwipe(() => useRightDrawer.getState().openDrawer(id), true);
+
+	const createFreshChat = async () => {
+		if (creatingNew.current) return;
+		creatingNew.current = true;
+		try {
+			let cwd = session?.cwd;
+			let mode = session?.mode;
+			if (!cwd) {
+				const res = await api<{ dirs?: DirEntry[] }>("GET", "/left/dirs");
+				const dirs = res.dirs ?? [];
+				const picked = dirs.find((d) => d.kind === "workspace") ?? dirs[0];
+				cwd = picked?.path;
+				if (!mode && picked?.kind !== "global") mode = picked?.mode;
+			}
+			if (!cwd) {
+				setNewOpen(true);
+				return;
+			}
+			const { id: nextId } = await useSessions.getState().createSession({ cwd, ...(mode ? { mode } : {}) });
+			nav.push(paths.chat(nextId));
+		} catch (e) {
+			toast(`新建失败：${errorMessage(e)}`, { kind: "error" });
+		} finally {
+			creatingNew.current = false;
+		}
+	};
+
+	const recordTrigger = (node: EventTarget | null, x = 0, y = 0) => {
+		if (!(node instanceof HTMLElement)) return;
+		const btn = node.closest("button");
+		if (btn instanceof HTMLElement) {
+			lastTriggerRef.current = { el: btn, rect: null, at: Date.now() };
+		} else if (x !== 0 || y !== 0) {
+			lastTriggerRef.current = {
+				el: null,
+				rect: { left: x - 4, top: y - 4, right: x + 4, bottom: y + 4, width: 8, height: 8 },
+				at: Date.now(),
+			};
+		} else {
+			lastTriggerRef.current = { el: node, rect: null, at: Date.now() };
+		}
+	};
+
 	const ui = useMemo<ChatUi | null>(
-		() => (controller ? { controller, openActions: setTarget, openStat: setStat } : null),
+		() =>
+			controller
+				? {
+						controller,
+						openActions: (t) => {
+							const recent = lastTriggerRef.current && Date.now() - lastTriggerRef.current.at < 2000 ? lastTriggerRef.current : null;
+							setTargetAnchor(recent ? { el: recent.el, rect: recent.rect } : null);
+							setTarget(t);
+						},
+						openStat: (s) => {
+							const recent = lastTriggerRef.current && Date.now() - lastTriggerRef.current.at < 2000 ? lastTriggerRef.current : null;
+							setStatAnchor(recent ? { el: recent.el, rect: recent.rect } : null);
+							setStat(s);
+						},
+					}
+				: null,
 		[controller],
 	);
 
@@ -152,16 +229,21 @@ export function ChatPage({ route }: PageProps) {
 
 	return (
 		<ChatCtx.Provider value={ui}>
-			<div className="flex min-h-0 flex-1 flex-col bg-m-bg">
+			<div
+				className="flex min-h-0 flex-1 flex-col bg-m-bg"
+				onPointerDownCapture={(e) => recordTrigger(e.target, e.clientX, e.clientY)}
+				onClickCapture={(e) => recordTrigger(e.target, e.clientX, e.clientY)}
+			>
 				<Header
 					sessionId={id}
+					titleButtonRef={titleBtnRef}
 					onOpenMenu={() => setMenuSheet(true)}
 					onOpenPicker={() => setPickerOpen(true)}
-					onNew={() => setNewOpen(true)}
-					onToolMenu={() => setToolMenu(true)}
+					onNew={() => void createFreshChat()}
+					onToolMenu={() => useRightDrawer.getState().toggleDrawer(id)}
 					onOpenPath={() => setPathOpen(true)}
 				/>
-				<MessageList sessionId={id} />
+				<MessageList sessionId={id} onPickDirectory={() => setWorkspaceOpen(true)} />
 				<div className="m-kb-dock relative z-(--z-composer) shrink-0">
 					<PendingCards />
 					<ResumeBar sessionId={id} />
@@ -169,11 +251,23 @@ export function ChatPage({ route }: PageProps) {
 					<Composer sessionId={id} onOpenPicker={() => setPickerOpen(true)} />
 				</div>
 			</div>
-			<MessageActionsSheet target={target} onClose={() => setTarget(null)} controller={controller} />
-			<StatCard stat={stat} onClose={() => setStat(null)} />
-			<HeaderMenu open={toolMenu} onClose={() => setToolMenu(false)} sessionId={id} />
+			<MessageActionsSheet
+				target={target}
+				onClose={() => setTarget(null)}
+				controller={controller}
+				anchorEl={targetAnchor?.el}
+				anchorRect={targetAnchor?.rect}
+			/>
+			<StatCard
+				stat={stat}
+				onClose={() => setStat(null)}
+				anchorEl={statAnchor?.el}
+				anchorRect={statAnchor?.rect}
+			/>
+			<RightWorkspaceDrawer sessionId={id} />
 			<MenuSheet open={menuSheet} onClose={() => setMenuSheet(false)} onNewSession={() => setNewOpen(true)} />
 			<NewSessionSheet open={newOpen} onClose={() => setNewOpen(false)} defaultCwd={session?.cwd} />
+			<WorkspacePickerSheet open={workspaceOpen} onClose={() => setWorkspaceOpen(false)} sessionId={id} currentCwd={session?.cwd} />
 			<ModelThinkingSheet
 				open={pickerOpen}
 				onClose={() => setPickerOpen(false)}
@@ -181,7 +275,14 @@ export function ChatPage({ route }: PageProps) {
 				currentLevel={controller.state.cstate?.thinkingLevel ?? null}
 				onFacts={(f) => controller.patchState({ ...(f.model ? { model: f.model } : {}), thinkingLevel: f.thinkingLevel })}
 			/>
-			<PathSheet open={pathOpen} onClose={() => setPathOpen(false)} cwd={session?.cwd} sessionId={id} />
+			<PathSheet
+				open={pathOpen}
+				onClose={() => setPathOpen(false)}
+				cwd={session?.cwd}
+				sessionId={id}
+				anchorEl={titleBtnRef.current}
+				onSwitchProject={() => setWorkspaceOpen(true)}
+			/>
 		</ChatCtx.Provider>
 	);
 }

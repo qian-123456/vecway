@@ -1,20 +1,17 @@
 /** [B] Floating bubble on text selection inside the message stream:
- * 批注 (quote annotation: a multi-line comment box; in the main chat a segmented
- * control picks the main or side-chat composer, inside a side chat it always
- * stages into that side chat's own composer; dismissing it with a
- * non-empty comment silently stages that comment as an annotation — Esc is
- * the only explicit discard) / 记到收集箱 (quick capture). */
+ * direct action buttons (批注 / 批注到辅助对话, plus 发到主对话 when enabled)
+ * open an inline multi-line comment box targeted at the chosen chat;
+ * dismissing it with a non-empty comment silently stages that comment as an
+ * annotation — Esc is the only explicit discard. */
 
 import clsx from "clsx";
-import { ArrowUp, BookmarkPlus, CornerUpLeft, MessageSquareQuote } from "lucide-react";
+import { ArrowUp, CornerUpLeft, MessageSquareQuote } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { SelectionBubble } from "../../components/SelectionBubble";
 import { isComposing } from "../../lib/hooks";
-import { Segmented } from "../../components/Segmented";
 import { type AnnotationTarget, useComposer } from "../../stores/composer";
 import { AnnotationImageButton, AnnotationImageStrip, useAnnotationImages } from "./AnnotationImages";
 import { useSessions } from "../../stores/sessions";
-import { useUi } from "../../stores/ui";
 import { resolveAnnotationKey, revealSideChatFor } from "../sidechat/annotationRoute";
 import { MAX_SIDE_CHAT_DEPTH } from "../sidechat/depth";
 import { useSideChatView } from "../sidechat/viewStore";
@@ -93,16 +90,14 @@ export function SelectionToolbar({
 	const [draft, setDraft] = useState("");
 	const addAnnotation = useComposer((s) => s.addAnnotation);
 	const focusComposer = useComposer((s) => s.focusComposer);
-	const annotationTarget = useComposer((s) => s.annotationTarget);
 	const setAnnotationTarget = useComposer((s) => s.setAnnotationTarget);
-	// Where the text was selected decides the target: the right-panel side chat has no choice;
-	// the main area (even when it shows a side-chat session) offers 主对话/辅助对话.
+	// Where the text was selected decides whether side-chat targeting is offered:
+	// the right-panel side chat stays in its own composer; the main area offers both targets.
 	const inSideChat = compact;
 	const isSideKind = useSessions((s) => s.sessions[sessionId]?.kind === "side");
 	const tooDeep = useSessions(
 		(s) => (s.sessions[sessionId]?.forkDepth ?? 0) >= MAX_SIDE_CHAT_DEPTH,
 	);
-	const openModal = useUi((s) => s.openModal);
 	const handbackMode = useDisplayPrefs((s) => s.sideChatHandback);
 	const showSendToMain = showSendToMainBubbleAction(handbackMode, isSideKind);
 	const boxRef = useRef<HTMLDivElement>(null);
@@ -115,6 +110,7 @@ export function SelectionToolbar({
 	draftRef.current = draft;
 	const commentingRef = useRef(commenting);
 	commentingRef.current = commenting;
+	const activeTargetRef = useRef<AnnotationTarget>("main");
 	const [images, setImages] = useState<string[]>([]);
 	const imagesRef = useRef<string[]>([]);
 	imagesRef.current = images;
@@ -134,6 +130,7 @@ export function SelectionToolbar({
 		draftRef.current = "";
 		imagesRef.current = [];
 		commentingRef.current = false;
+		activeTargetRef.current = "main";
 		pendingActionRef.current = null;
 		// Pending image results belonged to this draft: drop them so they never reach the next one.
 		invalidateImages();
@@ -143,14 +140,12 @@ export function SelectionToolbar({
 		setImages([]);
 	}, [invalidateImages]);
 
-	// A depth-capped parent cannot fork another side chat: fall back to main.
-	const target: AnnotationTarget = tooDeep ? "main" : annotationTarget;
 	const destKey = useCallback(
 		() =>
 			resolveAnnotationKey({
 				sessionId,
 				inSideChat,
-				target: tooDeep ? "main" : useComposer.getState().annotationTarget,
+				target: tooDeep ? "main" : activeTargetRef.current,
 				view: useSideChatView.getState(),
 			}),
 		[sessionId, inSideChat, tooDeep],
@@ -210,7 +205,10 @@ export function SelectionToolbar({
 		[clearSel, stageDraft, containerRef, pendingRef],
 	);
 
-	const startComment = () => {
+	const startComment = (chosenTarget: AnnotationTarget) => {
+		const effective: AnnotationTarget = inSideChat || tooDeep ? "main" : chosenTarget;
+		activeTargetRef.current = effective;
+		if (!inSideChat) setAnnotationTarget(effective);
 		setDraft("");
 		setCommenting(true);
 	};
@@ -435,7 +433,7 @@ export function SelectionToolbar({
 			{commenting ? (
 				<div className="flex flex-col gap-1 px-1.5 py-1">
 				<AnnotationImageStrip paths={images} onRemove={imageInput.remove} className="px-1" />
-				<div className={inSideChat ? "flex items-end gap-1.5" : "flex flex-col gap-1.5"}>
+				<div className="flex items-end gap-1.5">
 					<textarea
 						ref={inputRef}
 						rows={1}
@@ -469,39 +467,17 @@ export function SelectionToolbar({
 						aria-label={t("chatView.selection.annotateAria")}
 						className={`min-w-0 resize-none rounded-xl bg-transparent px-2.5 py-1.5 text-[12px] leading-[1.4] text-[var(--text)] outline-none placeholder:text-[var(--text-30)] ${inSideChat ? "w-60" : "w-72"}`}
 					/>
-					<div className={inSideChat ? "flex shrink-0 items-center pb-1" : "flex items-center justify-between gap-3 px-1 pb-0.5"}>
-						{!inSideChat && (
-							<Segmented<AnnotationTarget>
-								size="sm"
-								pill
-								aria-label={t("chatView.selection.targetAria")}
-								value={target}
-								onChange={setAnnotationTarget}
-								options={[
-									{ value: "main", label: t("chatView.selection.targetMain"), title: t("chatView.selection.targetMainTitle") },
-									{
-										value: "sidechat",
-										label: t("chatView.selection.targetSideChat"),
-										title: tooDeep
-											? t("chatView.selection.sideChatMaxDepth", { depth: MAX_SIDE_CHAT_DEPTH })
-											: t("chatView.selection.targetSideChatTitle"),
-										disabled: tooDeep,
-									},
-								]}
-							/>
-						)}
-						<div className="flex shrink-0 items-center gap-1">
-							<AnnotationImageButton onClick={imageInput.pick} busy={imageInput.busy} />
-							<button
-								type="button"
-								aria-label={t("chatView.selection.confirmAnnotationAria")}
-								title={t("chatView.selection.confirmAnnotationTitle")}
-								onClick={submitQuote}
-								className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--text)] text-[var(--bg-panel)] transition-opacity hover:opacity-80"
-							>
-								<ArrowUp size={13} strokeWidth={2.5} />
-							</button>
-						</div>
+					<div className="flex shrink-0 items-center gap-1 pb-1">
+						<AnnotationImageButton onClick={imageInput.pick} busy={imageInput.busy} />
+						<button
+							type="button"
+							aria-label={t("chatView.selection.confirmAnnotationAria")}
+							title={t("chatView.selection.confirmAnnotationTitle")}
+							onClick={submitQuote}
+							className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--text)] text-[var(--bg-panel)] transition-opacity hover:opacity-80"
+						>
+							<ArrowUp size={13} strokeWidth={2.5} />
+						</button>
 					</div>
 				</div>
 				</div>
@@ -510,32 +486,33 @@ export function SelectionToolbar({
 					<BubbleAction
 						icon={<MessageSquareQuote size={12} />}
 						label={t("chatView.selection.actionAnnotate")}
-						onClick={startComment}
+						onClick={() => startComment("main")}
 						primary
 					/>
-					<span aria-hidden="true" className="h-3.5 w-px shrink-0 bg-[var(--line,var(--border))]" />
-					{!docFile && (
-						<BubbleAction
-							icon={<BookmarkPlus size={12} />}
-							label={t("chatView.selection.actionQuickCapture")}
-							onClick={() => {
-								openModal("quick-capture", { text: sel.text, sessionId });
-								dismiss("discard");
-							}}
-						/>
+					{!inSideChat && !tooDeep && (
+						<>
+							<span aria-hidden="true" className="h-3.5 w-px shrink-0 bg-[var(--line,var(--border))]" />
+							<BubbleAction
+								icon={<MessageSquareQuote size={12} />}
+								label={t("chatView.selection.actionAnnotateToSideChat")}
+								onClick={() => startComment("sidechat")}
+							/>
+						</>
 					)}
 					{showSendToMain && (
-						<BubbleAction
-							icon={<CornerUpLeft size={12} />}
-							label={t("chatView.selection.actionSendToMain")}
-							onClick={() => {
-								stageInParent(sessionId, sel.text);
-								dismiss("discard");
-							}}
-						/>
+						<>
+							<span aria-hidden="true" className="h-3.5 w-px shrink-0 bg-[var(--line,var(--border))]" />
+							<BubbleAction
+								icon={<CornerUpLeft size={12} />}
+								label={t("chatView.selection.actionSendToMain")}
+								onClick={() => {
+									stageInParent(sessionId, sel.text);
+									dismiss("discard");
+								}}
+							/>
+						</>
 					)}
 				</>
-
 			)}
 			</div>
 		</SelectionBubble>

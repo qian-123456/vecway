@@ -313,4 +313,17 @@ describe("inbox aggregate feedback", () => {
 		fireEvent.click(screen.getByRole("button", { name: "重试加载待办" }));
 		await screen.findByText("收件箱是空的");
 	});
+
+	it("renders an inline 已读 button on unread inbox rows without opening a bottom sheet", async () => {
+		apiMock.mockImplementation(async (method: string, path: string) => {
+			if (path === "/todos") return [];
+			if (method === "POST" && path === "/left/inbox/s1/seen") return { ok: true };
+			return { awaiting: [], error: [], unread: [session], running: [] };
+		});
+		render(<InboxPage route={{ ...route, name: "inbox", path: "/inbox" }} />);
+		const markBtn = await screen.findByRole("button", { name: `标记已读：${session.title}` });
+		expect(markBtn.textContent).toBe("已读");
+		fireEvent.click(markBtn);
+		await waitFor(() => expect(apiMock).toHaveBeenCalledWith("POST", "/left/inbox/s1/seen"));
+	});
 });

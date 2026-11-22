@@ -1,20 +1,20 @@
-import { ChevronRight, ClipboardList, Copy, Download, Ellipsis } from "lucide-react";
+import { ChevronRight, ClipboardList, Copy, Download, Ellipsis, ImageOff } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import { apiUrl } from "../../../core/api";
 import { copyText } from "../../../core/lib/format";
 import { nav, paths } from "../../../core/nav";
 import { usePrefs } from "../../../core/stores/prefs";
 import type { ImageRef, Item, ToolItem } from "../../../core/types";
-import { Button, IconButton, openImage, toast } from "../../../ui";
+import { Button, IconButton, openImage, toast, type ViewerImage } from "../../../ui";
 import { Markdown } from "../../../ui/Markdown";
 import { useChat, useChatUi, type ChatUi } from "../ChatContext";
+import { stripImageMarkers } from "../lib/prompt";
 import { statSummary } from "../lib/requestStats";
 import { foldLabel, type Step, type Turn } from "../lib/turns";
 import { StatLine } from "./StatLine";
 import { Thinking } from "./Thinking";
 import { toolState, ToolCard } from "./ToolCard";
 import { useLongPress } from "./useLongPress";
-
 /** Per-turn expand override; survives window paging remounts. */
 const foldOverride = new Map<string, boolean>();
 
@@ -33,27 +33,74 @@ export function imageSrc(sessionId: string, img: ImageRef): string {
 	return img.path ? apiUrl(`/sessions/${sessionId}/image?path=${encodeURIComponent(img.path)}`) : "";
 }
 
-function ImageThumb({ src, label }: { src: string; label: string }) {
+function ImageThumb({
+	src,
+	label,
+	badge,
+	onOpen,
+}: {
+	src: string;
+	label: string;
+	badge?: number;
+	onOpen: () => void;
+}) {
 	const [bad, setBad] = useState(!src);
+	useEffect(() => {
+		setBad(!src);
+	}, [src]);
 	if (bad)
 		return (
-			<span className="inline-flex min-h-9 items-center whitespace-nowrap rounded-m-pill bg-m-surface px-3 text-m-xs text-m-text-2">
-				图片 {label}
+			<span className="inline-flex h-20 w-20 flex-col items-center justify-center gap-1 rounded-m-md border border-m-border bg-m-surface px-2 text-center text-m-xs text-m-text-2">
+				<ImageOff size={16} className="shrink-0 text-m-text-3" aria-hidden />
+				<span className="whitespace-nowrap">图片 {label}</span>
 			</span>
 		);
 	return (
-		<button type="button" onClick={() => openImage(src)} className="block min-h-11 min-w-11 max-w-full overflow-hidden rounded-m-md">
-			<img src={src} alt={label} loading="lazy" onError={() => setBad(true)} className="max-h-48 max-w-full object-cover" />
+		<button
+			type="button"
+			onClick={onOpen}
+			aria-label={`预览图片 ${label}`}
+			className="relative block h-20 w-20 shrink-0 overflow-hidden rounded-m-md border border-m-border bg-m-surface active:opacity-80"
+		>
+			<img src={src} alt={label} loading="lazy" onError={() => setBad(true)} className="block h-full w-full object-cover" />
+			{badge !== undefined && (
+				<span className="pointer-events-none absolute top-1 left-1 flex h-4 min-w-4 items-center justify-center rounded-m-sm bg-m-bg-elev/90 px-1 font-m-mono text-[10px] font-semibold leading-none text-m-text ring-1 ring-m-border">
+					{badge}
+				</span>
+			)}
 		</button>
 	);
 }
 
-export function Images({ sessionId, images }: { sessionId: string; images: readonly ImageRef[] }) {
+export function Images({
+	sessionId,
+	images,
+	align = "start",
+}: {
+	sessionId: string;
+	images: readonly ImageRef[];
+	align?: "start" | "end";
+}) {
 	if (!images.length) return null;
+	const gallery: ViewerImage[] = images.map((img, i) => ({
+		src: imageSrc(sessionId, img),
+		alt: `#${i + 1}`,
+	}));
 	return (
-		<div className="mt-2 flex flex-wrap gap-2" data-no-longpress>
+		<div
+			className={`flex flex-wrap gap-1.5 ${
+				align === "end" ? "max-w-[var(--m-user-bubble-max)] justify-end" : "mt-2"
+			}`}
+			data-no-longpress
+		>
 			{images.map((img, i) => (
-				<ImageThumb key={img.id || i} src={imageSrc(sessionId, img)} label={`#${i + 1}`} />
+				<ImageThumb
+					key={img.id || i}
+					src={gallery[i].src}
+					label={`#${i + 1}`}
+					badge={images.length > 1 ? i + 1 : undefined}
+					onOpen={() => openImage(gallery[i], gallery, i)}
+				/>
 			))}
 		</div>
 	);
@@ -64,35 +111,46 @@ const BUBBLE =
 
 export const UserBubble = memo(function UserBubble({ item, sessionId }: { item: Item; sessionId: string }) {
 	const { openActions } = useChatUi();
-	const lp = useLongPress(() => openActions({ role: "user", text: item.text, entryId: item.id, canRetry: false }));
-	if (!item.text && !item.images.length) return null;
+	const cleaned = stripImageMarkers(item.text);
+	const displayText = item.images.length > 0 && cleaned === "（图片）" ? "" : cleaned;
+	const lp = useLongPress(() => openActions({ role: "user", text: displayText || item.text, entryId: item.id, canRetry: false }));
+	if (!displayText && !item.images.length) return null;
 	return (
-		<div className="flex justify-end px-5 pt-4 pb-2">
-			<div {...lp} className={BUBBLE}>
-				{item.text}
-				<Images sessionId={sessionId} images={item.images} />
-			</div>
+		<div className="flex flex-col items-end gap-1.5 px-5 pt-4 pb-2">
+			<Images sessionId={sessionId} images={item.images} align="end" />
+			{displayText && (
+				<div {...lp} className={BUBBLE}>
+					{displayText}
+				</div>
+			)}
 		</div>
 	);
 });
 
 export const PendingBubble = memo(function PendingBubble({ text, imageUrls }: { text: string; imageUrls: string[] }) {
+	const cleaned = stripImageMarkers(text);
+	const displayText = imageUrls.length > 0 && cleaned === "（图片）" ? "" : cleaned;
+	const gallery: ViewerImage[] = imageUrls.map((src, i) => ({ src, alt: `#${i + 1}` }));
+	if (!displayText && !imageUrls.length) return null;
 	return (
-		<div className="flex justify-end px-5 pt-4 pb-2">
-			<div className={`${BUBBLE} opacity-70`}>
-				{text}
-				{imageUrls.length > 0 && (
-					<div className="mt-2 flex flex-wrap gap-2">
-						{imageUrls.map((u) => (
-							<img key={u} src={u} alt="" className="max-h-32 rounded-m-sm" />
-						))}
-					</div>
-				)}
-			</div>
+		<div className="flex flex-col items-end gap-1.5 px-5 pt-4 pb-2 opacity-70">
+			{imageUrls.length > 0 && (
+				<div className="flex max-w-[var(--m-user-bubble-max)] flex-wrap justify-end gap-1.5" data-no-longpress>
+					{gallery.map((img, i) => (
+						<ImageThumb
+							key={`${i}-${img.src}`}
+							src={img.src}
+							label={`#${i + 1}`}
+							badge={gallery.length > 1 ? i + 1 : undefined}
+							onOpen={() => openImage(img, gallery, i)}
+						/>
+					))}
+				</div>
+			)}
+			{displayText && <div className={BUBBLE}>{displayText}</div>}
 		</div>
 	);
 });
-
 function StepView({ step, running, onStat }: { step: Step; running: boolean; onStat: ChatUi["openStat"] }) {
 	switch (step.kind) {
 		case "thinking":

@@ -9,8 +9,9 @@ import {
 	isTerminalLimit,
 	parseExit,
 	reconnectDelay,
+	segmentTerminalBlocks,
+	stripAnsi,
 } from "./terminalPure";
-
 describe("key sequences", () => {
 	it("maps the key bar to the right byte sequences", () => {
 		const seq = Object.fromEntries(TERMINAL_KEYS.map((k) => [k.id, k.seq]));
@@ -110,5 +111,37 @@ describe("InputQueue", () => {
 		await new Promise((r) => setTimeout(r, 0));
 		expect(errors).toHaveLength(1);
 		expect(sent).toEqual(["2"]);
+	});
+});
+
+describe("ANSI stripping and terminal block segmentation", () => {
+	it("strips ANSI color/OSC codes and resolves carriage return overwrites", () => {
+		const raw = "\x1b[32mhello\x1b[0m\r\nprogress 10%\rprogress 100%\x1b]0;title\x07\n";
+		expect(stripAnsi(raw)).toBe("hello\nprogress 100%\n");
+	});
+
+	it("keeps a command and its multi-line output (including blank lines) as one atomic unit", () => {
+		const text = [
+			"user@mac ~/repo % npm test",
+			"running 2 suites",
+			"",
+			"PASS all tests",
+			"user@mac ~/repo % git status",
+			"On branch main",
+			"user@mac ~/repo % ",
+		].join("\n");
+		const blocks = segmentTerminalBlocks(text);
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0].command).toBe("npm test");
+		expect(blocks[0].text).toContain("running 2 suites\n\nPASS all tests");
+		expect(blocks[1].command).toBe("git status");
+		expect(blocks[1].text).toBe("user@mac ~/repo % git status\nOn branch main");
+	});
+
+	it("falls back to blank-line chunking when no shell prompts are present", () => {
+		const blocks = segmentTerminalBlocks("line 1\nline 2\n\nline 3\nline 4\n");
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0].text).toBe("line 1\nline 2");
+		expect(blocks[1].text).toBe("line 3\nline 4");
 	});
 });

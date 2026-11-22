@@ -4,7 +4,7 @@ import { countBatchApprovable, isBatchApprovable, showApproveAll } from "./appro
 import { createTitleFlasher } from "./attention";
 import { contextTone, formatContextDetail, formatContextPercent, queueChipText, resolveContextPercent } from "./context";
 import { createDebounce, createDraftBook, draftActivityBody } from "./drafts";
-import { attachmentBlocker, buildPrompt, buildPromptBody, sendIntent } from "./prompt";
+import { attachmentBlocker, buildPrompt, buildPromptBody, buildPromptImages, sendIntent, stripImageMarkers } from "./prompt";
 import { cachedCommands, clearSlashCache, commandAction, detectSlashQuery, filterCommands, groupCommands, loadSlashCommands, parseSlashInput, type SlashCmd } from "./slash";
 import { loadUnsent, saveUnsent, UNSENT_KEY } from "./unsent";
 
@@ -80,18 +80,32 @@ describe("slash filtering", () => {
 });
 
 describe("prompt payloads", () => {
-	it("prefixes uploaded attachments as tokens and ignores unfinished ones", () => {
-		const p = buildPrompt("look", [
-			{ isImage: true, status: "ok", path: "/a.png" },
-			{ isImage: false, status: "ok", path: "/b.txt" },
-			{ isImage: true, status: "err", path: "/c.png" },
-		]);
-		expect(p).toBe("[Image #1: /a.png] [文件 #1: /b.txt] look");
+	it("omits image markers when native images exist and keeps file tokens", () => {
+		const nativeImg = { mime: "image/png", data: "QQ==" };
+		const atts = [
+			{ isImage: true, status: "ok" as const, path: "/a.png", image: nativeImg },
+			{ isImage: false, status: "ok" as const, path: "/b.txt" },
+			{ isImage: true, status: "err" as const, path: "/c.png", image: nativeImg },
+		];
+		expect(buildPrompt("look", atts)).toBe("[文件 #1: /b.txt] look");
+		expect(buildPrompt("", [{ isImage: true, status: "ok", path: "/a.png", image: nativeImg }])).toBe("");
 		expect(buildPrompt("", [{ isImage: false, status: "ok", path: "/b" }])).toBe("[文件 #1: /b]");
+		expect(buildPromptImages(atts)).toEqual([nativeImg]);
 	});
-	it("attaches streamingBehavior only while streaming", () => {
+	it("falls back to image markers only for legacy path-only image attachments", () => {
+		const p = buildPrompt("look", [{ isImage: true, status: "ok", path: "/a.png" }]);
+		expect(p).toBe("[Image #1: /a.png] look");
+	});
+	it("strips residual image markers from display text without touching file references", () => {
+		expect(stripImageMarkers("[Image #1: /tmp/a.png] 看下这个")).toBe("看下这个");
+		expect(stripImageMarkers("[Image #1, 640x235] 🖼️ #2 [图片 #3]")).toBe("");
+		expect(stripImageMarkers("[Image #1: /tmp/a.png] [文件 #1: /tmp/b.txt] 说明")).toBe("[文件 #1: /tmp/b.txt] 说明");
+	});
+	it("attaches images and streamingBehavior only while streaming", () => {
+		const img = { mime: "image/png", data: "QQ==" };
 		expect(buildPromptBody("hi", false, "steer")).toEqual({ text: "hi", images: [] });
-		expect(buildPromptBody("hi", true, "steer")).toEqual({ text: "hi", images: [], streamingBehavior: "steer" });
+		expect(buildPromptBody("hi", false, "steer", [img])).toEqual({ text: "hi", images: [img] });
+		expect(buildPromptBody("hi", true, "steer", [img])).toEqual({ text: "hi", images: [img], streamingBehavior: "steer" });
 		expect(buildPromptBody("hi", true, "followUp").streamingBehavior).toBe("followUp");
 	});
 	it("blocks sending while uploads are pending or failed", () => {

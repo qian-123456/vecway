@@ -1,10 +1,10 @@
 import { Check, FolderCog, Globe2, X } from "lucide-react";
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../core/api";
 import { resolveThemeId, themeById } from "../../app/themes";
 import { nav, paths } from "../../core/nav";
 import { usePrefs } from "../../core/stores/prefs";
-import { BottomSheet, Button, EmptyState, IconButton, ListGroup, ListRow, MenuRow, PullToRefresh, Spinner, TopBar } from "../../ui";
+import { AnchoredPopover, Button, EmptyState, IconButton, ListGroup, ListRow, MenuRow, PullToRefresh, Spinner, TopBar } from "../../ui";
 import { OmpError, OmpSettingsGroup } from "./OmpSettings";
 import { QUOTA_ITEM, SETTINGS_GROUPS, type SettingsItemDef, type SheetId } from "./settingsGroups";
 import {
@@ -14,7 +14,6 @@ import {
 	DoctorSheet,
 	GeneralSheet,
 	GuideSheet,
-	InboxSheet,
 	McpSheet,
 	MemorySheet,
 	NotifySheet,
@@ -62,6 +61,8 @@ export function SettingsPage() {
 	const [scopeOpen, setScopeOpen] = useState(false);
 	const [activeSheet, setActiveSheet] = useState<SheetId | null>(null);
 	const [sheetOpen, setSheetOpen] = useState(false);
+	const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+	const lastClickedRowRef = useRef<HTMLElement | null>(null);
 	const scheme = usePrefs((s) => s.scheme);
 	const lightTheme = usePrefs((s) => s.lightTheme);
 	const darkTheme = usePrefs((s) => s.darkTheme);
@@ -111,6 +112,8 @@ export function SettingsPage() {
 			case "skills":
 				return nav.push(paths.skills());
 			case undefined:
+				if (item.id === "inbox") return nav.push(paths.inbox());
+				setAnchorEl(lastClickedRowRef.current);
 				setActiveSheet(item.id as SheetId);
 				setSheetOpen(true);
 		}
@@ -126,7 +129,34 @@ export function SettingsPage() {
 		}
 		if (id === "general" && mode) return APPROVAL_MODES.find((m) => m.value === mode)?.label;
 		if (id === "connection" && data?.mobile) return data.mobile.running ? "已连接" : "未运行";
+		if (id === "privacy" || id === "agents-md" || id === "subagents" || id === "memory" || id === "mcp" || id === "web") {
+			return "电脑端管理";
+		}
+		if (id === "about") return data?.appVersion || "未知";
 		return undefined;
+	};
+
+	const subtitleOf = (id: SettingsItemDef["id"]): string | undefined => {
+		switch (id) {
+			case "thinking":
+				return "在对话顶部点模型名称，可切换当前会话的思考深度；采样参数由电脑端管理。";
+			case "privacy":
+				return "登记过的密钥与敏感信息在发给模型前自动脱敏";
+			case "agents-md":
+				return "全局与项目规则文件在电脑端查看和编辑";
+			case "subagents":
+				return "子代理定义在电脑端配置";
+			case "memory":
+				return "跨会话记忆在电脑端查看和编辑";
+			case "mcp":
+				return "外部工具和数据连接在电脑端配置";
+			case "web":
+				return "搜索服务商与密钥在电脑端配置";
+			case "about":
+				return "版本升级在电脑上进行，刷新页面即可同步";
+			default:
+				return undefined;
+		}
 	};
 
 	const row = (item: SettingsItemDef) => {
@@ -137,7 +167,7 @@ export function SettingsPage() {
 				key={item.id}
 				icon={<Icon {...ICON} />}
 				title={<span className="whitespace-nowrap">{item.label}</span>}
-				subtitle={item.id === "thinking" ? "在对话顶部点模型名称，可切换当前会话的思考深度；采样参数由电脑端管理。" : undefined}
+				subtitle={subtitleOf(item.id)}
 				right={value}
 				chevron={item.id !== "thinking"}
 				onClick={item.id === "thinking" ? undefined : () => open(item)}
@@ -150,7 +180,13 @@ export function SettingsPage() {
 			<TopBar right={<IconButton variant="filled" icon={<X size={20} />} label="关闭" onClick={() => nav.back()} />} />
 
 			<PullToRefresh onRefresh={load} className="m-noscrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
-				<div className="flex flex-col gap-2 pb-[calc(var(--m-safe-bottom)+32px)]">
+				<div
+					className="flex flex-col gap-2 pb-[calc(var(--m-safe-bottom)+32px)]"
+					onClickCapture={(e) => {
+						const btn = (e.target as HTMLElement | null)?.closest("button");
+						if (btn instanceof HTMLElement) lastClickedRowRef.current = btn;
+					}}
+				>
 					<h1 className="px-6 pt-1 pb-3 text-m-title font-medium">设置</h1>
 
 					<ListGroup>{row(QUOTA_ITEM)}</ListGroup>
@@ -182,7 +218,10 @@ export function SettingsPage() {
 										subtitle="模型角色和备用模型保存到这里"
 										right={scopeDir ? dirName(scopeDir) : "全局"}
 										chevron
-										onClick={() => setScopeOpen(true)}
+										onClick={() => {
+											setAnchorEl(lastClickedRowRef.current);
+											setScopeOpen(true);
+										}}
 									/>
 								)}
 								{group.items.map(row)}
@@ -198,8 +237,17 @@ export function SettingsPage() {
 				</div>
 			</PullToRefresh>
 
-			<BottomSheet open={scopeOpen} onClose={() => setScopeOpen(false)} title="配置范围" subtitle="选择模型角色和备用模型对谁生效">
-				<div className="pb-3">
+			<AnchoredPopover
+				open={scopeOpen}
+				onClose={() => setScopeOpen(false)}
+				anchorEl={anchorEl}
+				placement="bottom-end"
+				title="配置范围"
+				subtitle="选择模型角色和备用模型对谁生效"
+				maxWidth={340}
+				minWidth={240}
+			>
+				<div className="py-1.5">
 					<MenuRow
 						icon={<Globe2 {...ICON} />}
 						label="全局配置"
@@ -220,7 +268,7 @@ export function SettingsPage() {
 						/>
 					))}
 				</div>
-			</BottomSheet>
+			</AnchoredPopover>
 
 			{activeSheet === "general" && <GeneralSheet
 				open={sheetOpen}
@@ -234,20 +282,19 @@ export function SettingsPage() {
 			/>}
 			{activeSheet === "appearance" && <AppearanceSheet open={sheetOpen} onClose={close} />}
 			{activeSheet === "notifications" && <NotifySheet open={sheetOpen} onClose={close} />}
-			{activeSheet === "privacy" && <PrivacySheet open={sheetOpen} onClose={close} />}
+			{activeSheet === "privacy" && <PrivacySheet open={sheetOpen} onClose={close} anchorEl={anchorEl} />}
 			{activeSheet === "sessions" && <SessionsSheet open={sheetOpen} onClose={close} omp={data?.omp} ompError={data?.ompError} onOmp={setOmp} />}
-			{activeSheet === "inbox" && <InboxSheet open={sheetOpen} onClose={close} />}
 			{activeSheet === "doctor" && <DoctorSheet open={sheetOpen} onClose={close} />}
-			{activeSheet === "agents-md" && <RulesFilesSheet open={sheetOpen} onClose={close} />}
+			{activeSheet === "agents-md" && <RulesFilesSheet open={sheetOpen} onClose={close} anchorEl={anchorEl} />}
 			{activeSheet === "prompt-composition" && <PromptCompositionSheet open={sheetOpen} onClose={close} />}
 			{activeSheet === "tools" && <ToolsSheet open={sheetOpen} onClose={close} omp={data?.omp} ompError={data?.ompError} onOmp={setOmp} />}
-			{activeSheet === "subagents" && <SubagentsSheet open={sheetOpen} onClose={close} />}
-			{activeSheet === "memory" && <MemorySheet open={sheetOpen} onClose={close} />}
+			{activeSheet === "subagents" && <SubagentsSheet open={sheetOpen} onClose={close} anchorEl={anchorEl} />}
+			{activeSheet === "memory" && <MemorySheet open={sheetOpen} onClose={close} anchorEl={anchorEl} />}
 			{activeSheet === "connection" && <ConnectionSheet open={sheetOpen} onClose={close} mobile={data?.mobile} appVersion={data?.appVersion} />}
-			{activeSheet === "mcp" && <McpSheet open={sheetOpen} onClose={close} />}
-			{activeSheet === "web" && <WebSheet open={sheetOpen} onClose={close} />}
+			{activeSheet === "mcp" && <McpSheet open={sheetOpen} onClose={close} anchorEl={anchorEl} />}
+			{activeSheet === "web" && <WebSheet open={sheetOpen} onClose={close} anchorEl={anchorEl} />}
 			{activeSheet === "guide" && <GuideSheet open={sheetOpen} onClose={close} />}
-			{activeSheet === "about" && <AboutSheet open={sheetOpen} onClose={close} appVersion={data?.appVersion} />}
+			{activeSheet === "about" && <AboutSheet open={sheetOpen} onClose={close} appVersion={data?.appVersion} anchorEl={anchorEl} />}
 		</div>
 	);
 }

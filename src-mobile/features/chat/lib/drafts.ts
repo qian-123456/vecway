@@ -17,6 +17,7 @@ export interface DraftStashEntry<A = unknown> {
 export interface Handoff {
 	id: string;
 	text: string;
+	imageUrls?: string[];
 }
 
 export interface DraftBook<A = unknown> {
@@ -25,7 +26,7 @@ export interface DraftBook<A = unknown> {
 	/** Mount: unsent content of this draft, if any. */
 	restore(id: string): DraftStashEntry<A> | null;
 	/** First prompt accepted: move the latest unsent stash and remember the first-message echo. */
-	handoff(from: string, to: string, text: string): void;
+	handoff(from: string, to: string, text: string, imageUrls?: string[]): void;
 	/** Mount of the real session page: consumes the handoff if it targets `id` (only once). */
 	takeHandoff(id: string): Handoff | null;
 	/** Observe late uploads and the target session when this id hands off ownership. */
@@ -50,8 +51,8 @@ export function createDraftBook<A = unknown>(): DraftBook<A> {
 			return meaningful;
 		},
 		restore: (id) => stash.get(id) ?? null,
-		handoff(from, to, text) {
-			handoff = { id: to, text };
+		handoff(from, to, text, imageUrls) {
+			handoff = { id: to, text, ...(imageUrls?.length ? { imageUrls: [...imageUrls] } : {}) };
 			if (from !== to) {
 				const entry = stash.get(from);
 				if (entry) stash.set(to, entry);

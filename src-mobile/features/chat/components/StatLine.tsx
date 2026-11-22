@@ -10,7 +10,7 @@ import {
 	type LucideIcon,
 } from "lucide-react";
 import { memo, useRef } from "react";
-import { BottomSheet } from "../../../ui";
+import { AnchoredPopover, type AnchorBox } from "../../../ui";
 import {
 	FIELDS,
 	FIELD_IDS,
@@ -90,27 +90,46 @@ function TtftBar({ stat }: { stat: RequestStat }) {
 }
 
 /** Detail sheet for one request; keeps the last stat while the sheet animates closed. */
-export function StatCard({ stat, onClose }: { stat: RequestStat | null; onClose: () => void }) {
+export function StatCard({
+	stat,
+	onClose,
+	anchorEl,
+	anchorRect,
+}: {
+	stat: RequestStat | null;
+	onClose: () => void;
+	anchorEl?: HTMLElement | null;
+	anchorRect?: AnchorBox | null;
+}) {
 	const last = useRef<RequestStat | null>(null);
 	if (stat) last.current = stat;
 	const shown = stat ?? last.current;
 	return (
-		<BottomSheet open={stat !== null} onClose={onClose} title="这次请求">
+		<AnchoredPopover
+			open={stat !== null}
+			onClose={onClose}
+			anchorEl={anchorEl}
+			anchorRect={anchorRect}
+			placement="top-start"
+			title="这次请求"
+			subtitle={shown ? whenText(shown) : undefined}
+			maxWidth={340}
+			minWidth={260}
+		>
 			{shown && (
-				<div className="pb-4">
-					<div className="px-5 pb-3 text-center text-m-sm text-m-text-3">{whenText(shown)}</div>
-					<div className="mx-4 overflow-hidden rounded-m-lg bg-m-card">
+				<div className="px-3 pt-2.5 pb-3">
+					<div className="overflow-hidden rounded-m-md bg-m-surface">
 						{FIELD_IDS.map((f) => {
 							const meta = FIELDS[f];
 							const Icon = FIELD_ICON[f];
 							return (
-								<div key={f} className="flex min-h-14 items-center gap-3 px-4 py-2.5">
-									<Icon size={20} strokeWidth={1.75} aria-hidden className="shrink-0 text-m-text-2" />
+								<div key={f} className="flex min-h-11 items-center gap-2.5 px-3 py-2">
+									<Icon size={17} strokeWidth={1.75} aria-hidden className="shrink-0 text-m-text-2" />
 									<div className="min-w-0 flex-1">
-										<div className="text-m-md">{meta.label}</div>
-										<div className="text-m-xs text-m-text-3">{meta.description}</div>
+										<div className="text-m-sm">{meta.label}</div>
+										<div className="text-[11px] text-m-text-3">{meta.description}</div>
 									</div>
-									<span className="shrink-0 whitespace-nowrap font-m-mono text-m-sm text-m-text-2">
+									<span className="shrink-0 whitespace-nowrap font-m-mono text-m-xs text-m-text-2">
 										{fieldText(shown, f) ?? MISSING}
 									</span>
 								</div>
@@ -120,6 +139,6 @@ export function StatCard({ stat, onClose }: { stat: RequestStat | null; onClose:
 					<TtftBar stat={shown} />
 				</div>
 			)}
-		</BottomSheet>
+		</AnchoredPopover>
 	);
 }

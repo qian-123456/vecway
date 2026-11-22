@@ -1,6 +1,6 @@
 import { Copy, FolderInput, FolderOpen } from "lucide-react";
 import { nav, paths } from "../../../core/nav";
-import { BottomSheet, MenuRow, toast } from "../../../ui";
+import { AnchoredPopover, MenuRow, toast } from "../../../ui";
 
 /** Sheet behind the folder of the status row: full path, copy, browse, switch project. */
 export function PathSheet({
@@ -9,12 +9,14 @@ export function PathSheet({
 	cwd,
 	sessionId,
 	onSwitchProject,
+	anchorEl,
 }: {
 	open: boolean;
 	onClose: () => void;
 	cwd?: string | null;
 	sessionId: string;
 	onSwitchProject?: () => void;
+	anchorEl?: HTMLElement | null;
 }) {
 	const copyPath = async () => {
 		if (!cwd) return;
@@ -27,16 +29,24 @@ export function PathSheet({
 	};
 
 	return (
-		<BottomSheet open={open} onClose={onClose} title="当前工作目录">
-			<div className="px-5 pt-2">
-				<div className="m-selectable rounded-m-lg bg-m-card px-5 py-4 font-m-mono text-m-sm break-all text-m-text shadow-m-card">
+		<AnchoredPopover
+			open={open}
+			onClose={onClose}
+			anchorEl={anchorEl}
+			placement="bottom-start"
+			title="当前工作目录"
+			maxWidth={340}
+			minWidth={260}
+		>
+			<div className="px-3.5 pt-3 pb-1">
+				<div className="m-selectable rounded-m-md bg-m-surface px-3.5 py-2.5 font-m-mono text-m-xs break-all text-m-text">
 					{cwd || "未设置工作目录"}
 				</div>
 			</div>
-			<div className="pt-3 pb-3">
-				<MenuRow icon={<Copy size={22} strokeWidth={1.75} />} label="复制路径" disabled={!cwd} onClick={() => void copyPath()} />
+			<div className="py-1.5">
+				<MenuRow icon={<Copy size={20} strokeWidth={1.75} />} label="复制路径" disabled={!cwd} onClick={() => void copyPath()} />
 				<MenuRow
-					icon={<FolderOpen size={22} strokeWidth={1.75} />}
+					icon={<FolderOpen size={20} strokeWidth={1.75} />}
 					label="浏览文件"
 					onClick={() => {
 						onClose();
@@ -45,7 +55,7 @@ export function PathSheet({
 				/>
 				{onSwitchProject && (
 					<MenuRow
-						icon={<FolderInput size={22} strokeWidth={1.75} />}
+						icon={<FolderInput size={20} strokeWidth={1.75} />}
 						label="切换项目目录"
 						hint="让这个会话改在另一个目录里工作"
 						onClick={() => {
@@ -55,6 +65,6 @@ export function PathSheet({
 					/>
 				)}
 			</div>
-		</BottomSheet>
+		</AnchoredPopover>
 	);
 }

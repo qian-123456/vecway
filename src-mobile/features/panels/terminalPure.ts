@@ -111,3 +111,111 @@ export class InputQueue {
 		}
 	}
 }
+
+export interface TerminalBlock {
+	id: string;
+	text: string;
+	command?: string;
+	lineCount: number;
+}
+
+// ANSI CSI, OSC, 2-byte ESC, and carriage-return/control cleanup for readable block capture.
+const ANSI_OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const ANSI_CSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+const ANSI_ESC_RE = /\x1b[@-Z\\-_]/g;
+const CTRL_CHAR_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+
+/** Strip ANSI escape sequences and normalize carriage-return line overwrites into clean text. */
+export function stripAnsi(raw: string): string {
+	const noEsc = raw
+		.replace(ANSI_OSC_RE, "")
+		.replace(ANSI_CSI_RE, "")
+		.replace(ANSI_ESC_RE, "")
+		.replace(/\r\n/g, "\n");
+	const lines = noEsc.split("\n").map((line) => {
+		if (!line.includes("\r")) return line;
+		const parts = line.split("\r");
+		for (let i = parts.length - 1; i >= 0; i--) {
+			if (parts[i] !== "") return parts[i];
+		}
+		return "";
+	});
+	return lines.join("\n").replace(CTRL_CHAR_RE, "");
+}
+
+const PROMPT_PATTERNS = [
+	// Common shell prompts with a command after %, $, #, >, ❯, ➜, λ
+	/^(?:[^\s].*?\s)?(?:[$#%]|[❯➜λ])\s+(\S.*)$/,
+	/^(?:[❯➜λ]|[$#%])\s+(\S.*)$/,
+];
+
+const BARE_PROMPT_RE = /^(?:(?:[^\s].*?\s)?(?:[$#%]|[❯➜λ]))\s*$/;
+
+function matchPromptCommand(line: string): string | null {
+	const trimmed = line.trimEnd();
+	if (!trimmed) return null;
+	for (const re of PROMPT_PATTERNS) {
+		const m = trimmed.match(re);
+		if (m && m[1]) return m[1].trim();
+	}
+	return null;
+}
+
+/**
+ * Segment stripped terminal text into indivisible command/output unit blocks.
+ * Commands and their entire output (including blank lines inside output) remain one atomic block
+ * until the next shell prompt; streams without prompts split cleanly at blank-line boundaries.
+ */
+export function segmentTerminalBlocks(text: string, maxBlocks = 60): TerminalBlock[] {
+	const lines = text.replace(/\r\n/g, "\n").split("\n");
+	const blocks: Array<{ lines: string[]; command?: string; hasPrompt: boolean }> = [];
+	let cur: { lines: string[]; command?: string; hasPrompt: boolean } | null = null;
+
+	const flush = () => {
+		if (!cur) return;
+		let start = 0;
+		let end = cur.lines.length;
+		while (start < end && cur.lines[start].trim() === "") start++;
+		while (end > start && (cur.lines[end - 1].trim() === "" || (!cur.hasPrompt && BARE_PROMPT_RE.test(cur.lines[end - 1])))) {
+			end--;
+		}
+		// Also strip a trailing bare prompt line attached right before the next prompt.
+		if (end > start && BARE_PROMPT_RE.test(cur.lines[end - 1])) {
+			end--;
+			while (end > start && cur.lines[end - 1].trim() === "") end--;
+		}
+		const sliced = cur.lines.slice(start, end);
+		if (sliced.length > 0) {
+			blocks.push({ lines: sliced, command: cur.command, hasPrompt: cur.hasPrompt });
+		}
+		cur = null;
+	};
+
+	for (const line of lines) {
+		const cmd = matchPromptCommand(line);
+		if (cmd !== null) {
+			flush();
+			cur = { lines: [line], command: cmd, hasPrompt: true };
+			continue;
+		}
+		if (!cur) {
+			if (line.trim() === "" || BARE_PROMPT_RE.test(line)) continue;
+			cur = { lines: [line], hasPrompt: false };
+			continue;
+		}
+		if (!cur.hasPrompt && line.trim() === "") {
+			flush();
+			continue;
+		}
+		cur.lines.push(line);
+	}
+	flush();
+
+	const recent = blocks.length > maxBlocks ? blocks.slice(-maxBlocks) : blocks;
+	return recent.map((b, idx) => ({
+		id: `blk-${idx}`,
+		text: b.lines.join("\n"),
+		...(b.command ? { command: b.command } : {}),
+		lineCount: b.lines.length,
+	}));
+}

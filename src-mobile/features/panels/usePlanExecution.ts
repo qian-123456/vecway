@@ -152,9 +152,18 @@ function subscribe(id: string, listener: () => void): () => void {
 	};
 }
 
+/** True whenever a real plan exists in any lifecycle state (planning, review, executing, completed, failed, handoff). */
+export function hasRealPlan(planStatus: PlanStatus | null | undefined): boolean {
+	if (!planStatus) return false;
+	if (planStatus.approved) return true;
+	if (planStatus.enabled) return true;
+	return Boolean(planStatus.content?.trim() || planStatus.planFile);
+}
+
 /** Chat reuses its existing controller; tool routes own a shared read-only snapshot. */
 export function usePlanExecution(sessionId: string): {
 	planStatus: PlanStatus | null;
+	hasPlan: boolean;
 	executing: boolean;
 	loading: boolean;
 	error: string | null;
@@ -175,6 +184,7 @@ export function usePlanExecution(sessionId: string): {
 	const planStatus = (controller ? chatState : panel.data)?.planStatus ?? null;
 	return {
 		planStatus,
+		hasPlan: hasRealPlan(planStatus),
 		executing: planStatus?.approved?.status === "executing",
 		loading: controller ? chatState === null : panel.loading,
 		error: controller ? null : panel.error,

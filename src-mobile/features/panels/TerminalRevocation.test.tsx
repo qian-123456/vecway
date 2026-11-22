@@ -5,10 +5,10 @@ import { useConnection } from "../../core/stores/connection";
 import { bytesToBase64, type NativeBridge, type NativeSseHandlers } from "../../core/nativeBridge";
 import { TerminalPage } from "./TerminalPage";
 
-vi.mock("./WorkspacePanelBar", () => ({ WorkspacePanelBar: () => null }));
+// No WorkspacePanelBar in TerminalPage anymore.
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
 	cols = 80; rows = 24; options = {};
-	loadAddon() {} open() {} reset() {} dispose() {}
+	loadAddon() {} open() {} write() {} clear() {} reset() {} dispose() {}
 	onData() { return { dispose() {} }; }
 } }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
@@ -96,8 +96,9 @@ it("uses native bridge.openSse for terminal streaming and closes cleanly on revo
 	expect(browserEventSource).not.toHaveBeenCalled();
 
 	act(() => capturedHandlers?.onOpen?.());
-	expect(screen.getByText("已连接")).toBeDefined();
-
+	expect(screen.getAllByText("等待终端响应…").length).toBeGreaterThan(0);
+	act(() => capturedHandlers?.onEvent?.("data", bytesToBase64(utf8.encode("ok\n"))));
+	expect(screen.getByText("已就绪")).toBeDefined();
 	act(() => useConnection.getState().setPhase("unauthorized", "revoked"));
 	expect(close).toHaveBeenCalledTimes(1);
 	expect(screen.getByText("配对已失效或被撤销，请重新配对。")).toBeDefined();

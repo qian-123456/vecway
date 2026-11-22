@@ -33,10 +33,10 @@ export function HeaderMenu({ open, onClose, sessionId, resolveSessionId }: Heade
 	const pendingRef = useRef(false);
 	const openRef = useRef(open);
 	openRef.current = open;
-	const { executing } = usePlanExecution(sessionId || `${DRAFT_PREFIX}menu`);
+	const { hasPlan } = usePlanExecution(sessionId || `${DRAFT_PREFIX}menu`);
 	const isDraftOrMissing = !sessionId || isDraftId(sessionId);
-	const entries = !isDraftOrMissing && executing
-		? [...ENTRIES, { label: "执行计划", hint: "查看已批准的计划与执行状态", icon: icon(ClipboardList), to: paths.plan }]
+	const entries = !isDraftOrMissing && hasPlan
+		? [...ENTRIES, { label: "执行计划", hint: "查看计划内容与执行状态", icon: icon(ClipboardList), to: paths.plan }]
 		: ENTRIES;
 	const handleSelect = async (entry: Entry, disabled: boolean) => {
 		if (disabled || pendingRef.current) return;

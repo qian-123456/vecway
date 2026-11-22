@@ -1,4 +1,6 @@
 export { ActionTile } from "./ActionTile";
+export { AnchoredPopover } from "./AnchoredPopover";
+export type { AnchorBox, AnchoredPopoverProps, PopoverPlacement } from "./AnchoredPopover";
 export { AppMark } from "./AppMark";
 export { BottomSheet } from "./BottomSheet";
 export { Button } from "./Button";

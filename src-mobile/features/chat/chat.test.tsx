@@ -233,6 +233,9 @@ describe("draft handoff composer ownership", () => {
 				target: { files: names.map((name) => new File(["image"], name, { type: "image/png" })) },
 			});
 		});
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 25));
+		});
 	};
 	beforeEach(() => {
 		vi.stubGlobal("URL", class extends URL {
@@ -284,14 +287,16 @@ describe("draft handoff composer ownership", () => {
 		// Exercise old-page disposal after the real page already mounted as well.
 		if (!disposeFirst) draft.dispose();
 		expect((screen.getByLabelText("消息输入框") as HTMLTextAreaElement).value).toBe(latest);
-		expect(screen.getByText("retained.png")).toBeTruthy();
-		expect(screen.queryByText("removed.png")).toBeNull();
-		expect(screen.queryByText("submitted.png")).toBeNull();
+		expect(screen.getByRole("button", { name: "预览图片 retained.png" })).toBeTruthy();
+		expect(screen.queryByText("retained.png")).toBeNull();
+		expect(screen.queryByRole("button", { name: "预览图片 removed.png" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "预览图片 submitted.png" })).toBeNull();
 		expect(real.state.atts).toMatchObject([{ name: "retained.png", status: before ? "ok" : "up" }]);
 		expect(real.state.optimistic).toHaveLength(1);
 		const firstEcho = real.state.optimistic[0].text;
-		expect(firstEcho).toContain("首条消息");
-		expect(firstEcho).toContain("/uploads/submitted.png");
+		expect(firstEcho).toBe("首条消息");
+		expect(real.state.optimistic[0].imageUrls).toEqual(["blob:submitted.png"]);
+		expect(URL.revokeObjectURL).not.toHaveBeenCalledWith("blob:submitted.png");
 		expect(screen.getAllByText(firstEcho)).toHaveLength(1);
 		await act(async () => {
 			lateUpload.resolve({ path: "/uploads/retained.png" });
@@ -301,7 +306,7 @@ describe("draft handoff composer ownership", () => {
 		expect(real.state.atts).toMatchObject([{ name: "retained.png", status: "ok", path: "/uploads/retained.png" }]);
 		expect(URL.revokeObjectURL).not.toHaveBeenCalledWith("blob:retained.png");
 		expect(apiMock.mock.calls.filter((call) => String(call[1]).endsWith("/prompt-ex"))).toEqual([
-			["POST", `/sessions/${id}/prompt-ex`, { text: firstEcho, images: [] }],
+			["POST", `/sessions/${id}/prompt-ex`, { text: "首条消息", images: [{ mime: "image/png", data: "aW1hZ2U=" }] }],
 		]);
 		// A real-page remount must retain the same draft, attachment ownership and single echo.
 		mounted.unmount();
@@ -309,7 +314,7 @@ describe("draft handoff composer ownership", () => {
 		const remounted = new ChatController(realId);
 		mounted = render(view(remounted));
 		expect((screen.getByLabelText("消息输入框") as HTMLTextAreaElement).value).toBe(latest);
-		expect(screen.getByText("retained.png")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "预览图片 retained.png" })).toBeTruthy();
 		expect(screen.getAllByText(firstEcho)).toHaveLength(1);
 		mounted.unmount();
 		remounted.dispose();
@@ -371,8 +376,8 @@ describe("draft handoff composer ownership", () => {
 		}
 		expect(nav.getRoute().params.id).toBe(realId);
 		expect((screen.getByLabelText("消息输入框") as HTMLTextAreaElement).value).toBe(latest);
-		expect(screen.queryByText("removed.png")).toBeNull();
-		expect(!!screen.queryByText("retained.png")).toBe(keepImage);
+		expect(screen.queryByRole("button", { name: "预览图片 removed.png" })).toBeNull();
+		expect(!!screen.queryByRole("button", { name: "预览图片 retained.png" })).toBe(keepImage);
 		expect(screen.queryByText("上传中")).toBeNull();
 		expect(screen.getAllByText("first")).toHaveLength(1);
 		expect(draftBook.restore(id)).toBeNull();
@@ -432,7 +437,7 @@ describe("draft handoff composer ownership", () => {
 			upload.resolve({ path: "/uploads/unsent.png" });
 		});
 		expect((screen.getByLabelText("消息输入框") as HTMLTextAreaElement).value).toBe("独立草稿二");
-		expect(screen.getByText("unsent.png")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "预览图片 unsent.png" })).toBeTruthy();
 		expect(draft.state.delivery).toMatchObject({ phase: "unknown", text: "submitted first", atts: [] });
 		expect(draft.state.optimistic).toEqual([]);
 		mounted.unmount();
@@ -440,7 +445,7 @@ describe("draft handoff composer ownership", () => {
 		const resumed = new ChatController(id);
 		mounted = render(view(resumed));
 		expect((screen.getByLabelText("消息输入框") as HTMLTextAreaElement).value).toBe("独立草稿二");
-		expect(screen.getByText("unsent.png")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "预览图片 unsent.png" })).toBeTruthy();
 		expect(resumed.state.atts).toMatchObject([{ name: "unsent.png", path: "/uploads/unsent.png", status: "ok" }]);
 		expect(resumed.state.delivery?.phase).toBe("unknown");
 		expect(apiMock.mock.calls.filter((call) => String(call[1]).endsWith("/prompt-ex"))).toHaveLength(1);

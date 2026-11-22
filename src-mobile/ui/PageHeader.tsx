@@ -14,7 +14,7 @@ export function TopBar({ left, center, right, className = "" }: { left?: ReactNo
 		<header className={`m-topbar-glass relative z-(--z-header) shrink-0 text-m-text ${className}`} style={{ paddingTop: "var(--m-safe-top)" }}>
 			<div className="flex h-13 items-center gap-1.5 px-2.5">
 				{left}
-				<div className="flex min-w-0 flex-1 items-center justify-center">{center}</div>
+				<div className="flex min-w-0 flex-1 items-center justify-start text-left">{center}</div>
 				{right != null && <div className="flex shrink-0 items-center gap-1">{right}</div>}
 			</div>
 		</header>
