@@ -157,10 +157,10 @@ export function useSessionActions(onOpen?: (s: TreeSession) => void): { openActi
 	const lastPointer = useRef<{ el: HTMLElement | null; rect: AnchorBox | null; at: number } | null>(null);
 	useEffect(() => {
 		const record = (target: EventTarget | null, x: number, y: number) => {
-			if (!(target instanceof HTMLElement)) return;
+			if (!(target instanceof Element)) return;
 			const btn = target.closest("button");
 			lastPointer.current = {
-				el: btn instanceof HTMLElement ? btn : target,
+				el: btn instanceof HTMLElement ? btn : target instanceof HTMLElement ? target : null,
 				rect: x !== 0 || y !== 0 ? { left: x - 4, top: y - 4, right: x + 4, bottom: y + 4, width: 8, height: 8 } : null,
 				at: Date.now(),
 			};

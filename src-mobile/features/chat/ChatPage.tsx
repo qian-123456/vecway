@@ -184,7 +184,7 @@ export function ChatPage({ route }: PageProps) {
 	};
 
 	const recordTrigger = (node: EventTarget | null, x = 0, y = 0) => {
-		if (!(node instanceof HTMLElement)) return;
+		if (!(node instanceof Element)) return;
 		const btn = node.closest("button");
 		if (btn instanceof HTMLElement) {
 			lastTriggerRef.current = { el: btn, rect: null, at: Date.now() };
@@ -194,7 +194,7 @@ export function ChatPage({ route }: PageProps) {
 				rect: { left: x - 4, top: y - 4, right: x + 4, bottom: y + 4, width: 8, height: 8 },
 				at: Date.now(),
 			};
-		} else {
+		} else if (node instanceof HTMLElement) {
 			lastTriggerRef.current = { el: node, rect: null, at: Date.now() };
 		}
 	};
@@ -204,14 +204,22 @@ export function ChatPage({ route }: PageProps) {
 			controller
 				? {
 						controller,
-						openActions: (t) => {
-							const recent = lastTriggerRef.current && Date.now() - lastTriggerRef.current.at < 2000 ? lastTriggerRef.current : null;
-							setTargetAnchor(recent ? { el: recent.el, rect: recent.rect } : null);
+						openActions: (t, anchorEl) => {
+							if (anchorEl) {
+								setTargetAnchor({ el: anchorEl, rect: null });
+							} else {
+								const recent = lastTriggerRef.current && Date.now() - lastTriggerRef.current.at < 2000 ? lastTriggerRef.current : null;
+								setTargetAnchor(recent ? { el: recent.el, rect: recent.rect } : null);
+							}
 							setTarget(t);
 						},
-						openStat: (s) => {
-							const recent = lastTriggerRef.current && Date.now() - lastTriggerRef.current.at < 2000 ? lastTriggerRef.current : null;
-							setStatAnchor(recent ? { el: recent.el, rect: recent.rect } : null);
+						openStat: (s, anchorEl) => {
+							if (anchorEl) {
+								setStatAnchor({ el: anchorEl, rect: null });
+							} else {
+								const recent = lastTriggerRef.current && Date.now() - lastTriggerRef.current.at < 2000 ? lastTriggerRef.current : null;
+								setStatAnchor(recent ? { el: recent.el, rect: recent.rect } : null);
+							}
 							setStat(s);
 						},
 					}

@@ -398,7 +398,7 @@ export const TurnView = memo(function TurnView({ turn, isLast, sessionId }: { tu
 									type="button"
 									aria-label="更多操作"
 									title="更多操作"
-									onClick={() => openActions(target)}
+									onClick={(e) => openActions(target, e.currentTarget)}
 									className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-m-text-3 transition-colors active:bg-m-surface-hover active:text-m-text"
 								>
 									<Ellipsis size={16} strokeWidth={1.75} />
@@ -407,7 +407,7 @@ export const TurnView = memo(function TurnView({ turn, isLast, sessionId }: { tu
 									<button
 										type="button"
 										aria-label={`请求详情：${statText}`}
-										onClick={() => openStat(answerStat.stat)}
+										onClick={(e) => openStat(answerStat.stat, e.currentTarget)}
 										className="ml-auto inline-flex h-8 min-w-0 items-center truncate rounded-md px-2 text-[11px] tabular-nums text-m-text-3 transition-colors active:bg-m-surface-hover"
 									>
 										{statText}

@@ -32,7 +32,7 @@ export const StatLine = memo(function StatLine({
 	onOpen,
 }: {
 	stat: RequestStat;
-	onOpen: (stat: RequestStat) => void;
+	onOpen: (stat: RequestStat, anchorEl?: HTMLElement | null) => void;
 }) {
 	const text = statSummary(stat);
 	if (!text) return null;
@@ -40,7 +40,7 @@ export const StatLine = memo(function StatLine({
 		<button
 			type="button"
 			aria-label={`请求详情：${text}`}
-			onClick={() => onOpen(stat)}
+			onClick={(e) => onOpen(stat, e.currentTarget)}
 			className="inline-flex min-h-11 min-w-11 items-center rounded-m-pill px-2 text-left text-m-xs text-m-text-3 active:bg-m-surface-hover"
 		>
 			{text}
@@ -110,7 +110,7 @@ export function StatCard({
 			onClose={onClose}
 			anchorEl={anchorEl}
 			anchorRect={anchorRect}
-			placement="top-start"
+			placement="top-end"
 			title="这次请求"
 			subtitle={shown ? whenText(shown) : undefined}
 			maxWidth={340}

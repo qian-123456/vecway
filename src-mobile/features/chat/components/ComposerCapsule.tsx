@@ -1,7 +1,7 @@
 import { ArrowUp, ChevronDown, Mic, Plus, Square } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Spinner } from "../../../ui";
-import { desktopThinkingLabel, shortModel } from "../lib/models";
+import { desktopThinkingLabel, parseModelRef, shortModel } from "../lib/models";
 import { ContextIndicator } from "./ContextIndicator";
 import { useVoiceInput } from "./useVoiceInput";
 
@@ -212,7 +212,8 @@ export function ComposerCapsule({
 	};
 
 	const modelName = shortModel(model ?? "") || "默认模型";
-	const thinkName = desktopThinkingLabel(thinking);
+	const effectiveThinking = thinking || parseModelRef(model)?.thinking || null;
+	const thinkName = desktopThinkingLabel(effectiveThinking);
 	const hasModel = onModel != null || model != null;
 	const hasThinking = onThinking != null || thinking != null;
 	const modelTriggerLabel = hasThinking

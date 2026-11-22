@@ -15,8 +15,8 @@ export interface MessageTarget {
 
 export interface ChatUi {
 	controller: ChatController;
-	openActions: (t: MessageTarget) => void;
-	openStat: (s: RequestStat) => void;
+	openActions: (t: MessageTarget, anchorEl?: HTMLElement | null) => void;
+	openStat: (s: RequestStat, anchorEl?: HTMLElement | null) => void;
 }
 
 export const ChatCtx = createContext<ChatUi | null>(null);

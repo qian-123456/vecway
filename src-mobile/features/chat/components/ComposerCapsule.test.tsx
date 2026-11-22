@@ -161,4 +161,23 @@ describe("ComposerCapsule", () => {
 		const contextBtn = screen.getByRole("button", { name: "上下文用量：25%" });
 		expect(contextBtn.querySelectorAll("circle")).toHaveLength(2);
 	});
+
+	it("parses embedded thinking suffix from model ref when thinking prop is null", () => {
+		render(
+			<ComposerCapsule
+				placeholder="消息"
+				onPlus={() => {}}
+				onSend={() => {}}
+				model="google/gemini-4-neon:high"
+				thinking={null}
+				onModel={() => {}}
+				onThinking={() => {}}
+			/>,
+		);
+		const modelBtn = screen.getByRole("button", { name: "当前模型：gemini-4-neon，思考强度：High，点击切换" });
+		expect(modelBtn.textContent).toContain("gemini-4-neon");
+		expect(modelBtn.textContent).toContain("High");
+		expect(modelBtn.textContent).not.toContain(":high");
+		expect(modelBtn.textContent).not.toContain("Auto");
+	});
 });

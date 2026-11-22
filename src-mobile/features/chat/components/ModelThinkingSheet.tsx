@@ -56,7 +56,11 @@ export function ModelThinkingSheet({
 	const [recentKeys, setRecentKeys] = useState<string[]>(() => loadRecentModels());
 	const [busy, setBusy] = useState(false);
 	const initializedTab = useRef(false);
-
+	const scrolledOnOpen = useRef(false);
+	const railContainerRef = useRef<HTMLElement | null>(null);
+	const listContainerRef = useRef<HTMLDivElement | null>(null);
+	const activeRailRef = useRef<HTMLButtonElement | null>(null);
+	const activeModelRef = useRef<HTMLDivElement | null>(null);
 	const models = data?.models ?? [];
 	const current = data?.current ?? null;
 	const curOpt = data ? currentModelOpt(data.models, data.current) : null;
@@ -75,6 +79,7 @@ export function ModelThinkingSheet({
 			setShowUnconfigured(false);
 		} else {
 			initializedTab.current = false;
+			scrolledOnOpen.current = false;
 		}
 	}, [open]);
 
@@ -117,6 +122,24 @@ export function ModelThinkingSheet({
 		const name = effectiveTab.slice(2);
 		return allGroups.find((g) => g.provider === name) ?? null;
 	}, [effectiveTab, allGroups]);
+	// Auto-scroll active provider and active model into view once when the sheet opens with data.
+	useEffect(() => {
+		if (!open || !data || !effectiveTab || searching || scrolledOnOpen.current) return;
+		scrolledOnOpen.current = true;
+		const centerIn = (container: HTMLElement | null, child: HTMLElement | null) => {
+			if (!container || !child) return;
+			const cRect = container.getBoundingClientRect();
+			const elRect = child.getBoundingClientRect();
+			if (cRect.height <= 0 || elRect.height <= 0) return;
+			const nextTop = container.scrollTop + (elRect.top - cRect.top) - (cRect.height - elRect.height) / 2;
+			container.scrollTop = Math.max(0, nextTop);
+		};
+		const raf = requestAnimationFrame(() => {
+			centerIn(railContainerRef.current, activeRailRef.current);
+			centerIn(listContainerRef.current, activeModelRef.current);
+		});
+		return () => cancelAnimationFrame(raf);
+	}, [open, data, effectiveTab, searching]);
 
 	const level = data?.thinkingLevel ?? currentLevel ?? null;
 	const levels = data ? resolveThinkingLevels(curOpt, data.liveThinking, level) : [];
@@ -154,7 +177,7 @@ export function ModelThinkingSheet({
 	};
 
 	const renderModelRow = (m: ModelOpt, { showProvider, removable }: { showProvider: boolean; removable: boolean }) => {
-		const on = isCurrentModel(m, current);
+		const on = curOpt ? m.provider === curOpt.provider && m.id === curOpt.id : isCurrentModel(m, current);
 		const label = modelLabel(m);
 		const tooSmall = isModelContextTooSmall(m, contextTokens);
 		const sub = showProvider
@@ -167,6 +190,7 @@ export function ModelThinkingSheet({
 		return (
 			<div
 				key={`${removable ? "recent:" : ""}${modelKey(m)}`}
+				ref={on ? activeModelRef : undefined}
 				className={`flex items-center border-b border-m-border/50 last:border-b-0 ${on ? "bg-m-accent-soft/55" : ""}`}
 			>
 				<button
@@ -225,6 +249,7 @@ export function ModelThinkingSheet({
 		return (
 			<button
 				key={tabId}
+				ref={active ? activeRailRef : undefined}
 				type="button"
 				role="tab"
 				aria-selected={active}
@@ -339,6 +364,7 @@ export function ModelThinkingSheet({
 				) : (
 					<div className="flex min-h-0 flex-1 overflow-hidden">
 						<nav
+							ref={railContainerRef}
 							role="tablist"
 							aria-label="模型供应商"
 							className="m-noscrollbar flex w-[112px] shrink-0 flex-col overflow-y-auto overscroll-contain border-r border-m-border bg-m-surface/40 py-1 pb-8"
@@ -387,7 +413,7 @@ export function ModelThinkingSheet({
 							)}
 						</nav>
 
-						<div role="tabpanel" className="min-w-0 flex-1 overflow-y-auto overscroll-contain bg-m-bg-elev pb-8">
+						<div ref={listContainerRef} role="tabpanel" className="min-w-0 flex-1 overflow-y-auto overscroll-contain bg-m-bg-elev pb-8">
 							{rightTitle && (
 								<div className="sticky top-0 z-(--z-base) border-b border-m-border/50 bg-m-bg-elev/95 px-3.5 py-2 text-m-xs font-medium text-m-text-3 backdrop-blur-xs">
 									{rightTitle}

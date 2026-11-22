@@ -39,6 +39,26 @@ export interface AnchoredPopoverProps {
 	offset?: number;
 }
 
+let safeProbeEl: HTMLDivElement | null = null;
+
+/** Resolve CSS `env(safe-area-inset-top/bottom)` in pixels so floating overlays never clip under the iOS notch/status bar. */
+export function readSafeAreaInsets(): { top: number; bottom: number } {
+	if (typeof document === "undefined" || !document.body) return { top: 0, bottom: 0 };
+	if (!safeProbeEl || !safeProbeEl.isConnected) {
+		const el = document.createElement("div");
+		el.setAttribute("aria-hidden", "true");
+		el.style.cssText =
+			"position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none;" +
+			"padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);";
+		document.body.appendChild(el);
+		safeProbeEl = el;
+	}
+	const cs = getComputedStyle(safeProbeEl);
+	const top = Number.parseFloat(cs.paddingTop) || 0;
+	const bottom = Number.parseFloat(cs.paddingBottom) || 0;
+	return { top, bottom };
+}
+
 function readAnchor(anchorEl?: HTMLElement | null, anchorRect?: AnchorBox | null): AnchorBox | null {
 	if (anchorEl && anchorEl.isConnected) {
 		const r = anchorEl.getBoundingClientRect();
@@ -104,6 +124,10 @@ export function AnchoredPopover({
 		const compute = () => {
 			const vw = window.innerWidth || 390;
 			const vh = window.innerHeight || 844;
+			const safe = readSafeAreaInsets();
+			const topBound = safe.top + EDGE_PAD;
+			const bottomBound = vh - safe.bottom - EDGE_PAD;
+			const availVh = Math.max(160, bottomBound - topBound);
 			const panelW = Math.min(maxWidth, vw - EDGE_PAD * 2);
 			const measuredW = panelRef.current?.offsetWidth || panelW;
 			const measuredH = panelRef.current?.offsetHeight || 220;
@@ -118,28 +142,28 @@ export function AnchoredPopover({
 			let maxHeight: number;
 
 			if (box) {
-				const spaceBelow = vh - box.bottom - offset - EDGE_PAD;
-				const spaceAbove = box.top - offset - EDGE_PAD;
+				const spaceBelow = Math.max(0, bottomBound - box.bottom - offset);
+				const spaceAbove = Math.max(0, box.top - offset - topBound);
 
 				if (preferTop) {
 					if (spaceAbove >= Math.min(measuredH, 160) || spaceAbove >= spaceBelow) {
 						fromTop = false;
-						maxHeight = Math.max(140, Math.min(spaceAbove, vh * 0.72));
-						top = Math.max(EDGE_PAD, box.top - offset - Math.min(measuredH, maxHeight));
+						maxHeight = Math.max(120, Math.min(spaceAbove, availVh * 0.78));
+						top = Math.max(topBound, box.top - offset - Math.min(measuredH, maxHeight));
 					} else {
 						fromTop = true;
-						maxHeight = Math.max(140, Math.min(spaceBelow, vh * 0.72));
-						top = box.bottom + offset;
+						maxHeight = Math.max(120, Math.min(spaceBelow, availVh * 0.78));
+						top = Math.max(topBound, Math.min(box.bottom + offset, bottomBound - Math.min(measuredH, maxHeight)));
 					}
 				} else {
 					if (spaceBelow >= Math.min(measuredH, 160) || spaceBelow >= spaceAbove) {
 						fromTop = true;
-						maxHeight = Math.max(140, Math.min(spaceBelow, vh * 0.72));
-						top = box.bottom + offset;
+						maxHeight = Math.max(120, Math.min(spaceBelow, availVh * 0.78));
+						top = Math.max(topBound, Math.min(box.bottom + offset, bottomBound - Math.min(measuredH, maxHeight)));
 					} else {
 						fromTop = false;
-						maxHeight = Math.max(140, Math.min(spaceAbove, vh * 0.72));
-						top = Math.max(EDGE_PAD, box.top - offset - Math.min(measuredH, maxHeight));
+						maxHeight = Math.max(120, Math.min(spaceAbove, availVh * 0.78));
+						top = Math.max(topBound, box.top - offset - Math.min(measuredH, maxHeight));
 					}
 				}
 
@@ -156,8 +180,8 @@ export function AnchoredPopover({
 				fromTop = !preferTop;
 				left = align === "end" ? vw - EDGE_PAD - measuredW : align === "center" ? (vw - measuredW) / 2 : EDGE_PAD;
 				left = Math.max(EDGE_PAD, Math.min(left, vw - EDGE_PAD - measuredW));
-				maxHeight = Math.max(180, vh * 0.65);
-				top = preferTop ? Math.max(EDGE_PAD, vh - 120 - Math.min(measuredH, maxHeight)) : 60;
+				maxHeight = Math.max(180, availVh * 0.65);
+				top = preferTop ? Math.max(topBound, bottomBound - 88 - Math.min(measuredH, maxHeight)) : topBound + 48;
 			}
 
 			const originX = align === "end" ? "right" : align === "center" ? "center" : "left";
@@ -167,9 +191,15 @@ export function AnchoredPopover({
 
 		compute();
 		const raf = requestAnimationFrame(compute);
+		let ro: ResizeObserver | null = null;
+		if (typeof ResizeObserver !== "undefined" && panelRef.current) {
+			ro = new ResizeObserver(compute);
+			ro.observe(panelRef.current);
+		}
 		window.addEventListener("resize", compute);
 		return () => {
 			cancelAnimationFrame(raf);
+			ro?.disconnect();
 			window.removeEventListener("resize", compute);
 		};
 	}, [mounted, open, anchorEl, anchorRect, placement, maxWidth, offset]);

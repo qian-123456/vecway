@@ -3,6 +3,7 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState }
 import { createPortal } from "react-dom";
 import { copyText } from "../../../core/lib/format";
 import { toast } from "../../../ui";
+import { readSafeAreaInsets } from "../../../ui/AnchoredPopover";
 import { useRightDrawer } from "../../panels/rightDrawerStore";
 import { ChatCtx } from "../ChatContext";
 
@@ -155,9 +156,9 @@ export function SelectionToolbar({
 		const vw = window.innerWidth || 390;
 		const vh = window.innerHeight || 844;
 		const vv = window.visualViewport;
-		const visTop = (vv?.offsetTop ?? 0) + EDGE_PAD;
-		const visBottom = (vv ? vv.offsetTop + vv.height : vh) - EDGE_PAD;
-
+		const safe = readSafeAreaInsets();
+		const visTop = Math.max(vv?.offsetTop ?? 0, safe.top) + EDGE_PAD;
+		const visBottom = (vv ? vv.offsetTop + vv.height : vh - safe.bottom) - EDGE_PAD;
 		const el = bubbleRef.current;
 		const fallbackW = target !== null ? Math.min(312, vw - EDGE_PAD * 2) : 252;
 		const fallbackH = target !== null ? 148 : 84;
@@ -297,7 +298,7 @@ export function SelectionToolbar({
 							}}
 							placeholder="添加批注（可选）..."
 							aria-label="添加批注"
-							className="min-h-7 min-w-0 flex-1 resize-none bg-transparent py-1 text-m-sm leading-[1.4] text-m-text outline-none placeholder:text-m-text-3"
+							className="min-h-7 min-w-0 flex-1 resize-none bg-transparent py-1 text-[16px] leading-[1.4] text-m-text outline-none placeholder:text-m-text-3"
 						/>
 						<button
 							type="button"

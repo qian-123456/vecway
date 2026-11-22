@@ -168,8 +168,14 @@ export function RightWorkspaceDrawer({
 	useEffect(() => {
 		const el = panelRef.current;
 		if (!el) return;
-		if (open) el.removeAttribute("inert");
-		else el.setAttribute("inert", "");
+		if (open) {
+			el.removeAttribute("inert");
+			if (document.activeElement instanceof HTMLElement && !el.contains(document.activeElement)) {
+				document.activeElement.blur();
+			}
+		} else {
+			el.setAttribute("inert", "");
+		}
 	}, [open]);
 
 	const plan = usePlanExecution(effectiveId || `${DRAFT_PREFIX}drawer`);

@@ -154,8 +154,10 @@ export function modelLabel(m: ModelOpt): string {
  */
 export function shortModel(text: string): string {
 	if (!text) return "";
-	const slash = text.lastIndexOf("/");
-	let s = slash >= 0 ? text.slice(slash + 1) : text;
+	const parsed = parseModelRef(text);
+	let s = parsed ? parsed.id : text;
+	const slash = s.lastIndexOf("/");
+	if (slash >= 0) s = s.slice(slash + 1);
 	// Strip trailing release/snapshot dates like -20250219 or -2024-08-06
 	s = s.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
 	return s;
