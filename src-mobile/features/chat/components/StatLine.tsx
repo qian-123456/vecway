@@ -1,4 +1,5 @@
-import { memo, useMemo, useRef } from "react";
+import { Database } from "lucide-react";
+import { memo, useMemo, useRef, type ReactNode } from "react";
 import { AnchoredPopover, type AnchorBox } from "../../../ui";
 import {
 	FIELDS,
@@ -19,6 +20,10 @@ import {
 	type RequestStat,
 } from "../lib/requestStats";
 
+function CacheIcon() {
+	return <Database className="h-3 w-3 shrink-0" strokeWidth={1.75} aria-hidden />;
+}
+
 /** Desktop-parity quiet 11px monospace TUI stats line; tap opens the detail card. */
 export const StatLine = memo(function StatLine({
 	stat,
@@ -32,30 +37,46 @@ export const StatLine = memo(function StatLine({
 	className?: string;
 }) {
 	const failed = formatFailedRequest(stat);
-	const parts = useMemo(() => (failed ? [] : formatDesktopStatParts(stat, { omitTime })), [failed, stat, omitTime]);
+	const parts = useMemo(() => {
+		if (failed) return [];
+		const primary = formatDesktopStatParts(stat, { omitTime });
+		if (primary.length > 0) return primary;
+		const fallback = formatDesktopStatParts(stat, {
+			omitTime,
+			includeDuration: true,
+			includeCost: true,
+		});
+		if (fallback.length > 0) return fallback;
+		return omitTime ? formatDesktopStatParts(stat, { omitTime: false }) : [];
+	}, [failed, stat, omitTime]);
 	if (!failed && parts.length === 0) return null;
 	const ariaSummary = failed
 		? [omitTime ? null : failed.time, failed.label, failed.wait, failed.reason].filter(Boolean).join(" ")
-		: parts.map((p) => `${p.glyph}${p.text}`).join(" ");
+		: parts.map((p) => (p.field === "cache" ? `缓存 ${p.text}` : `${p.glyph}${p.text}`)).join(" ");
 
 	return (
 		<button
 			type="button"
 			aria-label={`请求详情：${ariaSummary}`}
 			onClick={(e) => onOpen(stat, e.currentTarget)}
-			className={`-mx-1 inline-flex w-fit max-w-full flex-wrap items-baseline gap-x-2 rounded-md px-1 py-0.5 text-left font-m-mono text-[11px] leading-5 tabular-nums transition-colors active:bg-m-surface-hover ${className}`}
+			className={`-mx-1 inline-flex w-fit min-w-0 max-w-full flex-wrap items-baseline gap-x-2 rounded-md px-1 py-0.5 text-left font-m-mono text-[11px] leading-5 tabular-nums transition-colors active:bg-m-surface-hover ${className}`}
 		>
 			{failed ? (
 				<>
 					{!omitTime && failed.time && <span className="text-m-text-faint">{failed.time}</span>}
 					<span className="rounded-full bg-m-danger-bg px-1.5 text-m-danger">{failed.label}</span>
 					{failed.wait && <span className="text-m-text-quiet">{failed.wait}</span>}
-					<span className="break-words text-m-danger">{failed.reason}</span>
+					<span className="min-w-0 max-w-full break-words [overflow-wrap:anywhere] text-m-danger">
+						{failed.reason}
+					</span>
 				</>
 			) : (
 				parts.map((p) => (
-					<span key={p.field} className={p.field === "time" ? "text-m-text-faint" : "text-m-text-quiet"}>
-						{p.glyph}
+					<span
+						key={p.field}
+						className={`inline-flex items-center gap-0.5 ${p.field === "time" ? "text-m-text-faint" : "text-m-text-quiet"}`}
+					>
+						{p.field === "cache" ? <CacheIcon /> : p.glyph}
 						{p.text}
 					</span>
 				))
@@ -74,12 +95,12 @@ function statDateTime(epochMs: number): string {
 }
 
 function FieldRow({
-	glyph = "",
+	glyph,
 	label,
 	value,
 	description,
 }: {
-	glyph?: string;
+	glyph?: ReactNode;
 	label: string;
 	value: string;
 	description: string;
@@ -87,8 +108,8 @@ function FieldRow({
 	return (
 		<div className="flex flex-col">
 			<div className="flex items-baseline justify-between gap-3">
-				<span className="min-w-0 text-[12px] text-m-text-2">
-					{glyph && <span className="mr-1 text-m-text-quiet">{glyph}</span>}
+				<span className="inline-flex min-w-0 items-center gap-1 text-[12px] text-m-text-2">
+					{glyph && <span className="inline-flex items-center text-m-text-quiet">{glyph}</span>}
 					{label}
 				</span>
 				<span className="shrink-0 font-m-mono text-[11px] tabular-nums text-m-text-quiet">{value}</span>
@@ -137,7 +158,7 @@ function FailedRequestCard({ stat }: { stat: RequestStat }) {
 					description={FIELDS.duration.description}
 				/>
 			)}
-			<div className="break-words rounded-md bg-m-danger-bg px-2 py-1 font-m-mono text-[11px] leading-relaxed text-m-danger">
+			<div className="min-w-0 break-words [overflow-wrap:anywhere] rounded-md bg-m-danger-bg px-2 py-1 font-m-mono text-[11px] leading-relaxed text-m-danger">
 				{stat.error}
 			</div>
 		</div>
@@ -165,7 +186,7 @@ function RequestCard({ stat }: { stat: RequestStat }) {
 				return (
 					<FieldRow
 						key={f}
-						glyph={FIELD_GLYPHS[f]}
+						glyph={f === "cache" ? <CacheIcon /> : FIELD_GLYPHS[f]}
 						label={meta.label}
 						value={fieldText(stat, f) ?? MISSING}
 						description={meta.description}
@@ -217,7 +238,7 @@ export function TurnSummaryRows({
 	durationMs?: number;
 }) {
 	const totals = useMemo(() => aggregateTurnStats(stats), [stats]);
-	const rows: { label: string; value: string }[] = [];
+	const rows: { label: string; value: ReactNode }[] = [];
 	if (durationMs && durationMs > 0) {
 		rows.push({ label: "总耗时", value: formatDurationCompact(durationMs) });
 	}
@@ -236,7 +257,15 @@ export function TurnSummaryRows({
 		});
 		rows.push({
 			label: "缓存命中",
-			value: totals.cacheRead == null ? MISSING : `${FIELD_GLYPHS.cache}${formatStatTokens(totals.cacheRead)}`,
+			value:
+				totals.cacheRead == null ? (
+					MISSING
+				) : (
+					<span className="inline-flex items-center gap-0.5">
+						<CacheIcon />
+						{formatStatTokens(totals.cacheRead)}
+					</span>
+				),
 		});
 		rows.push({
 			label: "平均速度",

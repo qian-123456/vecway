@@ -23,7 +23,7 @@ export interface TurnDiffSummary {
 
 const WRITE_TOOLS = new Set(["write", "write_file"]);
 const EDIT_TOOLS = new Set(["edit", "edit_file", "ast_edit", "write", "write_file", "apply_patch"]);
-const PATH_ARG_KEYS = ["path", "file_path", "filePath", "target_file", "targetFile"] as const;
+const PATH_ARG_KEYS = ["path", "file", "file_path", "filePath", "target_file", "targetFile"] as const;
 const HASHLINE_HEADER_RE = /^\[([^\]#]+)#([0-9A-Za-z]+)\]$/;
 
 const STATUS_CHIP_STYLE: Record<TurnDiffStatus, string> = {
@@ -77,21 +77,75 @@ function extractPathsFromArgs(args: unknown): string[] {
 	return [];
 }
 
+const HUNK_HEADER_RE = /^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/;
+
+const HEADER_PREFIXES = [
+	"diff --git",
+	"index ",
+	"new file mode",
+	"deleted file mode",
+	"old mode",
+	"new mode",
+	"similarity index",
+	"rename from",
+	"rename to",
+	"Binary files",
+	"--- ",
+	"+++ ",
+	"\\ ",
+];
+
+interface HunkState {
+	inHunk: boolean;
+	oldRem: number;
+	newRem: number;
+}
+
+function advanceHunkState(state: HunkState, line: string): "reset" | "hunk_header" | "hunk_body" | "outside" {
+	if (line.startsWith("diff --git ")) {
+		state.inHunk = false;
+		state.oldRem = 0;
+		state.newRem = 0;
+		return "reset";
+	}
+	const mHunk = HUNK_HEADER_RE.exec(line);
+	if (mHunk) {
+		state.oldRem = mHunk[2] !== undefined ? Number(mHunk[2]) : 1;
+		state.newRem = mHunk[4] !== undefined ? Number(mHunk[4]) : 1;
+		state.inHunk = state.oldRem > 0 || state.newRem > 0;
+		return "hunk_header";
+	}
+	if (line.startsWith("@@")) {
+		state.inHunk = true;
+		state.oldRem = Number.POSITIVE_INFINITY;
+		state.newRem = Number.POSITIVE_INFINITY;
+		return "hunk_header";
+	}
+	if (!state.inHunk) return "outside";
+	if (!line.startsWith("\\ ")) {
+		if (line.startsWith("+")) state.newRem--;
+		else if (line.startsWith("-")) state.oldRem--;
+		else if (line.startsWith(" ") || line === "") {
+			state.oldRem--;
+			state.newRem--;
+		}
+		if (state.oldRem <= 0 && state.newRem <= 0) state.inHunk = false;
+	}
+	return "hunk_body";
+}
+
+/** Count added/removed lines while distinguishing `@@ ... @@` hunk bodies from file headers. */
 function countDiff(diff: string): { adds: number; dels: number; hasCounts: boolean } {
 	let adds = 0;
 	let dels = 0;
 	let sawDiffLine = false;
+	const state: HunkState = { inHunk: false, oldRem: 0, newRem: 0 };
+
 	for (const line of diff.split("\n")) {
-		if (
-			line.startsWith("diff --git") ||
-			line.startsWith("index ") ||
-			line.startsWith("--- ") ||
-			line.startsWith("+++ ") ||
-			line.startsWith("@@") ||
-			line.startsWith("\\ ")
-		) {
-			continue;
-		}
+		const pos = advanceHunkState(state, line);
+		if (pos === "reset" || pos === "hunk_header") continue;
+		if (pos === "outside" && HEADER_PREFIXES.some((p) => line.startsWith(p))) continue;
+		if (pos === "hunk_body" && line.startsWith("\\ ")) continue;
 		if (line.startsWith("+")) {
 			adds++;
 			sawDiffLine = true;
@@ -146,10 +200,55 @@ function splitHashlineInput(input: string): Array<{ path: string; diff: string; 
 	}));
 }
 
-function splitDiffByFile(
-	diff: string,
-	fallbackPaths: readonly string[],
-): Array<{ rawPath: string; diff: string; added: boolean; deleted: boolean }> {
+interface DiffSection {
+	rawPath: string;
+	diff: string;
+	added: boolean;
+	deleted: boolean;
+	hasHeader: boolean;
+}
+
+function stripDiffPathPrefix(raw: string, prefix: "a/" | "b/"): string {
+	const trimmed = raw.trim();
+	return trimmed.startsWith(prefix) ? trimmed.slice(prefix.length) : trimmed;
+}
+
+function splitUnifiedHeaderSections(lines: readonly string[]): DiffSection[] {
+	const headers: Array<{ start: number; rawPath: string; added: boolean; deleted: boolean }> = [];
+	const state: HunkState = { inHunk: false, oldRem: 0, newRem: 0 };
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (advanceHunkState(state, line) !== "outside") continue;
+		const next = lines[i + 1];
+		if (line.startsWith("--- ") && next?.startsWith("+++ ")) {
+			const added = line === "--- /dev/null";
+			const deleted = next === "+++ /dev/null";
+			const rawPath = !deleted
+				? stripDiffPathPrefix(next.slice(4), "b/")
+				: !added
+					? stripDiffPathPrefix(line.slice(4), "a/")
+					: "";
+			headers.push({ start: i, rawPath, added, deleted });
+			i++;
+		}
+	}
+	const out: DiffSection[] = [];
+	for (let i = 0; i < headers.length; i++) {
+		const cur = headers[i];
+		const end = i + 1 < headers.length ? headers[i + 1].start : lines.length;
+		if (!cur.rawPath) continue;
+		out.push({
+			rawPath: cur.rawPath,
+			diff: lines.slice(cur.start, end).join("\n"),
+			added: cur.added,
+			deleted: cur.deleted,
+			hasHeader: true,
+		});
+	}
+	return out;
+}
+
+function splitDiffByFile(diff: string, fallbackPaths: readonly string[]): DiffSection[] {
 	const lines = diff.split("\n");
 	const sections: Array<{ start: number; path: string | null; added: boolean; deleted: boolean }> = [];
 	for (let i = 0; i < lines.length; i++) {
@@ -166,18 +265,27 @@ function splitDiffByFile(
 		}
 	}
 	if (sections.length > 0) {
-		const out: Array<{ rawPath: string; diff: string; added: boolean; deleted: boolean }> = [];
+		const out: DiffSection[] = [];
 		for (let i = 0; i < sections.length; i++) {
 			const cur = sections[i];
 			const end = i + 1 < sections.length ? sections[i + 1].start : lines.length;
-			const rawPath = cur.path ?? fallbackPaths[i] ?? fallbackPaths[0] ?? "";
+			const rawPath = cur.path ?? (fallbackPaths.length === 1 ? fallbackPaths[0] : fallbackPaths[i] ?? "");
 			if (!rawPath) continue;
-			out.push({ rawPath, diff: lines.slice(cur.start, end).join("\n"), added: cur.added, deleted: cur.deleted });
+			out.push({
+				rawPath,
+				diff: lines.slice(cur.start, end).join("\n"),
+				added: cur.added,
+				deleted: cur.deleted,
+				hasHeader: true,
+			});
 		}
 		if (out.length > 0) return out;
 	}
-	if (fallbackPaths.length === 0) return [];
-	return [{ rawPath: fallbackPaths[0], diff, added: false, deleted: false }];
+	const unified = splitUnifiedHeaderSections(lines);
+	if (unified.length > 0) return unified;
+	// Never assign an unsectioned multi-file patch to the first file.
+	if (fallbackPaths.length !== 1) return [];
+	return [{ rawPath: fallbackPaths[0], diff, added: false, deleted: false, hasHeader: false }];
 }
 
 function looksLikePrivateDiff(text: string): boolean {
@@ -194,10 +302,26 @@ export function collectMobileTurnDiffSummary(steps: readonly Step[], cwd?: strin
 		hasCounts: boolean;
 	}
 	const byPath = new Map<string, MutableEntry>();
+	const mergeStatus = (prev: TurnDiffStatus, next: TurnDiffStatus): TurnDiffStatus => {
+		if (prev === next) return prev;
+		if (prev === "A") return next === "D" ? "D" : "A";
+		if (prev === "M") return next === "D" ? "D" : "M";
+		return "M";
+	};
+	const diffShowsExistingFile = (diff: string): boolean => {
+		for (const line of diff.split("\n")) {
+			if (line.startsWith("--- ") && line !== "--- /dev/null") return true;
+			if (/^-\d*\|/.test(line) || /^ \d*\|/.test(line)) return true;
+		}
+		return false;
+	};
 	const ensure = (rawPath: string, status: TurnDiffStatus): MutableEntry => {
 		const path = normalizeTurnFilePath(rawPath, cwd);
 		const existing = byPath.get(path);
-		if (existing) return existing;
+		if (existing) {
+			existing.status = mergeStatus(existing.status, status);
+			return existing;
+		}
 		const created: MutableEntry = { path, status, adds: 0, dels: 0, chunks: [], hasCounts: false };
 		byPath.set(path, created);
 		return created;
@@ -208,7 +332,8 @@ export function collectMobileTurnDiffSummary(steps: readonly Step[], cwd?: strin
 		const { tool } = step;
 		if (tool.status === "error" || tool.status === "running") continue;
 		const name = tool.name.toLowerCase();
-		if (!EDIT_TOOLS.has(name)) continue;
+		const toolDiff = typeof tool.diff === "string" && tool.diff.trim().length > 0 ? tool.diff : null;
+		if (!EDIT_TOOLS.has(name) && !toolDiff) continue;
 
 		const argsObj = asObj(tool.args);
 		const rawPaths = extractPathsFromArgs(tool.args);
@@ -220,31 +345,43 @@ export function collectMobileTurnDiffSummary(steps: readonly Step[], cwd?: strin
 				: typeof argsObj.diff === "string" && looksLikeDiff(argsObj.diff)
 					? argsObj.diff
 					: null;
-		const rawDiff = resultDiff ?? argPatch;
+		const rawDiff = toolDiff ?? resultDiff ?? argPatch;
 
 		if (rawDiff) {
-			const sections = splitDiffByFile(rawDiff, rawPaths.length > 0 ? rawPaths : [tool.name]);
-			const covered = new Set<string>();
-			for (const sec of sections) {
-				const st: TurnDiffStatus = sec.deleted ? "D" : sec.added || WRITE_TOOLS.has(name) ? "A" : "M";
-				const entry = ensure(sec.rawPath, st);
-				covered.add(entry.path);
-				const counts = countDiff(sec.diff);
-				entry.adds += counts.adds;
-				entry.dels += counts.dels;
-				if (counts.hasCounts) entry.hasCounts = true;
-				entry.chunks.push(sec.diff);
+			const sections = splitDiffByFile(rawDiff, rawPaths);
+			if (sections.length > 0) {
+				const covered = new Set<string>();
+				for (const sec of sections) {
+					const counts = countDiff(sec.diff);
+					const st: TurnDiffStatus = sec.deleted
+						? "D"
+						: sec.added
+							? "A"
+							: WRITE_TOOLS.has(name) && !sec.hasHeader && counts.dels === 0 && !diffShowsExistingFile(sec.diff)
+								? "A"
+								: "M";
+					const entry = ensure(sec.rawPath, st);
+					covered.add(entry.path);
+					entry.adds += counts.adds;
+					entry.dels += counts.dels;
+					if (counts.hasCounts) entry.hasCounts = true;
+					entry.chunks.push(sec.diff);
+				}
+				for (const p of rawPaths) {
+					const norm = normalizeTurnFilePath(p, cwd);
+					if (!covered.has(norm)) ensure(p, WRITE_TOOLS.has(name) ? "A" : "M");
+				}
+				continue;
 			}
-			for (const p of rawPaths) {
-				const norm = normalizeTurnFilePath(p, cwd);
-				if (!covered.has(norm)) ensure(p, WRITE_TOOLS.has(name) ? "A" : "M");
+			if (typeof argsObj.input !== "string") {
+				for (const p of rawPaths) ensure(p, WRITE_TOOLS.has(name) ? "A" : "M");
+				continue;
 			}
-			continue;
 		}
 
 		if (WRITE_TOOLS.has(name) && rawPaths.length > 0) {
 			const entry = ensure(rawPaths[0], "A");
-			if (typeof argsObj.content === "string") {
+			if (entry.status === "A" && typeof argsObj.content === "string") {
 				const synth = synthesizeAddedDiff(entry.path, argsObj.content);
 				if (synth) {
 					const counts = countDiff(synth);

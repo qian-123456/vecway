@@ -44,14 +44,25 @@ export const Thinking = memo(function Thinking({
 }) {
 	const [open, setOpen] = useState(openKeys.has(id));
 	const boxRef = useRef<HTMLDivElement>(null);
+	const stickBottomRef = useRef(true);
 	const preview = live && !open ? livePreviewText(text) : "";
 
 	useEffect(() => {
+		if (!open) {
+			stickBottomRef.current = true;
+			return;
+		}
 		const el = boxRef.current;
-		if (!el || !open || !live) return;
+		if (!el || !live || !stickBottomRef.current) return;
 		el.scrollTop = el.scrollHeight;
 	}, [open, live, text]);
 
+	const handleScroll = () => {
+		const el = boxRef.current;
+		if (!el) return;
+		const distFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
+		stickBottomRef.current = distFromBottom <= 24;
+	};
 	if (!text.trim()) return null;
 	const toggle = () => {
 		if (open) openKeys.delete(id);
@@ -91,6 +102,7 @@ export const Thinking = memo(function Thinking({
 			{open && (
 				<div
 					ref={boxRef}
+					onScroll={handleScroll}
 					className="m-selectable mt-0.5 mb-2 max-h-80 overflow-y-auto overscroll-contain break-words border-l border-m-border pl-3 text-[13px] leading-5 text-m-text-quiet"
 				>
 					<Markdown text={text} className="m-md-quiet" streaming={live} visualizeEnabled={false} />

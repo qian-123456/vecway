@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { subscribeKeyboardOpen } from "../app/viewport";
 import { useOverlay, usePresence } from "./overlay";
 
 const EXIT_MS = 180;
@@ -41,22 +42,25 @@ export interface AnchoredPopoverProps {
 
 let safeProbeEl: HTMLDivElement | null = null;
 
-/** Resolve CSS `env(safe-area-inset-top/bottom)` in pixels so floating overlays never clip under the iOS notch/status bar. */
-export function readSafeAreaInsets(): { top: number; bottom: number } {
-	if (typeof document === "undefined" || !document.body) return { top: 0, bottom: 0 };
+/** Resolve CSS `env(safe-area-inset-*)` in pixels so floating overlays never clip under the iOS notch/status bar. */
+export function readSafeAreaInsets(): { top: number; bottom: number; left: number; right: number } {
+	if (typeof document === "undefined" || !document.body) return { top: 0, bottom: 0, left: 0, right: 0 };
 	if (!safeProbeEl || !safeProbeEl.isConnected) {
 		const el = document.createElement("div");
 		el.setAttribute("aria-hidden", "true");
 		el.style.cssText =
 			"position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none;" +
-			"padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);";
+			"padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);" +
+			"padding-left:var(--m-safe-left,env(safe-area-inset-left,0px));padding-right:var(--m-safe-right,env(safe-area-inset-right,0px));";
 		document.body.appendChild(el);
 		safeProbeEl = el;
 	}
 	const cs = getComputedStyle(safeProbeEl);
 	const top = Number.parseFloat(cs.paddingTop) || 0;
 	const bottom = Number.parseFloat(cs.paddingBottom) || 0;
-	return { top, bottom };
+	const left = Number.parseFloat(cs.paddingLeft) || 0;
+	const right = Number.parseFloat(cs.paddingRight) || 0;
+	return { top, bottom, left, right };
 }
 
 function readAnchor(anchorEl?: HTMLElement | null, anchorRect?: AnchorBox | null): AnchorBox | null {
@@ -125,11 +129,22 @@ export function AnchoredPopover({
 			const vw = window.innerWidth || 390;
 			const vh = window.innerHeight || 844;
 			const safe = readSafeAreaInsets();
-			const topBound = safe.top + EDGE_PAD;
-			const bottomBound = vh - safe.bottom - EDGE_PAD;
-			const availVh = Math.max(160, bottomBound - topBound);
-			const panelW = Math.min(maxWidth, vw - EDGE_PAD * 2);
-			const measuredW = panelRef.current?.offsetWidth || panelW;
+			const rootStyle = getComputedStyle(document.documentElement);
+			const kbPx = Math.max(0, Number.parseFloat(rootStyle.getPropertyValue("--m-kb")) || 0);
+			const vv = window.visualViewport;
+			const isNativeKb = document.documentElement.dataset.kbNative === "1";
+			const vvTop = !isNativeKb && vv ? vv.offsetTop : 0;
+			const vvLeft = !isNativeKb && vv ? vv.offsetLeft : 0;
+			const vvWidth = !isNativeKb && vv ? vv.width : vw;
+			const usableBottom = !isNativeKb && vv ? vv.offsetTop + vv.height : Math.max(200, vh - kbPx);
+			const topBound = vvTop + safe.top + EDGE_PAD;
+			const bottomBound = Math.max(topBound + 120, usableBottom - (kbPx > 40 ? 0 : safe.bottom) - EDGE_PAD);
+			const availVh = Math.max(120, bottomBound - topBound);
+			const leftEdge = vvLeft + safe.left + EDGE_PAD;
+			const rightEdge = Math.max(leftEdge + 120, vvLeft + vvWidth - safe.right - EDGE_PAD);
+			const availVw = Math.max(120, rightEdge - leftEdge);
+			const panelW = Math.min(maxWidth, availVw);
+			const measuredW = Math.min(panelRef.current?.offsetWidth || panelW, availVw);
 			const measuredH = panelRef.current?.offsetHeight || 220;
 			const box = readAnchor(anchorEl, anchorRect);
 
@@ -174,12 +189,12 @@ export function AnchoredPopover({
 				} else {
 					left = box.left;
 				}
-				left = Math.max(EDGE_PAD, Math.min(left, vw - EDGE_PAD - measuredW));
+				left = Math.max(leftEdge, Math.min(left, rightEdge - measuredW));
 			} else {
 				// Fallback near top bar when no anchor was provided.
 				fromTop = !preferTop;
-				left = align === "end" ? vw - EDGE_PAD - measuredW : align === "center" ? (vw - measuredW) / 2 : EDGE_PAD;
-				left = Math.max(EDGE_PAD, Math.min(left, vw - EDGE_PAD - measuredW));
+				left = align === "end" ? rightEdge - measuredW : align === "center" ? leftEdge + (availVw - measuredW) / 2 : leftEdge;
+				left = Math.max(leftEdge, Math.min(left, rightEdge - measuredW));
 				maxHeight = Math.max(180, availVh * 0.65);
 				top = preferTop ? Math.max(topBound, bottomBound - 88 - Math.min(measuredH, maxHeight)) : topBound + 48;
 			}
@@ -196,18 +211,25 @@ export function AnchoredPopover({
 			ro = new ResizeObserver(compute);
 			ro.observe(panelRef.current);
 		}
+		const vv = window.visualViewport;
 		window.addEventListener("resize", compute);
+		vv?.addEventListener("resize", compute);
+		vv?.addEventListener("scroll", compute);
+		const unsubKb = subscribeKeyboardOpen(compute);
 		return () => {
 			cancelAnimationFrame(raf);
 			ro?.disconnect();
 			window.removeEventListener("resize", compute);
+			vv?.removeEventListener("resize", compute);
+			vv?.removeEventListener("scroll", compute);
+			unsubKb();
 		};
 	}, [mounted, open, anchorEl, anchorRect, placement, maxWidth, offset]);
 
 	if (!mounted) return null;
 
 	return createPortal(
-		<div className="fixed inset-0 z-(--z-sheet)">
+		<div aria-hidden={!open || undefined} className={`fixed inset-0 z-(--z-sheet) ${open ? "" : "pointer-events-none"}`}>
 			<div
 				aria-hidden="true"
 				onClick={onClose}
@@ -222,8 +244,8 @@ export function AnchoredPopover({
 				style={{
 					left: `${pos.left}px`,
 					top: `${pos.top}px`,
-					maxWidth: `min(${maxWidth}px, calc(100vw - ${EDGE_PAD * 2}px))`,
-					minWidth: `min(${minWidth}px, calc(100vw - ${EDGE_PAD * 2}px))`,
+					maxWidth: `min(${maxWidth}px, calc(100vw - var(--m-safe-left) - var(--m-safe-right) - ${EDGE_PAD * 2}px))`,
+					minWidth: `min(${minWidth}px, calc(100vw - var(--m-safe-left) - var(--m-safe-right) - ${EDGE_PAD * 2}px))`,
 					maxHeight: `${pos.maxHeight}px`,
 					transformOrigin: pos.origin,
 				}}

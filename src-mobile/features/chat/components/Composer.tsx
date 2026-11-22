@@ -262,8 +262,12 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 	return (
 		<div
 			ref={composerRef}
-			className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3 pt-1.5"
-			style={{ paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)" }}
+			className="relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent pt-1.5"
+			style={{
+				paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)",
+				paddingInlineStart: "calc(var(--m-safe-left) + 12px)",
+				paddingInlineEnd: "calc(var(--m-safe-right) + 12px)",
+			}}
 		>
 			{slashQuery !== null && sheet === null && <SlashPopup sessionId={sessionId} query={slashQuery} onPick={pickCommand} />}
 

@@ -11,7 +11,7 @@ const goBack = (): void => nav.back();
  */
 export function TopBar({ left, center, right, className = "" }: { left?: ReactNode; center?: ReactNode; right?: ReactNode; className?: string }) {
 	return (
-		<header className={`m-topbar-glass relative z-(--z-header) shrink-0 text-m-text ${className}`} style={{ paddingTop: "var(--m-safe-top)" }}>
+		<header className={`m-topbar-glass relative z-(--z-header) shrink-0 text-m-text ${className}`} style={{ paddingTop: "var(--m-safe-top)", paddingLeft: "var(--m-safe-left)", paddingRight: "var(--m-safe-right)" }}>
 			<div className="flex h-13 items-center gap-1.5 px-2.5">
 				{left}
 				<div className="flex min-w-0 flex-1 items-center justify-start text-left">{center}</div>
@@ -94,7 +94,7 @@ export function PageHeader({
 			className={`sticky top-0 z-(--z-header) shrink-0 bg-m-bg text-m-text after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-m-border ${
 				scrolled ?? autoScrolled ? "after:opacity-100" : "after:opacity-0"
 			} ${className}`}
-			style={{ paddingTop: "var(--m-safe-top)" }}
+			style={{ paddingTop: "var(--m-safe-top)", paddingLeft: "var(--m-safe-left)", paddingRight: "var(--m-safe-right)" }}
 		>
 			<div ref={barRef} className="relative flex h-14 items-center justify-between gap-1 px-2">
 				<div ref={leftRef} className="flex min-w-11 shrink-0 items-center">{leftNode}</div>

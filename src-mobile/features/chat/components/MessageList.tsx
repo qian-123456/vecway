@@ -33,13 +33,23 @@ const SYNTHETIC_TURN: Turn = {
 	src: [],
 };
 
-const BlockView = memo(function BlockView({ block, isLast, sessionId }: { block: Block; isLast: boolean; sessionId: string }) {
+const BlockView = memo(function BlockView({
+	block,
+	isLast,
+	isPlanHost,
+	sessionId,
+}: {
+	block: Block;
+	isLast: boolean;
+	isPlanHost: boolean;
+	sessionId: string;
+}) {
 	if (block.type === "notice") {
 		return <div className="m-turn px-5 py-3 text-center text-m-xs text-m-text-3">{block.text}</div>;
 	}
 	return (
 		<div className={isLast ? "m-turn-live" : "m-turn"}>
-			<TurnView turn={block} isLast={isLast} sessionId={sessionId} />
+			<TurnView turn={block} isLast={isLast} isPlanHost={isPlanHost} sessionId={sessionId} />
 		</div>
 	);
 });
@@ -251,6 +261,12 @@ export function MessageList({ sessionId, onPickDirectory }: { sessionId: string;
 		[blocks, visibleLimit],
 	);
 	const hidden = blocks.length - shown.length;
+	const lastTurnId = useMemo(() => {
+		for (let i = shown.length - 1; i >= 0; i--) {
+			if (shown[i].type === "turn") return shown[i].id;
+		}
+		return null;
+	}, [shown]);
 	const empty = loaded && blocks.length === 0 && optimistic.length === 0 && localOut.length === 0;
 	const lastTailKey = lastBlock
 		? `${lastBlock.id}:${lastBlock.type === "turn" ? `${lastBlock.steps.length}:${lastBlock.answer?.text.length ?? 0}` : lastBlock.text.length}`
@@ -322,7 +338,13 @@ export function MessageList({ sessionId, onPickDirectory }: { sessionId: string;
 						</div>
 					)}
 					{shown.map((b, i) => (
-						<BlockView key={b.id} block={b} isLast={!syntheticLive && i === shown.length - 1} sessionId={sessionId} />
+						<BlockView
+							key={b.id}
+							block={b}
+							isLast={!syntheticLive && i === shown.length - 1}
+							isPlanHost={b.type === "turn" && b.id === lastTurnId}
+							sessionId={sessionId}
+						/>
 					))}
 					<InterruptedView />
 					{optimistic.map((o) => (

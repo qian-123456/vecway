@@ -195,7 +195,10 @@ describe("HomePage", () => {
 		expect(screen.queryByRole("button", { name: "预览图片 2" })).toBeNull();
 
 		const sendBtn = screen.getByRole("button", { name: "发送" }) as HTMLButtonElement;
-		await waitFor(() => expect(sendBtn.disabled).toBe(false));
+		await waitFor(() => {
+			expect(screen.queryByRole("status", { name: "加载中" })).toBeNull();
+			expect(sendBtn.disabled).toBe(false);
+		});
 		await act(async () => {
 			fireEvent.click(sendBtn);
 		});

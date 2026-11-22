@@ -909,6 +909,7 @@ struct TranscriptResponse {
 
 /// Cap on tool output / tool arguments sent to the phone; the desktop keeps the full text.
 const MOBILE_TOOL_TEXT_CAP: usize = 4000;
+const MOBILE_TOOL_DIFF_CAP: usize = 16_000;
 
 fn cap_chars(s: &mut String, max: usize) {
     if let Some((idx, _)) = s.char_indices().nth(max) {
@@ -1000,7 +1001,18 @@ async fn transcript<B: Backend>(
     for item in &mut page.items {
         if let Some(r) = item.tool_result.as_mut() {
             cap_chars(&mut r.text, MOBILE_TOOL_TEXT_CAP);
-            r.details = None;
+            let diff = r
+                .details
+                .as_ref()
+                .and_then(|d| d.get("diff"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    let mut owned = s.to_string();
+                    cap_chars(&mut owned, MOBILE_TOOL_DIFF_CAP);
+                    owned
+                });
+            r.details = diff.map(|d| serde_json::json!({ "diff": d }));
         }
         for c in &mut item.tool_calls {
             let mut s = c.args.to_string();

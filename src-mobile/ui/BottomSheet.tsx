@@ -105,7 +105,7 @@ export function BottomSheet({
 		if (el) {
 			el.style.transition = "";
 			el.style.transform = "";
-			if (open && mounted) el.focus({ preventScroll: true });
+			if (open && mounted && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
 		}
 	}, [open, mounted]);
 
@@ -177,7 +177,14 @@ export function BottomSheet({
 	const handle = <div aria-hidden className="mx-auto mt-2 h-[5px] w-9 rounded-m-pill bg-m-border-strong" />;
 
 	return createPortal(
-		<div className="fixed inset-0 z-(--z-sheet)">
+		<div
+			aria-hidden={!open || undefined}
+			className={`fixed inset-x-0 z-(--z-sheet) ${open ? "" : "pointer-events-none"}`}
+			style={{
+				top: "var(--m-vv-top, 0px)",
+				height: "var(--m-vh, 100dvh)",
+			}}
+		>
 			<div
 				aria-hidden
 				onClick={onClose}
@@ -193,10 +200,11 @@ export function BottomSheet({
 				className={`m-sheet-surface absolute inset-x-0 bottom-0 flex flex-col overflow-hidden rounded-t-m-xl bg-m-bg-elev text-m-text outline-none ${visible ? "translate-y-0" : "translate-y-full"} ${className}`}
 				style={{
 					boxSizing: "border-box",
-					// --m-vh is the visual height; add keyboard inset back for this body-fixed box.
-					maxHeight: "calc(var(--m-vh, 100dvh) + var(--m-kb, 0px) - var(--m-safe-top) - 12px)",
-					height: fullHeight ? "calc(var(--m-vh, 100dvh) + var(--m-kb, 0px) - var(--m-safe-top) - 12px)" : undefined,
-					paddingBottom: "calc(var(--m-safe-bottom) + var(--m-kb, 0px))",
+					maxHeight: "calc(var(--m-vh, 100dvh) - var(--m-safe-top) - 12px)",
+					height: fullHeight ? "calc(var(--m-vh, 100dvh) - var(--m-safe-top) - 12px)" : undefined,
+					paddingBottom: "max(0px, calc(var(--m-safe-bottom) - var(--m-kb, 0px)))",
+					paddingLeft: "var(--m-safe-left)",
+					paddingRight: "var(--m-safe-right)",
 				}}
 			>
 				<div

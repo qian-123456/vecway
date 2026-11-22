@@ -1,4 +1,4 @@
-import { Bell, Check, Clock, FolderPlus, Gauge, Lightbulb, ListFilter, Search, Settings, SquarePen } from "lucide-react";
+import { Bell, Check, Clock, FolderPlus, Gauge, Lightbulb, ListFilter, Search, Settings, SquarePen, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
@@ -56,7 +56,9 @@ export function MenuSheet({
 	const [nativeStatus, setNativeStatus] = useState<NativeEndpointStatus | null>(null);
 	const [switchingLan, setSwitchingLan] = useState(false);
 	const [connOpen, setConnOpen] = useState(false);
+	const outerRef = useRef<HTMLDivElement>(null);
 	const filterRef = useRef<HTMLDivElement>(null);
+	const filterTriggerRef = useRef<HTMLButtonElement>(null);
 	const inboxSeq = useRef(0);
 	const [mobileInfo, setMobileInfo] = useState<MobileInfo>({});
 	const todos = useTodos((s) => s.todos);
@@ -65,6 +67,14 @@ export function MenuSheet({
 		nav.push(paths.chat(s.id));
 	}, [onClose]);
 	const { openActions, node } = useSessionActions(openSession);
+	const closeFilter = useCallback(() => {
+		setFilterOpen(false);
+		const trigger = filterTriggerRef.current;
+		if (trigger?.isConnected && !trigger.closest("[inert],[aria-hidden='true']")) {
+			trigger.focus({ preventScroll: true });
+		}
+	}, []);
+	useOverlay(filterOpen, closeFilter);
 	const panelRef = useRef<HTMLDivElement>(null);
 	const swipe = useRef<{ x: number; y: number; t: number; dx: number; axis: "x" | "y" | null } | null>(null);
 	const resetSwipe = useCallback(() => {
@@ -85,6 +95,13 @@ export function MenuSheet({
 		const frame = requestAnimationFrame(() => panelRef.current?.focus({ preventScroll: true }));
 		return () => cancelAnimationFrame(frame);
 	}, [open, mounted, resetSwipe]);
+
+	useEffect(() => {
+		const el = outerRef.current;
+		if (!el) return;
+		if (open) el.removeAttribute("inert");
+		else el.setAttribute("inert", "");
+	}, [open, mounted]);
 
 	useEffect(() => {
 		if (!filterOpen) return;
@@ -187,7 +204,8 @@ export function MenuSheet({
 
 	const onTouchStart = (e: ReactTouchEvent) => {
 		resetSwipe();
-		if (e.target instanceof Element && e.target.closest("[data-session-row]")) return;
+		if (!open || filterOpen) return;
+		if (e.target instanceof Element && (e.target.closest("[data-session-row]") || e.target.closest("[role='menu']"))) return;
 		const p = e.touches[0];
 		if (!p || e.touches.length !== 1) return;
 		swipe.current = { x: p.clientX, y: p.clientY, t: e.timeStamp, dx: 0, axis: null };
@@ -241,7 +259,7 @@ export function MenuSheet({
 	};
 
 	return createPortal(
-		<div className="fixed inset-0 z-(--z-sheet)">
+		<div ref={outerRef} aria-hidden={!open || undefined} className={`fixed inset-0 z-(--z-sheet) ${open ? "" : "pointer-events-none"}`}>
 			<div
 				aria-hidden="true"
 				onClick={onClose}
@@ -258,10 +276,10 @@ export function MenuSheet({
 				onTouchMove={onTouchMove}
 				onTouchEnd={onTouchEnd}
 				onTouchCancel={resetSwipe}
-				className={`absolute inset-y-0 left-0 flex w-[85vw] max-w-[340px] touch-pan-y flex-col border-r border-m-border/80 bg-m-drawer-bg/92 text-m-text shadow-m-pop backdrop-blur-2xl backdrop-saturate-150 outline-none transition-transform duration-300 ease-m-sheet ${
+				className={`m-sheet-surface absolute inset-y-0 left-0 flex w-[85vw] max-w-[340px] touch-pan-y flex-col border-r border-m-border/80 bg-m-drawer-bg text-m-text shadow-m-pop backdrop-blur-2xl backdrop-saturate-150 outline-none transition-transform duration-300 ease-m-sheet ${
 					visible ? "translate-x-0" : "-translate-x-full"
 				}`}
-				style={{ paddingTop: "var(--m-safe-top)", paddingBottom: "calc(var(--m-safe-bottom) + 6px)" }}
+				style={{ paddingTop: "var(--m-safe-top)", paddingBottom: "calc(var(--m-safe-bottom) + 6px)", paddingLeft: "var(--m-safe-left)" }}
 			>
 				<header className="flex h-13 shrink-0 items-center justify-between gap-2 border-b border-m-border/60 px-3">
 					<ModeSwitch />
@@ -276,6 +294,7 @@ export function MenuSheet({
 							label={badge > 0 ? `收件箱，${badge} 项待处理` : "收件箱"}
 							onClick={() => go(paths.inbox())}
 						/>
+						<IconButton variant="plain" size="sm" className="m-press" icon={<X size={18} strokeWidth={1.75} />} label="关闭导航" onClick={onClose} />
 					</div>
 				</header>
 
@@ -315,6 +334,7 @@ export function MenuSheet({
 					</span>
 					<div className="flex shrink-0 items-center gap-1">
 						<button
+							ref={filterTriggerRef}
 							type="button"
 							aria-label="切换视图"
 							aria-haspopup="menu"
@@ -356,7 +376,7 @@ export function MenuSheet({
 								aria-checked={viewMode === "project"}
 								onClick={() => {
 									setViewMode("project");
-									setFilterOpen(false);
+									closeFilter();
 								}}
 								className={`m-press flex min-h-9 w-full items-center justify-between rounded-m-md px-2.5 text-left text-m-xs whitespace-nowrap transition-colors duration-(--m-dur-fast) ease-m ${
 									viewMode === "project" ? "bg-m-drawer-active font-medium text-m-accent" : "text-m-text-2 active:bg-m-surface-hover"
@@ -371,7 +391,7 @@ export function MenuSheet({
 								aria-checked={viewMode === "time"}
 								onClick={() => {
 									setViewMode("time");
-									setFilterOpen(false);
+									closeFilter();
 								}}
 								className={`m-press flex min-h-9 w-full items-center justify-between rounded-m-md px-2.5 text-left text-m-xs whitespace-nowrap transition-colors duration-(--m-dur-fast) ease-m ${
 									viewMode === "time" ? "bg-m-drawer-active font-medium text-m-accent" : "text-m-text-2 active:bg-m-surface-hover"

@@ -1,4 +1,5 @@
 import {
+	AlertTriangle,
 	ArrowLeft,
 	Check,
 	ChevronDown,
@@ -7,11 +8,14 @@ import {
 	FileDiff,
 	GitBranch,
 	GitCommitHorizontal,
+	MinusCircle,
 	MoreHorizontal,
+	PlusCircle,
 	RefreshCw,
+	RotateCcw,
 	Sparkles,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../core/api";
 import { copyText, relTime } from "../../core/lib/format";
 import { nav, paths, type PageProps } from "../../core/nav";
@@ -29,6 +33,7 @@ import {
 	PageHeader,
 	PullToRefresh,
 	Segmented,
+	confirm,
 	inputCls,
 	toast,
 } from "../../ui";
@@ -41,6 +46,7 @@ interface GitStatus {
 	isRepo: boolean;
 	branch: string | null;
 	files: GitFile[];
+	truncated?: boolean;
 }
 interface Commit {
 	sha: string;
@@ -92,20 +98,22 @@ const STATUS_LABEL: Record<string, string> = {
 export function GitPanel({
 	sessionId,
 	embedded = false,
+	active = true,
 	visible = true,
 }: {
 	sessionId: string;
 	embedded?: boolean;
+	active?: boolean;
 	visible?: boolean;
 }) {
+	const isActive = active && visible;
 	const draft = isDraftId(sessionId);
 	const base = `/sessions/${q(sessionId)}/git`;
 	const [tab, setTab] = useState<Tab>("status");
 	const [diff, setDiff] = useState<DiffTarget | null>(null);
 	const [refreshNonce, setRefreshNonce] = useState(0);
 	const closeDiff = () => setDiff(null);
-	useLayer(diff !== null, closeDiff);
-
+	useLayer(isActive && diff !== null, closeDiff);
 	if (draft) {
 		const empty = <EmptyState icon={<GitBranch size={22} strokeWidth={1.75} />} title="当前为新草稿" hint="发送第一条消息后可查看仓库改动" />;
 		return embedded ? (
@@ -128,7 +136,8 @@ export function GitPanel({
 					sessionId={sessionId}
 					base={base}
 					embedded={embedded}
-					visible={visible && tab === "status" && diff === null}
+					active={isActive}
+					visible={isActive && tab === "status" && diff === null}
 					refreshNonce={refreshNonce}
 					onCommitted={() => setRefreshNonce((n) => n + 1)}
 					onDiff={setDiff}
@@ -137,7 +146,7 @@ export function GitPanel({
 			<div className={tab === "log" ? "flex min-h-0 flex-1 flex-col" : "hidden"} aria-hidden={tab !== "log"}>
 				<LogTab
 					base={base}
-					visible={visible && tab === "log" && diff === null}
+					visible={isActive && tab === "log" && diff === null}
 					refreshNonce={refreshNonce}
 					onRefreshAll={() => setRefreshNonce((n) => n + 1)}
 					onDiff={setDiff}
@@ -233,7 +242,13 @@ function DiffOverlay({
 					<ArrowLeft size={18} />
 					<span>{target.kind === "file" ? "改动差异" : "提交详情"}</span>
 				</button>
-				<Button variant="tonal" size="sm" icon={<Sparkles size={14} strokeWidth={1.85} />} onClick={sendAiPrompt}>
+				<Button
+					variant="tonal"
+					size="sm"
+					icon={<Sparkles size={14} strokeWidth={1.85} />}
+					disabled={state.loading || state.error !== null}
+					onClick={sendAiPrompt}
+				>
 					{target.kind === "file" ? "让 AI 修改" : "针对这次提交问 AI"}
 				</Button>
 			</div>
@@ -277,7 +292,13 @@ function DiffOverlay({
 				<Button variant="tonal" size="sm" icon={<Copy size={14} strokeWidth={1.75} />} onClick={copyTarget}>
 					{target.kind === "file" ? "复制路径" : "复制 SHA"}
 				</Button>
-				<Button variant="primary" size="sm" icon={<Sparkles size={14} strokeWidth={1.85} />} onClick={sendAiPrompt}>
+				<Button
+					variant="primary"
+					size="sm"
+					icon={<Sparkles size={14} strokeWidth={1.85} />}
+					disabled={state.loading || state.error !== null}
+					onClick={sendAiPrompt}
+				>
 					发给主对话
 				</Button>
 			</div>
@@ -305,9 +326,17 @@ function usePreservedScroll(visible: boolean) {
 	return scrollerRef;
 }
 
+type GitOp =
+	| { kind: "idle" }
+	| { kind: "suggesting"; seq: number }
+	| { kind: "aiSaving"; seq: number }
+	| { kind: "committing"; seq: number }
+	| { kind: "fileOp"; seq: number; path: string };
+
 function StatusTab({
 	sessionId,
 	base,
+	active,
 	visible,
 	embedded,
 	refreshNonce,
@@ -316,26 +345,44 @@ function StatusTab({
 }: {
 	sessionId: string;
 	base: string;
+	active: boolean;
 	visible: boolean;
 	embedded: boolean;
 	refreshNonce: number;
 	onCommitted: () => void;
 	onDiff: (t: DiffTarget) => void;
 }) {
-	const state = useLoad((signal) => api<GitStatus>("GET", `${base}/status`, undefined, { signal }), [base, refreshNonce]);
+	const state = useLoad((signal) => api<GitStatus>("GET", `${base}/status`, undefined, { signal }), [base]);
+	const prevRefreshNonce = useRef(refreshNonce);
+	useEffect(() => {
+		if (refreshNonce === prevRefreshNonce.current) return;
+		prevRefreshNonce.current = refreshNonce;
+		void state.reload(true);
+	}, [refreshNonce, state.reload]);
 	const scrollerRef = usePreservedScroll(visible);
 
 	const [commitOpen, setCommitOpen] = useState(false);
 	const [manualOpen, setManualOpen] = useState(false);
 	const [message, setMessage] = useState("");
-	const [suggesting, setSuggesting] = useState(false);
-	const [aiSaving, setAiSaving] = useState(false);
-	const [committing, setCommitting] = useState(false);
+	const [op, setOpState] = useState<GitOp>({ kind: "idle" });
+	const opRef = useRef<GitOp>({ kind: "idle" });
+	const opSeq = useRef(0);
+	const userEditedRef = useRef(false);
 	const [commitError, setCommitError] = useState<string | null>(null);
 	const [actionFile, setActionFile] = useState<GitFile | null>(null);
-	const suggestSeq = useRef(0);
 	const files = Array.isArray(state.data?.files) ? state.data.files : [];
-	const busy = suggesting || aiSaving || committing;
+	const setOp = (next: GitOp) => {
+		opRef.current = next;
+		setOpState(next);
+	};
+	const isCurrentOp = (kind: Exclude<GitOp["kind"], "idle">, seq: number) =>
+		opRef.current.kind === kind && opRef.current.seq === seq;
+
+	const suggesting = op.kind === "suggesting";
+	const aiSaving = op.kind === "aiSaving";
+	const committing = op.kind === "committing";
+	const fileOperating = op.kind === "fileOp";
+	const busy = op.kind !== "idle";
 
 	const stageAndCommit = async (msg: string) => {
 		const pendingPaths = files.filter((f) => f.unstaged || f.status === "??").map((f) => f.path);
@@ -346,35 +393,44 @@ function StatusTab({
 		setCommitOpen(false);
 		setManualOpen(false);
 		setMessage("");
-		toast("已提交全部改动", { kind: "success" });
+		userEditedRef.current = false;
+		toast(state.data?.truncated ? "已提交当前列表内改动" : "已提交全部改动", { kind: "success" });
 		await state.reload(true);
 		onCommitted();
 	};
 
 	const generateSuggestion = async () => {
-		const mine = ++suggestSeq.current;
-		setSuggesting(true);
+		if (opRef.current.kind === "aiSaving" || opRef.current.kind === "committing" || opRef.current.kind === "fileOp") return;
+		const mine = ++opSeq.current;
+		userEditedRef.current = false;
+		setOp({ kind: "suggesting", seq: mine });
 		setCommitError(null);
 		try {
 			const text = await gitCommitSuggest(base);
-			if (mine !== suggestSeq.current) return;
-			if (text) setMessage(text);
-			else toast("没能生成提交说明，可手动填写", { kind: "info" });
+			if (!isCurrentOp("suggesting", mine)) return;
+			if (!userEditedRef.current) {
+				if (text) setMessage(text);
+				else toast("没能生成提交说明，可手动填写", { kind: "info" });
+			}
 		} catch (e) {
-			if (mine === suggestSeq.current) setCommitError(`AI 生成失败：${errorMessage(e)}`);
+			if (isCurrentOp("suggesting", mine)) {
+				setCommitError(`AI 生成失败：${errorMessage(e)}`);
+			}
 		} finally {
-			if (mine === suggestSeq.current) setSuggesting(false);
+			if (isCurrentOp("suggesting", mine)) {
+				setOp({ kind: "idle" });
+			}
 		}
 	};
 
 	const saveWithAi = async () => {
-		if (busy) return;
-		const mine = ++suggestSeq.current;
-		setAiSaving(true);
+		if (opRef.current.kind !== "idle") return;
+		const mine = ++opSeq.current;
+		setOp({ kind: "aiSaving", seq: mine });
 		setCommitError(null);
 		try {
 			const suggested = (await gitCommitSuggest(base)).trim();
-			if (mine !== suggestSeq.current) return;
+			if (!isCurrentOp("aiSaving", mine)) return;
 			if (!suggested) {
 				setManualOpen(true);
 				toast("没能生成提交说明，可手动填写", { kind: "info" });
@@ -382,35 +438,82 @@ function StatusTab({
 			}
 			await stageAndCommit(suggested);
 		} catch (e) {
-			if (mine === suggestSeq.current) {
+			if (isCurrentOp("aiSaving", mine)) {
 				setCommitError(errorMessage(e));
 				setManualOpen(true);
 			}
 		} finally {
-			if (mine === suggestSeq.current) setAiSaving(false);
+			if (isCurrentOp("aiSaving", mine)) {
+				setOp({ kind: "idle" });
+			}
 		}
 	};
 
 	const openCommitModal = () => {
+		if (opRef.current.kind === "aiSaving" || opRef.current.kind === "committing" || opRef.current.kind === "fileOp") return;
 		setManualOpen(false);
 		setCommitOpen(true);
 		setCommitError(null);
 		setMessage("");
+		userEditedRef.current = false;
 		void generateSuggestion();
+	};
+
+	const closeCommitModal = () => {
+		if (opRef.current.kind === "committing") return;
+		opSeq.current++;
+		if (opRef.current.kind === "suggesting") setOp({ kind: "idle" });
+		setCommitOpen(false);
 	};
 
 	const commitAll = async () => {
 		const msg = message.trim();
-		if (!msg || committing || aiSaving) return;
-		setCommitting(true);
+		if (!msg || opRef.current.kind === "committing" || opRef.current.kind === "aiSaving" || opRef.current.kind === "fileOp") return;
+		const mine = ++opSeq.current;
+		setOp({ kind: "committing", seq: mine });
 		setCommitError(null);
 		try {
 			await stageAndCommit(msg);
 		} catch (e) {
-			setCommitError(errorMessage(e));
+			if (isCurrentOp("committing", mine)) setCommitError(errorMessage(e));
 		} finally {
-			setCommitting(false);
+			if (isCurrentOp("committing", mine)) setOp({ kind: "idle" });
 		}
+	};
+
+	const runFileOp = async (f: GitFile, fn: () => Promise<void>, okText: string) => {
+		if (opRef.current.kind !== "idle") return;
+		const mine = ++opSeq.current;
+		setOp({ kind: "fileOp", seq: mine, path: f.path });
+		try {
+			await fn();
+			toast(okText, { kind: "success" });
+			await state.reload(true);
+			onCommitted();
+		} catch (e) {
+			toast(`操作失败：${errorMessage(e)}`, { kind: "error" });
+		} finally {
+			if (isCurrentOp("fileOp", mine)) setOp({ kind: "idle" });
+		}
+	};
+
+	const discardFile = async (f: GitFile) => {
+		const isUntracked = f.status === "??";
+		setActionFile(null);
+		const ok = await confirm({
+			title: isUntracked ? "删除未跟踪文件" : "丢弃工作区改动",
+			message: isUntracked
+				? `确定删除未跟踪文件 ${f.path}？此操作不可撤销。`
+				: `确定丢弃 ${f.path} 的未暂存改动？此操作不可撤销。`,
+			confirmText: isUntracked ? "删除" : "丢弃",
+			danger: true,
+		});
+		if (!ok) return;
+		await runFileOp(
+			f,
+			() => api("POST", `${base}/discard`, { path: f.path, untracked: isUntracked }),
+			isUntracked ? "已删除未跟踪文件" : "已丢弃改动",
+		);
 	};
 
 	const openFileDiff = (f: GitFile) => {
@@ -445,7 +548,7 @@ function StatusTab({
 						}
 						const stFiles = Array.isArray(st.files) ? st.files : [];
 						return (
-							<div className="pb-6">
+							<div className="pb-[calc(var(--m-safe-bottom)+5.5rem)]">
 								<div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-2.5">
 									<div className="flex min-w-0 flex-wrap items-center gap-2">
 										<Chip tone="accent">
@@ -453,23 +556,32 @@ function StatusTab({
 											<span className="max-w-[160px] truncate">{st.branch ?? "游离 HEAD"}</span>
 										</Chip>
 										<span className="text-m-xs whitespace-nowrap text-m-text-3">
-											{stFiles.length > 0 ? `${stFiles.length} 个改动` : "工作区干净"}
+											{stFiles.length > 0 ? `${stFiles.length}${st.truncated ? "+" : ""} 个改动` : "工作区干净"}
 										</span>
 									</div>
 									{stFiles.length > 0 && (
-										<Button variant="tonal" size="sm" onClick={openCommitModal}>
+										<Button variant="tonal" size="sm" disabled={aiSaving || committing || fileOperating} onClick={openCommitModal}>
 											提交全部改动
 										</Button>
 									)}
 								</div>
 
+								{st.truncated && (
+									<div
+										role="status"
+										className="mx-4 mb-3 flex items-start gap-2 rounded-m-md bg-m-warn-bg px-3 py-2 text-m-xs text-m-warn"
+									>
+										<AlertTriangle size={15} className="mt-0.5 shrink-0" />
+										<span>改动文件超过 1000 个，列表已截断；暂存与提交操作仅覆盖当前显示范围内的文件。</span>
+									</div>
+								)}
 								{stFiles.length > 0 && (
 									<div className="mx-4 mb-3 space-y-2.5 rounded-m-lg border border-m-border bg-m-card p-3.5">
 										<Button
 											variant="primary"
 											icon={<Sparkles size={15} strokeWidth={1.85} />}
 											busy={aiSaving}
-											disabled={committing || suggesting}
+											disabled={committing || suggesting || fileOperating}
 											onClick={() => void saveWithAi()}
 											className="w-full"
 										>
@@ -489,14 +601,17 @@ function StatusTab({
 												<span>自填提交说明</span>
 											</button>
 											<span className="text-m-xs whitespace-nowrap text-m-text-3">
-												共 {stFiles.length} 个文件
+												共 {stFiles.length}{st.truncated ? "+" : ""} 个文件
 											</span>
 										</div>
 										{manualOpen && !commitOpen && (
 											<div className="space-y-2.5 pt-0.5">
 												<textarea
 													value={message}
-													onChange={(e) => setMessage(e.target.value)}
+													onChange={(e) => {
+														userEditedRef.current = true;
+														setMessage(e.target.value);
+													}}
 													rows={3}
 													aria-label="提交说明"
 													placeholder="输入或编辑提交说明"
@@ -509,7 +624,7 @@ function StatusTab({
 														size="sm"
 														icon={<Sparkles size={14} strokeWidth={1.85} />}
 														busy={suggesting}
-														disabled={committing || aiSaving}
+														disabled={committing || aiSaving || fileOperating}
 														onClick={() => void generateSuggestion()}
 													>
 														生成说明
@@ -518,7 +633,7 @@ function StatusTab({
 														variant="primary"
 														size="sm"
 														busy={committing}
-														disabled={suggesting || aiSaving || !message.trim()}
+														disabled={aiSaving || fileOperating || !message.trim()}
 														onClick={() => void commitAll()}
 													>
 														提交改动
@@ -553,7 +668,16 @@ function StatusTab({
 															</Chip>
 															<span className="min-w-0 flex-1">
 																<span className="block text-m-md font-medium break-all text-m-text">{name}</span>
-																{dir && <span className="mt-0.5 block text-m-xs break-all text-m-text-3">{dir}</span>}
+																{(dir || f.staged) && (
+																	<span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-m-xs text-m-text-3">
+																		{f.staged && (
+																			<span className="rounded-sm bg-m-accent-soft/60 px-1.5 py-0.2 text-[11px] font-medium text-m-accent-soft-text">
+																				{f.unstaged ? "部分暂存" : "已暂存"}
+																			</span>
+																		)}
+																		{dir && <span className="break-all">{dir}</span>}
+																	</span>
+																)}
 															</span>
 														</button>
 														<button
@@ -577,7 +701,7 @@ function StatusTab({
 			</PullToRefresh>
 
 			<BottomSheet
-				open={actionFile !== null}
+				open={active && actionFile !== null}
 				onClose={() => setActionFile(null)}
 				title={actionInfo?.name}
 				subtitle={actionInfo ? actionInfo.dir || actionFile?.path : undefined}
@@ -599,6 +723,47 @@ function StatusTab({
 								openFileDiff(targetFile);
 							}}
 						/>
+						{(actionFile.unstaged || actionFile.status === "??") && (
+							<MenuRow
+								icon={<PlusCircle size={19} strokeWidth={1.75} />}
+								label="暂存此文件"
+								disabled={busy}
+								onClick={() => {
+									const targetFile = actionFile;
+									setActionFile(null);
+									void runFileOp(
+										targetFile,
+										() => api("POST", `${base}/stage`, { paths: [targetFile.path] }),
+										"已暂存文件",
+									);
+								}}
+							/>
+						)}
+						{actionFile.staged && (
+							<MenuRow
+								icon={<MinusCircle size={19} strokeWidth={1.75} />}
+								label="取消暂存"
+								disabled={busy}
+								onClick={() => {
+									const targetFile = actionFile;
+									setActionFile(null);
+									void runFileOp(
+										targetFile,
+										() => api("POST", `${base}/unstage`, { paths: [targetFile.path] }),
+										"已取消暂存",
+									);
+								}}
+							/>
+						)}
+						{(actionFile.unstaged || actionFile.status === "??") && (
+							<MenuRow
+								icon={<RotateCcw size={19} strokeWidth={1.75} />}
+								label={actionFile.status === "??" ? "删除未跟踪文件" : "丢弃工作区改动"}
+								danger
+								disabled={busy}
+								onClick={() => void discardFile(actionFile)}
+							/>
+						)}
 						<MenuRow
 							icon={<Copy size={19} strokeWidth={1.75} />}
 							label="复制文件路径"
@@ -616,30 +781,18 @@ function StatusTab({
 			</BottomSheet>
 
 			<Dialog
-				open={commitOpen}
-				onClose={() => {
-					if (!committing) {
-						suggestSeq.current++;
-						setCommitOpen(false);
-					}
-				}}
+				open={active && commitOpen}
+				onClose={closeCommitModal}
 				title="提交全部改动"
 				actions={
 					<div className="flex justify-end gap-2">
-						<Button
-							variant="ghost"
-							disabled={committing}
-							onClick={() => {
-								suggestSeq.current++;
-								setCommitOpen(false);
-							}}
-						>
+						<Button variant="ghost" disabled={committing} onClick={closeCommitModal}>
 							取消
 						</Button>
 						<Button
 							variant="primary"
 							busy={committing}
-							disabled={suggesting || !message.trim()}
+							disabled={aiSaving || fileOperating || !message.trim()}
 							onClick={() => void commitAll()}
 						>
 							确认提交
@@ -649,13 +802,15 @@ function StatusTab({
 			>
 				<div className="space-y-3">
 					<div className="flex items-center justify-between gap-2">
-						<span className="text-m-xs text-m-text-3">将暂存并提交全部 {files.length} 个改动文件</span>
+						<span className="text-m-xs text-m-text-3">
+							将暂存并提交全部 {files.length}{state.data?.truncated ? "+" : ""} 个改动文件
+						</span>
 						<Button
 							variant="tonal"
 							size="sm"
 							icon={<Sparkles size={14} strokeWidth={1.85} />}
 							busy={suggesting}
-							disabled={committing}
+							disabled={committing || aiSaving || fileOperating}
 							onClick={() => void generateSuggestion()}
 						>
 							重新生成
@@ -666,7 +821,10 @@ function StatusTab({
 					)}
 					<textarea
 						value={message}
-						onChange={(e) => setMessage(e.target.value)}
+						onChange={(e) => {
+							userEditedRef.current = true;
+							setMessage(e.target.value);
+						}}
 						rows={4}
 						aria-label="提交说明"
 						placeholder="输入或编辑提交说明"
@@ -699,33 +857,44 @@ function LogTab({
 }) {
 	const state = useLoad((signal) => api<Commit[] | { commits?: Commit[] }>("GET", `${base}/log?limit=50`, undefined, { signal }), [base, refreshNonce]);
 	const [branchOpen, setBranchOpen] = useState(false);
+	const [showAllBranches, setShowAllBranches] = useState(false);
 	const [branches, setBranches] = useState<BranchInfo[] | null>(null);
 	const [branchLoading, setBranchLoading] = useState(false);
 	const [branchError, setBranchError] = useState<string | null>(null);
+	const branchSeq = useRef(0);
 	const scrollerRef = usePreservedScroll(visible);
 
-	const loadBranches = async () => {
+	const loadBranches = useCallback(async () => {
+		const mine = ++branchSeq.current;
 		setBranchLoading(true);
 		setBranchError(null);
 		try {
 			const list = await api<BranchInfo[] | { branches?: BranchInfo[] }>("GET", `${base}/branches`);
+			if (mine !== branchSeq.current) return;
 			setBranches(Array.isArray(list) ? list : Array.isArray(list?.branches) ? list.branches : []);
 		} catch (e) {
+			if (mine !== branchSeq.current) return;
 			setBranchError(errorMessage(e));
 		} finally {
-			setBranchLoading(false);
+			if (mine === branchSeq.current) setBranchLoading(false);
 		}
-	};
+	}, [base]);
 
 	useEffect(() => {
 		if (branchOpen) void loadBranches();
-	}, [branchOpen, refreshNonce]);
+	}, [branchOpen, refreshNonce, loadBranches]);
 
 	return (
-		<PullToRefresh ref={scrollerRef} onRefresh={() => state.reload(true)}>
+		<PullToRefresh
+			ref={scrollerRef}
+			onRefresh={() =>
+				Promise.all([state.reload(true), branchOpen ? loadBranches() : Promise.resolve()]).then(() => {})
+			}
+		>
 			<LoadGate state={state}>
 				{(raw) => {
 					const cs = Array.isArray(raw) ? raw : Array.isArray(raw?.commits) ? raw.commits : [];
+					const visibleBranches = branches ? (showAllBranches ? branches : branches.slice(0, 12)) : [];
 					return (
 						<div className="space-y-4 pt-2" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 24px)" }}>
 							{cs.length === 0 ? (
@@ -777,7 +946,7 @@ function LogTab({
 									{branchLoading && !branches && <Loading label="读取分支中" />}
 									{branches && (
 										<div className="space-y-2">
-											{branches.slice(0, 12).map((b) => (
+											{visibleBranches.map((b) => (
 												<div
 													key={`${b.isRemote ? "r" : "l"}:${b.name}`}
 													className={`rounded-m-md border px-3 py-2 ${
@@ -801,6 +970,16 @@ function LogTab({
 													)}
 												</div>
 											))}
+											{branches.length > 12 && (
+												<Button
+													variant="ghost"
+													size="sm"
+													className="w-full"
+													onClick={() => setShowAllBranches((v) => !v)}
+												>
+													{showAllBranches ? "收起分支列表" : `展开全部 ${branches.length} 个分支`}
+												</Button>
+											)}
 										</div>
 									)}
 								</div>

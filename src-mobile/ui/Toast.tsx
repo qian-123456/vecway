@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { CircleAlert, CircleCheck } from "lucide-react";
 import { errorMessage } from "../core/api";
 
@@ -59,11 +60,17 @@ async function runAction(id: number): Promise<void> {
 
 export function ToastHost() {
 	const list = useSyncExternalStore(subscribe, getItems, getItems);
-	return (
+	const node = (
 		<div
 			aria-live="polite"
-			className="pointer-events-none fixed inset-x-0 z-(--z-toast) flex flex-col items-center gap-2 px-4"
-			style={{ bottom: "calc(var(--m-safe-bottom) + var(--m-kb, 0px) + 88px)" }}
+			className="pointer-events-none fixed inset-x-0 z-(--z-toast) flex flex-col items-center justify-end gap-2 px-4"
+			style={{
+				top: "var(--m-vv-top, 0px)",
+				height: "var(--m-vh, 100dvh)",
+				paddingLeft: "max(16px, var(--m-safe-left))",
+				paddingRight: "max(16px, var(--m-safe-right))",
+				paddingBottom: "calc(max(0px, var(--m-safe-bottom) - var(--m-kb, 0px)) + 88px)",
+			}}
 		>
 			{list.map((t) => (
 				<div
@@ -90,4 +97,5 @@ export function ToastHost() {
 			))}
 		</div>
 	);
+	return typeof document !== "undefined" ? createPortal(node, document.body) : node;
 }

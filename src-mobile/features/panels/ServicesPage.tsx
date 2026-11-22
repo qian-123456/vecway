@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, ExternalLink, Server } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Server } from "lucide-react";
 import { useMemo, useState } from "react";
 import { api, errorMessage } from "../../core/api";
 import { copyText, sessionName } from "../../core/lib/format";
@@ -40,7 +40,7 @@ function isSessionOwned(s: ServiceInfo, sessionId: string, sessionCwd?: string |
 	return s.startedByApp && (!sessionCwd || !s.cwd || pathMatches(s.cwd, sessionCwd));
 }
 
-export function ServicesPanel({ sessionId, embedded = false }: { sessionId: string; embedded?: boolean }) {
+export function ServicesPanel({ sessionId, embedded = false, active: _active = true }: { sessionId: string; embedded?: boolean; active?: boolean }) {
 	const [diagOpen, setDiagOpen] = useState(false);
 	const [stopping, setStopping] = useState<number | null>(null);
 	const session = useSession(sessionId);
@@ -128,11 +128,13 @@ export function ServicesPanel({ sessionId, embedded = false }: { sessionId: stri
 											<div className="flex flex-wrap items-center gap-2 text-m-xs text-m-text-2">
 												<button
 													type="button"
-													onClick={() => void copyText(addr).then((ok) => ok && toast("已复制地址", { kind: "success" }))}
-													className="inline-flex min-h-8 items-center gap-1 rounded-m-pill bg-m-surface px-2.5 font-m-mono text-m-xs text-m-accent active:bg-m-surface-2"
+													aria-label={`复制本机地址 ${addr}`}
+													onClick={() => void copyText(addr).then((ok) => ok && toast("已复制本机地址", { kind: "success" }))}
+													className="inline-flex min-h-8 items-center gap-1.5 rounded-m-pill bg-m-surface px-2.5 text-m-xs text-m-accent active:bg-m-surface-2"
 												>
-													<ExternalLink size={12} />
-													{addr}
+													<Copy size={12} aria-hidden />
+													<span className="font-medium whitespace-nowrap">复制本机地址</span>
+													<span className="font-m-mono text-m-text-2">{addr}</span>
 												</button>
 												{s.memoryKb ? <span className="whitespace-nowrap text-m-text-3">{Math.round(s.memoryKb / 1024)} MB</span> : null}
 												{owner && <span className="truncate text-m-text-3">来自：{owner}</span>}

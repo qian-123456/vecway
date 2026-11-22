@@ -37,6 +37,8 @@ export interface DrawerTabHeader {
 
 interface RightDrawerState {
 	open: boolean;
+	/** Monotonic counter incremented on every open/close/reset to cancel stale lazy-resolve completions. */
+	openSeq: number;
 	sessionId: string | null;
 	/** Remembers the last active workspace tab per session so reopening returns in 1 tap. */
 	tabBySession: Record<string, WorkspaceTab>;
@@ -53,6 +55,8 @@ interface RightDrawerState {
 	closeDrawer: () => void;
 	toggleDrawer: (sessionId: string) => void;
 	setTab: (sessionId: string, tab: WorkspaceTab) => void;
+	bindResolvedSession: (sessionId: string) => void;
+	clearActiveContext: () => void;
 	openSidechatWithAnnotation: (sessionId: string, payload: SidechatAnnotationPayload) => void;
 	consumeSidechatAnnotation: (sessionId: string) => SidechatAnnotationPayload | null;
 	sendToMainChat: (sessionId: string, payload: MainAnnotationPayload) => void;
@@ -75,6 +79,7 @@ export function tabHeaderKey(sessionId: string, tab: WorkspaceTab): string {
 
 export const useRightDrawer = create<RightDrawerState>((set, get) => ({
 	open: false,
+	openSeq: 0,
 	sessionId: null,
 	tabBySession: {},
 	visitedBySession: {},
@@ -84,27 +89,33 @@ export const useRightDrawer = create<RightDrawerState>((set, get) => ({
 
 	openDrawer: (sessionId, tab) => {
 		set((s) => {
-			const nextTab = tab ?? s.tabBySession[sessionId] ?? "git";
+			const targetId = sessionId || s.sessionId || "";
+			const nextTab = tab ?? s.tabBySession[targetId] ?? s.tabBySession[sessionId] ?? "git";
+			const nextTabs = { ...s.tabBySession, [targetId]: nextTab };
 			return {
 				open: true,
-				sessionId,
-				tabBySession: { ...s.tabBySession, [sessionId]: nextTab },
-				visitedBySession: {
-					...s.visitedBySession,
-					[sessionId]: addVisited(s.visitedBySession[sessionId], nextTab),
-				},
+				openSeq: (s.openSeq ?? 0) + 1,
+				sessionId: targetId,
+				tabBySession: nextTabs,
+				visitedBySession: targetId
+					? {
+							...s.visitedBySession,
+							[targetId]: addVisited(s.visitedBySession[targetId], nextTab),
+						}
+					: s.visitedBySession,
 			};
 		});
 	},
 
-	closeDrawer: () => set({ open: false }),
+	closeDrawer: () => set((s) => ({ open: false, openSeq: (s.openSeq ?? 0) + 1 })),
 
 	toggleDrawer: (sessionId) => {
 		const s = get();
-		if (s.open && s.sessionId === sessionId) {
-			set({ open: false });
+		const targetId = sessionId || s.sessionId || "";
+		if (s.open && (s.sessionId ?? "") === targetId) {
+			set({ open: false, openSeq: (s.openSeq ?? 0) + 1 });
 		} else {
-			s.openDrawer(sessionId);
+			s.openDrawer(targetId);
 		}
 	},
 
@@ -118,10 +129,29 @@ export const useRightDrawer = create<RightDrawerState>((set, get) => ({
 		}));
 	},
 
+	bindResolvedSession: (sessionId) => {
+		if (!sessionId) return;
+		set((s) => {
+			if (s.sessionId && s.sessionId !== "__pending__") return s;
+			const wantedTab = s.tabBySession[""] ?? "git";
+			return {
+				sessionId,
+				tabBySession: { ...s.tabBySession, [sessionId]: s.tabBySession[sessionId] ?? wantedTab },
+			};
+		});
+	},
+
+	clearActiveContext: () =>
+		set((s) => ({
+			open: false,
+			openSeq: (s.openSeq ?? 0) + 1,
+			sessionId: null,
+		})),
 	openSidechatWithAnnotation: (sessionId, payload) => {
 		const nonce = ++nonceSeq;
 		set((s) => ({
 			open: true,
+			openSeq: (s.openSeq ?? 0) + 1,
 			sessionId,
 			tabBySession: { ...s.tabBySession, [sessionId]: "sidechat" },
 			visitedBySession: {
@@ -141,12 +171,12 @@ export const useRightDrawer = create<RightDrawerState>((set, get) => ({
 
 	sendToMainChat: (sessionId, payload) => {
 		const nonce = ++nonceSeq;
-		set({
+		set((s) => ({
 			open: false,
+			openSeq: (s.openSeq ?? 0) + 1,
 			pendingMain: { sessionId, payload, nonce },
-		});
+		}));
 	},
-
 	consumeMainAnnotation: (sessionId) => {
 		const cur = get().pendingMain;
 		if (!cur || cur.sessionId !== sessionId) return null;
@@ -185,6 +215,7 @@ export const useRightDrawer = create<RightDrawerState>((set, get) => ({
 			}
 			return {
 				open: s.sessionId === sessionId ? false : s.open,
+				openSeq: s.sessionId === sessionId ? (s.openSeq ?? 0) + 1 : (s.openSeq ?? 0),
 				sessionId: s.sessionId === sessionId ? null : s.sessionId,
 				tabBySession: nextTabs,
 				visitedBySession: nextVisited,

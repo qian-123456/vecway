@@ -1,5 +1,5 @@
-import { Camera, FileText, FolderOpen, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, Target, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Camera, FileText, FolderOpen, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, RotateCcw, Target, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage, upload } from "../../core/api";
 import { baseName } from "../../core/lib/format";
 import { imageFromBlob } from "../../core/lib/images";
@@ -18,6 +18,7 @@ import type { ModelSource } from "../chat/components/useModelFacts";
 import { draftBook, queueComposerAction, queueFirstSend, type ComposerAction } from "../chat/lib/drafts";
 import { parseModelRef, type ModelFacts, type ModelOpt } from "../chat/lib/models";
 import { attachmentBlocker } from "../chat/lib/prompt";
+import { hasBlockingOverlay } from "../../ui/overlay";
 import { useRightDrawer } from "../panels/rightDrawerStore";
 import { RightWorkspaceDrawer, useRightEdgeSwipe } from "../panels/RightWorkspaceDrawer";
 import { MenuSheet } from "./MenuSheet";
@@ -43,6 +44,10 @@ export function HomePage(_props: PageProps) {
 	const [directoryError, setDirectoryError] = useState<string | null>(null);
 	const [planOn, setPlanOn] = useState(false);
 	const appliedPlan = useRef(false);
+	const [draftId, setDraftId] = useState<string>("");
+	const draftIdRef = useRef("");
+	draftIdRef.current = draftId;
+	const cachedDraftCwd = useRef<string | null>(null);
 	const submitting = useRef(false);
 	const [facts, setFacts] = useState<ModelFacts>({ current: null, thinkingLevel: null, liveThinking: [] });
 	const selection = useRef<ModelOpt | null>(null);
@@ -56,6 +61,34 @@ export function HomePage(_props: PageProps) {
 	const attSeq = useRef(0);
 	const attsRef = useRef(atts);
 	attsRef.current = atts;
+	const modelKey = selection.current
+		? `${selection.current.provider}/${selection.current.id}`
+		: facts.current
+			? `${facts.current.provider}/${facts.current.id}`
+			: "";
+	const draftScopeKey = JSON.stringify({
+		cwd: directory?.path ?? "",
+		spaceId: mode,
+		modelKey,
+		thinking: facts.thinkingLevel ?? "",
+	});
+	const draftScopeRef = useRef(draftScopeKey);
+
+	useLayoutEffect(() => {
+		if (draftScopeRef.current === draftScopeKey) return;
+		draftScopeRef.current = draftScopeKey;
+		creating.current = null;
+		appliedPlan.current = false;
+		cachedDraftCwd.current = null;
+		const prevId = draftIdRef.current;
+		if (prevId) {
+			setDraftId("");
+			useRightDrawer.getState().resetSession(prevId);
+		}
+		if (attsRef.current.some((a) => !a.isImage && a.path)) {
+			setAtts((prev) => prev.map((a) => (!a.isImage && a.path ? { ...a, path: undefined } : a)));
+		}
+	}, [draftScopeKey]);
 	const transferredUrls = useRef(new Set<string>());
 	const pendingMain = useRightDrawer((s) => s.pendingMain);
 	const modelSource = useMemo<ModelSource>(() => ({
@@ -116,9 +149,12 @@ export function HomePage(_props: PageProps) {
 		apiRef.current?.set(next, true);
 	}, [pendingMain]);
 
-	useRightEdgeSwipe(() => useRightDrawer.getState().openDrawer(""), true);
+	useRightEdgeSwipe(() => {
+		if (!hasBlockingOverlay()) useRightDrawer.getState().openDrawer(draftIdRef.current);
+	}, true);
 
 	const addFiles = (files: readonly File[], forceImage = false) => {
+		if (submitting.current) return;
 		for (const f of files) {
 			if (f.size > MAX_BYTES) {
 				toast(`「${f.name}」超过 20MB 上限，无法上传`);
@@ -127,7 +163,7 @@ export function HomePage(_props: PageProps) {
 			const isImage = forceImage || f.type.startsWith("image/");
 			const attId = ++attSeq.current;
 			const url = isImage ? URL.createObjectURL(f) : "";
-			const att: Attachment = {
+			let attRef: Attachment = {
 				id: attId,
 				name: f.name || (isImage ? "image.jpg" : "file"),
 				isImage,
@@ -135,14 +171,20 @@ export function HomePage(_props: PageProps) {
 				status: isImage ? "up" : "ok",
 				file: f,
 			};
-			setAtts((prev) => [...prev, att]);
+			setAtts((prev) => [...prev, attRef]);
 			if (isImage) {
 				void imageFromBlob(f)
 					.then((image) => {
-						setAtts((prev) => prev.map((a) => (a.id === attId ? { ...a, status: "ok", image } : a)));
+						const updated: Attachment = { ...attRef, status: "ok", image, err: undefined };
+						draftBook.replaceAttachment(attRef, updated);
+						attRef = updated;
+						setAtts((prev) => prev.map((a) => (a.id === attId ? { ...a, status: "ok", image, err: undefined } : a)));
 					})
 					.catch((e: unknown) => {
 						const err = errorMessage(e);
+						const updated: Attachment = { ...attRef, status: "err", err };
+						draftBook.replaceAttachment(attRef, updated);
+						attRef = updated;
 						setAtts((prev) => prev.map((a) => (a.id === attId ? { ...a, status: "err", err } : a)));
 						toast(`读取图片失败：${err}`, { kind: "error" });
 					});
@@ -151,6 +193,7 @@ export function HomePage(_props: PageProps) {
 	};
 
 	const removeAtt = (attId: number) => {
+		if (submitting.current) return;
 		setAtts((prev) => {
 			const target = prev.find((a) => a.id === attId);
 			if (target?.url) URL.revokeObjectURL(target.url);
@@ -158,36 +201,141 @@ export function HomePage(_props: PageProps) {
 		});
 	};
 
-	const ensureDraft = (): Promise<string> => {
-		if (creating.current) return creating.current;
-		creating.current = (async () => {
-			const res = await api<{ dirs: DirEntry[] }>("GET", "/left/dirs");
-			const dirs = res.dirs ?? [];
-			const mode = useTree.getState().mode;
-			const dir = directory ? dirs.find((d) => d.path === directory.path) : dirs.find((d) => d.kind === "workspace" && d.mode === mode) ?? dirs.find((d) => d.mode === mode) ?? dirs[0];
-			if (!dir?.path) throw new Error(directory ? "所选目录已不可用，请重新选择目录" : "未找到可用目录，请先在菜单或设置中添加工作区");
-			const model = selection.current;
-			const level = factsRef.current.thinkingLevel;
-			const { id } = await useSessions.getState().createSession({ cwd: dir.path, mode: dir.kind === "global" ? "chat" : dir.mode ?? mode, ...(model ? { model: { provider: model.provider, modelId: model.id } } : {}), ...(level ? { thinking: level } : {}) });
-			return id;
-		})().catch((e) => { creating.current = null; throw e; });
-		return creating.current;
+	const resolveActiveDirectory = (dirs: readonly DirEntry[], targetDir: DirEntry | null, activeMode: string): DirEntry => {
+		const dir = targetDir
+			? dirs.find((d) => d.path === targetDir.path)
+			: dirs.find((d) => d.kind === "workspace" && d.mode === activeMode) ?? dirs.find((d) => d.mode === activeMode) ?? dirs[0];
+		if (!dir?.path) throw new Error(targetDir ? "所选目录已不可用，请重新选择目录" : "未找到可用目录，请先在菜单或设置中添加工作区");
+		return dir;
 	};
 
-	const prepareDraft = async (): Promise<string> => {
-		let id = await ensureDraft();
+	const invalidateDraftCache = (clearMissingSelection = false) => {
+		creating.current = null;
+		appliedPlan.current = false;
+		cachedDraftCwd.current = null;
+		const prevId = draftIdRef.current;
+		if (prevId) {
+			setDraftId("");
+			useRightDrawer.getState().resetSession(prevId);
+		}
+		if (clearMissingSelection) setDirectory(null);
+	};
+
+	const createFreshDraft = (): Promise<string> => {
+		const scopeAtStart = draftScopeRef.current;
+		const targetDir = directory;
+		const promise = (async () => {
+			const res = await api<{ dirs: DirEntry[] }>("GET", "/left/dirs");
+			const activeMode = useTree.getState().mode;
+			const dir = resolveActiveDirectory(res.dirs ?? [], targetDir, activeMode);
+			const model = selection.current;
+			const level = factsRef.current.thinkingLevel;
+			const { id } = await useSessions.getState().createSession({
+				cwd: dir.path,
+				mode: dir.kind === "global" ? "chat" : dir.mode ?? activeMode,
+				...(model ? { model: { provider: model.provider, modelId: model.id } } : {}),
+				...(level ? { thinking: level } : {}),
+			});
+			if (draftScopeRef.current !== scopeAtStart) {
+				throw new Error("会话设置已变更，请重试");
+			}
+			cachedDraftCwd.current = dir.path;
+			setDraftId(id);
+			return id;
+		})().catch((e) => {
+			if (creating.current === promise) creating.current = null;
+			throw e;
+		});
+		creating.current = promise;
+		return promise;
+	};
+
+	const ensureDraft = async (revalidateDir = false): Promise<string> => {
+		if (creating.current) {
+			const existingId = await creating.current;
+			if (!revalidateDir) return existingId;
+			const res = await api<{ dirs: DirEntry[] }>("GET", "/left/dirs");
+			const activeMode = useTree.getState().mode;
+			let dir: DirEntry;
+			try {
+				dir = resolveActiveDirectory(res.dirs ?? [], directory, activeMode);
+			} catch (e) {
+				invalidateDraftCache(Boolean(directory));
+				throw e;
+			}
+			if (!cachedDraftCwd.current || dir.path === cachedDraftCwd.current) return existingId;
+			invalidateDraftCache();
+			return createFreshDraft();
+		}
+		return createFreshDraft();
+	};
+
+	const prepareDraft = async (revalidateDir = false): Promise<string> => {
+		let id = await ensureDraft(revalidateDir);
 		if (planOn !== appliedPlan.current) {
 			const result = await api<{ on: boolean; sessionId?: string }>("POST", `/sessions/${id}/plan-mode`, { on: planOn });
 			// Enabling plan mode can materialize a process-free draft; use its real session id.
 			if (result.sessionId) {
 				id = result.sessionId;
 				creating.current = Promise.resolve(id);
+				setDraftId(id);
 				void useSessions.getState().refresh().catch(() => {});
 			}
 			appliedPlan.current = result.on;
 			if (result.on !== planOn) throw new Error("规划模式尚未切换成功，请重试");
 		}
 		return id;
+	};
+
+	const retryAtt = async (attId: number) => {
+		if (submitting.current) return;
+		const target = attsRef.current.find((a) => a.id === attId);
+		if (!target || target.status !== "err" || !target.file) return;
+		setAtts((prev) => prev.map((a) => (a.id === attId ? { ...a, status: "up", err: undefined } : a)));
+		if (target.isImage) {
+			try {
+				const image = await imageFromBlob(target.file);
+				setAtts((prev) => prev.map((a) => (a.id === attId ? { ...a, status: "ok", image, err: undefined } : a)));
+			} catch (e: unknown) {
+				const err = errorMessage(e);
+				setAtts((prev) => prev.map((a) => (a.id === attId ? { ...a, status: "err", err } : a)));
+				toast(`读取图片失败：${err}`, { kind: "error" });
+			}
+			return;
+		}
+		try {
+			const id = await ensureDraft();
+			const res = await upload<{ path: string }>(`/sessions/${id}/upload`, target.file, { name: target.name });
+			setAtts((prev) => prev.map((a) => (a.id === attId ? { ...a, status: "ok", path: res.path, err: undefined } : a)));
+		} catch (e: unknown) {
+			const err = errorMessage(e);
+			setAtts((prev) => prev.map((a) => (a.id === attId ? { ...a, status: "err", err } : a)));
+			toast(`上传失败：${err}`, { kind: "error" });
+		}
+	};
+
+	const uploadPendingFiles = async (id: string, snapshot: Attachment[]): Promise<Attachment[] | null> => {
+		if (!snapshot.some((a) => !a.isImage && a.file && !a.path)) return snapshot;
+		const uploaded: Attachment[] = [];
+		for (const a of snapshot) {
+			if (!a.isImage && a.file && !a.path) {
+				setAtts((prev) => prev.map((x) => (x.id === a.id ? { ...x, status: "up", err: undefined } : x)));
+				try {
+					const res = await upload<{ path: string }>(`/sessions/${id}/upload`, a.file, { name: a.name });
+					const nextAtt: Attachment = { ...a, status: "ok", path: res.path, err: undefined };
+					setAtts((prev) => prev.map((x) => (x.id === a.id ? nextAtt : x)));
+					uploaded.push(nextAtt);
+				} catch (e) {
+					const err = errorMessage(e);
+					setAtts((prev) => prev.map((x) => (x.id === a.id ? { ...x, status: "err", err } : x)));
+					toast(`上传失败：${err}`, { kind: "error" });
+					return null;
+				}
+			} else {
+				uploaded.push(a);
+			}
+		}
+		return uploaded;
 	};
 
 	const handleSend = async (value: string) => {
@@ -202,27 +350,9 @@ export function HomePage(_props: PageProps) {
 		submitting.current = true;
 		setSending(true);
 		try {
-			const id = await prepareDraft();
-			let finalAtts = currentAtts;
-			if (currentAtts.some((a) => !a.isImage && a.file && !a.path)) {
-				const uploaded: Attachment[] = [];
-				for (const a of currentAtts) {
-					if (!a.isImage && a.file && !a.path) {
-						try {
-							const res = await upload<{ path: string }>(`/sessions/${id}/upload`, a.file, { name: a.name });
-							uploaded.push({ ...a, status: "ok", path: res.path });
-						} catch (e) {
-							const err = errorMessage(e);
-							setAtts((prev) => prev.map((x) => (x.id === a.id ? { ...x, status: "err", err } : x)));
-							toast(`上传失败：${err}`, { kind: "error" });
-							return;
-						}
-					} else {
-						uploaded.push(a);
-					}
-				}
-				finalAtts = uploaded;
-			}
+			const id = await prepareDraft(true);
+			const finalAtts = await uploadPendingFiles(id, currentAtts);
+			if (!finalAtts) return;
 			for (const a of finalAtts) if (a.url) transferredUrls.current.add(a.url);
 			const cur = apiRef.current?.get();
 			let extra = "";
@@ -244,12 +374,24 @@ export function HomePage(_props: PageProps) {
 
 	const openAction = async (action?: ComposerAction, files?: File[]) => {
 		if (submitting.current) return;
+		const currentAtts = attsRef.current;
+		if (currentAtts.length > 0) {
+			const blocker = attachmentBlocker(currentAtts);
+			if (blocker) {
+				toast(blocker);
+				return;
+			}
+		}
 		submitting.current = true;
 		setPlusOpen(false);
 		setSending(true);
 		try {
-			const id = await prepareDraft();
-			draftBook.stash(id, apiRef.current?.get() ?? "", []);
+			const id = await prepareDraft(true);
+			const finalAtts = await uploadPendingFiles(id, currentAtts);
+			if (!finalAtts) return;
+			for (const a of finalAtts) if (a.url) transferredUrls.current.add(a.url);
+			draftBook.stash(id, apiRef.current?.get() ?? "", finalAtts);
+			setAtts([]);
 			queueComposerAction(id, action, files);
 			nav.replace(paths.chat(id));
 		} catch (e) {
@@ -271,21 +413,23 @@ export function HomePage(_props: PageProps) {
 	const imageGallery: ViewerImage[] = imageAtts.filter((a) => a.url).map((a) => ({ src: a.url, alt: a.name }));
 	const attachments =
 		atts.length > 0 ? (
-			<div className="flex flex-col gap-1.5 px-1 pt-1 pb-2">
+			<div className="m-noscrollbar flex max-h-[24vh] flex-col gap-1.5 overflow-y-auto overscroll-contain px-1 pt-1 pb-2">
 				{imageAtts.length > 0 && (
 					<div className="flex flex-wrap gap-2">
 						{imageAtts.map((a, idx) => {
 							const galleryIndex = imageGallery.findIndex((g) => g.src === a.url);
+							const isErr = a.status === "err";
 							return (
 								<div
 									key={a.id}
-									className={`relative h-13 w-13 shrink-0 overflow-hidden rounded-m-md bg-m-surface-2 ring-1 shadow-m-card ${a.status === "err" ? "ring-m-danger" : "ring-m-border/75"}`}
+									className={`relative h-13 w-13 shrink-0 overflow-hidden rounded-m-md bg-m-surface-2 ring-1 shadow-m-card ${isErr ? "ring-m-danger" : "ring-m-border/75"}`}
 								>
 									{a.url && (
 										<button
 											type="button"
-											aria-label={`预览图片 ${idx + 1}`}
-											onClick={() => openImage({ src: a.url, alt: a.name }, imageGallery, galleryIndex >= 0 ? galleryIndex : 0)}
+											disabled={sending}
+											aria-label={isErr ? `重试上传 ${a.name}` : `预览图片 ${idx + 1}`}
+											onClick={() => (isErr ? void retryAtt(a.id) : openImage({ src: a.url, alt: a.name }, imageGallery, galleryIndex >= 0 ? galleryIndex : 0))}
 											className="m-press block h-full w-full"
 										>
 											<img src={a.url} alt={a.name} className="h-full w-full object-cover" />
@@ -299,11 +443,18 @@ export function HomePage(_props: PageProps) {
 											<Spinner size={14} />
 										</span>
 									)}
+									{isErr && (
+										<span className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-0.5 bg-m-danger-bg/85 text-m-danger">
+											<RotateCcw size={13} aria-hidden />
+											<span className="text-[9px] font-medium whitespace-nowrap">重试</span>
+										</span>
+									)}
 									<button
 										type="button"
+										disabled={sending}
 										aria-label="移除附件"
 										onClick={() => removeAtt(a.id)}
-										className="m-press absolute top-0.5 right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-m-scrim/75 text-white active:opacity-80"
+										className="m-press absolute top-0.5 right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-m-scrim/75 text-white active:opacity-80 disabled:opacity-40"
 									>
 										<X size={12} strokeWidth={2} />
 									</button>
@@ -319,12 +470,32 @@ export function HomePage(_props: PageProps) {
 								<span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-m-sm bg-m-surface text-m-text-2">
 									<FileText size={16} strokeWidth={1.75} />
 								</span>
-								<span className="max-w-36 truncate text-m-xs text-m-text">{a.name}</span>
+								<span className="flex min-w-0 flex-col">
+									<span className="max-w-36 truncate text-m-xs text-m-text">{a.name}</span>
+									{a.status === "up" && (
+										<span className="flex items-center gap-1 text-[11px] whitespace-nowrap text-m-text-3">
+											<Spinner size={11} />
+											上传中
+										</span>
+									)}
+									{a.status === "err" && (
+										<button
+											type="button"
+											disabled={sending}
+											onClick={() => void retryAtt(a.id)}
+											className="inline-flex items-center gap-1 text-left text-[11px] font-medium whitespace-nowrap text-m-danger active:opacity-75 disabled:opacity-40"
+										>
+											<RotateCcw size={10} aria-hidden />
+											<span>上传失败，点击重试</span>
+										</button>
+									)}
+								</span>
 								<button
 									type="button"
+									disabled={sending}
 									aria-label="移除附件"
 									onClick={() => removeAtt(a.id)}
-									className="m-press absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-m-text-3 active:bg-m-surface-hover"
+									className="m-press absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-m-text-3 active:bg-m-surface-hover disabled:opacity-40"
 								>
 									<X size={14} />
 								</button>
@@ -341,7 +512,7 @@ export function HomePage(_props: PageProps) {
 			<ChatHeader
 				title="Vecway"
 				onMenu={() => setMenuOpen(true)}
-				onTools={() => useRightDrawer.getState().toggleDrawer("")}
+				onTools={() => useRightDrawer.getState().toggleDrawer(draftId)}
 			/>
 			<EmptyChatCanvas
 				dirName={dirName}
@@ -376,7 +547,7 @@ export function HomePage(_props: PageProps) {
 					busy={sending}
 					hasExtra={atts.length > 0}
 					top={attachments}
-					onPlus={() => setPlusOpen(true)}
+					onPlus={() => { if (!submitting.current) setPlusOpen(true); }}
 					onSend={(text) => void handleSend(text)}
 					model={facts.current?.id}
 					thinking={facts.thinkingLevel}
@@ -402,7 +573,7 @@ export function HomePage(_props: PageProps) {
 				</div>
 			</BottomSheet>
 			<MenuSheet open={menuOpen} onClose={() => setMenuOpen(false)} onNewSession={() => setNewOpen(true)} />
-			<RightWorkspaceDrawer resolveSessionId={ensureDraft} />
+			<RightWorkspaceDrawer sessionId={draftId || undefined} resolveSessionId={() => ensureDraft(false)} />
 			<NewSessionSheet open={newOpen} onClose={() => setNewOpen(false)} defaultCwd={directory?.path} />
 			<NewSessionSheet open={directoryOpen} onClose={() => setDirectoryOpen(false)} defaultCwd={directory?.path} onSelectDirectory={(dir) => {
 				if (dir.path !== directory?.path) { creating.current = null; appliedPlan.current = false; }

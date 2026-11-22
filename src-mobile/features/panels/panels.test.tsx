@@ -6,7 +6,7 @@ import { loadUnsent, saveUnsent } from "../chat/lib/unsent";
 import { FilesPage } from "./FilesPage";
 import { GitPanel, gitCommitSuggest } from "./GitPage";
 import { PlanPanel } from "./PlanPage";
-import { HANDBACK_MARKER, HANDBACK_PROMPT, SIDECHAT_DRAFT_PREFIX, SidechatPage } from "./SidechatPage";
+import { HANDBACK_MARKER, HANDBACK_PROMPT, SIDECHAT_DRAFT_PREFIX, SidechatPage, SidechatPanel } from "./SidechatPage";
 import { useRightDrawer } from "./rightDrawerStore";
 describe("gitCommitSuggest", () => {
 	afterEach(() => {
@@ -190,5 +190,48 @@ describe("panel presentation contracts", () => {
 		await screen.findByText("计划目录");
 		fireEvent.click(screen.getByRole("button", { name: "实现细节" }));
 		expect(scrollMock).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+	});
+
+	it("syncs PlanPanel TOC headings when planStatus already arrives from composer-state before /plan resolves", async () => {
+		const planStatus = {
+			enabled: true,
+			phase: "review",
+			title: "预置计划",
+			version: 2,
+			content: "# 总体目标\n\n## 第一阶段\n\n- [ ] 任务一\n\n## 第二阶段\n\n- [ ] 任务二",
+			approved: null,
+		};
+		let resolvePlan!: (v: unknown) => void;
+		const delayedPlan = new Promise((r) => {
+			resolvePlan = r;
+		});
+
+		vi.spyOn(apiModule, "api").mockImplementation(async (_m, path) => {
+			if (path.endsWith("/composer-state")) return { streaming: false, planMode: true, planStatus };
+			if (path.endsWith("/plan")) return delayedPlan;
+			return null;
+		});
+
+		render(<PlanPanel sessionId="s-plan-preloaded" embedded />);
+		await screen.findByText("预置计划");
+		resolvePlan({ streaming: false, planStatus });
+		await screen.findByRole("button", { name: /目录 · 3 章节/ });
+	});
+
+	it("handles wrapped { sidechats } payloads safely in SidechatPanel", async () => {
+		vi.spyOn(apiModule, "api").mockImplementation(async (_m, path) => {
+			if (path.endsWith("/sidechats")) {
+				return {
+					sidechats: [
+						{ id: "sc-wrap-1", label: "#1", title: "兼容数组包装", status: "idle", updatedAt: "2026-11-22T10:00:00Z", cwd: "/proj", live: true },
+					],
+				};
+			}
+			if (path.includes("/transcript?")) return { items: [], reset: true };
+			return {};
+		});
+
+		render(<SidechatPanel sessionId="s-side-wrap" embedded />);
+		await screen.findByText("开始一段新的辅助对话");
 	});
 });

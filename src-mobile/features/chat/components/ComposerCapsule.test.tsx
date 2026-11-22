@@ -39,10 +39,10 @@ describe("ComposerCapsule", () => {
 		expect(circles).toHaveLength(2);
 		expect(Number(circles[1].getAttribute("stroke-dashoffset"))).toBeCloseTo(2 * Math.PI * 7 * 0.85);
 		const mic = screen.getByRole("button", { name: "语音输入" });
-		expect(mic.className).toContain("h-8 w-8");
+		expect(mic.className).toContain("h-11 w-11");
 		expect(mic.className).not.toContain("bg-m-danger");
 		const send = screen.getByRole("button", { name: "发送" });
-		expect(send.className).toContain("bg-m-surface-2");
+		expect(send.querySelector("span")?.className).toContain("bg-m-surface-2");
 		fireEvent.focus(screen.getByRole("textbox"));
 		// Toolbar stays mounted with zero button jumping or unmounting on focus.
 		expect(screen.getByRole("button", { name: /当前模型/ })).toBeTruthy();

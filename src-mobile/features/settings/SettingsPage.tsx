@@ -64,6 +64,7 @@ export function SettingsPage() {
 	const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 	const lastClickedRowRef = useRef<HTMLElement | null>(null);
 	const scrollerRef = useRef<HTMLDivElement>(null);
+	const largeTitleRef = useRef<HTMLHeadingElement>(null);
 	const [collapsed, setCollapsed] = useState(false);
 	const scheme = usePrefs((s) => s.scheme);
 	const lightTheme = usePrefs((s) => s.lightTheme);
@@ -72,12 +73,25 @@ export function SettingsPage() {
 	const load = useCallback(async () => {
 		setError(null);
 		try {
-			const [s, d] = await Promise.all([
+			const [s, dirsResult] = await Promise.all([
 				api<SettingsData>("GET", "/left/settings"),
-				api<{ dirs: DirEntry[] }>("GET", "/left/dirs").catch(() => ({ dirs: [] })),
+				api<{ dirs: DirEntry[] }>("GET", "/left/dirs").then(
+					(res) => ({ ok: true as const, dirs: res.dirs ?? [] }),
+					() => ({ ok: false as const, dirs: null }),
+				),
 			]);
 			setData(s);
-			setDirs(d.dirs ?? []);
+			if (dirsResult.ok) {
+				setDirs(dirsResult.dirs);
+				setCwd((prev) => {
+					const target = scopeCwd ?? prev;
+					if (target != null && !dirsResult.dirs.some((dir) => dir.path === target)) {
+						scopeCwd = null;
+						return null;
+					}
+					return prev;
+				});
+			}
 		} catch (e) {
 			setError(errorMessage(e, "加载设置失败"));
 		}
@@ -87,15 +101,34 @@ export function SettingsPage() {
 		void load();
 	}, [load]);
 	useEffect(() => {
-		const el = scrollerRef.current;
-		if (!el) return;
+		const scroller = scrollerRef.current;
+		const titleEl = largeTitleRef.current;
+		if (!scroller || !titleEl) return;
 		const update = () => {
-			const next = el.scrollTop > 36;
+			const titleRect = titleEl.getBoundingClientRect();
+			const scrollerRect = scroller.getBoundingClientRect();
+			if (titleRect.height === 0 || scrollerRect.height === 0) {
+				const threshold = titleEl.offsetHeight || 40;
+				const next = scroller.scrollTop > threshold;
+				setCollapsed((prev) => (prev === next ? prev : next));
+				return;
+			}
+			const next = titleRect.bottom <= scrollerRect.top + 4;
 			setCollapsed((prev) => (prev === next ? prev : next));
 		};
 		update();
-		el.addEventListener("scroll", update, { passive: true });
-		return () => el.removeEventListener("scroll", update);
+		let observer: IntersectionObserver | null = null;
+		if (typeof IntersectionObserver !== "undefined") {
+			observer = new IntersectionObserver(update, { root: scroller, threshold: [0, 0.05, 1] });
+			observer.observe(titleEl);
+		}
+		scroller.addEventListener("scroll", update, { passive: true });
+		window.addEventListener("resize", update);
+		return () => {
+			observer?.disconnect();
+			scroller.removeEventListener("scroll", update);
+			window.removeEventListener("resize", update);
+		};
 	}, []);
 
 
@@ -195,7 +228,7 @@ export function SettingsPage() {
 				className={`m-topbar-glass sticky top-0 z-(--z-header) shrink-0 text-m-text transition-[border-color] duration-(--m-dur-fast) ease-m ${
 					collapsed ? "" : "border-b-transparent!"
 				}`}
-				style={{ paddingTop: "var(--m-safe-top)" }}
+				style={{ paddingTop: "var(--m-safe-top)", paddingLeft: "var(--m-safe-left)", paddingRight: "var(--m-safe-right)" }}
 			>
 				<div className="flex h-13 items-center justify-between gap-2 px-2.5">
 					<div className="flex min-w-11 shrink-0 items-center">
@@ -218,12 +251,13 @@ export function SettingsPage() {
 			<PullToRefresh ref={scrollerRef} onRefresh={load} className="m-noscrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
 				<div
 					className="flex flex-col gap-1.5 pb-[calc(var(--m-safe-bottom)+32px)]"
+					style={{ paddingLeft: "var(--m-safe-left)", paddingRight: "var(--m-safe-right)" }}
 					onClickCapture={(e) => {
 						const btn = (e.target as HTMLElement | null)?.closest("button");
 						if (btn instanceof HTMLElement) lastClickedRowRef.current = btn;
 					}}
 				>
-					<h1 className="px-5 pt-1 pb-2.5 text-[30px] leading-tight font-bold tracking-[-0.025em] text-m-text">设置</h1>
+					<h1 ref={largeTitleRef} className="px-5 pt-1 pb-2.5 text-[30px] leading-tight font-bold tracking-[-0.025em] text-m-text">设置</h1>
 
 					<ListGroup>{row(QUOTA_ITEM)}</ListGroup>
 
@@ -255,7 +289,7 @@ export function SettingsPage() {
 										icon={<FolderCog {...ICON} />}
 										title="配置范围"
 										subtitle="模型角色和备用模型保存到这里"
-										right={scopeDir ? dirName(scopeDir) : "全局"}
+										right={scopeDir ? <span className="block max-w-full min-w-0 truncate">{dirName(scopeDir)}</span> : "全局"}
 										chevron
 										onClick={() => {
 											setAnchorEl(lastClickedRowRef.current);

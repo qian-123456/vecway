@@ -91,6 +91,8 @@ export interface NativeBridge {
 		disable(): Promise<void>;
 		sendTest?(): Promise<void>;
 	};
+	shareTextFile?(req: { filename: string; content: string; mimeType?: string }): Promise<{ ok: boolean; cancelled?: boolean }>;
+	setAppearance?(mode: "system" | "light" | "dark", backgroundHex?: string): void;
 }
 
 declare global {

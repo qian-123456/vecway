@@ -81,6 +81,7 @@
 	--z-base: 0;
 	--z-header: 10;
 	--z-banner: 20;
+	--z-composer: 25;
 	--z-sheet: 50;
 	--z-modal: 60;
 	--z-toast: 70;
@@ -211,6 +212,9 @@ html[data-kb-native="1"] .m-kb-pad {
 	min-height: 0;
 	display: flex;
 	flex-direction: column;
+}
+.m-top-banner ~ .m-page {
+	--m-safe-top: 0px;
 }
 
 /* Spinner keyframes shared by ui/ primitives. */
@@ -404,11 +408,16 @@ html[data-scheme="light"] .m-glass-btn:active {
 			background-color var(--m-dur-fast) var(--m-ease);
 	}
 	.m-liquid-surface {
-		background-color: color-mix(in srgb, var(--m-bg-elev) 88%, transparent);
+		background-color: var(--m-bg-elev);
 		border: 1px solid var(--m-liquid-border);
 		box-shadow: var(--m-shadow-pop);
 		backdrop-filter: blur(24px) saturate(180%);
 		-webkit-backdrop-filter: blur(24px) saturate(180%);
+	}
+	@supports (color: color-mix(in srgb, red, blue)) {
+		.m-liquid-surface {
+			background-color: color-mix(in srgb, var(--m-bg-elev) 88%, transparent);
+		}
 	}
 }
 
@@ -419,6 +428,10 @@ html[data-scheme="light"] .m-glass-btn:active {
 	.m-liquid-track,
 	.m-liquid-surface {
 		background-color: var(--m-bg-elev);
+		backdrop-filter: none;
+		-webkit-backdrop-filter: none;
+	}
+	[class*="backdrop-blur"] {
 		backdrop-filter: none;
 		-webkit-backdrop-filter: none;
 	}

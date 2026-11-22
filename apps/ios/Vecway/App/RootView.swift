@@ -25,6 +25,8 @@ struct RootView: View {
                 .zIndex(100)
             }
         }
+        .background(Color(uiColor: controller.appearanceBackgroundColor).ignoresSafeArea())
+        .preferredColorScheme(controller.preferredColorScheme)
         .sheet(
             isPresented: $controller.isScannerPresented,
             onDismiss: {

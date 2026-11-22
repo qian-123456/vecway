@@ -39,22 +39,26 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
     private let voiceRecorder: NativeVoiceRecorder
     private let pushManager: NativePushManager
     private let openScannerHandler: @MainActor (AppController.PairScannerMode) async -> ScannerOutcome
+    private let setAppearanceHandler: @MainActor (String, String?) -> Void
 
     private var activeHttpTasks: [String: Task<Void, Never>] = [:]
     private var pendingSseOpenTasks: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+    private var activeShareCallIds = Set<String>()
 
     init(
         endpointManager: EndpointManager,
         sseBridge: SSEBridge,
         voiceRecorder: NativeVoiceRecorder,
         pushManager: NativePushManager,
-        openScannerHandler: @escaping @MainActor (AppController.PairScannerMode) async -> ScannerOutcome
+        openScannerHandler: @escaping @MainActor (AppController.PairScannerMode) async -> ScannerOutcome,
+        setAppearanceHandler: @escaping @MainActor (String, String?) -> Void = { _, _ in }
     ) {
         self.endpointManager = endpointManager
         self.sseBridge = sseBridge
         self.voiceRecorder = voiceRecorder
         self.pushManager = pushManager
         self.openScannerHandler = openScannerHandler
+        self.setAppearanceHandler = setAppearanceHandler
         super.init()
     }
 
@@ -230,6 +234,18 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
             guard let callId else { return }
             Task {
                 await pushManager.disable()
+                replyOK(callId: callId, value: NSNull())
+            }
+
+        case "shareTextFile":
+            guard let callId else { return }
+            handleShareTextFile(callId: callId, payload: payload)
+
+        case "setAppearance":
+            let mode = (payload["mode"] as? String) ?? "system"
+            let backgroundHex = payload["backgroundHex"] as? String
+            setAppearanceHandler(mode, backgroundHex)
+            if let callId {
                 replyOK(callId: callId, value: NSNull())
             }
 
@@ -514,6 +530,82 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
         }
     }
 
+    private func handleShareTextFile(callId: String, payload: [String: Any]) {
+        guard let content = payload["content"] as? String else {
+            replyError(callId: callId, message: "缺少要分享的文本内容")
+            return
+        }
+        let safeFilename = Self.sanitizeShareFilename(payload["filename"] as? String)
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vecway-share-\(UUID().uuidString)", isDirectory: true)
+        let fileURL = tempDir.appendingPathComponent(safeFilename, isDirectory: false)
+
+        do {
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            try? FileManager.default.removeItem(at: tempDir)
+            replyError(callId: callId, message: error.localizedDescription)
+            return
+        }
+
+        guard let presenter = Self.topViewController() else {
+            try? FileManager.default.removeItem(at: tempDir)
+            replyError(callId: callId, message: "无法打开系统分享面板")
+            return
+        }
+
+        let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+        if let popover = activityVC.popoverPresentationController {
+            popover.sourceView = presenter.view
+            popover.sourceRect = CGRect(
+                x: presenter.view.bounds.midX,
+                y: presenter.view.bounds.midY,
+                width: 1,
+                height: 1
+            )
+            popover.permittedArrowDirections = []
+        }
+
+        activeShareCallIds.insert(callId)
+        activityVC.completionWithItemsHandler = { [weak self] _, completed, _, activityError in
+            Task { @MainActor in
+                try? FileManager.default.removeItem(at: tempDir)
+                guard let self, self.activeShareCallIds.remove(callId) != nil else { return }
+                if let activityError {
+                    self.replyError(callId: callId, message: activityError.localizedDescription)
+                } else {
+                    self.replyOK(callId: callId, value: [
+                        "ok": true,
+                        "cancelled": !completed,
+                    ])
+                }
+            }
+        }
+        presenter.present(activityVC, animated: true)
+    }
+
+    private static func sanitizeShareFilename(_ raw: String?) -> String {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let leaf = trimmed.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? ""
+        let invalid = CharacterSet.controlCharacters.union(CharacterSet(charactersIn: ":/\\"))
+        let cleaned = leaf.components(separatedBy: invalid).joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty || cleaned == "." || cleaned == ".." {
+            return "share.txt"
+        }
+        return cleaned
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let keyWindow = scenes.flatMap(\.windows).first { $0.isKeyWindow } ?? scenes.flatMap(\.windows).first
+        var current = keyWindow?.rootViewController
+        while let presented = current?.presentedViewController {
+            current = presented
+        }
+        return current
+    }
+
     // MARK: - JS Dispatch Helpers
 
     private func dispatchSseError(streamId: String, message: String) {
@@ -787,7 +879,27 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
               getStatus: function () { return callNative("pushGetStatus"); },
               enable: function () { return callNative("pushEnable"); },
               disable: function () { return callNative("pushDisable"); }
-            })
+            }),
+            shareTextFile: function (req) {
+              var opts = req && typeof req === "object" ? req : {};
+              var payload = {
+                filename: typeof opts.filename === "string" ? opts.filename : "",
+                content: typeof opts.content === "string" ? opts.content : ""
+              };
+              if (typeof opts.mimeType === "string" && opts.mimeType) {
+                payload.mimeType = opts.mimeType;
+              }
+              return callNative("shareTextFile", payload);
+            },
+            setAppearance: function (mode, backgroundHex) {
+              try {
+                post({
+                  action: "setAppearance",
+                  mode: typeof mode === "string" ? mode : "system",
+                  backgroundHex: typeof backgroundHex === "string" ? backgroundHex : null
+                });
+              } catch (_) {}
+            }
           });
 
           Object.defineProperty(window, "__VECWAY_NATIVE__", {

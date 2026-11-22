@@ -25,6 +25,21 @@ final class AppController: ObservableObject {
     @Published var scannerInitialMode: PairScannerMode = .scan
     @Published var pendingDeepLinkPayload: PairingPayload?
     @Published var deepLinkError: String?
+    @Published var preferredColorScheme: ColorScheme? = nil
+    @Published var appearanceBackgroundColor: UIColor = .systemBackground
+
+    var preferredUIUserInterfaceStyle: UIUserInterfaceStyle {
+        switch preferredColorScheme {
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        case nil:
+            return .unspecified
+        @unknown default:
+            return .unspecified
+        }
+    }
 
     private var scannerContinuation: CheckedContinuation<ScannerOutcome, Never>?
     private var scannerCompletedOutcome: ScannerOutcome?
@@ -59,6 +74,9 @@ final class AppController: ObservableObject {
                     return ScannerOutcome(ok: false, error: "应用已释放", status: nil)
                 }
                 return await self.openScannerFromBridge(mode: mode)
+            },
+            setAppearanceHandler: { [weak self] mode, backgroundHex in
+                self?.updateAppearance(mode: mode, backgroundHex: backgroundHex)
             }
         )
 
@@ -191,6 +209,48 @@ final class AppController: ObservableObject {
         @unknown default:
             break
         }
+    }
+
+    // MARK: - Appearance
+
+    func updateAppearance(mode: String, backgroundHex: String?) {
+        switch mode {
+        case "light":
+            preferredColorScheme = .light
+        case "dark":
+            preferredColorScheme = .dark
+        default:
+            preferredColorScheme = nil
+        }
+        appearanceBackgroundColor = Self.parseColor(hex: backgroundHex) ?? .systemBackground
+    }
+
+    private static func parseColor(hex: String?) -> UIColor? {
+        guard let raw = hex?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        let cleaned = raw.hasPrefix("#") ? String(raw.dropFirst()) : raw
+        let expanded: String
+        if cleaned.count == 3 {
+            expanded = cleaned.map { "\($0)\($0)" }.joined()
+        } else {
+            expanded = cleaned
+        }
+        guard expanded.count == 6 || expanded.count == 8,
+              let value = UInt64(expanded, radix: 16) else {
+            return nil
+        }
+        if expanded.count == 6 {
+            let r = CGFloat((value >> 16) & 0xFF) / 255.0
+            let g = CGFloat((value >> 8) & 0xFF) / 255.0
+            let b = CGFloat(value & 0xFF) / 255.0
+            return UIColor(red: r, green: g, blue: b, alpha: 1.0)
+        }
+        let r = CGFloat((value >> 24) & 0xFF) / 255.0
+        let g = CGFloat((value >> 16) & 0xFF) / 255.0
+        let b = CGFloat((value >> 8) & 0xFF) / 255.0
+        let a = CGFloat(value & 0xFF) / 255.0
+        return UIColor(red: r, green: g, blue: b, alpha: a)
     }
 
     // MARK: - Private

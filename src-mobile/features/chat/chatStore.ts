@@ -4,7 +4,7 @@
  * (streaming only changes `live`; the persisted rows keep identity).
  */
 import { createStore, type StoreApi } from "zustand/vanilla";
-import type { PlanStatus } from "../../../src/features/chat/plan/planStatus";
+import { parsePlanStatus, PLAN_STATUS_KEY, type PlanStatus } from "../../../src/features/chat/plan/planStatus";
 import { api, errorMessage, LONG_TIMEOUT_MS, upload } from "../../core/api";
 import { imageFromBlob, toDataUrl, type PromptImage } from "../../core/lib/images";
 import { nav, paths } from "../../core/nav";
@@ -46,6 +46,8 @@ import { buildBlocks, reuseBlocks, type Block } from "./lib/turns";
 import { extractTreeParents, filterToLeafPath, treeVersions, type TreeVersions } from "./lib/tree";
 import { clearUnsent, loadUnsent, saveUnsent } from "./lib/unsent";
 import type { Goal } from "./components/GoalSheet";
+import type { PlanSheetMode } from "./components/PlanSheet";
+import { executePlanApproval, type ApprovePlanOptions } from "../panels/usePlanExecution";
 
 export interface Attachment {
 	id: number;
@@ -142,6 +144,9 @@ export interface ChatState {
 	compacting: boolean;
 	delivery: PromptDeliveryState | null;
 	acceptedPlan: { turnId: string; content: string } | null;
+	planSheetOpen: boolean;
+	planSheetMode: PlanSheetMode;
+	planApproving: boolean;
 }
 
 // Promise.withResolvers is missing on older iOS Safari, which this bundle targets.
@@ -287,6 +292,9 @@ export class ChatController {
 			compacting: false,
 			delivery: loadDelivery(id),
 			acceptedPlan: null,
+			planSheetOpen: false,
+			planSheetMode: "half",
+			planApproving: false,
 		}));
 		if (this.ownsDraftStash) {
 			this.offs.push(draftBook.subscribe(id, (entry) => {
@@ -693,6 +701,13 @@ export class ChatController {
 	private onRpc(frame: RpcFrame): void {
 		if (!frame || typeof frame.type !== "string") return;
 		if (frame.type.startsWith("extension_ui")) void this.syncPendings();
+		if (frame.type === "extension_ui_request" && frame.method === "setStatus" && frame.statusKey === PLAN_STATUS_KEY) {
+			const parsed = parsePlanStatus(frame.statusText);
+			if (parsed) {
+				this.patchState({ planMode: parsed.enabled, planStatus: parsed });
+				if (this.state.acceptedPlan) this.set({ acceptedPlan: null });
+			}
+		}
 		const step = reduceFrame(this.stream, frame);
 		if (!step.handled) return;
 		++this.activitySequence;
@@ -1259,19 +1274,69 @@ export class ChatController {
 		}
 	}
 
-	/** Approval is a host command: never consume the user's draft or attachments. */
-	async approvePlan(turnId: string, content: string): Promise<boolean> {
-		if (this.state.delivery || this.state.acceptedPlan) return false;
-		const ok = await this.runCommand("plan-action", "approve keep");
-		if (!ok || this.disposed) return false;
-		this.patchState({ planMode: false });
-		clearTimeout(this.approvalTimer);
-		this.set({ acceptedPlan: { turnId, content } });
-		this.approvalTimer = setTimeout(() => {
-			if (!this.disposed) this.set({ acceptedPlan: null });
-		}, 30_000);
-		void this.loadState();
-		return true;
+	openPlanSheet(mode: PlanSheetMode = "half"): void {
+		this.set({ planSheetOpen: true, planSheetMode: mode });
+	}
+
+	closePlanSheet(): void {
+		this.set({ planSheetOpen: false });
+	}
+
+	setPlanSheetMode(mode: PlanSheetMode): void {
+		this.set({ planSheetMode: mode });
+	}
+
+	/** Approval is a host command: never consume the user's draft or attachments, and wait for settlement. */
+	async approvePlan(
+		turnIdOrOpts?: string | (ApprovePlanOptions & { turnId?: string; content?: string }),
+		_content?: string,
+		extraOpts?: ApprovePlanOptions,
+	): Promise<boolean> {
+		if (this.state.delivery || this.state.planApproving) return false;
+		const opts = typeof turnIdOrOpts === "object" && turnIdOrOpts !== null ? turnIdOrOpts : extraOpts;
+		this.set({ planApproving: true });
+		try {
+			const result = await executePlanApproval({
+				sessionId: this.id,
+				planStatus: this.state.cstate?.planStatus ?? null,
+				mode: opts?.mode,
+				role: opts?.role,
+				onPlanStatus: (planStatus) => {
+					if (!this.disposed) {
+						this.patchState({ planMode: planStatus.enabled, planStatus });
+						if (this.state.acceptedPlan) this.set({ acceptedPlan: null });
+					}
+				},
+				onLegacyPlanModeOff: () => {
+					if (!this.disposed) this.patchState({ planMode: false });
+				},
+				onWorking: () => {
+					if (!this.disposed) {
+						this.setWorking(true);
+						this.scheduleFetch(200);
+					}
+				},
+			});
+			if (this.disposed) return false;
+			if (!result.ok) {
+				toast(result.error || "计划执行失败", { kind: "error" });
+				return false;
+			}
+			clearTimeout(this.approvalTimer);
+			this.set({ acceptedPlan: null, planSheetOpen: false });
+			if (result.handoffSessionId && result.handoffSessionId !== this.id) {
+				toast("已在新会话中开始执行计划", { kind: "success" });
+				nav.push(paths.chat(result.handoffSessionId));
+			} else {
+				toast("计划已开始执行", { kind: "success" });
+				this.scheduleFetch(200);
+				void this.loadState();
+			}
+			void useSessions.getState().refresh().catch(() => {});
+			return true;
+		} finally {
+			if (!this.disposed) this.set({ planApproving: false });
+		}
 	}
 
 	async compact(): Promise<void> {

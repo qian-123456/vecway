@@ -2,6 +2,7 @@ import { ChevronDown, ChevronLeft, MoreHorizontal } from "lucide-react";
 import {
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -12,7 +13,7 @@ import { createPortal } from "react-dom";
 import { errorMessage } from "../../core/api";
 import { DRAFT_PREFIX } from "../../core/types";
 import { AnchoredPopover, MenuRow, toast } from "../../ui";
-import { useOverlay } from "../../ui/overlay";
+import { hasBlockingOverlay, useOverlay } from "../../ui/overlay";
 import { FilesPanel } from "./FilesPage";
 import { GitPanel } from "./GitPage";
 import { ErrorState, Loading } from "./PanelState";
@@ -37,14 +38,28 @@ const EDGE_MAX_VERT_PX = 30;
 const CLOSE_SWIPE_PX = 72;
 const CLOSE_SWIPE_V = 0.4;
 
+function eventElement(target: EventTarget | null): Element | null {
+	if (target instanceof Element) return target;
+	if (target instanceof Node) return target.parentElement;
+	return null;
+}
+
 function hasHorizontalScrollableAncestor(target: EventTarget | null, boundary: HTMLElement | null): boolean {
-	let node = target instanceof Element ? target : null;
+	let node = eventElement(target);
 	while (node && node !== boundary) {
 		if (node.classList.contains("xterm") || node.getAttribute("role") === "tablist") return true;
-		if (node instanceof HTMLElement && node.scrollWidth > node.clientWidth + 2) return true;
+		if (node instanceof HTMLElement && node.scrollWidth > node.clientWidth + 2) {
+			const ov = getComputedStyle(node).overflowX;
+			if (ov === "auto" || ov === "scroll") return true;
+		}
 		node = node.parentElement;
 	}
 	return false;
+}
+
+function hasActiveTextSelection(): boolean {
+	const sel = typeof window !== "undefined" ? window.getSelection() : null;
+	return Boolean(sel && !sel.isCollapsed && sel.toString().length > 0);
 }
 
 /**
@@ -60,7 +75,19 @@ export function useRightEdgeSwipe(onOpen: () => void, enabled = true): void {
 		let track: { startX: number; startY: number; triggered: boolean } | null = null;
 
 		const onTouchStart = (e: TouchEvent) => {
+			if (useRightDrawer.getState().open || hasBlockingOverlay()) {
+				track = null;
+				return;
+			}
 			if (e.touches.length !== 1) {
+				track = null;
+				return;
+			}
+			const targetEl = eventElement(e.target);
+			if (
+				targetEl?.closest('[role="dialog"], [role="alertdialog"], [data-sheet], [data-overlay]') ||
+				hasHorizontalScrollableAncestor(targetEl, document.body)
+			) {
 				track = null;
 				return;
 			}
@@ -75,6 +102,10 @@ export function useRightEdgeSwipe(onOpen: () => void, enabled = true): void {
 
 		const onTouchMove = (e: TouchEvent) => {
 			if (!track || track.triggered) return;
+			if (useRightDrawer.getState().open || hasBlockingOverlay()) {
+				track = null;
+				return;
+			}
 			if (e.touches.length !== 1) {
 				track = null;
 				return;
@@ -92,7 +123,6 @@ export function useRightEdgeSwipe(onOpen: () => void, enabled = true): void {
 				onOpenRef.current();
 			}
 		};
-
 		const clear = () => {
 			track = null;
 		};
@@ -135,13 +165,21 @@ export function RightWorkspaceDrawer({
 
 	const triggerResolve = useCallback(async () => {
 		if (!resolveSessionId) return;
+		const reqSeq = useRightDrawer.getState().openSeq ?? 0;
 		setResolving(true);
 		setResolveError(null);
 		try {
 			const resolved = await resolveSessionId();
-			const wantedTab = useRightDrawer.getState().tabBySession[useRightDrawer.getState().sessionId ?? ""];
-			useRightDrawer.getState().openDrawer(resolved, wantedTab);
+			const st = useRightDrawer.getState();
+			if (!st.open || (st.openSeq ?? 0) !== reqSeq) {
+				st.bindResolvedSession(resolved);
+				return;
+			}
+			const wantedTab = st.tabBySession[st.sessionId ?? ""] ?? st.tabBySession[""];
+			st.openDrawer(resolved, wantedTab);
 		} catch (e) {
+			const st = useRightDrawer.getState();
+			if (!st.open || (st.openSeq ?? 0) !== reqSeq) return;
 			const msg = errorMessage(e, "准备会话工作区失败");
 			setResolveError(msg);
 			toast(msg, { kind: "error" });
@@ -149,6 +187,12 @@ export function RightWorkspaceDrawer({
 			setResolving(false);
 		}
 	}, [resolveSessionId]);
+
+	useEffect(() => {
+		return () => {
+			useRightDrawer.getState().clearActiveContext();
+		};
+	}, []);
 
 	// Lazily resolve draft session once when opened from Home before a draft exists.
 	useEffect(() => {
@@ -165,10 +209,13 @@ export function RightWorkspaceDrawer({
 	useOverlay(open, closeDrawer);
 
 	// Sync `inert` attribute when drawer is collapsed so hidden kept-alive panels are non-interactive.
+	// Sync `inert` attribute and clear any swipe-dismiss inline transform when drawer opens/closes.
 	useEffect(() => {
 		const el = panelRef.current;
 		if (!el) return;
 		if (open) {
+			el.style.transition = "";
+			el.style.transform = "";
 			el.removeAttribute("inert");
 			if (document.activeElement instanceof HTMLElement && !el.contains(document.activeElement)) {
 				document.activeElement.blur();
@@ -204,6 +251,68 @@ export function RightWorkspaceDrawer({
 		if (!open || moreActions.length === 0) setMoreOpen(false);
 	}, [open, activeTab, effectiveId, moreActions.length]);
 
+	const tabListRef = useRef<HTMLElement>(null);
+	const tabBtnRefs = useRef<Partial<Record<WorkspaceTab, HTMLButtonElement | null>>>({});
+	const [capsule, setCapsule] = useState<{ x: number; width: number; ready: boolean; animate: boolean }>({
+		x: 0,
+		width: 0,
+		ready: false,
+		animate: false,
+	});
+	const capsuleReadyRef = useRef(false);
+	const measureCapsule = useCallback(() => {
+		const nav = tabListRef.current;
+		const btn = tabBtnRefs.current[activeTab];
+		if (!nav || !btn) {
+			capsuleReadyRef.current = false;
+			setCapsule((c) => (c.ready || c.animate ? { ...c, ready: false, animate: false } : c));
+			return;
+		}
+		const navRect = nav.getBoundingClientRect();
+		const btnRect = btn.getBoundingClientRect();
+		const x =
+			btnRect.width > 0
+				? Math.round((btnRect.left - navRect.left - nav.clientLeft + nav.scrollLeft) * 10) / 10
+				: btn.offsetLeft;
+		const width = btnRect.width > 0 ? Math.round(btnRect.width * 10) / 10 : btn.offsetWidth;
+		const ready = width > 0;
+		const shouldAnimate = ready && capsuleReadyRef.current;
+		if (ready) capsuleReadyRef.current = true;
+		setCapsule((c) =>
+			c.x === x && c.width === width && c.ready === ready && c.animate === shouldAnimate
+				? c
+				: { x, width, ready, animate: shouldAnimate },
+		);
+	}, [activeTab]);
+
+	useLayoutEffect(() => {
+		if (!open) {
+			capsuleReadyRef.current = false;
+			setCapsule((c) => (c.ready || c.animate ? { ...c, ready: false, animate: false } : c));
+			return;
+		}
+		measureCapsule();
+		const btn = tabBtnRefs.current[activeTab];
+		if (btn && typeof btn.scrollIntoView === "function") {
+			btn.scrollIntoView({ inline: "nearest", block: "nearest" });
+		}
+		if (typeof ResizeObserver === "undefined") return;
+		const ro = new ResizeObserver(measureCapsule);
+		if (tabListRef.current) ro.observe(tabListRef.current);
+		for (const node of Object.values(tabBtnRefs.current)) {
+			if (node) ro.observe(node);
+		}
+		return () => ro.disconnect();
+	}, [open, activeTab, tabs.length, effectiveId, measureCapsule]);
+
+	useEffect(() => {
+		if (!open || !capsule.ready || capsule.animate) return;
+		const raf = requestAnimationFrame(() => {
+			setCapsule((c) => (c.ready && !c.animate ? { ...c, animate: true } : c));
+		});
+		return () => cancelAnimationFrame(raf);
+	}, [open, capsule.ready, capsule.animate]);
+
 	// Nothing to keep alive yet if drawer has never been opened for this session.
 	if (!open && visitedTabs.length === 0) return null;
 
@@ -217,9 +326,21 @@ export function RightWorkspaceDrawer({
 	};
 
 	const onTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
-		resetSwipe();
+		swipeRef.current = null;
+		const el = panelRef.current;
+		const targetEl = eventElement(e.target);
+		// Ignore React synthetic touch events bubbling from portaled overlays outside the drawer DOM.
+		if (!el || !targetEl || !el.contains(targetEl)) return;
 		if (e.touches.length !== 1) return;
-		if (hasHorizontalScrollableAncestor(e.target, panelRef.current)) return;
+		if (
+			targetEl.closest(
+				'input, textarea, select, [contenteditable]:not([contenteditable="false"]), button, a, .xterm, [data-no-drawer-swipe]',
+			) ||
+			hasActiveTextSelection() ||
+			hasHorizontalScrollableAncestor(targetEl, el)
+		) {
+			return;
+		}
 		const p = e.touches[0];
 		if (!p) return;
 		swipeRef.current = { x: p.clientX, y: p.clientY, t: e.timeStamp, dx: 0, axis: null };
@@ -227,13 +348,14 @@ export function RightWorkspaceDrawer({
 
 	const onTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
 		const s = swipeRef.current;
+		if (!s) return;
 		const p = e.touches[0];
 		const el = panelRef.current;
 		if (e.touches.length !== 1) {
 			resetSwipe();
 			return;
 		}
-		if (!s || !p || !el) return;
+		if (!p || !el) return;
 		const dx = p.clientX - s.x;
 		const dy = p.clientY - s.y;
 		if (s.axis === null) {
@@ -248,34 +370,52 @@ export function RightWorkspaceDrawer({
 
 	const onTouchEnd = (e: ReactTouchEvent<HTMLDivElement>) => {
 		const s = swipeRef.current;
-		resetSwipe();
-		if (!s || s.axis !== "x") return;
+		swipeRef.current = null;
+		if (!s || s.axis !== "x") {
+			resetSwipe();
+			return;
+		}
 		const v = s.dx / Math.max(1, e.timeStamp - s.t);
-		if (s.dx > CLOSE_SWIPE_PX || v > CLOSE_SWIPE_V) closeDrawer();
+		const el = panelRef.current;
+		if (s.dx > CLOSE_SWIPE_PX || v > CLOSE_SWIPE_V) {
+			// Settle directly from the dragged offset to off-screen without snapping back to 0 first.
+			if (el) {
+				el.style.transition = "";
+				el.style.transform = "translate3d(100%,0,0)";
+			}
+			closeDrawer();
+			return;
+		}
+		resetSwipe();
 	};
 
 	const renderPanel = (tab: WorkspaceTab) => {
-		const isTabVisible = open && activeTab === tab;
+		const isTabActive = open && activeTab === tab;
 		switch (tab) {
 			case "sidechat":
-				return <SidechatPanel sessionId={effectiveId} embedded />;
+				return <SidechatPanel sessionId={effectiveId} embedded active={isTabActive} />;
 			case "git":
-				return <GitPanel sessionId={effectiveId} embedded visible={isTabVisible} />;
+				return <GitPanel sessionId={effectiveId} embedded active={isTabActive} visible={isTabActive} />;
 			case "files":
-				return <FilesPanel sessionId={effectiveId} embedded />;
+				return <FilesPanel sessionId={effectiveId} embedded active={isTabActive} />;
 			case "terminal":
-				return <TerminalPanel sessionId={effectiveId} embedded visible={isTabVisible} />;
+				return <TerminalPanel sessionId={effectiveId} embedded active={isTabActive} visible={isTabActive} />;
 			case "services":
-				return <ServicesPanel sessionId={effectiveId} embedded />;
+				return <ServicesPanel sessionId={effectiveId} embedded active={isTabActive} />;
 			case "plan":
-				return <PlanPanel sessionId={effectiveId} embedded />;
+				return <PlanPanel sessionId={effectiveId} embedded active={isTabActive} />;
 		}
 	};
 
 	return createPortal(
 		<div
 			aria-hidden={!open}
-			className={`fixed inset-0 z-(--z-sheet) ${open ? "" : "pointer-events-none"}`}
+			className={`fixed inset-x-0 z-(--z-sheet) ${open ? "" : "pointer-events-none"}`}
+			style={{
+				top: "var(--m-vv-top, 0px)",
+				height: "var(--m-vh, 100dvh)",
+				transition: "height var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1)",
+			}}
 		>
 			<div
 				aria-hidden="true"
@@ -294,10 +434,19 @@ export function RightWorkspaceDrawer({
 				onTouchMove={onTouchMove}
 				onTouchEnd={onTouchEnd}
 				onTouchCancel={resetSwipe}
+				onTransitionEnd={(e) => {
+					if (e.target === panelRef.current && !open && panelRef.current) {
+						panelRef.current.style.transform = "";
+					}
+				}}
 				className={`absolute inset-y-0 right-0 flex w-full sm:w-[92vw] max-w-[460px] touch-pan-y flex-col border-l border-m-border bg-m-bg text-m-text shadow-m-pop outline-none transition-transform duration-300 ease-m-sheet ${
 					open ? "translate-x-0" : "translate-x-full"
 				}`}
-				style={{ paddingTop: "var(--m-safe-top)" }}
+				style={{
+					paddingTop: "var(--m-safe-top)",
+					paddingLeft: "max(0px, calc(var(--m-safe-left, 0px) - (100vw - 100%)))",
+					paddingRight: "var(--m-safe-right, 0px)",
+				}}
 			>
 				<header className="shrink-0 px-3 pt-2 pb-2.5">
 					<div className="grid grid-cols-[36px_minmax(0,1fr)_36px] items-center gap-2 pb-2">
@@ -330,16 +479,30 @@ export function RightWorkspaceDrawer({
 					</div>
 
 					<nav
+						ref={tabListRef}
 						role="tablist"
 						aria-label="工作区面板"
-						className="m-liquid-track m-noscrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto rounded-full p-1"
+						className="m-liquid-track m-noscrollbar relative flex min-w-0 items-center gap-0.5 overflow-x-auto rounded-full p-1"
 					>
+						<span
+							aria-hidden="true"
+							className={`m-liquid-lens pointer-events-none absolute top-1 bottom-1 left-0 rounded-full motion-reduce:transition-none! ${
+								capsule.animate ? "" : "transition-none! "
+							}${capsule.ready ? "opacity-100" : "opacity-0"}`}
+							style={{
+								width: `${capsule.width}px`,
+								transform: `translateX(${capsule.x}px)`,
+							}}
+						/>
 						{tabs.map((tab) => {
 							const selected = activeTab === tab.id;
 							const showChevron = tab.id === "sidechat" && selected;
 							return (
 								<button
 									key={tab.id}
+									ref={(node) => {
+										tabBtnRefs.current[tab.id] = node;
+									}}
 									type="button"
 									role="tab"
 									aria-selected={selected}
@@ -353,10 +516,8 @@ export function RightWorkspaceDrawer({
 											setTab(effectiveId, tab.id);
 										}
 									}}
-									className={`m-press inline-flex min-h-8 flex-1 shrink-0 items-center justify-center gap-0.5 rounded-full px-2.5 text-m-xs whitespace-nowrap transition-colors ${
-										selected
-											? "m-liquid-lens font-semibold text-m-text"
-											: "font-medium text-m-text-2 active:text-m-text"
+									className={`m-press relative z-1 inline-flex min-h-8 flex-1 shrink-0 items-center justify-center gap-0.5 rounded-full px-2.5 text-m-xs whitespace-nowrap transition-colors ${
+										selected ? "font-semibold text-m-text" : "font-medium text-m-text-2 active:text-m-text"
 									}`}
 								>
 									<span>{tab.label}</span>
@@ -376,13 +537,13 @@ export function RightWorkspaceDrawer({
 					</nav>
 
 					<AnchoredPopover
-						open={moreOpen && moreActions.length > 0}
+						open={open && moreOpen && moreActions.length > 0}
 						onClose={() => setMoreOpen(false)}
 						anchorEl={moreBtnRef.current}
 						placement="bottom-end"
 						minWidth={196}
 						maxWidth={260}
-						className="m-liquid-surface rounded-2xl! border-(--m-liquid-border)! bg-[color-mix(in_srgb,var(--m-bg-elev)_88%,transparent)]!"
+						className="m-liquid-surface rounded-2xl!"
 					>
 						<div className="py-1">
 							{moreActions.map((action) => (

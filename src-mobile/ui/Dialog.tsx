@@ -20,7 +20,18 @@ export function Dialog({
 	useOverlay(open, onClose);
 	if (!mounted) return null;
 	return createPortal(
-		<div className="fixed inset-0 z-(--z-modal) flex items-center justify-center p-6">
+		<div
+			aria-hidden={!open || undefined}
+			className={`fixed inset-x-0 z-(--z-modal) flex items-center justify-center p-6 ${open ? "" : "pointer-events-none"}`}
+			style={{
+				top: "var(--m-vv-top, 0px)",
+				height: "var(--m-vh, 100dvh)",
+				paddingTop: "max(24px, var(--m-safe-top))",
+				paddingBottom: "max(24px, calc(var(--m-safe-bottom) - var(--m-kb, 0px)))",
+				paddingLeft: "max(24px, var(--m-safe-left))",
+				paddingRight: "max(24px, var(--m-safe-right))",
+			}}
+		>
 			<div
 				aria-hidden
 				onClick={onClose}

@@ -2,7 +2,7 @@
  * Transcript buffer: incremental page merge (offset / tailId / reset), cross-page tool results,
  * request stats side table and optimistic-message reconciliation. Pure: never mutates its inputs.
  */
-import { appendUnique, normalizeTranscript } from "../../../core/normalize";
+import { appendUnique, normalizeTranscript, resultDiff } from "../../../core/normalize";
 import type { Item, ToolItem, TranscriptItem, TranscriptPage } from "../../../core/types";
 import { requestStatFromItem, type RequestStat } from "./requestStats";
 
@@ -110,9 +110,14 @@ export function mergePage(prev: TranscriptState, page?: TranscriptPage | null): 
 			if (idx >= 0) {
 				const owner = items[idx];
 				const res = r.toolResult;
-				const tools: ToolItem[] = owner.tools.map((t) =>
-					t.id === res.toolCallId ? { ...t, status: res.isError ? "error" : "done", result: res.text || "" } : t,
-				);
+				const diff = resultDiff(res.details);
+				const tools: ToolItem[] = owner.tools.map((t) => {
+					if (t.id !== res.toolCallId) return t;
+					const nextDiff = diff ?? t.diff;
+					return nextDiff
+						? { ...t, status: res.isError ? "error" : "done", result: res.text || "", diff: nextDiff }
+						: { ...t, status: res.isError ? "error" : "done", result: res.text || "" };
+				});
 				if (items === base.items) items = items.slice();
 				items[idx] = { ...owner, tools };
 				patched = true;
@@ -195,7 +200,14 @@ export function prependOlderPage(prev: TranscriptState, page?: TranscriptPage | 
 			uniqueOlder[idx] = {
 				...owner,
 				tools: owner.tools.map((t) =>
-					t.id === orphan.id ? { ...t, status: orphan.status, result: orphan.result } : t,
+					t.id === orphan.id
+						? {
+								...t,
+								status: orphan.status,
+								result: orphan.result,
+								...(orphan.diff ? { diff: orphan.diff } : {}),
+							}
+						: t,
 				),
 			};
 			consumedPrev.add(i);

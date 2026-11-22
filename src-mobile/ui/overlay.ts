@@ -53,6 +53,11 @@ function onDocumentKeyDown(e: KeyboardEvent): void {
 	if (top) top();
 }
 
+/** True while any modal/sheet/drawer/menu registered with `useOverlay` currently owns input. */
+export function hasBlockingOverlay(): boolean {
+	return escapeStack.length > 0;
+}
+
 /**
  * Shared overlay behaviour while `open`: back-gesture layer, topmost-only Escape to close,
  * body scroll lock, and safe focus restore once all overlays close.

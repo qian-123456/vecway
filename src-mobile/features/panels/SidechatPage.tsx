@@ -14,6 +14,7 @@ import {
 	Plus,
 	RefreshCw,
 	Sparkles,
+	Trash2,
 	X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -35,6 +36,7 @@ import {
 	MenuRow,
 	PageHeader,
 	PullToRefresh,
+	confirm,
 	inputCls,
 	toast,
 } from "../../ui";
@@ -49,7 +51,7 @@ import { attachmentBlocker, buildPrompt } from "../chat/lib/prompt";
 import { formatDesktopStatParts, formatStatClock, requestStatFromItem, type RequestStat } from "../chat/lib/requestStats";
 import { EMPTY_TRANSCRIPT, mergePage } from "../chat/lib/transcript";
 import { loadUnsent, saveUnsent } from "../chat/lib/unsent";
-import { LoadGate, Loading } from "./PanelState";
+import { ErrorState, LoadGate, Loading } from "./PanelState";
 import { useLayer, useLoad, useResync, type LoadState } from "./hooks";
 import { useRightDrawer, type SidechatAnnotationPayload } from "./rightDrawerStore";
 
@@ -57,8 +59,10 @@ type PendingMessage = { id: number; text: string; images: ImageRef[] };
 type SidechatImage = { mime: string; data: string };
 type SidechatMessage = { text: string; imagePaths: string[]; images: SidechatImage[] };
 type SidechatAttachment = Attachment & { file: File; image?: SidechatImage };
-type DraftInject = { text: string; nonce: number };
+type DraftInject = { targetKey: string; text: string; nonce: number };
 
+const NEW_DRAFT_KEY = "__new__";
+const EMPTY_ATTS: SidechatAttachment[] = [];
 export const HANDBACK_MARKER = "【回传整理】";
 export const HANDBACK_PROMPT = `${HANDBACK_MARKER}请把我们在这个辅助对话里讨论并确定下来的内容，整理成一份可以交给主会话的结论。
 
@@ -97,26 +101,245 @@ function handbackReply(items: readonly Item[]): string | null {
 	return null;
 }
 
-export function SidechatPanel({ sessionId, embedded = false }: { sessionId: string; embedded?: boolean }) {
-	return <SidechatPanelInner key={sessionId} sessionId={sessionId} embedded={embedded} />;
+/** Text + streaming flag of the `index`-th (0-based) handback request reply, if present. */
+function nthHandbackReply(items: readonly Item[], index: number): { text: string; streaming: boolean } | null {
+	let seen = 0;
+	for (let i = 0; i < items.length; i++) {
+		const it = items[i];
+		if (it.role === "user" && it.text?.includes(HANDBACK_MARKER)) {
+			if (seen === index) {
+				const reply = items.slice(i + 1).find((x) => x.role === "assistant" && x.text);
+				return reply?.text ? { text: reply.text, streaming: Boolean(reply.streaming) } : null;
+			}
+			seen++;
+		}
+	}
+	return null;
 }
 
-function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string; embedded?: boolean }) {
+interface SidechatDraftController {
+	getText: (key: string) => string;
+	setText: (key: string, text: string) => void;
+	appendText: (key: string, text: string) => void;
+	getAtts: (key: string) => SidechatAttachment[];
+	addFiles: (key: string, files: readonly File[]) => void;
+	retryAtt: (key: string, att: SidechatAttachment) => void;
+	removeAtt: (key: string, att: SidechatAttachment) => void;
+	consumeSent: (key: string, sentText: string, sentAtts: readonly SidechatAttachment[]) => void;
+	transfer: (fromKey: string, toKey: string) => void;
+	discardKey: (key: string) => void;
+	markInjectConsumed: (nonce: number) => boolean;
+}
+
+function useSidechatDrafts(parentSessionId: string): SidechatDraftController {
+	const alive = useRef(true);
+	const textsRef = useRef<Record<string, string>>({});
+	const consumedNonces = useRef(new Set<number>());
+	const [attsByKey, setAttsByKey] = useState<Record<string, SidechatAttachment[]>>({});
+	const attsRef = useRef(attsByKey);
+	attsRef.current = attsByKey;
+	const nextAttId = useRef(0);
+	const uploads = useRef(new Map<string, AbortController>());
+
+	useEffect(() => {
+		alive.current = true;
+		return () => {
+			alive.current = false;
+			for (const ctl of uploads.current.values()) ctl.abort();
+			uploads.current.clear();
+			for (const list of Object.values(attsRef.current)) {
+				for (const att of list) if (att.url) URL.revokeObjectURL(att.url);
+			}
+		};
+	}, [parentSessionId]);
+
+	const patchAtt = useCallback((key: string, id: number, patch: Partial<SidechatAttachment>) => {
+		if (!alive.current) return;
+		setAttsByKey((prev) => {
+			const cur = prev[key];
+			if (!cur) return prev;
+			return { ...prev, [key]: cur.map((att) => (att.id === id ? { ...att, ...patch } : att)) };
+		});
+	}, []);
+
+	const uploadAtt = useCallback(
+		async (key: string, att: SidechatAttachment) => {
+			const uploadKey = `${key}:${att.id}`;
+			uploads.current.get(uploadKey)?.abort();
+			const ctl = new AbortController();
+			uploads.current.set(uploadKey, ctl);
+			patchAtt(key, att.id, { status: "up", err: undefined });
+			try {
+				let image: SidechatImage | undefined;
+				if (att.isImage) image = await imageFromBlob(att.file);
+				if (ctl.signal.aborted) return;
+				const result = await upload<{ path: string }>(`/sessions/${q(parentSessionId)}/upload`, att.file, {
+					name: att.name,
+					signal: ctl.signal,
+				});
+				patchAtt(key, att.id, { status: "ok", path: result.path, image });
+			} catch (e) {
+				if (!ctl.signal.aborted) {
+					patchAtt(key, att.id, { status: "err", err: errorMessage(e) });
+					toast(`上传失败：${errorMessage(e)}`, { kind: "error" });
+				}
+			} finally {
+				if (uploads.current.get(uploadKey) === ctl) uploads.current.delete(uploadKey);
+			}
+		},
+		[parentSessionId, patchAtt],
+	);
+
+	const addFiles = useCallback(
+		(key: string, files: readonly File[]) => {
+			const created: SidechatAttachment[] = [];
+			for (const file of files) {
+				if (file.size > 20 * 1024 * 1024) {
+					toast(`「${file.name}」超过 20MB 上限，无法上传`, { kind: "error" });
+					continue;
+				}
+				const isImage = file.type.startsWith("image/");
+				created.push({
+					id: ++nextAttId.current,
+					name: file.name || "附件",
+					isImage,
+					url: isImage ? URL.createObjectURL(file) : "",
+					status: "up",
+					file,
+				});
+			}
+			if (!created.length) return;
+			setAttsByKey((prev) => ({ ...prev, [key]: [...(prev[key] ?? []), ...created] }));
+			for (const att of created) void uploadAtt(key, att);
+		},
+		[uploadAtt],
+	);
+
+	const removeAtt = useCallback((key: string, att: SidechatAttachment) => {
+		const uploadKey = `${key}:${att.id}`;
+		uploads.current.get(uploadKey)?.abort();
+		uploads.current.delete(uploadKey);
+		if (att.url) URL.revokeObjectURL(att.url);
+		setAttsByKey((prev) => ({ ...prev, [key]: (prev[key] ?? []).filter((item) => item.id !== att.id) }));
+	}, []);
+
+	const consumeSent = useCallback((key: string, sentText: string, sentAtts: readonly SidechatAttachment[]) => {
+		if ((textsRef.current[key] ?? "") === sentText) {
+			textsRef.current[key] = "";
+		}
+		if (sentAtts.length > 0) {
+			const sentIds = new Set(sentAtts.map((a) => a.id));
+			for (const att of sentAtts) if (att.url) URL.revokeObjectURL(att.url);
+			setAttsByKey((prev) => ({ ...prev, [key]: (prev[key] ?? []).filter((att) => !sentIds.has(att.id)) }));
+		}
+	}, []);
+
+	const transfer = useCallback((fromKey: string, toKey: string) => {
+		if (fromKey === toKey) return;
+		const fromText = textsRef.current[fromKey];
+		if (fromText) {
+			const toText = textsRef.current[toKey] ?? "";
+			textsRef.current[toKey] = toText.trim() ? `${toText.replace(/\s+$/, "")}\n\n${fromText}` : fromText;
+			delete textsRef.current[fromKey];
+		}
+		const fromAtts = attsRef.current[fromKey];
+		if (fromAtts?.length) {
+			setAttsByKey((prev) => {
+				const moved = prev[fromKey];
+				if (!moved?.length) return prev;
+				const next = { ...prev };
+				delete next[fromKey];
+				next[toKey] = [...(next[toKey] ?? []), ...moved];
+				return next;
+			});
+		}
+	}, []);
+
+	const discardKey = useCallback((key: string) => {
+		delete textsRef.current[key];
+		const prefix = `${key}:`;
+		for (const [uk, ctl] of uploads.current.entries()) {
+			if (uk.startsWith(prefix)) {
+				ctl.abort();
+				uploads.current.delete(uk);
+			}
+		}
+		const list = attsRef.current[key];
+		if (list?.length) {
+			for (const att of list) if (att.url) URL.revokeObjectURL(att.url);
+			setAttsByKey((prev) => {
+				const next = { ...prev };
+				delete next[key];
+				return next;
+			});
+		}
+	}, []);
+
+	return useMemo(
+		() => ({
+			getText: (key: string) => textsRef.current[key] ?? "",
+			setText: (key: string, text: string) => {
+				textsRef.current[key] = text;
+			},
+			appendText: (key: string, text: string) => {
+				const cur = textsRef.current[key] ?? "";
+				textsRef.current[key] = cur.trim() ? `${cur.replace(/\s+$/, "")}\n\n${text}` : text;
+			},
+			getAtts: (key: string) => attsRef.current[key] ?? EMPTY_ATTS,
+			addFiles,
+			retryAtt: (key: string, att: SidechatAttachment) => void uploadAtt(key, att),
+			removeAtt,
+			consumeSent,
+			transfer,
+			discardKey,
+			markInjectConsumed: (nonce: number) => {
+				if (consumedNonces.current.has(nonce)) return false;
+				consumedNonces.current.add(nonce);
+				return true;
+			},
+		}),
+		[addFiles, uploadAtt, removeAtt, consumeSent, transfer, discardKey],
+	);
+}
+
+export function SidechatPanel({
+	sessionId,
+	embedded = false,
+	active = true,
+}: {
+	sessionId: string;
+	embedded?: boolean;
+	active?: boolean;
+}) {
+	return <SidechatPanelInner key={sessionId} sessionId={sessionId} embedded={embedded} active={active} />;
+}
+
+function SidechatPanelInner({
+	sessionId,
+	embedded = false,
+	active = true,
+}: {
+	sessionId: string;
+	embedded?: boolean;
+	active?: boolean;
+}) {
 	const draftSession = isDraftId(sessionId);
 	const alive = useRef(true);
 	const parentRef = useRef(sessionId);
 	parentRef.current = sessionId;
-
+	const drafts = useSidechatDrafts(sessionId);
 	const [mode, setMode] = useState<"thread" | "new">("new");
 	const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-	const [createdMeta, setCreatedMeta] = useState<{ parentId: string; id: string; initial?: SidechatMessage; draft?: string } | null>(null);
+	const viewRef = useRef<{ mode: "thread" | "new"; activeThreadId: string | null }>({ mode: "new", activeThreadId: null });
+	viewRef.current = { mode, activeThreadId };
+	const [createdMetaMap, setCreatedMetaMap] = useState<Record<string, SidechatMessage>>({});
+	const justCreatedIds = useRef(new Set<string>());
 	const [switcherOpen, setSwitcherOpen] = useState(false);
 	const [handbackOpen, setHandbackOpen] = useState(false);
 	const [canHandback, setCanHandback] = useState(false);
 	const [draftInject, setDraftInject] = useState<DraftInject | null>(null);
 	const injectSeq = useRef(0);
 	const autoInitializedFor = useRef<string | null>(null);
-	const pendingCreate = useRef<{ parentId: string; id: string; message: SidechatMessage } | null>(null);
 
 	useEffect(() => {
 		alive.current = true;
@@ -129,28 +352,39 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 	useEffect(() => {
 		setMode("new");
 		setActiveThreadId(null);
-		setCreatedMeta(null);
+		setCreatedMetaMap({});
+		justCreatedIds.current.clear();
 		setSwitcherOpen(false);
 		setHandbackOpen(false);
 		setCanHandback(false);
 		autoInitializedFor.current = null;
-		pendingCreate.current = null;
 
 		const draftKey = `${SIDECHAT_DRAFT_PREFIX}${sessionId}`;
 		const stored = sessionStorage.getItem(draftKey);
 		sessionStorage.removeItem(draftKey);
 		if (stored) {
-			setDraftInject({ text: stored, nonce: ++injectSeq.current });
+			if (viewRef.current.mode === "new") {
+				setDraftInject({ targetKey: NEW_DRAFT_KEY, text: stored, nonce: ++injectSeq.current });
+			} else {
+				drafts.appendText(NEW_DRAFT_KEY, stored);
+				setDraftInject(null);
+			}
 		} else {
 			setDraftInject(null);
 		}
-	}, [sessionId]);
+	}, [sessionId, drafts]);
 
 	const state = useLoad(
 		async (signal) => {
 			if (draftSession) return [] as MobileSession[];
-			const rows = await api<MobileSession[]>("GET", `/sessions/${q(sessionId)}/sidechats`, undefined, { signal });
-			return [...rows].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+			const raw = await api<MobileSession[] | { sidechats?: MobileSession[] }>(
+				"GET",
+				`/sessions/${q(sessionId)}/sidechats`,
+				undefined,
+				{ signal },
+			);
+			const list = Array.isArray(raw) ? raw : Array.isArray(raw?.sidechats) ? raw.sidechats : [];
+			return list.filter((r) => !r.archived).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 		},
 		[sessionId, draftSession],
 	);
@@ -159,30 +393,56 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 	const rows = state.data ?? [];
 	const pendingSidechat = useRightDrawer((s) => s.pendingSidechat);
 
-	// Auto-select the latest sidechat once rows load for this session unless user already picked or started creating.
+	// Initial auto-select and ongoing reconciliation whenever a refreshed list succeeds.
 	useEffect(() => {
-		if (state.loading || state.data === null) return;
-		if (autoInitializedFor.current === sessionId) return;
-		autoInitializedFor.current = sessionId;
-		if (rows.length > 0 && !activeThreadId) {
-			setActiveThreadId(rows[0].id);
-			setMode("thread");
-		} else if (rows.length === 0) {
-			setMode("new");
+		if (state.loading || state.data === null || state.error !== null) return;
+		if (autoInitializedFor.current !== sessionId) {
+			autoInitializedFor.current = sessionId;
+			if (rows.length > 0 && !activeThreadId) {
+				setActiveThreadId(rows[0].id);
+				setMode("thread");
+			} else if (rows.length === 0 && viewRef.current.mode !== "thread") {
+				setMode("new");
+			}
+			return;
 		}
-	}, [sessionId, state.loading, state.data, rows, activeThreadId]);
+		if (mode === "thread" && activeThreadId) {
+			const exists = rows.some((r) => r.id === activeThreadId);
+			if (exists) {
+				justCreatedIds.current.delete(activeThreadId);
+			} else if (!justCreatedIds.current.has(activeThreadId)) {
+				if (rows.length > 0) {
+					setActiveThreadId(rows[0].id);
+				} else {
+					setActiveThreadId(null);
+					setMode("new");
+					setCanHandback(false);
+				}
+			}
+		}
+	}, [sessionId, state.loading, state.data, state.error, rows, mode, activeThreadId]);
 
 	const createSidechat = useCallback(
-		async (message: SidechatMessage): Promise<boolean> => {
+		async (message: SidechatMessage, sentText = "", sentAtts: readonly SidechatAttachment[] = []): Promise<boolean> => {
 			const targetParent = sessionId;
 			try {
 				const info = await api<{ sessionId: string }>("POST", `/sessions/${q(targetParent)}/sidechats`, {
 					question: message.text,
 					imagePaths: message.imagePaths,
 				});
-				if (!alive.current || parentRef.current !== targetParent) return false;
 				void useSessions.getState().refresh();
-				pendingCreate.current = { parentId: targetParent, id: info.sessionId, message };
+				if (!alive.current || parentRef.current !== targetParent) return true;
+				drafts.consumeSent(NEW_DRAFT_KEY, sentText, sentAtts);
+				justCreatedIds.current.add(info.sessionId);
+				setCreatedMetaMap((prev) => ({ ...prev, [info.sessionId]: message }));
+				if (viewRef.current.mode === "new") {
+					drafts.transfer(NEW_DRAFT_KEY, info.sessionId);
+					setActiveThreadId(info.sessionId);
+					setMode("thread");
+				} else {
+					toast("新辅助对话已创建", { kind: "success" });
+				}
+				void state.reload(true);
 				return true;
 			} catch (e) {
 				if (!alive.current || parentRef.current !== targetParent) return false;
@@ -190,7 +450,7 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 				return false;
 			}
 		},
-		[sessionId],
+		[sessionId, drafts, state.reload],
 	);
 
 	// Consume structured annotations targeted at Sidechat (from MessageActions or Terminal block multi-select).
@@ -204,28 +464,26 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 		if (rows.length === 0 && payload.comment?.trim()) {
 			// First sidechat with explicit comment: create and open immediately so the user sees the answer stream.
 			const msg: SidechatMessage = { text, imagePaths: [], images: [] };
-			void createSidechat(msg).then((ok) => {
-				if (!ok || !pendingCreate.current || parentRef.current !== sessionId) return;
-				const c = pendingCreate.current;
-				pendingCreate.current = null;
-				setCreatedMeta({ parentId: sessionId, id: c.id, initial: c.message });
-				setActiveThreadId(c.id);
-				setMode("thread");
-				void state.reload(true);
-			});
+			void createSidechat(msg);
 			return;
 		}
+		let targetKey = NEW_DRAFT_KEY;
 		if (rows.length > 0) {
-			const targetId = activeThreadId ?? rows[0].id;
-			setActiveThreadId(targetId);
+			targetKey = activeThreadId ?? rows[0].id;
+			setActiveThreadId(targetKey);
 			setMode("thread");
 		} else {
 			setMode("new");
 		}
-		setDraftInject({ text, nonce: ++injectSeq.current });
-	}, [pendingSidechat, sessionId, draftSession, state.loading, state.data, rows, activeThreadId, createSidechat, state]);
+		const currentKey = viewRef.current.mode === "thread" && viewRef.current.activeThreadId ? viewRef.current.activeThreadId : NEW_DRAFT_KEY;
+		if (currentKey === targetKey) {
+			setDraftInject({ targetKey, text, nonce: ++injectSeq.current });
+		} else {
+			drafts.appendText(targetKey, text);
+		}
+	}, [pendingSidechat, sessionId, draftSession, state.loading, state.data, rows, activeThreadId, createSidechat, drafts]);
 
-	useLayer(switcherOpen, () => setSwitcherOpen(false));
+	useLayer(active && switcherOpen, () => setSwitcherOpen(false));
 
 	const sessionsById = useSessions((s) => s.byId);
 	const activeRow = useMemo(
@@ -246,8 +504,8 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 	const [moreOpen, setMoreOpen] = useState(false);
 	const [moreAnchor, setMoreAnchor] = useState<HTMLElement | null>(null);
 	useEffect(() => {
-		if (!hasHandback) setMoreOpen(false);
-	}, [hasHandback]);
+		if (!active || (mode !== "thread" && !hasHandback)) setMoreOpen(false);
+	}, [active, mode, hasHandback]);
 
 	const drawerTab = useRightDrawer((s) => s.tabBySession[sessionId]);
 	const drawerOpen = useRightDrawer((s) => s.open);
@@ -264,20 +522,66 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 	const toggleSwitcher = useCallback(() => setSwitcherOpen((v) => !v), []);
 	const openHandback = useCallback(() => setHandbackOpen(true), []);
 
+	const deleteThread = useCallback(
+		async (target: MobileSession) => {
+			const busy = target.status === "working" || target.status === "awaiting_answer" || target.status === "awaiting_approval";
+			const ok = await confirm({
+				title: "删除辅助对话",
+				message: busy
+					? `「${sessionName(target)}」正在运行中，确定删除并移除吗？`
+					: `确定删除「${sessionName(target)}」？删除后将从辅助对话列表移除。`,
+				confirmText: "删除",
+				danger: true,
+			});
+			if (!ok) return;
+			try {
+				await api("PATCH", `/left/sessions/${q(target.id)}`, { archived: true });
+				justCreatedIds.current.delete(target.id);
+				drafts.discardKey(target.id);
+				setCreatedMetaMap((prev) => {
+					if (!(target.id in prev)) return prev;
+					const next = { ...prev };
+					delete next[target.id];
+					return next;
+				});
+				toast("已删除辅助对话", { kind: "success" });
+				void useSessions.getState().refresh();
+				await state.reload(true);
+			} catch (e) {
+				toast(`删除失败：${errorMessage(e)}`, { kind: "error" });
+			}
+		},
+		[drafts, state.reload],
+	);
+
+	const moreActions = useMemo(() => {
+		const list: Array<{ id: string; label: string; icon: ReactNode; danger?: boolean; onSelect: () => void }> = [];
+		if (hasHandback) {
+			list.push({
+				id: "handback",
+				label: "把结论发回主对话",
+				icon: <CornerDownLeft size={18} strokeWidth={1.75} />,
+				onSelect: openHandback,
+			});
+		}
+		if (mode === "thread" && activeRow) {
+			const target = activeRow;
+			list.push({
+				id: "delete",
+				label: "删除此辅助对话",
+				icon: <Trash2 size={18} strokeWidth={1.75} />,
+				danger: true,
+				onSelect: () => void deleteThread(target),
+			});
+		}
+		return list;
+	}, [hasHandback, openHandback, mode, activeRow, deleteThread]);
+
 	useEffect(() => {
 		if (!embedded) return;
 		useRightDrawer.getState().setTabHeader(sessionId, "sidechat", {
 			title: headerTitle,
-			moreActions: hasHandback
-				? [
-						{
-							id: "handback",
-							label: "把结论发回主对话",
-							icon: <CornerDownLeft size={18} strokeWidth={1.75} />,
-							onSelect: openHandback,
-						},
-					]
-				: [],
+			moreActions,
 			sidechatSwitcher: draftSession
 				? undefined
 				: {
@@ -286,8 +590,7 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 						toggle: toggleSwitcher,
 					},
 		});
-	}, [embedded, sessionId, headerTitle, hasHandback, openHandback, draftSession, rows.length, switcherOpen, toggleSwitcher]);
-
+	}, [embedded, sessionId, headerTitle, moreActions, draftSession, rows.length, switcherOpen, toggleSwitcher]);
 	useEffect(() => {
 		if (!embedded) return;
 		return () => {
@@ -315,9 +618,10 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 					parentId={sessionId}
 					threadId={activeThreadId}
 					embedded={embedded}
-					initial={createdMeta?.parentId === sessionId && createdMeta.id === activeThreadId ? createdMeta.initial : undefined}
-					initialDraft={createdMeta?.parentId === sessionId && createdMeta.id === activeThreadId ? createdMeta.draft : undefined}
-					draftInject={draftInject}
+					active={active}
+					drafts={drafts}
+					initial={createdMetaMap[activeThreadId]}
+					draftInject={draftInject?.targetKey === activeThreadId ? draftInject : null}
 					handbackOpen={handbackOpen}
 					onCloseHandback={() => setHandbackOpen(false)}
 					onCanHandbackChange={setCanHandback}
@@ -326,22 +630,15 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 				<NewSidechatView
 					key={sessionId}
 					sessionId={sessionId}
+					active={active}
+					drafts={drafts}
 					state={state}
-					draftInject={draftInject}
+					draftInject={draftInject?.targetKey === NEW_DRAFT_KEY ? draftInject : null}
 					onCreate={createSidechat}
-					onCreated={(nextDraft) => {
-						if (!pendingCreate.current || pendingCreate.current.parentId !== parentRef.current) return;
-						const c = pendingCreate.current;
-						pendingCreate.current = null;
-						setCreatedMeta({ parentId: sessionId, id: c.id, initial: c.message, draft: nextDraft });
-						setActiveThreadId(c.id);
-						setMode("thread");
-						void state.reload(true);
-					}}
 				/>
 			)}
 
-			{switcherOpen && (
+			{active && switcherOpen && (
 				<div className="absolute inset-0 z-(--z-base) flex flex-col justify-start">
 					<div
 						aria-hidden="true"
@@ -365,47 +662,71 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 							</button>
 						</div>
 						<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
-							{rows.length === 0 ? (
-								<div className="px-3 py-6 text-center text-m-xs text-m-text-3">
-									还没有辅助对话，点击下方新建或在对话框提问
-								</div>
+							{state.loading && state.data === null ? (
+								<Loading label="加载辅助对话列表..." />
+							) : state.error !== null && rows.length === 0 ? (
+								<ErrorState message={state.error} onRetry={() => void state.reload()} />
 							) : (
-								<div className="space-y-1">
-									{rows.map((s) => {
-										const selected = mode === "thread" && s.id === activeThreadId;
-										return (
-											<button
-												key={s.id}
-												type="button"
-												aria-current={selected ? "true" : undefined}
-												onClick={() => {
-													setActiveThreadId(s.id);
-													setMode("thread");
-													setSwitcherOpen(false);
-												}}
-												className={`w-full rounded-xl px-3 py-2.5 text-left transition-colors ${
-													selected ? "bg-m-accent-soft/45" : "active:bg-m-surface-hover"
-												}`}
-											>
-												<div className="flex items-center gap-2">
-													{selected && <Check size={14} className="shrink-0 text-m-accent" />}
-													<span className="min-w-0 flex-1 truncate text-m-sm font-medium text-m-text">
-														{sessionName(s)}
-													</span>
-												</div>
-												<div className="mt-1 flex items-center gap-1.5 text-m-xs text-m-text-3">
-													{s.status === "working" && <span aria-hidden className="m-pulse h-2 w-2 rounded-full bg-m-accent" />}
-													<span className="whitespace-nowrap">{STATUS_LABEL[s.status] ?? s.status}</span>
-													<span aria-hidden>·</span>
-													<span className="whitespace-nowrap">{relTime(s.updatedAt)}</span>
-												</div>
-												{s.lastAssistant && (
-													<p className="mt-1 line-clamp-2 text-m-xs text-m-text-2">{s.lastAssistant}</p>
-												)}
-											</button>
-										);
-									})}
-								</div>
+								<>
+									{state.error !== null && (
+										<div role="alert" className="mb-2 flex items-center justify-between gap-2 rounded-xl bg-m-warn-bg px-3 py-2 text-m-xs text-m-warn">
+											<span className="min-w-0 flex-1 break-words">刷新失败：{state.error}</span>
+											<Button size="sm" onClick={() => void state.reload()}>重试</Button>
+										</div>
+									)}
+									{rows.length === 0 ? (
+										<div className="px-3 py-6 text-center text-m-xs text-m-text-3">
+											还没有辅助对话，点击下方新建或在对话框提问
+										</div>
+									) : (
+										<div className="space-y-1">
+											{rows.map((s) => {
+												const selected = mode === "thread" && s.id === activeThreadId;
+												const title = sessionName(s);
+												return (
+													<div key={s.id} className="flex items-center gap-1">
+														<button
+															type="button"
+															aria-current={selected ? "true" : undefined}
+															onClick={() => {
+																setActiveThreadId(s.id);
+																setMode("thread");
+																setSwitcherOpen(false);
+															}}
+															className={`min-w-0 flex-1 rounded-xl px-3 py-2.5 text-left transition-colors ${
+																selected ? "bg-m-accent-soft/45" : "active:bg-m-surface-hover"
+															}`}
+														>
+															<div className="flex items-center gap-2">
+																{selected && <Check size={14} className="shrink-0 text-m-accent" />}
+																<span className="min-w-0 flex-1 truncate text-m-sm font-medium text-m-text">
+																	{title}
+																</span>
+															</div>
+															<div className="mt-1 flex items-center gap-1.5 text-m-xs text-m-text-3">
+																{s.status === "working" && <span aria-hidden className="m-pulse h-2 w-2 rounded-full bg-m-accent" />}
+																<span className="whitespace-nowrap">{STATUS_LABEL[s.status] ?? s.status}</span>
+																<span aria-hidden>·</span>
+																<span className="whitespace-nowrap">{relTime(s.updatedAt)}</span>
+															</div>
+															{s.lastAssistant && (
+																<p className="mt-1 line-clamp-2 text-m-xs text-m-text-2">{s.lastAssistant}</p>
+															)}
+														</button>
+														<button
+															type="button"
+															aria-label={`删除 ${title}`}
+															onClick={() => void deleteThread(s)}
+															className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-m-text-3 active:bg-m-danger-bg active:text-m-danger"
+														>
+															<Trash2 size={15} strokeWidth={1.75} />
+														</button>
+													</div>
+												);
+											})}
+										</div>
+									)}
+								</>
 							)}
 						</div>
 						<div className="shrink-0 border-t border-m-border/60 p-2.5">
@@ -456,7 +777,7 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 								className={`transition-transform duration-(--m-dur-fast) ${switcherOpen ? "rotate-180" : ""}`}
 							/>
 						</button>
-						{hasHandback && (
+						{moreActions.length > 0 && (
 							<button
 								type="button"
 								aria-label="更多操作"
@@ -476,23 +797,27 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 			/>
 			{body}
 			<AnchoredPopover
-				open={moreOpen && hasHandback}
+				open={active && moreOpen && moreActions.length > 0}
 				onClose={() => setMoreOpen(false)}
 				anchorEl={moreAnchor}
 				placement="bottom-end"
 				minWidth={196}
 				maxWidth={260}
-				className="m-liquid-surface rounded-2xl! border-(--m-liquid-border)! bg-[color-mix(in_srgb,var(--m-bg-elev)_88%,transparent)]!"
+				className="m-liquid-surface rounded-2xl!"
 			>
 				<div className="py-1">
-					<MenuRow
-						icon={<CornerDownLeft size={18} strokeWidth={1.75} />}
-						label="把结论发回主对话"
-						onClick={() => {
-							setMoreOpen(false);
-							setHandbackOpen(true);
-						}}
-					/>
+					{moreActions.map((a) => (
+						<MenuRow
+							key={a.id}
+							icon={a.icon}
+							label={a.label}
+							danger={a.danger}
+							onClick={() => {
+								setMoreOpen(false);
+								a.onSelect();
+							}}
+						/>
+					))}
 				</div>
 			</AnchoredPopover>
 		</div>
@@ -506,17 +831,19 @@ export function SidechatPage({ route }: PageProps) {
 /* ---------------------------------------------------------------- new */
 
 function NewSidechatView({
-	sessionId,
+	sessionId: _sessionId,
+	active,
+	drafts,
 	state,
 	draftInject,
 	onCreate,
-	onCreated,
 }: {
 	sessionId: string;
+	active: boolean;
+	drafts: SidechatDraftController;
 	state: LoadState<MobileSession[]>;
 	draftInject: DraftInject | null;
-	onCreate: (message: SidechatMessage) => Promise<boolean>;
-	onCreated: (nextDraft: string) => void;
+	onCreate: (message: SidechatMessage, sentText: string, sentAtts: readonly SidechatAttachment[]) => Promise<boolean>;
 }) {
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
@@ -532,11 +859,13 @@ function NewSidechatView({
 				</LoadGate>
 			</PullToRefresh>
 			<Composer
-				sessionId={sessionId}
+				key={NEW_DRAFT_KEY}
+				draftKey={NEW_DRAFT_KEY}
+				active={active}
+				drafts={drafts}
 				placeholder="问一个问题，开始辅助对话"
 				draftInject={draftInject}
 				onSend={onCreate}
-				onAccepted={onCreated}
 			/>
 		</div>
 	);
@@ -548,8 +877,9 @@ function ThreadView({
 	parentId,
 	threadId,
 	embedded,
+	active,
+	drafts,
 	initial,
-	initialDraft,
 	draftInject,
 	handbackOpen,
 	onCloseHandback,
@@ -558,8 +888,9 @@ function ThreadView({
 	parentId: string;
 	threadId: string;
 	embedded: boolean;
+	active: boolean;
+	drafts: SidechatDraftController;
 	initial?: SidechatMessage;
-	initialDraft?: string;
 	draftInject: DraftInject | null;
 	handbackOpen: boolean;
 	onCloseHandback: () => void;
@@ -595,20 +926,38 @@ function ThreadView({
 
 	const [handbackDraft, setHandbackDraft] = useState("");
 	const [summarizing, setSummarizing] = useState(false);
-	const [summarySettled, setSummarySettled] = useState(false);
-	const summaryRun = useRef<"idle" | "running" | "terminal" | "settling">("idle");
 	const [handbackSending, setHandbackSending] = useState(false);
-
+	const summaryNonceRef = useRef(0);
+	const fetchSeqRef = useRef(0);
+	const [completedFetchSeq, setCompletedFetchSeq] = useState(0);
+	const activeSummaryRef = useRef<{
+		nonce: number;
+		baselineCount: number;
+		startFetchSeq: number;
+		terminalFetchSeq: number | null;
+		sawAgentEnd: boolean;
+		awaitingContinuation: boolean;
+		resynced: boolean;
+		edited: boolean;
+	} | null>(null);
+	const handbackEditedRef = useRef(false);
+	const prefilledForOpenRef = useRef(false);
 	useEffect(() => {
 		onCanHandbackChange(items.length > 0);
 	}, [items.length, onCanHandbackChange]);
 
-	// Opening handback sheet pre-fills an existing summary if available, NEVER auto-triggers a model turn.
+	// Opening handback sheet pre-fills an existing summary once per open without restoring cleared text or overwriting edits.
 	useEffect(() => {
-		if (!handbackOpen || handbackDraft) return;
+		if (!handbackOpen) {
+			prefilledForOpenRef.current = false;
+			return;
+		}
+		if (prefilledForOpenRef.current) return;
+		prefilledForOpenRef.current = true;
+		if (handbackEditedRef.current || activeSummaryRef.current) return;
 		const reply = handbackReply(items);
 		if (reply) setHandbackDraft(reply);
-	}, [handbackOpen, handbackDraft, items]);
+	}, [handbackOpen, items]);
 
 	const fetchThread = useCallback(async () => {
 		if (inflight.current) {
@@ -616,7 +965,7 @@ function ThreadView({
 			return;
 		}
 		inflight.current = true;
-		if (summaryRun.current === "terminal") summaryRun.current = "settling";
+		const fetchMine = ++fetchSeqRef.current;
 		try {
 			const c = transcript.current;
 			const page = await api<TranscriptPage>(
@@ -649,6 +998,7 @@ function ThreadView({
 					return false;
 				}),
 			);
+			setCompletedFetchSeq(fetchMine);
 			setError(null);
 		} catch (e) {
 			if (alive.current) setError(errorMessage(e, "加载失败"));
@@ -658,8 +1008,6 @@ function ThreadView({
 			if (again.current && alive.current) {
 				again.current = false;
 				void fetchThread();
-			} else if (alive.current && summaryRun.current === "settling") {
-				setSummarySettled(true);
 			}
 		}
 	}, [threadId]);
@@ -678,29 +1026,53 @@ function ThreadView({
 	}, [session?.status]);
 
 	const triggerSummarize = async () => {
-		summaryRun.current = "running";
-		setSummarySettled(false);
+		if (working && !summarizing) return;
+		const nonce = ++summaryNonceRef.current;
+		const baselineCount = items.filter((it) => it.role === "user" && it.text?.includes(HANDBACK_MARKER)).length;
+		activeSummaryRef.current = {
+			nonce,
+			baselineCount,
+			startFetchSeq: fetchSeqRef.current,
+			terminalFetchSeq: null,
+			sawAgentEnd: false,
+			awaitingContinuation: false,
+			resynced: false,
+			edited: false,
+		};
 		setSummarizing(true);
 		try {
 			await api("POST", `/sessions/${q(threadId)}/prompt`, { text: HANDBACK_PROMPT });
+			if (!alive.current || activeSummaryRef.current?.nonce !== nonce) return;
+			setRunActive(true);
 			scheduleFetch();
 		} catch (e) {
-			summaryRun.current = "idle";
+			if (!alive.current || activeSummaryRef.current?.nonce !== nonce) return;
+			activeSummaryRef.current = null;
 			setSummarizing(false);
 			toast(`整理失败：${errorMessage(e)}`, { kind: "error" });
 		}
 	};
 
+	// Reconcile summary completion from either SSE agent_end or transcript/status resync.
 	useEffect(() => {
-		if (!summarizing) return;
-		const reply = handbackReply(items);
-		if (reply) setHandbackDraft(reply);
-		if (summarySettled) {
-			summaryRun.current = "idle";
+		const req = activeSummaryRef.current;
+		if (!req) return;
+		const reply = nthHandbackReply(items, req.baselineCount);
+		if (reply && !req.edited && reply.text) {
+			setHandbackDraft(reply.text);
+		}
+		if (req.sawAgentEnd) {
+			if (req.terminalFetchSeq !== null && completedFetchSeq > req.terminalFetchSeq) {
+				activeSummaryRef.current = null;
+				setSummarizing(false);
+			}
+			return;
+		}
+		if (req.resynced && !req.awaitingContinuation && reply && !working && !reply.streaming && completedFetchSeq > req.startFetchSeq) {
+			activeSummaryRef.current = null;
 			setSummarizing(false);
 		}
-	}, [items, summarizing, summarySettled]);
-
+	}, [items, working, loaded, completedFetchSeq]);
 	const handbackTitle = session ? sessionName(session) : "辅助对话";
 	const insertIntoParent = () => {
 		const text = handbackDraft.trim();
@@ -743,10 +1115,19 @@ function ThreadView({
 		void fetchThread();
 		const off = events.on("rpc", (d) => {
 			if (d.sessionId !== threadId) return;
-			if (d.frame.type === "agent_start" || d.frame.type === "turn_start") setRunActive(true);
+			if (d.frame.type === "agent_start" || d.frame.type === "turn_start") {
+				setRunActive(true);
+				if (activeSummaryRef.current) activeSummaryRef.current.awaitingContinuation = false;
+			}
 			if ((d.frame.type === "agent_end" && (d.frame.isTerminal !== false || d.frame.awaitingAsyncWork === true)) || (d.frame.type === "turn_end" && d.frame.isTerminal === true)) setRunActive(false);
-			if (summaryRun.current === "running" && d.frame.type === "agent_end" && d.frame.isTerminal !== false) {
-				summaryRun.current = "terminal";
+			if (activeSummaryRef.current && d.frame.type === "agent_end") {
+				if (d.frame.isTerminal === false) {
+					activeSummaryRef.current.awaitingContinuation = true;
+				} else {
+					activeSummaryRef.current.awaitingContinuation = false;
+					activeSummaryRef.current.sawAgentEnd = true;
+					activeSummaryRef.current.terminalFetchSeq = fetchSeqRef.current;
+				}
 			}
 			scheduleFetch();
 		});
@@ -764,7 +1145,13 @@ function ThreadView({
 			document.removeEventListener("visibilitychange", onVisibility);
 		};
 	}, [threadId, fetchThread, scheduleFetch]);
-	useResync(() => void fetchThread());
+	useResync(() => {
+		if (activeSummaryRef.current) {
+			activeSummaryRef.current.resynced = true;
+			activeSummaryRef.current.awaitingContinuation = false;
+		}
+		void fetchThread();
+	});
 
 	// Keep pinned to the bottom unless the user scrolled up.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: scroll on content change
@@ -785,14 +1172,19 @@ function ThreadView({
 		return () => observer.disconnect();
 	}, []);
 
-	const send = async ({ text, images, imagePaths }: SidechatMessage): Promise<boolean> => {
+	const send = async (msg: SidechatMessage, sentText: string, sentAtts: readonly SidechatAttachment[]): Promise<boolean> => {
 		if (!loaded) return false;
 		const id = ++nextPendingId.current;
-		updatePending([...pendingRef.current, { id, text, images: transcriptImages(imagePaths.map((path) => ({ path }))) }]);
+		updatePending([...pendingRef.current, { id, text: msg.text, images: transcriptImages(msg.imagePaths.map((path) => ({ path }))) }]);
 		stick.current = true;
 		setRunActive(true);
 		try {
-			await api("POST", `/sessions/${q(threadId)}/prompt-ex`, { text, images, ...(working ? { streamingBehavior: "followUp" } : {}) });
+			await api("POST", `/sessions/${q(threadId)}/prompt-ex`, {
+				text: msg.text,
+				images: msg.images,
+				...(working ? { streamingBehavior: "followUp" } : {}),
+			});
+			drafts.consumeSent(threadId, sentText, sentAtts);
 			if (!alive.current) return true;
 			scheduleFetch();
 			return true;
@@ -822,13 +1214,16 @@ function ThreadView({
 						<div ref={content} className="space-y-5">
 							{!loaded && <Loading />}
 							{loaded && error !== null && items.length === 0 && (
-								<EmptyState title="加载失败" hint={error} action={<Button onClick={() => void fetchThread()}>重试</Button>} />
+								<ErrorState message={error} onRetry={() => void fetchThread()} />
 							)}
 							{error && items.length > 0 && (
 								<div role="alert" className="space-y-2 rounded-m-lg bg-m-danger-bg p-3 text-m-sm text-m-danger [overflow-wrap:anywhere]">
 									<p>{error}</p>
 									<Button size="sm" onClick={() => void fetchThread()}>重试加载</Button>
 								</div>
+							)}
+							{loaded && error === null && items.length === 0 && pending.length === 0 && !working && (
+								<EmptyState icon={<MessagesSquare {...ICON} />} title="暂无消息" hint="在下方输入问题继续这段辅助对话" />
 							)}
 							{items.length > MAX_ROWS && (
 								<div className="text-center text-m-xs text-m-text-3">只显示最近 {MAX_ROWS} 条</div>
@@ -865,9 +1260,11 @@ function ThreadView({
 					)}
 				</div>
 				<Composer
-					sessionId={threadId}
+					key={threadId}
+					draftKey={threadId}
+					active={active}
+					drafts={drafts}
 					placeholder="继续追问"
-					initialText={initialDraft}
 					draftInject={draftInject}
 					onSend={send}
 					disabled={!loaded}
@@ -897,28 +1294,33 @@ function ThreadView({
 				/>
 			</div>
 			<BottomSheet
-				open={handbackOpen}
+				open={active && handbackOpen}
 				onClose={onCloseHandback}
 				title="发回主对话"
 				footer={
-					<div className="flex gap-2 px-4 pt-2 pb-3">
-						<Button
-							variant="tonal"
-							className="flex-1"
-							disabled={!handbackDraft.trim() || handbackSending || summarizing}
-							onClick={insertIntoParent}
-						>
-							放进输入框
-						</Button>
-						<Button
-							variant="primary"
-							className="flex-1"
-							busy={handbackSending}
-							disabled={!handbackDraft.trim() || summarizing}
-							onClick={() => void sendDirectToParent()}
-						>
-							直接发送
-						</Button>
+					<div className="space-y-1.5 px-4 pt-2 pb-3">
+						{!handbackDraft.trim() && !summarizing && (
+							<p className="text-center text-m-xs text-m-text-3">请先输入结论内容或点击「AI 总结」</p>
+						)}
+						<div className="flex gap-2">
+							<Button
+								variant="tonal"
+								className="flex-1"
+								disabled={!handbackDraft.trim() || handbackSending || summarizing}
+								onClick={insertIntoParent}
+							>
+								放进输入框
+							</Button>
+							<Button
+								variant="primary"
+								className="flex-1"
+								busy={handbackSending}
+								disabled={!handbackDraft.trim() || summarizing}
+								onClick={() => void sendDirectToParent()}
+							>
+								直接发送
+							</Button>
+						</div>
 					</div>
 				}
 			>
@@ -935,10 +1337,19 @@ function ThreadView({
 							{handbackDraft ? "重新 AI 总结" : "AI 总结"}
 						</Button>
 					</div>
-					{summarizing && !handbackDraft && <div className="m-shimmer mb-3 px-1 text-m-sm text-m-text-3">正在整理结论</div>}
+					{working && !summarizing && (
+						<p className="mb-2 px-1 text-m-xs text-m-text-3">辅助对话正在回复中，完成后可使用「AI 总结」</p>
+					)}
+					{summarizing && (
+						<div className="m-shimmer mb-3 px-1 text-m-sm text-m-text-3">正在整理结论，请稍候…</div>
+					)}
 					<textarea
 						value={handbackDraft}
-						onChange={(e) => setHandbackDraft(e.target.value)}
+						onChange={(e) => {
+							handbackEditedRef.current = true;
+							if (activeSummaryRef.current) activeSummaryRef.current.edited = true;
+							setHandbackDraft(e.target.value);
+						}}
 						rows={7}
 						aria-label="结论"
 						placeholder="手动输入要发回主对话的结论，或点击右上角「AI 总结」"
@@ -1074,59 +1485,58 @@ const ThreadRow = memo(function ThreadRow({
 
 /** Child-session adapter: shared IME/voice capsule, real uploads, and no main-chat store mutations. */
 function Composer({
-	sessionId,
+	draftKey,
+	active,
+	drafts,
 	placeholder,
 	onSend,
-	initialText = "",
 	draftInject = null,
 	working = false,
 	disabled = false,
 	restoredTexts,
-	onAccepted,
 	onStop,
 }: {
-	sessionId: string;
+	draftKey: string;
+	active: boolean;
+	drafts: SidechatDraftController;
 	placeholder: string;
-	onSend: (message: SidechatMessage) => Promise<boolean>;
-	initialText?: string;
+	onSend: (message: SidechatMessage, sentText: string, sentAtts: readonly SidechatAttachment[]) => Promise<boolean>;
 	draftInject?: DraftInject | null;
 	working?: boolean;
 	disabled?: boolean;
 	restoredTexts?: string[];
-	onAccepted?: (draft: string) => void;
 	onStop?: () => Promise<void>;
 }) {
 	const apiRef = useRef<ComposerApi | null>(null);
 	const wrapRef = useRef<HTMLDivElement>(null);
 	const editVersion = useRef(0);
-	const lastInjectNonce = useRef(draftInject?.nonce ?? 0);
 	const sendingText = useRef<{ text: string; version: number } | null>(null);
+	const atts = drafts.getAtts(draftKey);
+	const initialDraftText = useRef(drafts.getText(draftKey));
 
 	useEffect(() => {
-		if (!draftInject || draftInject.nonce === lastInjectNonce.current) return;
-		lastInjectNonce.current = draftInject.nonce;
+		if (!draftInject || draftInject.targetKey !== draftKey) return;
+		if (!drafts.markInjectConsumed(draftInject.nonce)) return;
 		const cur = apiRef.current?.get() ?? "";
 		const next = cur.trim() ? `${cur.replace(/\s+$/, "")}\n\n${draftInject.text}` : draftInject.text;
 		apiRef.current?.set(next, true);
-	}, [draftInject]);
+		drafts.setText(draftKey, next);
+	}, [draftInject, drafts, draftKey]);
 
 	useEffect(() => {
 		if (!restoredTexts?.length) return;
 		const current = apiRef.current?.get() ?? "";
 		const keep = current.trim() && !(sendingText.current?.text === current && sendingText.current.version === editVersion.current && restoredTexts.includes(current.trim()));
-		apiRef.current?.set([...(keep ? [current] : []), ...restoredTexts].join("\n\n"));
-	}, [restoredTexts]);
+		const next = [...(keep ? [current] : []), ...restoredTexts].join("\n\n");
+		apiRef.current?.set(next);
+		drafts.setText(draftKey, next);
+	}, [restoredTexts, drafts, draftKey]);
 
 	const [sending, setSending] = useState(false);
 	const sendingRef = useRef(false);
 	const [plusOpen, setPlusOpen] = useState(false);
 	const [plusAnchor, setPlusAnchor] = useState<HTMLElement | null>(null);
-	const [atts, setAtts] = useState<SidechatAttachment[]>([]);
-	const attsRef = useRef(atts);
-	attsRef.current = atts;
-	const nextId = useRef(0);
 	const alive = useRef(true);
-	const uploads = useRef(new Map<number, AbortController>());
 	const fileAny = useRef<HTMLInputElement>(null);
 	const fileCamera = useRef<HTMLInputElement>(null);
 	const fileGallery = useRef<HTMLInputElement>(null);
@@ -1135,88 +1545,46 @@ function Composer({
 		alive.current = true;
 		return () => {
 			alive.current = false;
-			for (const ctl of uploads.current.values()) ctl.abort();
-			uploads.current.clear();
-			for (const att of attsRef.current) if (att.url) URL.revokeObjectURL(att.url);
 		};
 	}, []);
 
-	const patchAtt = (id: number, patch: Partial<SidechatAttachment>) => {
-		if (alive.current) setAtts((prev) => prev.map((att) => (att.id === id ? { ...att, ...patch } : att)));
-	};
-	const uploadAtt = async (att: SidechatAttachment) => {
-		const ctl = new AbortController();
-		uploads.current.set(att.id, ctl);
-		patchAtt(att.id, { status: "up", err: undefined });
-		try {
-			let image: SidechatImage | undefined;
-			if (att.isImage) image = await imageFromBlob(att.file);
-			if (ctl.signal.aborted) return;
-			const result = await upload<{ path: string }>(`/sessions/${q(sessionId)}/upload`, att.file, { name: att.name, signal: ctl.signal });
-			patchAtt(att.id, { status: "ok", path: result.path, image });
-		} catch (e) {
-			if (!ctl.signal.aborted) {
-				patchAtt(att.id, { status: "err", err: errorMessage(e) });
-				toast(`上传失败：${errorMessage(e)}`, { kind: "error" });
-			}
-		} finally {
-			if (uploads.current.get(att.id) === ctl) uploads.current.delete(att.id);
-		}
-	};
-	const addFiles = (files: readonly File[]) => {
-		for (const file of files) {
-			if (file.size > 20 * 1024 * 1024) {
-				toast(`「${file.name}」超过 20MB 上限，无法上传`, { kind: "error" });
-				continue;
-			}
-			const isImage = file.type.startsWith("image/");
-			const att: SidechatAttachment = {
-				id: ++nextId.current,
-				name: file.name || "附件",
-				isImage,
-				url: isImage ? URL.createObjectURL(file) : "",
-				status: "up",
-				file,
-			};
-			setAtts((prev) => [...prev, att]);
-			void uploadAtt(att);
-		}
-	};
+	useEffect(() => {
+		if (!active) setPlusOpen(false);
+	}, [active]);
+
 	const pickFiles = (input: HTMLInputElement) => {
 		const files = Array.from(input.files ?? []);
 		input.value = "";
-		addFiles(files);
+		drafts.addFiles(draftKey, files);
 	};
-	const removeAtt = (att: SidechatAttachment) => {
-		uploads.current.get(att.id)?.abort();
-		uploads.current.delete(att.id);
-		if (att.url) URL.revokeObjectURL(att.url);
-		setAtts((prev) => prev.filter((item) => item.id !== att.id));
-	};
+
 	const submit = async (text: string) => {
 		if (sendingRef.current || disabled) return;
-		const blocker = attachmentBlocker(atts);
+		const currentAtts = drafts.getAtts(draftKey);
+		const blocker = attachmentBlocker(currentAtts);
 		if (blocker) {
 			toast(blocker, { kind: "error" });
 			return;
 		}
-		const prompt = buildPrompt(text.trim(), atts);
+		const prompt = buildPrompt(text.trim(), currentAtts);
 		if (!prompt) return;
 		sendingRef.current = true;
 		const version = editVersion.current;
 		sendingText.current = { text, version };
 		setSending(true);
 		try {
-			const ok = await onSend({
-				text: prompt,
-				imagePaths: atts.flatMap((att) => (att.isImage && att.path ? [att.path] : [])),
-				images: atts.flatMap((att) => (att.image ? [att.image] : [])),
-			});
+			const ok = await onSend(
+				{
+					text: prompt,
+					imagePaths: currentAtts.flatMap((att) => (att.isImage && att.path ? [att.path] : [])),
+					images: currentAtts.flatMap((att) => (att.image ? [att.image] : [])),
+				},
+				text,
+				currentAtts,
+			);
 			if (ok && alive.current) {
 				if (editVersion.current === version && apiRef.current?.get() === text) apiRef.current.clear();
-				for (const att of atts) if (att.url) URL.revokeObjectURL(att.url);
-				setAtts((prev) => prev.filter((att) => !atts.some((sent) => sent.id === att.id)));
-				onAccepted?.(apiRef.current?.get() ?? "");
+				drafts.consumeSent(draftKey, text, currentAtts);
 			}
 		} finally {
 			sendingText.current = null;
@@ -1227,7 +1595,7 @@ function Composer({
 
 	const attachments =
 		atts.length > 0 ? (
-			<div className="flex min-w-0 flex-col gap-2 pb-2">
+			<div className="flex max-h-[24vh] min-w-0 flex-col gap-2 overflow-y-auto overscroll-contain pb-2">
 				{atts.map((att) => (
 					<div key={att.id} className="min-w-0 space-y-2 rounded-m-md bg-m-surface p-2">
 						<div className="flex min-w-0 items-center gap-2">
@@ -1246,9 +1614,9 @@ function Composer({
 						</span>
 						<div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap">
 							{att.status === "err" && (
-								<IconButton label={`重试上传 ${att.name}`} icon={<RefreshCw size={18} />} disabled={sending} onClick={() => void uploadAtt(att)} />
+								<IconButton label={`重试上传 ${att.name}`} icon={<RefreshCw size={18} />} disabled={sending} onClick={() => drafts.retryAtt(draftKey, att)} />
 							)}
-							<IconButton label={`移除 ${att.name}`} icon={<X size={18} />} disabled={sending} onClick={() => removeAtt(att)} />
+							<IconButton label={`移除 ${att.name}`} icon={<X size={18} />} disabled={sending} onClick={() => drafts.removeAtt(draftKey, att)} />
 						</div>
 					</div>
 				))}
@@ -1260,7 +1628,7 @@ function Composer({
 			<ComposerCapsule
 				apiRef={apiRef}
 				placeholder={placeholder}
-				initialText={initialText || draftInject?.text || ""}
+				initialText={initialDraftText.current}
 				busy={sending || disabled}
 				working={working}
 				hasExtra={atts.length > 0}
@@ -1268,6 +1636,8 @@ function Composer({
 				onInput={() => {
 					editVersion.current++;
 				}}
+				onSync={(val) => drafts.setText(draftKey, val)}
+				onUnmount={(val) => drafts.setText(draftKey, val)}
 				onPlus={() => {
 					setPlusAnchor(wrapRef.current?.querySelector<HTMLElement>('button[aria-label="添加"]') ?? wrapRef.current);
 					setPlusOpen(true);
@@ -1279,7 +1649,7 @@ function Composer({
 			<input ref={fileCamera} type="file" accept="image/png,image/jpeg,image/gif,image/webp" capture="environment" hidden onChange={(e) => pickFiles(e.currentTarget)} />
 			<input ref={fileGallery} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={(e) => pickFiles(e.currentTarget)} />
 			<AnchoredPopover
-				open={plusOpen}
+				open={active && plusOpen}
 				onClose={() => setPlusOpen(false)}
 				anchorEl={plusAnchor}
 				placement="top-start"

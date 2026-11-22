@@ -73,20 +73,23 @@ export function normalizeTranscript(raw: readonly (TranscriptItem | null | undef
 		} else if (kind === "tool_result") {
 			const r = it.toolResult;
 			if (!r) continue;
+			const diff = resultDiff(r.details);
 			const owner = findTool(out, r.toolCallId);
 			if (owner) {
 				owner.status = r.isError ? "error" : "done";
 				owner.result = r.text || "";
+				if (diff) owner.diff = diff;
 				continue;
 			}
+			const host = lastAssistant(out);
 			const orphan: ToolItem = {
 				id: r.toolCallId,
 				name: r.toolName || "tool",
 				args: null,
 				status: r.isError ? "error" : "done",
 				result: r.text || "",
+				...(diff ? { diff } : {}),
 			};
-			const host = lastAssistant(out);
 			if (host) host.tools.push(orphan);
 			else {
 				const item = emptyItem(it.id, "system", kind, it.parentId ?? null);
@@ -188,6 +191,13 @@ function resultText(r: { content?: { type?: string; text?: string }[] } | null |
 		.slice(0, 4000);
 }
 
+/** Extract `details.diff` from a tool result payload when present and non-empty. */
+export function resultDiff(details: unknown): string | undefined {
+	if (!details || typeof details !== "object" || !("diff" in details)) return undefined;
+	const diff = details.diff;
+	return typeof diff === "string" && diff.length > 0 ? diff : undefined;
+}
+
 /**
  * Apply one `rpc` frame to the live row. Pure: never mutates `live`.
  * `agent_end` with `isTerminal === false` (scheduled continuation or
@@ -229,19 +239,25 @@ export function applyLiveFrame(live: Item | null, frame: RpcFrame, now?: string)
 			// must update it in place instead of appending a duplicate card.
 			const known = tool.id !== "" && base.tools.some((t) => t.id === tool.id);
 			const tools = known
-				? base.tools.map((t) => (t.id === tool.id ? { ...t, status: "running" as const, result: "" } : t))
+				? base.tools.map((t) => {
+						if (t.id !== tool.id) return t;
+						const { diff: _diff, ...rest } = t;
+						return { ...rest, status: "running" as const, result: "" };
+					})
 				: [...base.tools, tool];
 			return { live: { ...base, tools }, streaming: null, refetch: false, handled: true };
 		}
 		case "tool_execution_update": {
 			if (!live) return keep(null);
 			const result = resultText(frame.partialResult);
+			const diff = resultDiff(frame.partialResult?.details);
 			let changed = false;
 			const tools = live.tools.map((t) => {
 				if (t.id !== frame.toolCallId) return t;
-				if (t.result === result) return t;
+				const nextDiff = diff ?? t.diff;
+				if (t.result === result && t.diff === nextDiff) return t;
 				changed = true;
-				return { ...t, result };
+				return nextDiff ? { ...t, result, diff: nextDiff } : { ...t, result };
 			});
 			if (!changed) return keep(null);
 			return { live: { ...live, tools }, streaming: null, refetch: false, handled: true };
@@ -249,8 +265,13 @@ export function applyLiveFrame(live: Item | null, frame: RpcFrame, now?: string)
 		case "tool_execution_end": {
 			if (!live) return keep(null, true);
 			const result = resultText(frame.result);
+			const diff = resultDiff(frame.result?.details);
 			const status = frame.isError === true ? ("error" as const) : ("done" as const);
-			const tools = live.tools.map((t) => (t.id === frame.toolCallId ? { ...t, status, result } : t));
+			const tools = live.tools.map((t) => {
+				if (t.id !== frame.toolCallId) return t;
+				const nextDiff = diff ?? t.diff;
+				return nextDiff ? { ...t, status, result, diff: nextDiff } : { ...t, status, result };
+			});
 			return { live: { ...live, tools }, streaming: null, refetch: true, handled: true };
 		}
 		case "turn_end":

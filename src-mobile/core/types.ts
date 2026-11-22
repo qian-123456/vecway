@@ -69,11 +69,17 @@ export interface RawToolCall {
 	intent?: string | null;
 }
 
+export interface RawToolResultDetails {
+	diff?: string;
+	[k: string]: unknown;
+}
+
 export interface RawToolResult {
 	toolCallId: string;
 	toolName?: string;
 	text?: string;
 	isError?: boolean;
+	details?: RawToolResultDetails | null;
 }
 
 /** `TranscriptItem` as served by `GET /sessions/{id}/transcript`. `kind` is snake_case. */
@@ -115,6 +121,7 @@ export interface ToolItem {
 	intent?: string | null;
 	status: ToolStatus;
 	result: string;
+	diff?: string;
 }
 
 /** Image reference carried by a message (no bytes: the mobile API does not serve them). */
@@ -204,6 +211,11 @@ export interface PendingForm {
 export type ConnectionPhase = "idle" | "connecting" | "open" | "closed" | "unauthorized";
 
 /** Live RPC frame forwarded by the `rpc` SSE event. */
+export interface RpcToolResult {
+	content?: { type?: string; text?: string }[];
+	details?: RawToolResultDetails | null;
+}
+
 export interface RpcFrame {
 	type: string;
 	isTerminal?: boolean;
@@ -213,8 +225,8 @@ export interface RpcFrame {
 	toolName?: string;
 	args?: unknown;
 	isError?: boolean;
-	result?: { content?: { type?: string; text?: string }[] } | null;
+	result?: RpcToolResult | null;
 	/** `tool_execution_update`: the tool's partial output so far (same shape as `result`). */
-	partialResult?: { content?: { type?: string; text?: string }[] } | null;
+	partialResult?: RpcToolResult | null;
 	[k: string]: unknown;
 }

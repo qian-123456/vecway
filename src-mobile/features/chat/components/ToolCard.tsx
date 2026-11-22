@@ -15,8 +15,7 @@ import {
 import { memo, useState } from "react";
 import { copyText } from "../../../core/lib/format";
 import type { ToolItem } from "../../../core/types";
-import { Button, DiffView, looksLikeDiff, Spinner, toast } from "../../../ui";
-import { Markdown } from "../../../ui/Markdown";
+import { Button, CodeBlock, DiffView, looksLikeDiff, Spinner, toast } from "../../../ui";
 import { prettyArgs, toolLine, type ToolKind } from "../lib/turns";
 
 /** Open state survives remounts of the row. */
@@ -57,6 +56,27 @@ function StateMark({ state }: { state: ToolState }) {
 	return null;
 }
 
+function TruncatedNotice({
+	total,
+	expanded,
+	onExpand,
+}: {
+	total: number;
+	expanded: boolean;
+	onExpand: () => void;
+}) {
+	if (expanded || total <= RESULT_CAP) return null;
+	return (
+		<button
+			type="button"
+			onClick={onExpand}
+			className="mt-2 min-h-11 min-w-11 whitespace-nowrap rounded-m-pill bg-m-surface-2 px-4 text-m-xs text-m-text-2 active:opacity-80"
+		>
+			显示全部（共 {total} 字）
+		</button>
+	);
+}
+
 /** Monospace block: wraps (full text, no sideways scrolling for prose output). */
 function Pre({ text, err }: { text: string; err?: boolean }) {
 	const [all, setAll] = useState(false);
@@ -68,34 +88,55 @@ function Pre({ text, err }: { text: string; err?: boolean }) {
 			>
 				{cut ? text.slice(0, RESULT_CAP) : text}
 			</pre>
-			{cut && (
-				<button
-					type="button"
-					onClick={() => setAll(true)}
-					className="mt-2 min-h-11 min-w-11 whitespace-nowrap rounded-m-pill bg-m-surface-2 px-4 text-m-xs text-m-text-2 active:opacity-80"
-				>
-					显示全部（共 {text.length} 字）
-				</button>
-			)}
+			<TruncatedNotice total={text.length} expanded={all} onExpand={() => setAll(true)} />
 		</>
 	);
 }
 
-/** Only structured or explicitly identified code uses syntax highlighting; prose stays intact. */
+const CODE_LANGUAGES: Record<string, string> = {
+	ts: "typescript",
+	tsx: "tsx",
+	js: "javascript",
+	jsx: "jsx",
+	py: "python",
+	rs: "rust",
+	json: "json",
+	sh: "bash",
+	css: "css",
+	html: "html",
+	yaml: "yaml",
+	yml: "yaml",
+	sql: "sql",
+};
+
+/** Only structured or explicitly identified code uses CodeBlock; prose stays intact and bounded. */
 function Result({ text, tool }: { text: string; tool: ToolItem }) {
+	const [all, setAll] = useState(false);
 	let lang = "";
-	try {
-		const value: unknown = JSON.parse(text);
-		if (value !== null && typeof value === "object") lang = "json";
-	} catch { /* Non-JSON output remains plain unless the source identifies code. */ }
-	const args = tool.args && typeof tool.args === "object" ? tool.args as Record<string, unknown> : {};
-	const path = String(args.path ?? args.file_path ?? "");
-	const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase();
-	const languages: Record<string, string> = { ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", py: "python", rs: "rust", json: "json", sh: "bash", css: "css", html: "html", yaml: "yaml", yml: "yaml", sql: "sql" };
-	if (!lang && /^(read|read_file)$/.test(tool.name) && ext) lang = languages[ext] ?? "";
+	const trimmed = text.trimStart();
+	if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+		try {
+			const value: unknown = JSON.parse(text);
+			if (value !== null && typeof value === "object") lang = "json";
+		} catch {
+			/* Non-JSON output remains plain unless the source identifies code. */
+		}
+	}
+	if (!lang && /^(read|read_file)$/.test(tool.name) && tool.args && typeof tool.args === "object") {
+		const args = tool.args as Record<string, unknown>;
+		const path = String(args.path ?? args.file_path ?? args.file ?? args.filePath ?? "");
+		const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase();
+		if (ext) lang = CODE_LANGUAGES[ext] ?? "";
+	}
 	if (!lang) return <Pre text={text} err={tool.status === "error"} />;
-	const fence = "`".repeat(Math.max(3, ...Array.from(text.matchAll(/`+/g), (match) => match[0].length + 1)));
-	return <Markdown text={`${fence}${lang}\n${text}\n${fence}`} className="m-md-quiet" visualizeEnabled={false} />;
+	const cut = !all && text.length > RESULT_CAP;
+	const shown = cut ? text.slice(0, RESULT_CAP) : text;
+	return (
+		<>
+			<CodeBlock code={shown} lang={lang} />
+			<TruncatedNotice total={text.length} expanded={all} onExpand={() => setAll(true)} />
+		</>
+	);
 }
 
 /**
@@ -114,7 +155,7 @@ export const ToolCard = memo(function ToolCard({ id, tool, state }: { id: string
 	const line = toolLine(tool.name, tool.args);
 	const Icon = KIND_ICON[line.kind];
 	const args = prettyArgs(tool.args);
-	const hasResult = tool.status !== "running" || tool.result !== "";
+	const hasResult = tool.status !== "running" || tool.result !== "" || !!tool.diff;
 	const isError = state === "bad";
 	const isRunning = state === "run";
 	const isCodeTarget = line.kind === "shell" || line.kind === "read" || line.kind === "edit";
@@ -167,9 +208,16 @@ export const ToolCard = memo(function ToolCard({ id, tool, state }: { id: string
 						<div>
 							<div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-m-text-quiet">
 								<span>{tool.status === "error" ? "错误" : "结果"}</span>
-								<Button size="sm" variant="ghost" onClick={() => void copyText(tool.result).then((ok) => toast(ok ? "已复制" : "复制失败", { kind: ok ? "success" : "error" }))}>复制完整输出</Button>
+								<Button size="sm" variant="ghost" onClick={() => void copyText(tool.result || tool.diff || "").then((ok) => toast(ok ? "已复制" : "复制失败", { kind: ok ? "success" : "error" }))}>复制完整输出</Button>
 							</div>
-							{tool.result && looksLikeDiff(tool.result) ? (
+							{tool.diff ? (
+								<div className="space-y-2">
+									<DiffView diff={tool.diff} />
+									{tool.result && tool.result.trim() !== tool.diff.trim() && !looksLikeDiff(tool.result) && (
+										<Result text={tool.result} tool={tool} />
+									)}
+								</div>
+							) : tool.result && looksLikeDiff(tool.result) ? (
 								<DiffView diff={tool.result} />
 							) : (
 								<Result text={tool.result || "（无输出）"} tool={tool} />

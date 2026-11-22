@@ -1,15 +1,26 @@
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, ClipboardList, Copy, ListTree, RefreshCw } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ClipboardList, Copy, GitCompareArrows, ListTree, RefreshCw } from "lucide-react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PlanStatus } from "../../../src/features/chat/plan/planStatus";
 import { api } from "../../core/api";
 import { copyText } from "../../core/lib/format";
-import { nav, type PageProps } from "../../core/nav";
+import { nav, paths, type PageProps } from "../../core/nav";
+import { useSession } from "../../core/stores/sessions";
 import { isDraftId } from "../../core/types";
 import { AnchoredPopover, Chip, EmptyState, IconButton, PageHeader, PullToRefresh, toast, type ChipTone } from "../../ui";
 import { Markdown } from "../../ui/Markdown";
+import { ChatCtx } from "../chat/ChatContext";
+import {
+	computeLineDiff,
+	parseChecklistProgress,
+	PlanApprovalControls,
+	PlanDiffView,
+	readDomHeadings,
+	type PlanHeading,
+} from "../chat/components/PlanSheet";
 import { LoadGate } from "./PanelState";
 import { useLoad, useResync } from "./hooks";
-import { usePlanExecution } from "./usePlanExecution";
+import { useRightDrawer } from "./rightDrawerStore";
+import { executePlanApproval, usePlanExecution, type ApprovePlanOptions } from "./usePlanExecution";
 interface PlanResponse {
 	streaming?: boolean;
 	planStatus?: PlanStatus | null;
@@ -45,58 +56,12 @@ function planBadge(status: PlanStatus | null): PlanBadge {
 	return { label: "暂无计划", tone: "neutral" };
 }
 
-function parseChecklistProgress(md: string): { done: number; total: number; nextStep: string | null } | null {
-	const lines = md.split("\n");
-	let done = 0;
-	let total = 0;
-	let nextStep: string | null = null;
-	for (const line of lines) {
-		const m = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.+)$/);
-		if (!m) continue;
-		total++;
-		if (m[1] !== " ") done++;
-		else if (!nextStep) nextStep = m[2].trim();
-	}
-	return total > 0 ? { done, total, nextStep } : null;
-}
-interface PlanHeading {
-	index: number;
-	level: number;
-	text: string;
-}
 
-function parsePlanHeadings(md: string): PlanHeading[] {
-	const headings: PlanHeading[] = [];
-	let inFence = false;
-	let fenceChar = "";
-	for (const rawLine of md.split("\n")) {
-		const fenceMatch = rawLine.match(/^\s*(`{3,}|~{3,})/);
-		if (fenceMatch) {
-			const char = fenceMatch[1][0];
-			if (!inFence) {
-				inFence = true;
-				fenceChar = char;
-			} else if (char === fenceChar) {
-				inFence = false;
-			}
-			continue;
-		}
-		if (inFence) continue;
-		const m = rawLine.match(/^(#{1,4})\s+(.+?)\s*#*$/);
-		if (!m) continue;
-		const cleaned = m[2]
-			.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-			.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-			.replace(/[`*_~]/g, "")
-			.trim();
-		if (!cleaned) continue;
-		headings.push({ index: headings.length, level: m[1].length, text: cleaned });
-	}
-	return headings;
-}
-
-export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; embedded?: boolean }) {
+export function PlanPanel({ sessionId, embedded = false, active = true }: { sessionId: string; embedded?: boolean; active?: boolean }) {
 	const draft = isDraftId(sessionId);
+	const chatCtx = useContext(ChatCtx);
+	const controller = chatCtx?.controller.id === sessionId ? chatCtx.controller : null;
+	const session = useSession(sessionId);
 	const state = useLoad(
 		(signal) =>
 			draft
@@ -105,18 +70,58 @@ export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; 
 		[sessionId, draft],
 	);
 	const execution = usePlanExecution(sessionId);
-	const status = execution.planStatus ?? state.data?.planStatus ?? null;
+	const [settledStatus, setSettledStatus] = useState<PlanStatus | null>(null);
+	const status = settledStatus ?? execution.planStatus ?? state.data?.planStatus ?? null;
 	// Never substitute an unrelated ordinary assistant reply when no real plan exists.
-	const planContent = status?.approved?.content ?? status?.content ?? null;
+	const isApprovedView = Boolean(status?.approved?.content);
+	const planContent = isApprovedView ? status!.approved!.content : (status?.content ?? null);
+	const prevContent = isApprovedView
+		? (status!.approved!.prevContent ?? null)
+		: (status?.prevContent ?? null);
 	const title = status?.approved?.title ?? status?.title ?? "当前计划";
 	const version = status?.approved?.version ?? status?.version ?? 0;
 	const badge = planBadge(status);
 	const progress = useMemo(() => (planContent ? parseChecklistProgress(planContent) : null), [planContent]);
-	const headings = useMemo(() => (planContent ? parsePlanHeadings(planContent) : []), [planContent]);
+	const hasDiff = Boolean(planContent && prevContent !== null && prevContent !== planContent);
+	const [showDiff, setShowDiff] = useState(false);
+	const diffLines = useMemo(
+		() => (showDiff && hasDiff && planContent && prevContent !== null ? computeLineDiff(prevContent, planContent) : []),
+		[showDiff, hasDiff, prevContent, planContent],
+	);
+	const [headings, setHeadings] = useState<PlanHeading[]>([]);
 	const [tocOpen, setTocOpen] = useState(false);
 	const [copied, setCopied] = useState(false);
+	const [localApproving, setLocalApproving] = useState(false);
 	const tocBtnRef = useRef<HTMLButtonElement>(null);
-	const mdRootRef = useRef<HTMLDivElement>(null);
+	const [mdRoot, setMdRoot] = useState<HTMLDivElement | null>(null);
+	const approving = controller ? controller.state.planApproving : localApproving;
+	const isReview = Boolean(status?.enabled && status.phase === "review" && !status?.approved && planContent);
+	const canFresh = Boolean(status?.planFile && session?.cwd);
+
+	useEffect(() => {
+		setSettledStatus(null);
+	}, [sessionId, state.data?.planStatus, execution.planStatus]);
+
+	useEffect(() => {
+		setShowDiff(false);
+	}, [planContent, version]);
+
+	useEffect(() => {
+		if (!active) setTocOpen(false);
+	}, [active]);
+
+	useLayoutEffect(() => {
+		if (!planContent || showDiff || !mdRoot) {
+			if (!planContent) setHeadings([]);
+			return;
+		}
+		const sync = () => setHeadings(readDomHeadings(mdRoot, `plan-panel-${sessionId.slice(0, 8)}`));
+		sync();
+		if (typeof MutationObserver === "undefined") return;
+		const mo = new MutationObserver(sync);
+		mo.observe(mdRoot, { childList: true, subtree: true, characterData: true });
+		return () => mo.disconnect();
+	}, [mdRoot, planContent, showDiff, sessionId]);
 
 	const refresh = () => Promise.all([state.reload(true), execution.reload()]).then(() => {});
 	useResync(() => void state.reload(true));
@@ -124,7 +129,10 @@ export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; 
 	const copyPlan = () => {
 		if (!planContent) return;
 		void copyText(planContent).then((ok) => {
-			if (!ok) return;
+			if (!ok) {
+				toast("复制失败", { kind: "error" });
+				return;
+			}
 			setCopied(true);
 			toast("已复制计划内容", { kind: "success" });
 			window.setTimeout(() => setCopied(false), 1500);
@@ -133,10 +141,63 @@ export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; 
 
 	const jumpToHeading = (index: number) => {
 		setTocOpen(false);
-		const target = mdRootRef.current?.querySelectorAll("h1, h2, h3, h4, h5, h6")[index];
+		const nodes = Array.from(mdRoot?.querySelectorAll<HTMLElement>("h1, h2, h3, h4") ?? []).filter(
+			(n) => (n.textContent ?? "").trim().length > 0,
+		);
+		const target = nodes[index];
 		if (target && typeof target.scrollIntoView === "function") {
 			target.scrollIntoView({ behavior: "smooth", block: "start" });
 		}
+	};
+
+	const handleApprove = async (opts: ApprovePlanOptions) => {
+		if (!isReview || approving) return;
+		if (controller) {
+			const ok = await controller.approvePlan(opts);
+			if (ok) await refresh();
+			return;
+		}
+		setLocalApproving(true);
+		try {
+			const res = await executePlanApproval({
+				sessionId,
+				planStatus: status,
+				mode: opts.mode,
+				role: opts.role,
+				cwd: session?.cwd,
+				sessionMode: session?.mode,
+				onPlanStatus: (next) => setSettledStatus(next),
+			});
+			if (!res.ok) {
+				toast(res.error || "计划执行失败", { kind: "error" });
+				return;
+			}
+			if (res.handoffSessionId && res.handoffSessionId !== sessionId) {
+				toast("已在新会话中开始执行计划", { kind: "success" });
+				nav.push(paths.chat(res.handoffSessionId));
+			} else {
+				toast("计划已开始执行", { kind: "success" });
+				await refresh();
+			}
+		} finally {
+			setLocalApproving(false);
+		}
+	};
+
+	const handleAnnotate = () => {
+		if (!planContent) return;
+		if (controller) {
+			controller.stageAnnotation(planContent, "请按以下要求修改计划：\n");
+			if (embedded) useRightDrawer.getState().closeDrawer();
+			controller.focusComposer();
+			return;
+		}
+		useRightDrawer.getState().sendToMainChat(sessionId, {
+			quote: planContent,
+			comment: "请按以下要求修改计划：\n",
+			sourceLabel: "计划",
+		});
+		if (!embedded) nav.back();
 	};
 
 	const content = (
@@ -160,7 +221,21 @@ export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; 
 								label="复制计划"
 								onClick={copyPlan}
 							/>
-							<IconButton variant="plain" size="sm" icon={<RefreshCw size={16} />} label="刷新计划" onClick={() => void refresh()} />
+							{hasDiff && (
+								<IconButton
+									variant="plain"
+									size="sm"
+									icon={<GitCompareArrows size={16} className={showDiff ? "text-m-accent" : undefined} />}
+									label="对比版本"
+									onClick={() => {
+										setShowDiff((v) => !v);
+										setTocOpen(false);
+									}}
+								/>
+							)}
+							{embedded && (
+								<IconButton variant="plain" size="sm" icon={<RefreshCw size={16} />} label="刷新计划" onClick={() => void refresh()} />
+							)}
 						</div>
 					</div>
 					{(headings.length > 0 || progress !== null) && (
@@ -168,7 +243,7 @@ export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; 
 							<button
 								ref={tocBtnRef}
 								type="button"
-								disabled={headings.length === 0}
+								disabled={showDiff || headings.length === 0}
 								aria-expanded={tocOpen}
 								onClick={() => setTocOpen((v) => !v)}
 								className="m-press flex min-h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded-m-pill bg-m-surface px-3 py-1.5 text-left text-m-xs font-medium text-m-text-2 active:bg-m-surface-2 disabled:opacity-50"
@@ -199,7 +274,10 @@ export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; 
 				<LoadGate state={state}>
 					{() =>
 						planContent ? (
-							<div className="space-y-3 px-4 pt-3" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 28px)" }}>
+							<div
+								className="space-y-3 px-4 pt-3"
+								style={{ paddingBottom: isReview ? "24px" : "calc(var(--m-safe-bottom) + 28px)" }}
+							>
 								{(status?.approved?.status === "failed" || status?.approved?.error) && (
 									<div role="status" className="flex items-start gap-2.5 rounded-m-lg border border-m-border bg-m-danger-bg px-3.5 py-3 text-m-sm text-m-danger">
 										<AlertTriangle size={18} className="mt-0.5 shrink-0" />
@@ -210,9 +288,13 @@ export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; 
 										</span>
 									</div>
 								)}
-								<div ref={mdRootRef} className="m-selectable">
-									<Markdown text={planContent} streaming={status?.enabled && !status?.approved && !!state.data?.streaming} />
-								</div>
+								{showDiff && hasDiff ? (
+									<PlanDiffView lines={diffLines} />
+								) : (
+									<div ref={setMdRoot} className="m-selectable">
+										<Markdown text={planContent} sessionId={sessionId} streaming={status?.enabled && !status?.approved && !!state.data?.streaming} />
+									</div>
+								)}
 							</div>
 						) : (
 							<EmptyState
@@ -225,8 +307,24 @@ export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; 
 				</LoadGate>
 			</PullToRefresh>
 
+			{isReview && (
+				<div
+					className="shrink-0 border-t border-m-border/70 bg-m-bg-elev/88 px-3.5 pt-2.5 backdrop-blur-xl"
+					style={{ paddingBottom: "calc(var(--m-safe-bottom) + 12px)" }}
+				>
+					<PlanApprovalControls
+						planStatus={status}
+						canFresh={canFresh}
+						running={Boolean(state.data?.streaming)}
+						approving={approving}
+						onApprove={handleApprove}
+						onAnnotate={handleAnnotate}
+					/>
+				</div>
+			)}
+
 			<AnchoredPopover
-				open={tocOpen && headings.length > 0}
+				open={active && tocOpen && headings.length > 0}
 				onClose={() => setTocOpen(false)}
 				anchorEl={tocBtnRef.current}
 				placement="bottom-start"
@@ -237,13 +335,13 @@ export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; 
 				<div className="space-y-0.5 py-1">
 					{headings.map((h) => (
 						<button
-							key={`${h.index}-${h.text}`}
+							key={`${h.index}-${h.id}`}
 							type="button"
 							onClick={() => jumpToHeading(h.index)}
 							style={{ paddingLeft: `${12 + (h.level - 1) * 12}px` }}
-							className="flex min-h-9 w-full items-center rounded-m-md pr-3 text-left text-m-sm text-m-text active:bg-m-surface-hover"
+							className="flex min-h-10 w-full items-center rounded-m-md pr-3 text-left text-m-sm text-m-text active:bg-m-surface-hover"
 						>
-							<span className="truncate">{h.text}</span>
+							<span className="truncate">{h.title}</span>
 						</button>
 					))}
 				</div>
@@ -259,7 +357,7 @@ export function PlanPanel({ sessionId, embedded = false }: { sessionId: string; 
 				title="计划"
 				subtitle={badge.label}
 				onBack={() => nav.back()}
-				right={<IconButton icon={<RefreshCw size={20} />} label="刷新" onClick={() => void refresh()} />}
+				right={<IconButton icon={<RefreshCw size={20} />} label="刷新计划" onClick={() => void refresh()} />}
 			/>
 			{content}
 		</div>

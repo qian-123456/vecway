@@ -221,8 +221,11 @@ struct AppWebView: UIViewRepresentable {
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = false
         webView.isOpaque = false
-        webView.backgroundColor = .systemBackground
-        webView.scrollView.backgroundColor = .systemBackground
+        let bgColor = controller.appearanceBackgroundColor
+        webView.overrideUserInterfaceStyle = controller.preferredUIUserInterfaceStyle
+        webView.backgroundColor = bgColor
+        webView.scrollView.backgroundColor = bgColor
+        webView.underPageBackgroundColor = bgColor
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.bounces = false
         webView.scrollView.alwaysBounceVertical = false
@@ -245,6 +248,16 @@ struct AppWebView: UIViewRepresentable {
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
         // Keep the live SPA WebView mounted without reloading on SwiftUI state updates.
+        let style = controller.preferredUIUserInterfaceStyle
+        if uiView.overrideUserInterfaceStyle != style {
+            uiView.overrideUserInterfaceStyle = style
+        }
+        let bgColor = controller.appearanceBackgroundColor
+        if uiView.backgroundColor != bgColor {
+            uiView.backgroundColor = bgColor
+            uiView.scrollView.backgroundColor = bgColor
+            uiView.underPageBackgroundColor = bgColor
+        }
     }
 
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {

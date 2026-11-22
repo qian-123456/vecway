@@ -22,6 +22,7 @@ import { Button, EmptyState, IconButton, PageHeader, confirm, inputCls, toast } 
 import { useKeyboardOpen } from "../chat/components/ComposerToolbar";
 import { abbreviateHomePath } from "../sessions/NewSessionSheet";
 import { SIDECHAT_DRAFT_PREFIX } from "./SidechatPage";
+import { useLayer } from "./hooks";
 import { fenced } from "./pure";
 import { useRightDrawer } from "./rightDrawerStore";
 import {
@@ -74,12 +75,15 @@ function statusDisplay(phase: Phase, hasOutput: boolean): { label: string; tone:
 export function TerminalPanel({
 	sessionId,
 	embedded = false,
+	active: panelActive = true,
 	visible = true,
 }: {
 	sessionId: string;
 	embedded?: boolean;
+	active?: boolean;
 	visible?: boolean;
 }) {
+	const isPanelActive = panelActive && visible;
 	const nextId = useRef(1);
 	const [tabs, setTabs] = useState([1]);
 	const tabsRef = useRef(tabs);
@@ -137,7 +141,7 @@ export function TerminalPanel({
 					key={id}
 					sessionId={sessionId}
 					tabId={id}
-					active={active === id && visible}
+					active={active === id && isPanelActive}
 					embedded={embedded}
 					onClosed={() => removeTab(id)}
 				/>
@@ -548,11 +552,14 @@ function TerminalPane({
 		};
 	}, [open, attach, closeTerm, sendResize]);
 
+	useLayer(active && selectMode, () => setSelectMode(false));
+
 	useEffect(() => {
 		if (!active) {
 			window.clearTimeout(retryTimer.current);
 			return;
 		}
+		if (selectMode) return;
 		const frame = requestAnimationFrame(() => {
 			const t = term.current;
 			if (!t) return;
@@ -562,10 +569,11 @@ function TerminalPane({
 				/* The host may still be laying out. */
 			}
 			sendResize();
+			t.refresh?.(0, Math.max(0, t.rows - 1));
 			if (termId.current && !exited.current && !source.current && document.visibilityState === "visible") attach();
 		});
 		return () => cancelAnimationFrame(frame);
-	}, [active, attach, sendResize]);
+	}, [active, selectMode, attach, sendResize]);
 
 	const paste = async () => {
 		try {
@@ -629,132 +637,126 @@ function TerminalPane({
 	const inputActive = kbOpen || focused;
 	const disconnected = !streamOpen && (phase === "dropped" || phase === "reconnecting" || phase === "error" || phase === "exited");
 
-	if (selectMode) {
-		return (
-			<div
-				id={`terminal-pane-${tabId}`}
-				role="tabpanel"
-				aria-labelledby={`terminal-tab-${tabId}`}
-				hidden={!active}
-				className="min-h-0 flex-1 flex-col bg-m-bg"
-				style={{ display: active ? "flex" : "none" }}
-			>
-				<div className="flex shrink-0 items-center justify-between gap-2 border-b border-m-border px-3 py-2">
-					<button
-						type="button"
-						onClick={() => setSelectMode(false)}
-						className="inline-flex min-h-9 items-center gap-1 rounded-m-pill px-2 text-m-xs font-medium whitespace-nowrap text-m-accent active:bg-m-surface"
-					>
-						<ArrowLeft size={16} />
-						返回终端
-					</button>
-					<span className="text-m-xs font-medium whitespace-nowrap text-m-text-2">已选 {selectedIds.size} 段</span>
-					{blocks.length > 0 && (
-						<button
-							type="button"
-							onClick={() =>
-								setSelectedIds((prev) =>
-									prev.size === blocks.length ? new Set() : new Set(blocks.map((b) => b.id)),
-								)
-							}
-							className="min-h-9 rounded-m-pill px-2.5 text-m-xs font-medium whitespace-nowrap text-m-accent active:bg-m-surface"
-						>
-							{selectedIds.size === blocks.length ? "取消全选" : "全选"}
-						</button>
-					)}
-				</div>
-				<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
-					{blocks.length === 0 ? (
-						<EmptyState
-							title="还没有可发送的终端输出"
-							hint="在终端运行命令并产生输出后，这里会自动按命令与输出分段"
-						/>
-					) : (
-						<div className="space-y-2.5">
-							{blocks.map((b) => {
-								const checked = selectedIds.has(b.id);
-								return (
-									<button
-										key={b.id}
-										type="button"
-										aria-pressed={checked}
-										onClick={() =>
-											setSelectedIds((prev) => {
-												const next = new Set(prev);
-												if (next.has(b.id)) next.delete(b.id);
-												else next.add(b.id);
-												return next;
-											})
-										}
-										className={`block w-full rounded-m-lg border p-3 text-left transition-colors ${
-											checked ? "border-m-accent bg-m-accent-soft/25" : "border-m-border bg-m-card"
-										}`}
-									>
-										<div className="mb-1.5 flex items-center justify-between gap-2">
-											<span className="min-w-0 truncate font-m-mono text-m-xs font-medium text-m-text-2">
-												{b.command ? `$ ${b.command}` : `输出片段（${b.lineCount} 行）`}
-											</span>
-											<span
-												aria-hidden
-												className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
-													checked ? "border-m-accent bg-m-accent text-m-accent-text" : "border-m-border-strong bg-m-surface"
-												}`}
-											>
-												{checked && <Check size={13} strokeWidth={2.5} />}
-											</span>
-										</div>
-										<pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-all font-m-mono text-m-xs leading-5 text-m-text">
-											{b.text}
-										</pre>
-									</button>
-								);
-							})}
-						</div>
-					)}
-				</div>
-				<div className="shrink-0 space-y-2 border-t border-m-border bg-m-bg px-3 pt-2.5" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 8px)" }}>
-					<input
-						type="text"
-						value={comment}
-						onChange={(e) => setComment(e.target.value)}
-						aria-label="批注说明"
-						placeholder="添加批注说明（可选）..."
-						className={`${inputCls} rounded-m-lg py-2 text-m-sm`}
-					/>
-					<div className="flex gap-2">
-						<Button
-							variant="tonal"
-							className="flex-1"
-							icon={<MessageSquarePlus size={16} />}
-							disabled={selectedIds.size === 0}
-							onClick={() => dispatchAnnotation("main")}
-						>
-							批注
-						</Button>
-						<Button
-							variant="primary"
-							className="flex-1"
-							icon={<MessagesSquare size={16} />}
-							disabled={selectedIds.size === 0}
-							onClick={() => dispatchAnnotation("sidechat")}
-						>
-							批注到辅助对话
-						</Button>
-					</div>
-				</div>
-			</div>
-		);
-	}
-
 	return (
 		<div
 			id={`terminal-pane-${tabId}`}
 			role="tabpanel"
 			aria-labelledby={`terminal-tab-${tabId}`}
 			hidden={!active}
-			className="min-h-0 flex-1 flex-col"
+			className="relative min-h-0 flex-1 flex-col bg-m-bg"
 			style={{ display: active ? "flex" : "none" }}
 		>
+			{selectMode && (
+				<div className="relative z-10 flex min-h-0 flex-1 flex-col bg-m-bg">
+					<div className="flex shrink-0 items-center justify-between gap-2 border-b border-m-border px-3 py-2">
+						<button
+							type="button"
+							onClick={() => setSelectMode(false)}
+							className="inline-flex min-h-9 items-center gap-1 rounded-m-pill px-2 text-m-xs font-medium whitespace-nowrap text-m-accent active:bg-m-surface"
+						>
+							<ArrowLeft size={16} />
+							返回终端
+						</button>
+						<span className="text-m-xs font-medium whitespace-nowrap text-m-text-2">已选 {selectedIds.size} 段</span>
+						{blocks.length > 0 && (
+							<button
+								type="button"
+								onClick={() =>
+									setSelectedIds((prev) =>
+										prev.size === blocks.length ? new Set() : new Set(blocks.map((b) => b.id)),
+									)
+								}
+								className="min-h-9 rounded-m-pill px-2.5 text-m-xs font-medium whitespace-nowrap text-m-accent active:bg-m-surface"
+							>
+								{selectedIds.size === blocks.length ? "取消全选" : "全选"}
+							</button>
+						)}
+					</div>
+					<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+						{blocks.length === 0 ? (
+							<EmptyState
+								title="还没有可发送的终端输出"
+								hint="在终端运行命令并产生输出后，这里会自动按命令与输出分段"
+							/>
+						) : (
+							<div className="space-y-2.5">
+								{blocks.map((b) => {
+									const checked = selectedIds.has(b.id);
+									return (
+										<button
+											key={b.id}
+											type="button"
+											aria-pressed={checked}
+											onClick={() =>
+												setSelectedIds((prev) => {
+													const next = new Set(prev);
+													if (next.has(b.id)) next.delete(b.id);
+													else next.add(b.id);
+													return next;
+												})
+											}
+											className={`block w-full rounded-m-lg border p-3 text-left transition-colors ${
+												checked ? "border-m-accent bg-m-accent-soft/25" : "border-m-border bg-m-card"
+											}`}
+										>
+											<div className="mb-1.5 flex items-center justify-between gap-2">
+												<span className="min-w-0 truncate font-m-mono text-m-xs font-medium text-m-text-2">
+													{b.command ? `$ ${b.command}` : `输出片段（${b.lineCount} 行）`}
+												</span>
+												<span
+													aria-hidden
+													className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
+														checked ? "border-m-accent bg-m-accent text-m-accent-text" : "border-m-border-strong bg-m-surface"
+													}`}
+												>
+													{checked && <Check size={13} strokeWidth={2.5} />}
+												</span>
+											</div>
+											<pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-all font-m-mono text-m-xs leading-5 text-m-text">
+												{b.text}
+											</pre>
+										</button>
+									);
+								})}
+							</div>
+						)}
+					</div>
+					<div className="shrink-0 space-y-2 border-t border-m-border bg-m-bg px-3 pt-2.5" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 8px)" }}>
+						<input
+							type="text"
+							value={comment}
+							onChange={(e) => setComment(e.target.value)}
+							aria-label="批注说明"
+							placeholder="添加批注说明（可选）..."
+							className={`${inputCls} rounded-m-lg py-2 text-[16px]`}
+						/>
+						<div className="flex gap-2">
+							<Button
+								variant="tonal"
+								className="flex-1"
+								icon={<MessageSquarePlus size={16} />}
+								disabled={selectedIds.size === 0}
+								onClick={() => dispatchAnnotation("main")}
+							>
+								批注
+							</Button>
+							<Button
+								variant="primary"
+								className="flex-1"
+								icon={<MessagesSquare size={16} />}
+								disabled={selectedIds.size === 0}
+								onClick={() => dispatchAnnotation("sidechat")}
+							>
+								批注到辅助对话
+							</Button>
+						</div>
+					</div>
+				</div>
+			)}
+			<div
+				aria-hidden={selectMode || undefined}
+				className={selectMode ? "pointer-events-none invisible absolute inset-0 flex flex-col" : "flex min-h-0 flex-1 flex-col"}
+			>
 			<div className="flex shrink-0 items-center justify-between gap-2 px-3 pt-1.5 pb-1">
 				<div className="flex min-w-0 flex-1 items-center gap-2">
 					{cwd && (
@@ -871,6 +873,7 @@ function TerminalPane({
 						</KeyButton>
 					</div>
 				)}
+			</div>
 			</div>
 		</div>
 	);

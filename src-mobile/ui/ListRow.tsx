@@ -63,7 +63,13 @@ export function ListRow({
 					<span className={`block text-m-md break-words ${danger ? "text-m-danger" : "text-m-text"}`}>{title}</span>
 					{subtitle != null && <span className="mt-0.5 block text-m-xs break-words text-m-text-3">{subtitle}</span>}
 				</span>
-				{right != null && <span className="flex shrink-0 items-center gap-1 text-m-sm whitespace-nowrap text-m-text-3">{right}</span>}
+				{right != null && (
+					typeof right === "string" || typeof right === "number" ? (
+						<span className="max-w-[52%] min-w-0 shrink-0 truncate text-m-sm text-m-text-3">{right}</span>
+					) : (
+						<span className="flex max-w-[52%] min-w-0 shrink-0 items-center gap-1 text-m-sm whitespace-nowrap text-m-text-3">{right}</span>
+					)
+				)}
 				{showChevron && <ChevronRight size={18} className="shrink-0 text-m-text-3" aria-hidden />}
 			</span>
 		</>

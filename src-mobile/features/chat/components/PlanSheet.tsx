@@ -13,23 +13,29 @@ import {
 import {
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
 	type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import type { PlanStatus } from "../../../../src/features/chat/plan/planStatus";
 import { copyText } from "../../../core/lib/format";
 import { Button, Chip, Spinner, toast, type ChipTone } from "../../../ui";
 import { Markdown } from "../../../ui/Markdown";
 import { useOverlay } from "../../../ui/overlay";
+import { defaultApproveMode, type ApprovePlanOptions, type PlanApproveMode } from "../../panels/usePlanExecution";
+import { shortModel } from "../lib/models";
 
 export type PlanSheetMode = "half" | "full" | "float";
 export type PlanSheetStatus = "review" | "pending" | "executing" | "completed" | "failed" | "handoff";
 
 export interface PlanHeading {
+	index: number;
 	level: number;
 	title: string;
+	id: string;
 }
 
 const STATUS_CHIP: Record<PlanSheetStatus, { label: string; tone: ChipTone; live?: boolean }> = {
@@ -47,49 +53,63 @@ export function extractPlanTitle(md: string): string | null {
 	return m ? m[1].replace(/\s+#+\s*$/, "").trim() : null;
 }
 
-/** Extract section headings (preferring h2, falling back to h1/h3) outside fenced code blocks. */
-export function parsePlanHeadings(md: string): PlanHeading[] {
-	const lines = md.split("\n");
-	let fence: string | null = null;
-	const all: PlanHeading[] = [];
-	for (const line of lines) {
-		const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
-		if (fenceMatch) {
-			const marker = fenceMatch[1][0];
-			if (!fence) fence = marker;
-			else if (fence === marker) fence = null;
-			continue;
-		}
-		if (fence) continue;
-		const hMatch = /^(#{1,3})\s+(.+?)\s*$/.exec(line);
-		if (!hMatch) continue;
-		all.push({ level: hMatch[1].length, title: hMatch[2].replace(/\s+#+\s*$/, "").trim() });
-	}
-	const h2 = all.filter((h) => h.level === 2);
-	if (h2.length > 0) return h2;
-	const h3 = all.filter((h) => h.level === 3);
-	if (h3.length > 0) return h3;
-	return all;
+/** Read rendered DOM headings in document order and assign stable anchor IDs. */
+export function readDomHeadings(container: HTMLElement | null, idPrefix: string): PlanHeading[] {
+	if (!container) return [];
+	const nodes = container.querySelectorAll<HTMLElement>("h1, h2, h3, h4");
+	const out: PlanHeading[] = [];
+	nodes.forEach((node) => {
+		const title = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+		if (!title) return;
+		const index = out.length;
+		const id = `${idPrefix}-h-${index}`;
+		if (node.id !== id) node.id = id;
+		const level = Number(node.tagName.slice(1)) || 2;
+		out.push({ index, level, title, id });
+	});
+	return out;
 }
 
-function parseChecklistProgress(md: string): { done: number; total: number } | null {
+/** Strip fenced code blocks before counting markdown checklist items. */
+export function parseChecklistProgress(md: string): { done: number; total: number; nextStep: string | null } | null {
 	let done = 0;
 	let total = 0;
+	let nextStep: string | null = null;
+	let inFence = false;
+	let fenceChar = "";
+	let fenceLen = 0;
 	for (const line of md.split("\n")) {
-		const m = /^\s*[-*+]\s+\[([ xX])\]\s+/.exec(line);
+		const fenceMatch = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+		if (fenceMatch) {
+			const marker = fenceMatch[1];
+			const char = marker[0];
+			if (!inFence) {
+				inFence = true;
+				fenceChar = char;
+				fenceLen = marker.length;
+				continue;
+			}
+			if (char === fenceChar && marker.length >= fenceLen && fenceMatch[2].trim() === "") {
+				inFence = false;
+				continue;
+			}
+		}
+		if (inFence) continue;
+		const m = /^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/.exec(line);
 		if (!m) continue;
 		total++;
-		if (m[1].toLowerCase() === "x") done++;
+		if (m[1] !== " ") done++;
+		else if (!nextStep) nextStep = m[2].trim();
 	}
-	return total > 0 ? { done, total } : null;
+	return total > 0 ? { done, total, nextStep } : null;
 }
 
-interface PlanDiffLine {
+export interface PlanDiffLine {
 	kind: "same" | "add" | "del";
 	text: string;
 }
 
-function computeLineDiff(before: string, after: string): PlanDiffLine[] {
+export function computeLineDiff(before: string, after: string): PlanDiffLine[] {
 	const a = before.split("\n");
 	const b = after.split("\n");
 	if (a.length * b.length > 60_000) {
@@ -124,12 +144,194 @@ function computeLineDiff(before: string, after: string): PlanDiffLine[] {
 	return out;
 }
 
+/** Shared line-diff list that keeps blank lines with explicit `+`/`-`/` ` markers. */
+export function PlanDiffView({ lines }: { lines: readonly PlanDiffLine[] }) {
+	return (
+		<div className="space-y-0.5 py-1">
+			{lines.map((l, idx) => (
+				<div
+					key={idx}
+					className={`min-h-5 rounded px-2.5 py-0.5 font-m-mono text-[12px] leading-5 whitespace-pre-wrap break-words ${
+						l.kind === "add"
+							? "bg-m-diff-add text-m-text"
+							: l.kind === "del"
+								? "bg-m-diff-del text-m-text-2 line-through"
+								: "text-m-text-quiet"
+					}`}
+				>
+					<span>{l.kind === "add" ? "+ " : l.kind === "del" ? "- " : "  "}</span>
+					<span>{l.text || "\u00A0"}</span>
+				</div>
+			))}
+		</div>
+	);
+}
+
+const EXEC_MODE_OPTIONS: ReadonlyArray<{ id: PlanApproveMode; label: string }> = [
+	{ id: "keep", label: "继续当前上下文" },
+	{ id: "compact", label: "压缩上下文执行" },
+	{ id: "fresh", label: "新上下文执行" },
+];
+
+/** Compact Apple-style execution mode & role/model approval dock shared by PlanSheet and PlanPage. */
+export function PlanApprovalControls({
+	planStatus,
+	canFresh = false,
+	running = false,
+	approving = false,
+	onApprove,
+	onAnnotate,
+}: {
+	planStatus?: PlanStatus | null;
+	canFresh?: boolean;
+	running?: boolean;
+	approving?: boolean;
+	onApprove?: (opts: ApprovePlanOptions) => unknown | Promise<unknown>;
+	onAnnotate?: () => void;
+}) {
+	const keepDisabled = planStatus?.keepDisabled === true;
+	const freshEnabled = Boolean(canFresh && planStatus?.planFile);
+	const tiers = planStatus?.tiers ?? [];
+	const defaultRole = planStatus?.defaultRole;
+	const [mode, setMode] = useState<PlanApproveMode>(() => defaultApproveMode(planStatus));
+	const [role, setRole] = useState<string | null>(() => {
+		if (!tiers.length) return null;
+		return tiers.some((t) => t.role === defaultRole) ? (defaultRole ?? null) : (tiers[0]?.role ?? null);
+	});
+
+	useEffect(() => {
+		if (keepDisabled && mode === "keep") setMode("compact");
+	}, [keepDisabled, mode]);
+
+	useEffect(() => {
+		if (!tiers.length) {
+			setRole(null);
+			return;
+		}
+		setRole((cur) => {
+			if (cur && tiers.some((t) => t.role === cur)) return cur;
+			return tiers.some((t) => t.role === defaultRole) ? (defaultRole ?? null) : (tiers[0]?.role ?? null);
+		});
+	}, [tiers, defaultRole]);
+
+	const activeTier = tiers.find((t) => t.role === role) ?? null;
+	const modelSpec = activeTier?.spec ?? planStatus?.planModel ?? null;
+	const pct = typeof planStatus?.contextPercent === "number" ? Math.round(planStatus.contextPercent) : null;
+	const busy = running || approving;
+
+	return (
+		<div className="mx-auto w-full max-w-md space-y-2">
+			{/* Execution mode choices */}
+			<div
+				role="radiogroup"
+				aria-label="执行方式"
+				className="grid grid-cols-3 gap-1 rounded-m-md bg-m-surface p-1"
+			>
+				{EXEC_MODE_OPTIONS.map((opt) => {
+					const disabledOpt =
+						busy ||
+						(opt.id === "keep" && keepDisabled) ||
+						(opt.id === "fresh" && !freshEnabled);
+					const selected = mode === opt.id;
+					const titleHint =
+						opt.id === "keep" && keepDisabled
+							? `上下文已达 ${pct ?? 95}% 以上，请压缩或新开会话`
+							: opt.id === "fresh" && !freshEnabled
+								? "需要已保存的计划文件与项目目录"
+								: undefined;
+					return (
+						<button
+							key={opt.id}
+							type="button"
+							role="radio"
+							aria-checked={selected}
+							disabled={disabledOpt}
+							title={titleHint}
+							onClick={() => setMode(opt.id)}
+							className={`m-press min-h-9 rounded-m-sm px-1.5 py-1 text-[11.5px] leading-tight font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+								selected
+									? "bg-m-segment-on text-m-text shadow-xs"
+									: "text-m-text-2 active:bg-m-surface-hover"
+							}`}
+						>
+							<span className="block truncate">{opt.label}</span>
+						</button>
+					);
+				})}
+			</div>
+
+			{/* Execution role / model info */}
+			{(tiers.length > 0 || modelSpec) && (
+				<div className="flex items-center justify-between gap-2 px-0.5 text-[11.5px] text-m-text-3">
+					{tiers.length > 1 ? (
+						<div className="m-noscrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="radiogroup" aria-label="执行角色">
+							{tiers.map((t) => {
+								const selected = t.role === role;
+								return (
+									<button
+										key={t.role}
+										type="button"
+										role="radio"
+										aria-checked={selected}
+										disabled={busy}
+										onClick={() => setRole(t.role)}
+										title={t.spec}
+										className={`m-press shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium whitespace-nowrap transition-colors ${
+											selected
+												? "bg-m-accent-soft text-m-accent-soft-text"
+												: "bg-m-surface text-m-text-2 active:bg-m-surface-2"
+										}`}
+									>
+										{t.role}
+									</button>
+								);
+							})}
+						</div>
+					) : (
+						<span className="min-w-0 truncate">
+							{activeTier ? `执行角色：${activeTier.role}` : "执行模型"}
+						</span>
+					)}
+					{modelSpec && (
+						<span className="shrink-0 truncate font-m-mono text-[11px] text-m-text-3" title={modelSpec}>
+							{shortModel(modelSpec)}
+						</span>
+					)}
+				</div>
+			)}
+
+			{/* Primary action buttons */}
+			<div className="flex items-center gap-2">
+				<Button
+					variant="tonal"
+					className="flex-1 whitespace-nowrap"
+					disabled={busy}
+					onClick={onAnnotate}
+				>
+					修改计划
+				</Button>
+				<Button
+					variant="primary"
+					className="flex-1 whitespace-nowrap"
+					disabled={busy}
+					onClick={() => void onApprove?.({ mode, role })}
+				>
+					{approving && <Spinner size={15} />}
+					执行计划
+				</Button>
+			</div>
+		</div>
+	);
+}
+
 /**
- * 3-state Apple PlanSheet (`half` 78vh, `full` 94vh, `float` bottom glass pill).
- * Compact 2-row header with TOC dropdown, scrollable Markdown body, and floating approval dock.
+ * 3-state Apple PlanSheet (`half` 78% vh, `full` 94% vh, `float` bottom glass pill).
+ * Compact 2-row header with DOM-derived TOC dropdown, scrollable Markdown body, and pinned translucent approval dock.
  */
 export function PlanSheet({
 	open,
+	mode: modeProp,
+	onModeChange,
 	onClose,
 	text,
 	sessionId,
@@ -137,12 +339,16 @@ export function PlanSheet({
 	title,
 	version = 0,
 	prevContent = null,
+	planStatus = null,
+	canFresh = false,
 	running = false,
 	approving = false,
 	onApprove,
 	onAnnotate,
 }: {
 	open: boolean;
+	mode?: PlanSheetMode;
+	onModeChange?: (mode: PlanSheetMode) => void;
 	onClose: () => void;
 	text: string;
 	sessionId: string;
@@ -150,53 +356,58 @@ export function PlanSheet({
 	title?: string | null;
 	version?: number;
 	prevContent?: string | null;
+	planStatus?: PlanStatus | null;
+	canFresh?: boolean;
 	running?: boolean;
 	approving?: boolean;
-	onApprove?: () => void | Promise<void>;
+	onApprove?: (opts?: ApprovePlanOptions) => unknown | Promise<unknown>;
 	onAnnotate?: () => void;
 }) {
-	const [mode, setMode] = useState<PlanSheetMode>("half");
+	const [uncontrolledMode, setUncontrolledMode] = useState<PlanSheetMode>("half");
+	const mode = modeProp ?? uncontrolledMode;
+	const setMode = useCallback(
+		(next: PlanSheetMode | ((prev: PlanSheetMode) => PlanSheetMode)) => {
+			if (onModeChange) {
+				const resolved = typeof next === "function" ? next(modeProp ?? uncontrolledMode) : next;
+				onModeChange(resolved);
+			} else {
+				setUncontrolledMode(next);
+			}
+		},
+		[onModeChange, modeProp, uncontrolledMode],
+	);
+
 	const [tocOpen, setTocOpen] = useState(false);
 	const [showDiff, setShowDiff] = useState(false);
+	const [headings, setHeadings] = useState<PlanHeading[]>([]);
 	const [curSection, setCurSection] = useState(0);
 	const [dragOffset, setDragOffset] = useState(0);
 	const [dragging, setDragging] = useState(false);
 
 	const scrollRef = useRef<HTMLDivElement>(null);
-	const dragRef = useRef<{ startY: number; startTime: number; lastY: number } | null>(null);
+	const bodyRef = useRef<HTMLDivElement>(null);
+	const dragRef = useRef<{ pointerId: number; startY: number; startTime: number; lastY: number } | null>(null);
 
 	useEffect(() => {
 		if (open) {
-			setMode("half");
+			if (modeProp === undefined) setUncontrolledMode("half");
 			setTocOpen(false);
 			setDragOffset(0);
 			setDragging(false);
+			dragRef.current = null;
+		} else {
+			setTocOpen(false);
 		}
-	}, [open]);
+	}, [open, modeProp]);
 
 	useEffect(() => {
 		setShowDiff(false);
 	}, [text, version]);
 
-	const handleOverlayDismiss = useCallback(() => {
-		if (tocOpen) {
-			setTocOpen(false);
-			return;
-		}
-		if (mode === "full") {
-			setMode("half");
-			return;
-		}
-		onClose();
-	}, [tocOpen, mode, onClose]);
+	// Separate overlay layers so Back closes TOC first without swallowing PlanSheet's history entry.
+	useOverlay(open && mode !== "float", onClose);
+	useOverlay(open && mode !== "float" && tocOpen, useCallback(() => setTocOpen(false), []));
 
-	useOverlay(open && mode !== "float", handleOverlayDismiss);
-
-	const headings = useMemo(() => parsePlanHeadings(text), [text]);
-	const headingTag = useMemo(() => {
-		const level = headings[0]?.level;
-		return level ? `h${level}` : "h2";
-	}, [headings]);
 	const resolvedTitle = title?.trim() || extractPlanTitle(text) || "执行方案";
 	const progress = useMemo(() => parseChecklistProgress(text), [text]);
 	const chip = STATUS_CHIP[status];
@@ -206,12 +417,28 @@ export function PlanSheet({
 		[showDiff, hasDiff, prevContent, text],
 	);
 
+	// Derive TOC headings directly from rendered Markdown DOM headings so Setext/ATX/nested markup match 1:1.
+	useLayoutEffect(() => {
+		if (!open || mode === "float" || showDiff) return;
+		const container = bodyRef.current;
+		if (!container) return;
+		const sync = () => setHeadings(readDomHeadings(container, `plan-sheet-${sessionId.slice(0, 8)}`));
+		sync();
+		if (typeof MutationObserver === "undefined") return;
+		const mo = new MutationObserver(sync);
+		mo.observe(container, { childList: true, subtree: true, characterData: true });
+		return () => mo.disconnect();
+	}, [open, mode, showDiff, text, sessionId]);
+
 	useEffect(() => {
 		if (!open || mode === "float" || showDiff) return;
 		const el = scrollRef.current;
-		if (!el) return;
+		const body = bodyRef.current;
+		if (!el || !body) return;
 		const onScroll = () => {
-			const nodes = Array.from(el.querySelectorAll<HTMLElement>(`[data-plan-sheet-body] ${headingTag}`));
+			const nodes = Array.from(body.querySelectorAll<HTMLElement>("h1, h2, h3, h4")).filter(
+				(n) => (n.textContent ?? "").trim().length > 0,
+			);
 			if (nodes.length === 0) return;
 			const threshold = el.getBoundingClientRect().top + 48;
 			let active = 0;
@@ -223,14 +450,17 @@ export function PlanSheet({
 		onScroll();
 		el.addEventListener("scroll", onScroll, { passive: true });
 		return () => el.removeEventListener("scroll", onScroll);
-	}, [open, mode, showDiff, headingTag, text]);
+	}, [open, mode, showDiff, headings]);
 
 	const jumpToHeading = (index: number) => {
 		setTocOpen(false);
 		setCurSection(index);
 		const el = scrollRef.current;
-		if (!el) return;
-		const nodes = Array.from(el.querySelectorAll<HTMLElement>(`[data-plan-sheet-body] ${headingTag}`));
+		const body = bodyRef.current;
+		if (!el || !body) return;
+		const nodes = Array.from(body.querySelectorAll<HTMLElement>("h1, h2, h3, h4")).filter(
+			(n) => (n.textContent ?? "").trim().length > 0,
+		);
 		const target = nodes[index];
 		if (!target) return;
 		const top = el.scrollTop + target.getBoundingClientRect().top - el.getBoundingClientRect().top - 10;
@@ -247,27 +477,40 @@ export function PlanSheet({
 	};
 
 	const onDragStart = (e: ReactPointerEvent<HTMLDivElement>) => {
+		if (dragRef.current) return;
 		if ((e.target as HTMLElement).closest("button,a,input,textarea")) return;
-		dragRef.current = { startY: e.clientY, startTime: performance.now(), lastY: e.clientY };
+		dragRef.current = { pointerId: e.pointerId, startY: e.clientY, startTime: performance.now(), lastY: e.clientY };
 		setDragging(true);
 		e.currentTarget.setPointerCapture?.(e.pointerId);
 	};
 
 	const onDragMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-		if (!dragRef.current) return;
+		if (!dragRef.current || dragRef.current.pointerId !== e.pointerId) return;
 		dragRef.current.lastY = e.clientY;
 		const dy = e.clientY - dragRef.current.startY;
-		// Allow dragging downward freely and upward within reasonable rubber-band.
 		setDragOffset(Math.max(-96, dy));
+	};
+
+	const onDragCancel = (e: ReactPointerEvent<HTMLDivElement>) => {
+		const drag = dragRef.current;
+		if (!drag || drag.pointerId !== e.pointerId) return;
+		dragRef.current = null;
+		setDragging(false);
+		setDragOffset(0);
+		if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+			e.currentTarget.releasePointerCapture?.(e.pointerId);
+		}
 	};
 
 	const onDragEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
 		const drag = dragRef.current;
+		if (!drag || drag.pointerId !== e.pointerId) return;
 		dragRef.current = null;
 		setDragging(false);
 		setDragOffset(0);
-		if (!drag) return;
-		e.currentTarget.releasePointerCapture?.(e.pointerId);
+		if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+			e.currentTarget.releasePointerCapture?.(e.pointerId);
+		}
 		const dy = e.clientY - drag.startY;
 		const dt = Math.max(16, performance.now() - drag.startTime);
 		const velocity = dy / dt;
@@ -286,18 +529,22 @@ export function PlanSheet({
 	if (mode === "float") {
 		return createPortal(
 			<div
-				className="fixed right-4 left-4 z-(--z-sheet) flex justify-center pointer-events-none"
-				style={{ bottom: "calc(var(--m-safe-bottom) + 84px)" }}
+				className="pointer-events-none fixed z-(--z-sheet) flex justify-center"
+				style={{
+					left: "calc(var(--m-safe-left) + 16px)",
+					right: "calc(var(--m-safe-right) + 16px)",
+					bottom: "calc(var(--m-kb, 0px) + var(--m-safe-bottom) + 84px)",
+				}}
 			>
 				<div
 					role="region"
 					aria-label="执行方案悬浮条"
-					className="m-liquid-surface pointer-events-auto flex max-w-full items-center gap-2 rounded-m-pill py-1.5 pr-1.5 pl-3.5"
+					className="m-liquid-surface pointer-events-auto flex max-w-full items-center gap-1 rounded-m-pill py-1 pr-1 pl-3.5"
 				>
 					<button
 						type="button"
 						onClick={() => setMode("half")}
-						className="flex min-w-0 items-center gap-2 py-1 text-left active:opacity-75"
+						className="flex min-h-10 min-w-0 items-center gap-2 py-1 text-left active:opacity-75"
 					>
 						<ClipboardList size={15} strokeWidth={1.75} className="shrink-0 text-m-accent" aria-hidden />
 						<span className="truncate whitespace-nowrap text-[13px] font-medium text-m-text">
@@ -308,7 +555,7 @@ export function PlanSheet({
 						type="button"
 						aria-label="关闭计划"
 						onClick={onClose}
-						className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-m-text-3 active:bg-m-surface-hover active:text-m-text"
+						className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-m-text-3 active:bg-m-surface-hover active:text-m-text"
 					>
 						<X size={14} strokeWidth={1.85} />
 					</button>
@@ -318,11 +565,23 @@ export function PlanSheet({
 		);
 	}
 
-	const sheetHeight = mode === "full" ? "94vh" : "78vh";
+	const sheetHeight = mode === "full" ? "calc(var(--m-vh, 100dvh) * 0.94)" : "calc(var(--m-vh, 100dvh) * 0.78)";
 	const translateY = dragOffset > 0 ? dragOffset : dragOffset * 0.25;
+	const reducedMotion = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+	const sheetTransition = dragging
+		? "none"
+		: reducedMotion
+			? "opacity 150ms var(--m-ease)"
+			: "height 300ms var(--m-ease-sheet), transform 300ms var(--m-ease-sheet), opacity var(--m-dur-fast) var(--m-ease)";
 
 	return createPortal(
-		<div className="fixed inset-0 z-(--z-sheet) flex flex-col justify-end">
+		<div
+			className="fixed inset-x-0 z-(--z-sheet) flex flex-col justify-end"
+			style={{
+				top: "var(--m-vv-top, 0px)",
+				height: "var(--m-vh, 100dvh)",
+			}}
+		>
 			<div
 				aria-hidden="true"
 				onClick={onClose}
@@ -334,20 +593,24 @@ export function PlanSheet({
 				aria-label={resolvedTitle}
 				style={{
 					height: sheetHeight,
-					maxHeight: "94vh",
+					maxHeight: "calc(var(--m-vh, 100dvh) * 0.94)",
 					transform: translateY !== 0 ? `translate3d(0, ${translateY}px, 0)` : undefined,
+					transition: sheetTransition,
 				}}
-				className={`m-sheet-surface relative flex w-full flex-col overflow-hidden rounded-t-[28px] border-t border-m-border bg-m-bg-elev text-m-text ${
-					dragging ? "" : "transition-[height,transform] duration-300 ease-m-sheet"
-				}`}
+				className="relative flex w-full flex-col overflow-hidden rounded-t-[28px] border-t border-m-border bg-m-bg-elev text-m-text shadow-m-pop"
 			>
 				{/* Draggable Compact 2-Row Header */}
 				<div
 					onPointerDown={onDragStart}
 					onPointerMove={onDragMove}
 					onPointerUp={onDragEnd}
-					onPointerCancel={onDragEnd}
-					className="shrink-0 touch-none border-b border-m-border px-4 pb-2.5 select-none"
+					onPointerCancel={onDragCancel}
+					onLostPointerCapture={onDragCancel}
+					style={{
+						paddingInlineStart: "calc(var(--m-safe-left) + 16px)",
+						paddingInlineEnd: "calc(var(--m-safe-right) + 16px)",
+					}}
+					className="shrink-0 touch-none border-b border-m-border pb-2.5 select-none"
 				>
 					<div aria-hidden className="mx-auto mt-2 mb-2 h-[4px] w-9 rounded-m-pill bg-m-border-strong" />
 
@@ -370,7 +633,7 @@ export function PlanSheet({
 								aria-label="复制计划"
 								title="复制计划"
 								onClick={() => void copyPlan()}
-								className="m-press flex h-8 w-8 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
+								className="m-press flex h-9 w-9 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
 							>
 								<Copy size={15} strokeWidth={1.75} />
 							</button>
@@ -384,7 +647,7 @@ export function PlanSheet({
 										setShowDiff((v) => !v);
 										setTocOpen(false);
 									}}
-									className={`m-press flex h-8 w-8 items-center justify-center rounded-full ${
+									className={`m-press flex h-9 w-9 items-center justify-center rounded-full ${
 										showDiff
 											? "bg-m-accent-soft text-m-accent-soft-text"
 											: "text-m-text-2 active:bg-m-surface-hover"
@@ -398,7 +661,7 @@ export function PlanSheet({
 								aria-label={mode === "full" ? "还原半屏" : "全屏展开"}
 								title={mode === "full" ? "还原半屏" : "全屏展开"}
 								onClick={() => setMode((m) => (m === "full" ? "half" : "full"))}
-								className="m-press flex h-8 w-8 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
+								className="m-press flex h-9 w-9 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
 							>
 								{mode === "full" ? <Minimize2 size={15} strokeWidth={1.75} /> : <Maximize2 size={15} strokeWidth={1.75} />}
 							</button>
@@ -407,7 +670,7 @@ export function PlanSheet({
 								aria-label="收起为悬浮条"
 								title="收起为悬浮条"
 								onClick={() => setMode("float")}
-								className="m-press flex h-8 w-8 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
+								className="m-press flex h-9 w-9 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
 							>
 								<PanelBottomClose size={15} strokeWidth={1.75} />
 							</button>
@@ -416,7 +679,7 @@ export function PlanSheet({
 								aria-label="关闭计划"
 								title="关闭计划"
 								onClick={onClose}
-								className="m-press flex h-8 w-8 items-center justify-center rounded-full bg-m-surface text-m-text-2 active:bg-m-surface-2"
+								className="m-press flex h-9 w-9 items-center justify-center rounded-full bg-m-surface text-m-text-2 active:bg-m-surface-2"
 							>
 								<X size={15} strokeWidth={1.85} />
 							</button>
@@ -430,7 +693,7 @@ export function PlanSheet({
 							disabled={showDiff || headings.length === 0}
 							aria-expanded={tocOpen}
 							onClick={() => setTocOpen((v) => !v)}
-							className="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-m-sm bg-m-surface px-2.5 text-left text-[12px] text-m-text-2 transition-colors active:bg-m-surface-2 disabled:opacity-50"
+							className="flex h-9 min-w-0 flex-1 items-center gap-1.5 rounded-m-sm bg-m-surface px-2.5 text-left text-[12px] text-m-text-2 transition-colors active:bg-m-surface-2 disabled:opacity-50"
 						>
 							<List size={13} strokeWidth={1.8} className="shrink-0 text-m-text-quiet" aria-hidden />
 							<span className="shrink-0 whitespace-nowrap font-medium">
@@ -468,11 +731,12 @@ export function PlanSheet({
 									const active = idx === curSection;
 									return (
 										<button
-											key={`${idx}-${h.title}`}
+											key={`${idx}-${h.id}`}
 											type="button"
 											role="menuitem"
 											onClick={() => jumpToHeading(idx)}
-											className={`flex w-full items-center gap-2 rounded-m-sm px-2.5 py-2 text-left text-[12.5px] transition-colors active:bg-m-surface-hover ${
+											style={{ paddingLeft: `${10 + (h.level - 1) * 10}px` }}
+											className={`flex min-h-10 w-full items-center gap-2 rounded-m-sm pr-2.5 py-2 text-left text-[12.5px] transition-colors active:bg-m-surface-hover ${
 												active ? "bg-m-surface font-medium text-m-text" : "text-m-text-2"
 											}`}
 										>
@@ -495,66 +759,43 @@ export function PlanSheet({
 					onClick={() => {
 						if (tocOpen) setTocOpen(false);
 					}}
-					className={`m-scroll-pane relative min-h-0 flex-1 px-4 pt-3 ${
-						status === "review" ? "pb-24" : "pb-[calc(var(--m-safe-bottom)+24px)]"
-					}`}
+					style={{
+						paddingInlineStart: "calc(var(--m-safe-left) + 16px)",
+						paddingInlineEnd: "calc(var(--m-safe-right) + 16px)",
+						paddingBottom: status === "review" ? "24px" : "calc(var(--m-safe-bottom) + 24px)",
+					}}
+					className="m-scroll-pane relative min-h-0 flex-1 pt-3"
 				>
 					{showDiff && hasDiff ? (
-						<div className="space-y-0.5 py-1">
-							{diffLines.map((l, idx) => {
-								if (!l.text.trim()) return null;
-								return (
-									<div
-										key={idx}
-										className={`rounded px-2.5 py-0.5 font-m-mono text-[12px] leading-5 whitespace-pre-wrap break-words ${
-											l.kind === "add"
-												? "bg-m-diff-add text-m-text"
-												: l.kind === "del"
-													? "bg-m-diff-del text-m-text-2 line-through"
-													: "text-m-text-quiet"
-										}`}
-									>
-										{l.kind === "add" ? "+ " : l.kind === "del" ? "- " : "  "}
-										{l.text}
-									</div>
-								);
-							})}
-						</div>
+						<PlanDiffView lines={diffLines} />
 					) : (
-						<div data-plan-sheet-body className="m-selectable pb-4">
+						<div ref={bodyRef} data-plan-sheet-body className="m-selectable pb-4">
 							<Markdown text={text} sessionId={sessionId} />
 						</div>
 					)}
 				</div>
 
-				{/* Floating Liquid Glass Approval Dock (review state) */}
+				{/* Pinned Translucent Liquid Glass Approval Dock (never overlaps scrolled text) */}
 				{status === "review" && (
 					<div
-						className="pointer-events-none absolute right-3 left-3 bottom-0 flex justify-center"
-						style={{ paddingBottom: "calc(var(--m-safe-bottom) + 12px)" }}
+						className="shrink-0 border-t border-m-border/70 bg-m-bg-elev/88 pt-2.5 backdrop-blur-xl"
+						style={{
+							paddingInlineStart: "calc(var(--m-safe-left) + 14px)",
+							paddingInlineEnd: "calc(var(--m-safe-right) + 14px)",
+							paddingBottom: "calc(var(--m-safe-bottom) + 12px)",
+						}}
 					>
-						<div className="m-liquid-surface pointer-events-auto flex w-full max-w-md items-center gap-2 rounded-2xl p-2">
-							<Button
-								variant="tonal"
-								className="flex-1 whitespace-nowrap"
-								disabled={running || approving}
-								onClick={() => {
-									onAnnotate?.();
-									onClose();
-								}}
-							>
-								修改计划
-							</Button>
-							<Button
-								variant="primary"
-								className="flex-1 whitespace-nowrap"
-								disabled={running || approving}
-								onClick={() => void onApprove?.()}
-							>
-								{approving && <Spinner size={15} />}
-								执行计划
-							</Button>
-						</div>
+						<PlanApprovalControls
+							planStatus={planStatus}
+							canFresh={canFresh}
+							running={running}
+							approving={approving}
+							onApprove={onApprove}
+							onAnnotate={() => {
+								onAnnotate?.();
+								onClose();
+							}}
+						/>
 					</div>
 				)}
 			</section>

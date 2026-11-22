@@ -59,21 +59,23 @@
 	/* Device */
 	--m-safe-top: env(safe-area-inset-top, 0px);
 	--m-safe-bottom: env(safe-area-inset-bottom, 0px);
+	--m-safe-left: env(safe-area-inset-left, 0px);
+	--m-safe-right: env(safe-area-inset-right, 0px);
 	/* Written by app/viewport.ts (only on viewport resize/scroll): visual viewport height / keyboard inset. */
 	--m-vh: 100dvh;
 	--m-kb: 0px;
 	--m-kb-dur: 0ms;
 
 	--m-assistant-bg: transparent;
-	/* Desktop session-tree parity, resolved against the current scheme. */
-	--m-tree-line: color-mix(in oklab, var(--m-accent) 42%, transparent);
-	--m-tree-sky: light-dark(#0284c7, #38bdf8);
-	--m-tree-emerald: light-dark(#059669, #34d399);
-	--m-tree-amber: light-dark(#d97706, #fbbf24);
-	--m-tree-purple: light-dark(#9333ea, #c084fc);
-	--m-tree-rose: light-dark(#e11d48, #fb7185);
-	--m-tree-teal: light-dark(#0d9488, #2dd4bf);
-	--m-tree-indigo: light-dark(#4f46e5, #818cf8);
+	/* Desktop session-tree parity, resolved against the current scheme (iOS <17.5 safe). */
+	--m-tree-line: rgb(37 99 235 / 0.42);
+	--m-tree-sky: #0284c7;
+	--m-tree-emerald: #059669;
+	--m-tree-amber: #d97706;
+	--m-tree-purple: #9333ea;
+	--m-tree-rose: #e11d48;
+	--m-tree-teal: #0d9488;
+	--m-tree-indigo: #4f46e5;
 }
 
 /* ============================================================================
@@ -95,45 +97,53 @@ html[data-scheme="dark"] {
 	--m-text-3: #838a99;
 	--m-accent: #78a9ff;
 	--m-accent-text: #071936;
-	--m-accent-soft: color-mix(in srgb, var(--m-accent) 18%, var(--m-bg));
-	--m-accent-soft-text: color-mix(in srgb, var(--m-accent) 78%, #ffffff);
+	--m-accent-soft: #1f2a3d;
+	--m-accent-soft-text: #dce8ff;
 	--m-link: var(--m-accent);
 	--m-danger: #f87171;
 	--m-warn: #fbbf24;
 	--m-success: #4ade80;
-	--m-danger-bg: color-mix(in srgb, var(--m-danger) 15%, var(--m-bg));
-	--m-warn-bg: color-mix(in srgb, var(--m-warn) 14%, var(--m-bg));
-	--m-warn-border: color-mix(in srgb, var(--m-warn) 32%, transparent);
-	--m-success-bg: color-mix(in srgb, var(--m-success) 14%, var(--m-bg));
+	--m-danger-bg: #2f1c20;
+	--m-warn-bg: #2d2614;
+	--m-warn-border: rgb(251 191 36 / 0.32);
+	--m-success-bg: #152a1f;
 	--m-bubble-user-bg: #1e2636;
 	--m-bubble-user-text: var(--m-text);
-	--m-bubble-user-border: color-mix(in srgb, var(--m-accent) 18%, transparent);
-	--m-topbar-bg: color-mix(in srgb, var(--m-bg) 82%, transparent);
-	--m-topbar-border: color-mix(in srgb, var(--m-text) 8%, transparent);
+	--m-bubble-user-border: rgb(120 169 255 / 0.18);
+	--m-topbar-bg: rgb(12 13 16 / 0.82);
+	--m-topbar-border: rgb(238 240 245 / 0.08);
 	--m-composer-bg: var(--m-card);
-	--m-composer-border: color-mix(in srgb, var(--m-text) 11%, transparent);
+	--m-composer-border: rgb(238 240 245 / 0.11);
 	--m-composer-shadow: 0 10px 28px rgb(0 0 0 / 0.44), 0 1px 2px rgb(0 0 0 / 0.25);
 	--m-code-bg: #13151b;
-	--m-code-hdr: color-mix(in srgb, var(--m-surface) 72%, var(--m-code-bg));
+	--m-code-hdr: #1b1e24;
 	--m-code-text: var(--m-text);
 	--m-inline-code-bg: var(--m-surface);
 	--m-inline-code-text: var(--m-text);
-	--m-diff-add: color-mix(in srgb, var(--m-success) 18%, transparent);
-	--m-diff-del: color-mix(in srgb, var(--m-danger) 20%, transparent);
-	--m-drawer-bg: color-mix(in srgb, var(--m-bg-elev) 75%, var(--m-bg));
-	--m-drawer-active: color-mix(in srgb, var(--m-accent) 16%, transparent);
+	--m-diff-add: rgb(74 222 128 / 0.18);
+	--m-diff-del: rgb(248 113 113 / 0.20);
+	--m-drawer-bg: #131519;
+	--m-drawer-active: rgb(120 169 255 / 0.16);
 	--m-scrim: rgb(0 0 0 / 0.58);
 	--m-rim-light: rgb(255 255 255 / 0.13);
 	--m-rim-light-subtle: rgb(255 255 255 / 0.07);
 	--m-shadow-pop: inset 0 0.5px 0 var(--m-rim-light), 0 14px 36px rgb(0 0 0 / 0.54), 0 2px 6px rgb(0 0 0 / 0.28);
 	--m-shadow-card: inset 0 0.5px 0 var(--m-rim-light-subtle), 0 1px 2px rgb(0 0 0 / 0.28);
-	--m-text-quiet: color-mix(in srgb, var(--m-text) 40%, transparent);
-	--m-text-faint: color-mix(in srgb, var(--m-text) 30%, transparent);
-	--m-liquid-bg: color-mix(in srgb, var(--m-bg-elev) 72%, transparent);
+	--m-text-quiet: rgb(238 240 245 / 0.40);
+	--m-text-faint: rgb(238 240 245 / 0.30);
+	--m-liquid-bg: rgb(21 23 28 / 0.72);
 	--m-liquid-border: rgb(255 255 255 / 0.14);
-	--m-liquid-pill: color-mix(in srgb, var(--m-text) 14%, var(--m-surface));
+	--m-liquid-pill: #3b3e46;
 	--m-liquid-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16), 0 6px 20px rgb(0 0 0 / 0.34);
-	--m-glow: radial-gradient(120% 56% at 50% 108%, color-mix(in srgb, var(--m-accent) 24%, transparent), color-mix(in srgb, var(--m-accent) 8%, transparent) 46%, transparent 74%);
+	--m-glow: radial-gradient(120% 56% at 50% 108%, rgb(120 169 255 / 0.24), rgb(120 169 255 / 0.08) 46%, transparent 74%);
+	--m-tree-line: rgb(120 169 255 / 0.42);
+	--m-tree-sky: #38bdf8;
+	--m-tree-emerald: #34d399;
+	--m-tree-amber: #fbbf24;
+	--m-tree-purple: #c084fc;
+	--m-tree-rose: #fb7185;
+	--m-tree-teal: #2dd4bf;
+	--m-tree-indigo: #818cf8;
 }
 
 /* ============================================================================
@@ -155,45 +165,53 @@ html[data-scheme="light"] {
 	--m-text-3: #5d6370;
 	--m-accent: #2563eb;
 	--m-accent-text: #ffffff;
-	--m-accent-soft: color-mix(in srgb, var(--m-accent) 13%, var(--m-card));
-	--m-accent-soft-text: color-mix(in srgb, var(--m-accent) 82%, #000000);
+	--m-accent-soft: #e3ebfc;
+	--m-accent-soft-text: #1e51c1;
 	--m-link: var(--m-accent);
 	--m-danger: #dc2626;
 	--m-warn: #b45309;
 	--m-success: #15803d;
-	--m-danger-bg: color-mix(in srgb, var(--m-danger) 10%, var(--m-card));
-	--m-warn-bg: color-mix(in srgb, var(--m-warn) 11%, var(--m-card));
-	--m-warn-border: color-mix(in srgb, var(--m-warn) 26%, transparent);
-	--m-success-bg: color-mix(in srgb, var(--m-success) 10%, var(--m-card));
+	--m-danger-bg: #fce9e9;
+	--m-warn-bg: #f7ece4;
+	--m-warn-border: rgb(180 83 9 / 0.26);
+	--m-success-bg: #e8f2ec;
 	--m-bubble-user-bg: #e8effc;
 	--m-bubble-user-text: var(--m-text);
-	--m-bubble-user-border: color-mix(in srgb, var(--m-accent) 14%, transparent);
-	--m-topbar-bg: color-mix(in srgb, var(--m-bg) 84%, transparent);
-	--m-topbar-border: color-mix(in srgb, var(--m-text) 7%, transparent);
+	--m-bubble-user-border: rgb(37 99 235 / 0.14);
+	--m-topbar-bg: rgb(250 249 247 / 0.84);
+	--m-topbar-border: rgb(23 25 31 / 0.07);
 	--m-composer-bg: var(--m-card);
-	--m-composer-border: color-mix(in srgb, var(--m-text) 9%, transparent);
+	--m-composer-border: rgb(23 25 31 / 0.09);
 	--m-composer-shadow: 0 6px 24px rgb(18 22 33 / 0.08), 0 1px 2px rgb(18 22 33 / 0.05);
 	--m-code-bg: #f3f2ef;
-	--m-code-hdr: color-mix(in srgb, var(--m-surface) 82%, var(--m-code-bg));
+	--m-code-hdr: #eceae4;
 	--m-code-text: var(--m-text);
 	--m-inline-code-bg: var(--m-surface);
 	--m-inline-code-text: var(--m-text);
-	--m-diff-add: color-mix(in srgb, var(--m-success) 12%, transparent);
-	--m-diff-del: color-mix(in srgb, var(--m-danger) 12%, transparent);
+	--m-diff-add: rgb(21 128 61 / 0.12);
+	--m-diff-del: rgb(220 38 38 / 0.12);
 	--m-drawer-bg: var(--m-bg);
-	--m-drawer-active: color-mix(in srgb, var(--m-accent) 12%, var(--m-card));
+	--m-drawer-active: #e5ecfd;
 	--m-scrim: rgb(15 18 28 / 0.3);
 	--m-rim-light: rgb(255 255 255 / 0.82);
 	--m-rim-light-subtle: rgb(255 255 255 / 0.62);
 	--m-shadow-pop: inset 0 0.5px 0 var(--m-rim-light), 0 12px 32px rgb(18 22 33 / 0.14), 0 2px 6px rgb(18 22 33 / 0.07);
 	--m-shadow-card: inset 0 0.5px 0 var(--m-rim-light-subtle), 0 1px 3px rgb(18 22 33 / 0.06);
-	--m-text-quiet: color-mix(in srgb, var(--m-text) 42%, transparent);
-	--m-text-faint: color-mix(in srgb, var(--m-text) 32%, transparent);
-	--m-liquid-bg: color-mix(in srgb, var(--m-card) 76%, transparent);
+	--m-text-quiet: rgb(23 25 31 / 0.42);
+	--m-text-faint: rgb(23 25 31 / 0.32);
+	--m-liquid-bg: rgb(255 255 255 / 0.76);
 	--m-liquid-border: rgb(20 20 26 / 0.10);
 	--m-liquid-pill: var(--m-card);
 	--m-liquid-shadow: inset 0 1px 0 rgb(255 255 255 / 0.85), 0 4px 16px rgb(18 22 33 / 0.08);
-	--m-glow: radial-gradient(120% 56% at 50% 108%, color-mix(in srgb, var(--m-accent) 16%, transparent), color-mix(in srgb, var(--m-accent) 6%, transparent) 46%, transparent 74%);
+	--m-glow: radial-gradient(120% 56% at 50% 108%, rgb(37 99 235 / 0.16), rgb(37 99 235 / 0.06) 46%, transparent 74%);
+	--m-tree-line: rgb(37 99 235 / 0.42);
+	--m-tree-sky: #0284c7;
+	--m-tree-emerald: #059669;
+	--m-tree-amber: #d97706;
+	--m-tree-purple: #9333ea;
+	--m-tree-rose: #e11d48;
+	--m-tree-teal: #0d9488;
+	--m-tree-indigo: #4f46e5;
 }
 
 /* ============================================================================
@@ -253,7 +271,7 @@ html[data-scheme="light"][data-theme="glacier"] {
 	--m-text: #1b3242;
 	--m-text-2: #3e596e;
 	--m-text-3: #506c81;
-	--m-accent: #0d94bd;
+	--m-accent: #087191;
 	--m-accent-text: #ffffff;
 	--m-bubble-user-bg: #def0f8;
 	--m-code-bg: #edf4f9;
@@ -286,8 +304,8 @@ html[data-scheme="light"][data-theme="catppuccin-latte"] {
 	--m-accent: #1e66f5;
 	--m-accent-text: #ffffff;
 	--m-danger: #d20f39;
-	--m-warn: #df8e1d;
-	--m-success: #40a02b;
+	--m-warn: #8f5400;
+	--m-success: #266d18;
 	--m-bubble-user-bg: #dce6fb;
 	--m-code-bg: #e8ebf1;
 }
@@ -354,7 +372,7 @@ html[data-scheme="dark"][data-theme="tokyo-night"] {
 	--m-segment-on: #343b58;
 	--m-text: #c0caf5;
 	--m-text-2: #9aa5ce;
-	--m-text-3: #6873a1;
+	--m-text-3: #8b97c7;
 	--m-accent: #7aa2f7;
 	--m-accent-text: #101524;
 	--m-danger: #f7768e;
@@ -457,4 +475,73 @@ html[data-scheme="dark"][data-theme="gruvbox-dark"] {
 	--m-success: #b8bb26;
 	--m-bubble-user-bg: #392e24;
 	--m-code-bg: #1a1816;
+}
+
+/* ============================================================================
+ * Dynamic color-mix enhancements (Safari 16.2+ / modern WebKit; iOS 16.0-16.1 use hex/rgba fallbacks above)
+ * ============================================================================ */
+@supports (color: color-mix(in srgb, red, blue)) {
+	html[data-scheme="dark"],
+	html[data-scheme="light"] {
+		--m-tree-line: color-mix(in srgb, var(--m-accent) 42%, transparent);
+	}
+	html[data-scheme="dark"] {
+		--m-accent-soft: color-mix(in srgb, var(--m-accent) 18%, var(--m-bg));
+		--m-accent-soft-text: color-mix(in srgb, var(--m-accent) 78%, #ffffff);
+		--m-danger-bg: color-mix(in srgb, var(--m-danger) 15%, var(--m-bg));
+		--m-warn-bg: color-mix(in srgb, var(--m-warn) 14%, var(--m-bg));
+		--m-warn-border: color-mix(in srgb, var(--m-warn) 32%, transparent);
+		--m-success-bg: color-mix(in srgb, var(--m-success) 14%, var(--m-bg));
+		--m-bubble-user-border: color-mix(in srgb, var(--m-accent) 18%, transparent);
+		--m-topbar-bg: color-mix(in srgb, var(--m-bg) 82%, transparent);
+		--m-topbar-border: color-mix(in srgb, var(--m-text) 8%, transparent);
+		--m-composer-border: color-mix(in srgb, var(--m-text) 11%, transparent);
+		--m-code-hdr: color-mix(in srgb, var(--m-surface) 72%, var(--m-code-bg));
+		--m-diff-add: color-mix(in srgb, var(--m-success) 18%, transparent);
+		--m-diff-del: color-mix(in srgb, var(--m-danger) 20%, transparent);
+		--m-drawer-bg: color-mix(in srgb, var(--m-bg-elev) 75%, var(--m-bg));
+		--m-drawer-active: color-mix(in srgb, var(--m-accent) 16%, transparent);
+		--m-text-quiet: color-mix(in srgb, var(--m-text) 40%, transparent);
+		--m-text-faint: color-mix(in srgb, var(--m-text) 30%, transparent);
+		--m-liquid-bg: color-mix(in srgb, var(--m-bg-elev) 72%, transparent);
+		--m-liquid-pill: color-mix(in srgb, var(--m-text) 14%, var(--m-surface));
+		--m-glow: radial-gradient(120% 56% at 50% 108%, color-mix(in srgb, var(--m-accent) 24%, transparent), color-mix(in srgb, var(--m-accent) 8%, transparent) 46%, transparent 74%);
+	}
+
+	html[data-scheme="light"] {
+		--m-accent-soft: color-mix(in srgb, var(--m-accent) 13%, var(--m-card));
+		--m-accent-soft-text: color-mix(in srgb, var(--m-accent) 82%, #000000);
+		--m-danger-bg: color-mix(in srgb, var(--m-danger) 10%, var(--m-card));
+		--m-warn-bg: color-mix(in srgb, var(--m-warn) 11%, var(--m-card));
+		--m-warn-border: color-mix(in srgb, var(--m-warn) 26%, transparent);
+		--m-success-bg: color-mix(in srgb, var(--m-success) 10%, var(--m-card));
+		--m-bubble-user-border: color-mix(in srgb, var(--m-accent) 14%, transparent);
+		--m-topbar-bg: color-mix(in srgb, var(--m-bg) 84%, transparent);
+		--m-topbar-border: color-mix(in srgb, var(--m-text) 7%, transparent);
+		--m-composer-border: color-mix(in srgb, var(--m-text) 9%, transparent);
+		--m-code-hdr: color-mix(in srgb, var(--m-surface) 82%, var(--m-code-bg));
+		--m-diff-add: color-mix(in srgb, var(--m-success) 12%, transparent);
+		--m-diff-del: color-mix(in srgb, var(--m-danger) 12%, transparent);
+		--m-drawer-active: color-mix(in srgb, var(--m-accent) 12%, var(--m-card));
+		--m-text-quiet: color-mix(in srgb, var(--m-text) 42%, transparent);
+		--m-text-faint: color-mix(in srgb, var(--m-text) 32%, transparent);
+		--m-liquid-bg: color-mix(in srgb, var(--m-card) 76%, transparent);
+		--m-glow: radial-gradient(120% 56% at 50% 108%, color-mix(in srgb, var(--m-accent) 16%, transparent), color-mix(in srgb, var(--m-accent) 6%, transparent) 46%, transparent 74%);
+	}
+}
+
+@supports (color: color-mix(in oklab, red, blue)) {
+	html[data-scheme="dark"],
+	html[data-scheme="light"] {
+		--m-tree-line: color-mix(in oklab, var(--m-accent) 42%, transparent);
+	}
+}
+
+@media (prefers-reduced-transparency: reduce) {
+	html[data-scheme="dark"],
+	html[data-scheme="light"] {
+		--m-topbar-bg: var(--m-bg);
+		--m-liquid-bg: var(--m-bg-elev);
+		--m-drawer-bg: var(--m-bg-elev);
+	}
 }

@@ -38,7 +38,7 @@ export const FIELD_GLYPHS: Record<StatField, string> = {
 	time: "",
 	input: "↘",
 	output: "↗",
-	cache: "💾",
+	cache: "",
 	ttft: "⏱",
 	tps: "⚡",
 	duration: "⌛",
@@ -237,7 +237,7 @@ export interface DesktopStatPart {
 }
 
 /**
- * Desktop-parity TUI stat part formatter (`12:47:23 ↘1.3K ↗774 💾51K ⏱2.2s ⚡71.4/s`).
+ * Desktop-parity TUI stat part formatter (`12:47:23 ↘1.3K ↗774 51K ⏱2.2s ⚡71.4/s`).
  * Only includes fields that have recorded values.
  */
 export function formatDesktopStatParts(

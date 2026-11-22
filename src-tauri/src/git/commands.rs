@@ -742,20 +742,52 @@ pub fn pending_diff(dir: &std::path::Path) -> Result<String, String> {
     let _ = std::fs::remove_file(&tmp);
     result
 }
-
-pub async fn git_commit_suggest_impl(state: &AppState, cwd: &str) -> Result<String, String> {
-    let dir = PathBuf::from(cwd);
-    let (diff, recent) = blocking(move || {
-        let diff = pending_diff(&dir)?;
-        if diff.trim().is_empty() {
-            return Err("没有检测到任何改动".to_string());
+/// Scoped variant of `pending_diff` restricted to validated literal pathspecs.
+pub fn pending_diff_for_paths(
+    dir: &std::path::Path,
+    pathspecs: &[String],
+) -> Result<String, String> {
+    use super::cmd::{git_cmd, run, GIT_TIMEOUT};
+    if pathspecs.is_empty() {
+        return Err("没有检测到任何改动".to_string());
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let tmp = std::env::temp_dir().join(format!(
+        "omp-pending-scoped-{}-{nanos}.idx",
+        std::process::id()
+    ));
+    let in_tmp = |args: &[&str]| -> Result<String, String> {
+        let mut cmd = git_cmd(dir);
+        cmd.env("GIT_INDEX_FILE", &tmp).args(args);
+        let out = run(cmd, GIT_TIMEOUT)?;
+        if out.ok() {
+            Ok(out.text())
+        } else {
+            Err(out.err_msg())
         }
-        let recent = super::cmd::git_ok(&dir, &["log", "-10", "--no-merges", "--format=%s"])
-            .unwrap_or_default();
-        Ok((diff, recent))
-    })
-    .await?;
+    };
+    let result = (|| {
+        if super::status::has_head(dir) {
+            in_tmp(&["read-tree", "HEAD"])?;
+        }
+        for chunk in pathspecs.chunks(200) {
+            let mut args = vec!["add", "-A", "--"];
+            args.extend(chunk.iter().map(String::as_str));
+            in_tmp(&args)?;
+        }
+        in_tmp(&["diff", "--cached", "--no-color", "--stat", "--patch"])
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
 
+async fn suggest_commit_from_diff(
+    state: &AppState,
+    diff: String,
+    recent: String,
+) -> Result<String, String> {
     // The stat block comes first, so the file list survives truncation.
     let capped_diff: String = diff.chars().take(8000).collect();
     let prompt = format!(
@@ -776,6 +808,39 @@ pub async fn git_commit_suggest_impl(state: &AppState, cwd: &str) -> Result<Stri
     let suggestion =
         crate::todos::omp::run_print(state, model_to_use, &prompt, Duration::from_secs(60)).await?;
     parse_commit_draft(&suggestion)
+}
+
+pub async fn git_commit_suggest_scoped(
+    state: &AppState,
+    repo_dir: PathBuf,
+    pathspecs: Vec<String>,
+) -> Result<String, String> {
+    let (diff, recent) = blocking(move || {
+        let diff = pending_diff_for_paths(&repo_dir, &pathspecs)?;
+        if diff.trim().is_empty() {
+            return Err("没有检测到任何改动".to_string());
+        }
+        let recent = super::cmd::git_ok(&repo_dir, &["log", "-10", "--no-merges", "--format=%s"])
+            .unwrap_or_default();
+        Ok((diff, recent))
+    })
+    .await?;
+    suggest_commit_from_diff(state, diff, recent).await
+}
+
+pub async fn git_commit_suggest_impl(state: &AppState, cwd: &str) -> Result<String, String> {
+    let dir = PathBuf::from(cwd);
+    let (diff, recent) = blocking(move || {
+        let diff = pending_diff(&dir)?;
+        if diff.trim().is_empty() {
+            return Err("没有检测到任何改动".to_string());
+        }
+        let recent = super::cmd::git_ok(&dir, &["log", "-10", "--no-merges", "--format=%s"])
+            .unwrap_or_default();
+        Ok((diff, recent))
+    })
+    .await?;
+    suggest_commit_from_diff(state, diff, recent).await
 }
 
 #[tauri::command]

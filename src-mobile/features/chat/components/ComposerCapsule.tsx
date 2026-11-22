@@ -235,7 +235,7 @@ export function ComposerCapsule({
 				</div>
 			)}
 			<div className="relative flex flex-col rounded-(--m-composer-radius) border border-m-composer-border bg-m-composer-bg shadow-m-composer backdrop-blur-xl transition-[border-color,box-shadow,background-color] duration-(--m-dur-fast) focus-within:border-m-border-strong focus-within:shadow-m-pop">
-				{top != null && <div className="p-2.5 pb-0">{top}</div>}
+				{top != null && <div className="max-h-[26vh] overflow-y-auto overscroll-contain p-2.5 pb-0">{top}</div>}
 			<textarea
 				ref={ta}
 				rows={1}
@@ -278,9 +278,11 @@ export function ComposerCapsule({
 						type="button"
 						aria-label="添加"
 						onClick={onPlus}
-						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-m-surface/55 text-m-text-2 transition-[background-color,color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
+						className="-m-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
 					>
-						<Plus size={18} strokeWidth={2} />
+						<span className="flex h-8 w-8 items-center justify-center rounded-full bg-m-surface/55 text-m-text-2 transition-[background-color,color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2">
+							<Plus size={18} strokeWidth={2} />
+						</span>
 					</button>
 
 					{(hasModel || hasThinking) && (
@@ -289,7 +291,7 @@ export function ComposerCapsule({
 							aria-label={modelTriggerLabel}
 							onClick={onModel ?? onThinking}
 							disabled={!onModel && !onThinking}
-							className="flex h-8 min-w-0 max-w-full flex-initial items-center gap-1 rounded-lg px-2 text-left transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface/70 active:scale-[0.98] active:bg-m-surface-2 disabled:cursor-default disabled:active:scale-100"
+							className="-my-1.5 flex min-h-11 min-w-0 max-w-full flex-initial items-center gap-1 rounded-lg px-2 text-left transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface/70 active:scale-[0.98] active:bg-m-surface-2 disabled:cursor-default disabled:active:scale-100"
 						>
 							{hasModel && (
 								<span className="min-w-0 truncate text-[12.5px] font-medium text-m-text">
@@ -316,9 +318,11 @@ export function ComposerCapsule({
 							title={`上下文用量：${contextText}`}
 							onClick={onContext}
 							disabled={!onContext}
-							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface active:scale-95 active:bg-m-surface-2 disabled:opacity-60 disabled:active:scale-100 ${contextToneClass}`}
+							className={`-mx-1 -my-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full disabled:opacity-60 ${contextToneClass}`}
 						>
-							<ContextIndicator text={contextText} percent={contextPercent} compact />
+							<span className="flex h-8 w-8 items-center justify-center rounded-full transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface active:scale-95 active:bg-m-surface-2">
+								<ContextIndicator text={contextText} percent={contextPercent} compact />
+							</span>
 						</button>
 					)}
 
@@ -328,13 +332,17 @@ export function ComposerCapsule({
 						aria-pressed={recording}
 						disabled={transcribing}
 						onClick={() => void toggleRecording()}
-						className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-[background-color,color,transform] duration-(--m-dur-press) ease-m ${
-							recording
-								? "m-pulse bg-m-danger text-white"
-								: "text-m-text-2 hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
-						}`}
+						className="-mx-1 -my-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
 					>
-						{transcribing ? <Spinner size={15} /> : recording ? <Square size={12} fill="currentColor" /> : <Mic size={17} />}
+						<span
+							className={`flex h-8 w-8 items-center justify-center rounded-full transition-[background-color,color,transform] duration-(--m-dur-press) ease-m ${
+								recording
+									? "m-pulse bg-m-danger text-white"
+									: "text-m-text-2 hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
+							}`}
+						>
+							{transcribing ? <Spinner size={15} /> : recording ? <Square size={12} fill="currentColor" /> : <Mic size={17} />}
+						</span>
 					</button>
 
 					{showPrimaryStop ? (
@@ -343,9 +351,11 @@ export function ComposerCapsule({
 							type="button"
 							aria-label="停止"
 							onClick={onStop}
-							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-m-text text-m-bg transition-transform duration-(--m-dur-press) ease-m active:scale-95"
+							className="-my-1.5 -mr-1.5 -ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
 						>
-							<Square size={11} fill="currentColor" />
+							<span className="flex h-8 w-8 items-center justify-center rounded-full bg-m-text text-m-bg transition-transform duration-(--m-dur-press) ease-m active:scale-95">
+								<Square size={11} fill="currentColor" />
+							</span>
 						</button>
 					) : (
 						<button
@@ -354,13 +364,17 @@ export function ComposerCapsule({
 							aria-label="发送"
 							disabled={!canSend}
 							onClick={submit}
-							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-[background-color,color,transform,opacity] duration-(--m-dur-press) ease-m ${
-								canSend
-									? "cursor-pointer bg-m-text text-m-bg shadow-xs active:scale-95"
-									: "cursor-not-allowed bg-m-surface-2 text-m-text-3"
-							}`}
+							className="-my-1.5 -mr-1.5 -ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full disabled:cursor-not-allowed"
 						>
-							{busy ? <Spinner size={15} /> : <ArrowUp size={16} strokeWidth={2.25} />}
+							<span
+								className={`flex h-8 w-8 items-center justify-center rounded-full transition-[background-color,color,transform,opacity] duration-(--m-dur-press) ease-m ${
+									canSend
+										? "cursor-pointer bg-m-text text-m-bg shadow-xs active:scale-95"
+										: "bg-m-surface-2 text-m-text-3"
+								}`}
+							>
+								{busy ? <Spinner size={15} /> : <ArrowUp size={16} strokeWidth={2.25} />}
+							</span>
 						</button>
 					)}
 				</div>

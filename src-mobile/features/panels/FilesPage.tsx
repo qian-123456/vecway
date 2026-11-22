@@ -78,10 +78,10 @@ const RASTER_IMAGE_RE = /\.(png|jpe?g|gif|webp|ico|bmp)$/i;
 const q = encodeURIComponent;
 const ICON = { size: 20, strokeWidth: 1.75 } as const;
 
-export function FilesPanel({ sessionId, embedded = false }: { sessionId: string; embedded?: boolean }) {
+export function FilesPanel({ sessionId, embedded = false, active = true }: { sessionId: string; embedded?: boolean; active?: boolean }) {
 	const draft = isDraftId(sessionId);
 	const [dir, setDir] = useState<string | null>(null);
-	const [file, setFile] = useState<{ entry: DirEntry; deleted?: boolean } | null>(null);
+	const [file, setFile] = useState<{ entry: DirEntry; deleted?: boolean; repoRelative?: boolean } | null>(null);
 	const [query, setQuery] = useState("");
 	const [manualScope, setManualScope] = useState<FileScope | null>(null);
 
@@ -116,7 +116,7 @@ export function FilesPanel({ sessionId, embedded = false }: { sessionId: string;
 	const closeFile = () => setFile(null);
 	const parentDir = dirState.data?.parent ?? null;
 	// Back gesture closes file preview first, or climbs directory levels in "全部文件" mode.
-	useLayer(file !== null || (scope === "all" && parentDir !== null), () => {
+	useLayer(active && (file !== null || (scope === "all" && parentDir !== null)), () => {
 		if (file) {
 			closeFile();
 		} else if (scope === "all" && parentDir) {
@@ -144,6 +144,7 @@ export function FilesPanel({ sessionId, embedded = false }: { sessionId: string;
 				sessionId={sessionId}
 				entry={file.entry}
 				deleted={file.deleted}
+				repoRelative={file.repoRelative}
 				embedded={embedded}
 				onClose={closeFile}
 			/>
@@ -165,7 +166,7 @@ export function FilesPanel({ sessionId, embedded = false }: { sessionId: string;
 						onChange={(e) => setQuery(e.target.value)}
 						placeholder={scope === "changed" ? "筛选改动文件" : "在当前目录中查找"}
 						aria-label={scope === "changed" ? "筛选改动文件" : "在当前目录中查找"}
-						className="min-h-10 min-w-0 flex-1 bg-transparent text-m-sm text-m-text outline-none placeholder:text-m-text-3 [&::-webkit-search-cancel-button]:hidden"
+						className="min-h-10 min-w-0 flex-1 bg-transparent text-[16px] text-m-text outline-none placeholder:text-m-text-3 [&::-webkit-search-cancel-button]:hidden"
 					/>
 					{query && (
 						<button
@@ -216,6 +217,7 @@ export function FilesPanel({ sessionId, embedded = false }: { sessionId: string;
 														setFile({
 															entry: { name, path: f.path, kind: "file", size: 0 },
 															deleted: f.status === "D",
+															repoRelative: true,
 														})
 													}
 												/>
@@ -346,12 +348,14 @@ function FileViewer({
 	sessionId,
 	entry,
 	deleted = false,
+	repoRelative = false,
 	embedded,
 	onClose,
 }: {
 	sessionId: string;
 	entry: DirEntry;
 	deleted?: boolean;
+	repoRelative?: boolean;
 	embedded: boolean;
 	onClose: () => void;
 }) {
@@ -369,10 +373,14 @@ function FileViewer({
 		(signal) =>
 			deleted || isRasterImg
 				? Promise.resolve<FileData>({ path: entry.path, size: entry.size, binary: isRasterImg, truncated: false, text: "" })
-				: api<FileData>("GET", `/sessions/${q(sessionId)}/file?path=${q(entry.path)}`, undefined, { signal }),
-		[sessionId, entry.path, entry.size, deleted, isRasterImg],
+				: api<FileData>(
+						"GET",
+						`/sessions/${q(sessionId)}/file?path=${q(entry.path)}${repoRelative ? "&repoRelative=1" : ""}`,
+						undefined,
+						{ signal },
+					),
+		[sessionId, entry.path, entry.size, deleted, repoRelative, isRasterImg],
 	);
-
 	const askAi = () => {
 		useRightDrawer.getState().sendToMainChat(sessionId, {
 			quote: `文件：\`${entry.path}\``,
@@ -435,7 +443,7 @@ function FileViewer({
 						hint="可在 Git 面板查看该文件的删除差异"
 					/>
 				) : isRasterImg ? (
-					<RasterImagePreview sessionId={sessionId} entry={entry} onAskAi={askAi} />
+					<RasterImagePreview sessionId={sessionId} entry={entry} repoRelative={repoRelative} onAskAi={askAi} />
 				) : (
 					<LoadGate state={state}>
 						{(data) => (
@@ -457,22 +465,22 @@ function FileViewer({
 function RasterImagePreview({
 	sessionId,
 	entry,
+	repoRelative = false,
 	onAskAi,
 }: {
 	sessionId: string;
 	entry: DirEntry;
+	repoRelative?: boolean;
 	onAskAi: () => void;
 }) {
 	const candidates = useMemo(
 		() => [
-			apiUrl(`/sessions/${q(sessionId)}/files/raw?path=${q(entry.path)}`),
-			apiUrl(`/sessions/${q(sessionId)}/image?path=${q(entry.path)}`),
+			apiUrl(`/sessions/${q(sessionId)}/files/raw?path=${q(entry.path)}${repoRelative ? "&repoRelative=1" : ""}`),
 		],
-		[sessionId, entry.path],
+		[sessionId, entry.path, repoRelative],
 	);
 	const [attempt, setAttempt] = useState(0);
 	const [loaded, setLoaded] = useState(false);
-
 	useEffect(() => {
 		setAttempt(0);
 		setLoaded(false);

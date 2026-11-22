@@ -81,6 +81,10 @@
 .m-md th { background: var(--m-surface); font-weight: 500; white-space: nowrap; }
 .m-md tr:last-child td { border-bottom: 0; }
 .m-md input[type="checkbox"] { margin-right: 0.4em; }
+.m-md ul.contains-task-list { list-style: none; padding-left: 0.25em; }
+.m-md li.task-list-item { list-style: none; padding-left: 0; }
+.m-md li.task-list-item::marker { content: ""; }
+.m-md ul.contains-task-list > li:not(.task-list-item) { list-style: disc; margin-left: 1.35em; }
 
 /* KaTeX does not wrap: keep wide display formulas inside the message column. */
 .m-md .katex-display {
@@ -95,32 +99,32 @@
 .m-md .hljs-keyword,
 .m-md .hljs-selector-tag,
 .m-md .hljs-doctag,
-.m-md .hljs-meta .hljs-keyword { color: color-mix(in srgb, var(--m-accent) 85%, var(--m-text)); }
+.m-md .hljs-meta .hljs-keyword { color: var(--m-accent); color: color-mix(in srgb, var(--m-accent) 85%, var(--m-text)); }
 .m-md .hljs-string,
 .m-md .hljs-regexp,
 .m-md .hljs-addition,
-.m-md .hljs-meta .hljs-string { color: color-mix(in srgb, var(--m-success) 85%, var(--m-text)); }
+.m-md .hljs-meta .hljs-string { color: var(--m-success); color: color-mix(in srgb, var(--m-success) 85%, var(--m-text)); }
 .m-md .hljs-number,
 .m-md .hljs-literal,
 .m-md .hljs-symbol,
-.m-md .hljs-bullet { color: color-mix(in srgb, var(--m-warn) 85%, var(--m-text)); }
+.m-md .hljs-bullet { color: var(--m-warn); color: color-mix(in srgb, var(--m-warn) 85%, var(--m-text)); }
 .m-md .hljs-title,
 .m-md .hljs-title.function_,
 .m-md .hljs-section,
 .m-md .hljs-selector-id,
-.m-md .hljs-selector-class { color: color-mix(in srgb, var(--m-accent) 60%, var(--m-text)); }
+.m-md .hljs-selector-class { color: var(--m-accent); color: color-mix(in srgb, var(--m-accent) 60%, var(--m-text)); }
 .m-md .hljs-type,
 .m-md .hljs-built_in,
 .m-md .hljs-class .hljs-title,
-.m-md .hljs-title.class_ { color: color-mix(in srgb, var(--m-warn) 60%, var(--m-text)); }
+.m-md .hljs-title.class_ { color: var(--m-warn); color: color-mix(in srgb, var(--m-warn) 60%, var(--m-text)); }
 .m-md .hljs-attr,
 .m-md .hljs-attribute,
 .m-md .hljs-variable,
 .m-md .hljs-template-variable,
-.m-md .hljs-property { color: color-mix(in srgb, var(--m-accent) 45%, var(--m-text)); }
+.m-md .hljs-property { color: var(--m-text-2); color: color-mix(in srgb, var(--m-accent) 45%, var(--m-text)); }
 .m-md .hljs-meta,
 .m-md .hljs-name,
-.m-md .hljs-tag { color: color-mix(in srgb, var(--m-text) 65%, var(--m-accent)); }
-.m-md .hljs-deletion { color: color-mix(in srgb, var(--m-danger) 85%, var(--m-text)); }
+.m-md .hljs-tag { color: var(--m-text-2); color: color-mix(in srgb, var(--m-text) 65%, var(--m-accent)); }
+.m-md .hljs-deletion { color: var(--m-danger); color: color-mix(in srgb, var(--m-danger) 85%, var(--m-text)); }
 .m-md .hljs-emphasis { font-style: italic; }
 .m-md .hljs-strong { font-weight: 600; }

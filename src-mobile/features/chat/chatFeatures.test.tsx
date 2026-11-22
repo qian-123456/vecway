@@ -267,12 +267,11 @@ describe("Plan mode (Change 7)", () => {
   expect(draft).toContain("Step 1: Design");
 		expect(c.store.getState().cstate?.planMode).toBe(true);
 		await act(async () => { fireEvent.click(screen.getByRole("button", { name: "执行计划" })); });
-  expect(apiMock).toHaveBeenCalledWith("POST", "/sessions/s1/slash", { name: "plan-action", args: "approve keep" });
-  expect(draft).toContain("请按以下要求修改计划");
-  expect(screen.getByText("等待执行确认")).toBeTruthy();
-  expect(screen.queryByText("计划执行中")).toBeNull();
-  c.dispose();
+		expect(apiMock).toHaveBeenCalledWith("POST", "/sessions/s1/slash", { name: "plan-action", args: "approve keep" });
+		expect(draft).toContain("请按以下要求修改计划");
+		expect(screen.queryByText("计划已生成")).toBeNull();
 		expect(c.store.getState().cstate?.planMode).toBe(false);
+		c.dispose();
 	});
 });
 

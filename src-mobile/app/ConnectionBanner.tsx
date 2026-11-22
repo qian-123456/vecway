@@ -9,19 +9,27 @@ import { AnchoredPopover } from "../ui/AnchoredPopover";
 import { Spinner } from "../ui/Spinner";
 import { toast } from "../ui/Toast";
 
-/** Floating capsule just below the top bar; never covers the bar's buttons. */
-function Pill({ role, tone, icon, text, action, onAction, actionRef }: { role: "alert" | "status"; tone: "warn" | "danger"; icon: ReactNode; text: string; action: string; onAction: () => void; actionRef?: Ref<HTMLButtonElement> }) {
+/** Sleek in-flow status strip above route content; collapses to 0px when connected so it never overlaps text. */
+function Strip({ role, tone, icon, text, action, onAction, actionRef }: { role: "alert" | "status"; tone: "warn" | "danger"; icon: ReactNode; text: string; action: string; onAction: () => void; actionRef?: Ref<HTMLButtonElement> }) {
 	return (
-		<div className="pointer-events-none fixed inset-x-0 z-(--z-banner) flex justify-center px-4" style={{ top: "calc(var(--m-safe-top) + 60px)" }}>
-			<div
-				role={role}
-				className={`pointer-events-auto flex max-w-full items-center gap-2 rounded-m-pill py-1 pr-1 pl-4 text-m-sm shadow-m-pop ${
-					tone === "danger" ? "bg-m-danger-bg text-m-danger" : "bg-m-warn-bg text-m-warn"
-				}`}
-			>
-				<span className="shrink-0">{icon}</span>
-				<span className="min-w-0 break-words">{text}</span>
-				<button ref={actionRef} type="button" onClick={onAction} className="min-h-11 min-w-11 shrink-0 rounded-m-pill px-3 font-medium whitespace-nowrap active:bg-m-surface-hover">
+		<div
+			className={`m-top-banner pointer-events-none shrink-0 border-b ${
+				tone === "danger"
+					? "border-m-danger/20 bg-m-danger-bg text-m-danger"
+					: "border-m-warn-border bg-m-warn-bg text-m-warn"
+			}`}
+			style={{
+				paddingTop: "var(--m-safe-top)",
+				paddingLeft: "max(12px, var(--m-safe-left))",
+				paddingRight: "max(12px, var(--m-safe-right))",
+			}}
+		>
+			<div role={role} className="mx-auto flex min-h-11 max-w-2xl items-center justify-between gap-2 py-0.5 pl-1">
+				<div className="flex min-w-0 items-center gap-2 text-m-sm font-medium">
+					<span className="shrink-0">{icon}</span>
+					<span className="min-w-0 truncate">{text}</span>
+				</div>
+				<button ref={actionRef} type="button" onClick={onAction} className="pointer-events-auto min-h-11 min-w-11 shrink-0 rounded-m-pill px-3 text-m-sm font-semibold whitespace-nowrap active:bg-m-surface-hover">
 					{action}
 				</button>
 			</div>
@@ -66,7 +74,7 @@ export function ConnectionBanner() {
 	if (phase === "unauthorized") {
 		if (isNativeApp()) {
 			return (
-				<Pill
+				<Strip
 					role="alert"
 					tone="danger"
 					icon={<KeyRound size={16} />}
@@ -78,7 +86,7 @@ export function ConnectionBanner() {
 		}
 		return (
 			<>
-				<Pill role="alert" tone="danger" icon={<KeyRound size={16} />} text="配对已失效" action="重新配对" onAction={() => setGuide(true)} actionRef={repairBtnRef} />
+				<Strip role="alert" tone="danger" icon={<KeyRound size={16} />} text="配对已失效" action="重新配对" onAction={() => setGuide(true)} actionRef={repairBtnRef} />
 				<AnchoredPopover
 					open={guide}
 					onClose={() => setGuide(false)}
@@ -103,7 +111,7 @@ export function ConnectionBanner() {
 	if (!offline) return null;
 	const connecting = phase === "connecting";
 	return (
-		<Pill
+		<Strip
 			role="status"
 			tone="warn"
 			icon={connecting ? <Spinner size={14} /> : <CloudOff size={16} />}

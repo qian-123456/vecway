@@ -96,7 +96,15 @@ function NativeUnpairedScreen() {
 	};
 
 	return (
-		<main className="m-page relative flex flex-1 flex-col items-center justify-center gap-4 px-8 py-12 text-center">
+		<main
+			className="m-page relative flex flex-1 flex-col items-center justify-center gap-4 px-8 py-12 text-center"
+			style={{
+				paddingTop: "max(48px, var(--m-safe-top))",
+				paddingBottom: "max(48px, var(--m-safe-bottom))",
+				paddingLeft: "max(32px, var(--m-safe-left))",
+				paddingRight: "max(32px, var(--m-safe-right))",
+			}}
+		>
 			<div className="pointer-events-none absolute inset-0" style={{ background: "var(--m-glow)" }} aria-hidden />
 			<div className="relative flex h-18 w-18 items-center justify-center rounded-[22px] border border-m-border bg-m-card shadow-m-card">
 				<AppMark size={52} />
@@ -166,7 +174,15 @@ function NativePinMismatchScreen({ mismatch }: { mismatch: NativePinMismatch }) 
 	};
 
 	return (
-		<main className="m-page flex flex-1 flex-col items-center justify-center gap-4 px-6 py-10 text-center">
+		<main
+			className="m-page flex flex-1 flex-col items-center justify-center gap-4 overflow-y-auto px-6 py-10 text-center"
+			style={{
+				paddingTop: "max(40px, var(--m-safe-top))",
+				paddingBottom: "max(40px, var(--m-safe-bottom))",
+				paddingLeft: "max(24px, var(--m-safe-left))",
+				paddingRight: "max(24px, var(--m-safe-right))",
+			}}
+		>
 			<div className="flex h-14 w-14 items-center justify-center rounded-m-pill bg-m-danger-bg text-m-danger">
 				<ShieldAlert size={28} />
 			</div>

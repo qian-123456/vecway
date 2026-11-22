@@ -63,7 +63,7 @@ export function ChatHeader({
 
 	return (
 		<TopBar
-			className="border-b border-m-topbar-border/60 backdrop-blur-xl"
+			className="border-b border-m-topbar-border/60 ps-(--m-safe-left) pe-(--m-safe-right) backdrop-blur-xl"
 			left={<OrbButton icon={<Menu size={19} strokeWidth={1.85} />} label="菜单" onClick={onMenu} />}
 			center={
 				<button

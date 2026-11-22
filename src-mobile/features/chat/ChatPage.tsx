@@ -4,6 +4,7 @@ import { api, errorMessage } from "../../core/api";
 import { startViewingPresence } from "../../core/presence";
 import { useSession, useSessions } from "../../core/stores/sessions";
 import { Spinner, toast, type AnchorBox } from "../../ui";
+import { hasBlockingOverlay } from "../../ui/overlay";
 import { STATUS_LABEL } from "../../core/types";
 import { MenuSheet } from "../sessions/MenuSheet";
 import { NewSessionSheet } from "../sessions";
@@ -22,6 +23,7 @@ import { sessionModelSource } from "./components/useModelFacts";
 import { takeFirstSend } from "./lib/drafts";
 import { MessageActionsSheet } from "./components/MessageActions";
 import { MessageList } from "./components/MessageList";
+import { PlanSheet, type PlanSheetStatus } from "./components/PlanSheet";
 import { ModelThinkingSheet } from "./components/ModelThinkingSheet";
 import { PendingCards } from "./components/PendingCards";
 import { StatCard } from "./components/StatLine";
@@ -103,6 +105,48 @@ function ResumeBar({ sessionId }: { sessionId: string }) {
 		</div>
 	);
 }
+function SessionPlanSheet({ sessionId, cwd }: { sessionId: string; cwd?: string }) {
+	const { controller } = useUi();
+	const open = useChat((s) => s.planSheetOpen);
+	const mode = useChat((s) => s.planSheetMode);
+	const working = useChat((s) => s.working);
+	const approving = useChat((s) => s.planApproving);
+	const planStatus = useChat((s) => s.cstate?.planStatus ?? null);
+	const acceptedPlan = useChat((s) => s.acceptedPlan);
+	const approved = planStatus?.approved;
+	const isApprovedView = Boolean(approved?.content);
+	const planText =
+		approved?.content ??
+		acceptedPlan?.content ??
+		(planStatus?.enabled && planStatus.phase === "review" ? planStatus.content : null);
+	const prevContent = isApprovedView
+		? (approved?.prevContent ?? null)
+		: (planStatus?.prevContent ?? null);
+	const sheetStatus: PlanSheetStatus = approved?.status ?? (acceptedPlan ? "pending" : "review");
+
+	if (!planText) return null;
+	return (
+		<PlanSheet
+			open={open}
+			mode={mode}
+			onModeChange={(next) => controller.setPlanSheetMode(next)}
+			onClose={() => controller.closePlanSheet()}
+			text={planText}
+			sessionId={sessionId}
+			status={sheetStatus}
+			title={approved?.title ?? planStatus?.title}
+			version={approved?.version ?? planStatus?.version}
+			prevContent={prevContent}
+			planStatus={planStatus}
+			canFresh={Boolean(planStatus?.planFile && cwd)}
+			running={working}
+			approving={approving}
+			onApprove={(opts) => controller.approvePlan(opts)}
+			onAnnotate={() => controller.stageAnnotation(planText, "请按以下要求修改计划：\n")}
+		/>
+	);
+}
+
 
 export function ChatPage({ route }: PageProps) {
 	const id = route.params.id;
@@ -123,6 +167,7 @@ export function ChatPage({ route }: PageProps) {
 	const lastTriggerRef = useRef<{ el: HTMLElement | null; rect: AnchorBox | null; at: number } | null>(null);
 	const modelSource = useMemo(() => sessionModelSource(id), [id]);
 	const pendingMain = useRightDrawer((s) => s.pendingMain);
+	const drawerOpen = useRightDrawer((s) => s.open);
 	useEffect(() => {
 		if (!controller || controller.id !== id) return;
 		const first = takeFirstSend(id);
@@ -155,7 +200,19 @@ export function ChatPage({ route }: PageProps) {
 		controller.stageAnnotation(payload.quote, payload.comment);
 	}, [controller, id, pendingMain]);
 
-	useRightEdgeSwipe(() => useRightDrawer.getState().openDrawer(id), true);
+	const canEdgeSwipe =
+		!drawerOpen &&
+		!menuSheet &&
+		!pickerOpen &&
+		!newOpen &&
+		!workspaceOpen &&
+		!pathOpen &&
+		!target &&
+		!stat;
+	useRightEdgeSwipe(() => {
+		if (useRightDrawer.getState().open || hasBlockingOverlay()) return;
+		useRightDrawer.getState().openDrawer(id);
+	}, canEdgeSwipe);
 
 	const createFreshChat = async () => {
 		if (creatingNew.current) return;
@@ -273,6 +330,7 @@ export function ChatPage({ route }: PageProps) {
 				anchorRect={statAnchor?.rect}
 			/>
 			<RightWorkspaceDrawer sessionId={id} />
+			<SessionPlanSheet sessionId={id} cwd={session?.cwd} />
 			<MenuSheet open={menuSheet} onClose={() => setMenuSheet(false)} onNewSession={() => setNewOpen(true)} />
 			<NewSessionSheet open={newOpen} onClose={() => setNewOpen(false)} defaultCwd={session?.cwd} />
 			<WorkspacePickerSheet open={workspaceOpen} onClose={() => setWorkspaceOpen(false)} sessionId={id} currentCwd={session?.cwd} />
