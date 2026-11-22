@@ -72,7 +72,7 @@ final class AppController: ObservableObject {
             sseBridge?.closeAll()
         }
         endpointManager.onActiveChannelChanged = { [weak self, weak sseBridge] _, _ in
-            sseBridge?.closeAll()
+            sseBridge?.closeAll(notifyDisconnected: true)
             Task { @MainActor [weak self] in
                 guard let self, self.status.pinMismatch == nil else { return }
                 self.bridgeRouter.notifyForegroundResync()

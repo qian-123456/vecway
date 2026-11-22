@@ -182,6 +182,7 @@ export function InboxPage(_props: PageProps) {
 				onRefresh={() => Promise.allSettled([load(), useTodos.getState().load()])}
 				className="pb-[calc(var(--m-safe-bottom)+24px)]"
 			>
+				<div className="m-kb-pad">
 				{error && <div role="alert" className="flex flex-col items-center gap-4 px-6 py-6 text-center"><p className="m-selectable text-m-sm break-words text-m-danger">加载失败：{error}</p><Button onClick={() => void load()}>重试</Button></div>}
 				{!data && !error && (
 					<div role="status" aria-label="加载收件箱" className="flex justify-center p-10 text-m-text-3">
@@ -212,6 +213,7 @@ export function InboxPage(_props: PageProps) {
 						</div>
 					);
 				})}
+				</div>
 			</PullToRefresh>
 		</div>
 	);

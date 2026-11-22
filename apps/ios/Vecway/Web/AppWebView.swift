@@ -225,8 +225,14 @@ struct AppWebView: UIViewRepresentable {
             let endFrameInWindow = window.convert(endFrameScreen, from: nil as UIWindow?)
             let webViewFrameInWindow = webView.convert(webView.bounds, to: window)
 
+            let isBottomDocked = endFrameInWindow.maxY >= webViewFrameInWindow.maxY - 4
+                || abs(endFrameInWindow.maxY - window.bounds.maxY) <= 4
+
             let overlap: Double
-            if endFrameInWindow.isEmpty || endFrameInWindow.height <= 0 || !webViewFrameInWindow.intersects(endFrameInWindow) {
+            if endFrameInWindow.isEmpty
+                || endFrameInWindow.height <= 0
+                || !isBottomDocked
+                || !webViewFrameInWindow.intersects(endFrameInWindow) {
                 overlap = 0
             } else {
                 let rawOverlap = max(0.0, Double(webViewFrameInWindow.maxY - endFrameInWindow.minY))

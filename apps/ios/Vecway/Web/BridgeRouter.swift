@@ -41,6 +41,7 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
     private let openScannerHandler: @MainActor (AppController.PairScannerMode) async -> ScannerOutcome
 
     private var activeHttpTasks: [String: Task<Void, Never>] = [:]
+    private var pendingSseOpenTasks: [String: (token: UUID, task: Task<Void, Never>)] = [:]
 
     init(
         endpointManager: EndpointManager,
@@ -125,6 +126,7 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
 
         case "sseClose":
             if let streamId = payload["streamId"] as? String {
+                pendingSseOpenTasks.removeValue(forKey: streamId)?.task.cancel()
                 sseBridge.close(streamId: streamId)
             }
 
@@ -310,8 +312,18 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
     }
 
     private func handleSseOpen(streamId: String, path: String) {
-        Task { [weak self] in
+        let openToken = UUID()
+        pendingSseOpenTasks.removeValue(forKey: streamId)?.task.cancel()
+
+        let task = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if self.pendingSseOpenTasks[streamId]?.token == openToken {
+                    self.pendingSseOpenTasks.removeValue(forKey: streamId)
+                }
+            }
+            if Task.isCancelled { return }
+
             let status = self.endpointManager.currentStatus()
             if let mismatch = status.pinMismatch {
                 self.dispatchSseError(
@@ -328,6 +340,7 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
             var active = self.endpointManager.activeConnection()
             if active == nil {
                 _ = await self.endpointManager.reprobeConnection()
+                if Task.isCancelled { return }
                 if let mismatch = self.endpointManager.currentStatus().pinMismatch {
                     self.dispatchSseError(
                         streamId: streamId,
@@ -337,6 +350,8 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
                 }
                 active = self.endpointManager.activeConnection()
             }
+
+            if Task.isCancelled { return }
 
             guard let connection = active else {
                 self.dispatchSseError(streamId: streamId, message: "无法连接到电脑上的 Vecway 服务")
@@ -387,6 +402,7 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
                 callbacks: callbacks
             )
         }
+        pendingSseOpenTasks[streamId] = (token: openToken, task: task)
     }
 
     private func handleUpdateEndpoints(callId: String, raw: [String: Any]) {
@@ -656,6 +672,7 @@ final class BridgeRouter: NSObject, WKScriptMessageHandler {
                 } else if (msg.kind === "event") {
                   if (typeof handlers.onEvent === "function") handlers.onEvent(msg.eventType || "message", msg.data || "");
                 } else if (msg.kind === "error") {
+                  sseStreams.delete(msg.streamId);
                   if (typeof handlers.onError === "function") handlers.onError(msg.message);
                 }
                 return;

@@ -57,6 +57,7 @@ export function MenuSheet({
 	const [switchingLan, setSwitchingLan] = useState(false);
 	const [connOpen, setConnOpen] = useState(false);
 	const filterRef = useRef<HTMLDivElement>(null);
+	const inboxSeq = useRef(0);
 	const [mobileInfo, setMobileInfo] = useState<MobileInfo>({});
 	const todos = useTodos((s) => s.todos);
 	const openSession = useCallback((s: TreeSession) => {
@@ -95,19 +96,23 @@ export function MenuSheet({
 	}, [filterOpen]);
 	useEffect(() => {
 		if (!open) return;
-		if (!useTree.getState().data) void useTree.getState().load();
+		void useTree.getState().load();
 		const offTree = startTreeSync();
 		const offTodos = startTodosSync();
 		let alive = true;
-		const loadInbox = () => api<InboxData>("GET", "/left/inbox")
-			.then((d) => { if (alive) setInbox(d); })
-			.catch(() => {});
+		const loadInbox = () => {
+			const req = ++inboxSeq.current;
+			return api<InboxData>("GET", "/left/inbox")
+				.then((d) => { if (alive && req === inboxSeq.current) setInbox(d); })
+				.catch(() => {});
+		};
 		void loadInbox();
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const soon = () => { clearTimeout(timer); timer = setTimeout(() => void loadInbox(), 400); };
 		const offs = [events.on("session", soon), events.on("hello", soon), events.on("resync", soon)];
 		return () => {
 			alive = false;
+			++inboxSeq.current;
 			clearTimeout(timer);
 			offs.forEach((off) => off());
 			offTree();
@@ -316,18 +321,20 @@ export function MenuSheet({
 						>
 							<ListFilter size={15} strokeWidth={1.85} />
 						</button>
-						<button
-							type="button"
-							aria-label="添加项目目录"
-							onClick={() => {
-								setFilterOpen(false);
-								onClose();
-								onNewSession?.();
-							}}
-							className="inline-flex h-8 w-8 items-center justify-center rounded-md text-m-text-3 transition-colors active:bg-m-surface-hover active:text-m-text"
-						>
-							<FolderPlus size={15} strokeWidth={1.85} />
-						</button>
+						{onNewSession && (
+							<button
+								type="button"
+								aria-label="在项目目录新建会话"
+								onClick={() => {
+									setFilterOpen(false);
+									onClose();
+									onNewSession();
+								}}
+								className="inline-flex h-8 w-8 items-center justify-center rounded-md text-m-text-3 transition-colors active:bg-m-surface-hover active:text-m-text"
+							>
+								<FolderPlus size={15} strokeWidth={1.85} />
+							</button>
+						)}
 					</div>
 					{filterOpen && (
 						<div

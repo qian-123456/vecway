@@ -109,10 +109,10 @@ export class SseClient {
 		return this.started;
 	}
 
-	/** Page became visible / network returned: revive a dead stream and tell views to refetch. */
-	resume(reason: "visible" | "online"): void {
+	/** Page became visible / network returned: revive a dead stream (or force-reopen when `force` is true) and tell views to refetch. */
+	resume(reason: "visible" | "online", force = false): void {
 		if (!this.started || isUnauthorized()) return;
-		if (!this.es || this.es.readyState === 2) {
+		if (force || !this.es || this.es.readyState === 2) {
 			if (this.hasConnected) this.wasDisconnected = true;
 			this.close();
 			clearTimeout(this.timer);
@@ -240,12 +240,12 @@ export function stopEvents(): void {
 	client?.stop();
 }
 
-/** Re-probe now (banner "重试" button): restarts a stopped/closed stream. */
-export function reconnectEvents(): void {
+/** Re-probe now (banner "重试" button / native resync): restarts a stopped/closed stream (or any stream when `force` is true). */
+export function reconnectEvents(force = false): void {
 	const c = ensureClient();
 	if (!c.isStarted()) {
 		c.start();
 		return;
 	}
-	c.resume("online");
+	c.resume("online", force);
 }

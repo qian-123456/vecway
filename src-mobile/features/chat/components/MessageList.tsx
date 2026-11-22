@@ -304,7 +304,7 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 				</section>
 			)}
 			<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]">
-				<div ref={contentRef} className="pt-1" style={{ paddingBottom: "calc(var(--m-kb, 0px) + 16px)" }}>
+				<div ref={contentRef} className="m-kb-pad pt-1">
 					{showLoadOlder && (
 						<div className="flex justify-center py-3">
 							<Button size="sm" busy={loadingOlder} onClick={handleLoadOlder}>
@@ -341,20 +341,22 @@ export function MessageList({ sessionId }: { sessionId: string }) {
 					{empty && !syntheticLive && <EmptyState icon={<MessageSquare size={24} strokeWidth={1.75} />} title="还没有消息" hint="在下方发送消息，开始这段对话" />}
 				</div>
 			</div>
-			<button
-				type="button"
-				onClick={jump}
-				aria-label={hasUnread ? "有新消息，回到底部" : working ? "正在生成，回到底部" : "回到底部"}
-				aria-hidden={!showJump}
-				tabIndex={showJump ? 0 : -1}
-				disabled={!showJump}
-				className={`absolute bottom-2 left-1/2 z-(--z-banner) flex h-11 w-11 -translate-x-1/2 items-center justify-center transition-[opacity,scale] duration-(--m-dur-fast) ease-m motion-reduce:transition-none ${showJump ? "scale-100 opacity-100" : "pointer-events-none scale-90 opacity-0"}`}
-			>
-				<span className={`relative flex h-10 w-10 items-center justify-center rounded-m-pill shadow-m-pop active:bg-m-surface-2 ${hasUnread || working ? "bg-m-accent-soft text-m-accent-soft-text" : "bg-m-surface text-m-text"}`}>
-					<ArrowDown size={20} strokeWidth={1.75} />
-					{(hasUnread || working) && <span aria-hidden className={`absolute right-0 top-0 size-2.5 rounded-full bg-m-accent ${working ? "animate-pulse motion-reduce:animate-none" : ""}`} />}
-				</span>
-			</button>
+			<div className="m-kb-dock pointer-events-none absolute inset-x-0 bottom-2 z-(--z-banner) flex justify-center">
+				<button
+					type="button"
+					onClick={jump}
+					aria-label={hasUnread ? "有新消息，回到底部" : working ? "正在生成，回到底部" : "回到底部"}
+					aria-hidden={!showJump}
+					tabIndex={showJump ? 0 : -1}
+					disabled={!showJump}
+					className={`flex h-11 w-11 items-center justify-center transition-[opacity,scale] duration-(--m-dur-fast) ease-m motion-reduce:transition-none ${showJump ? "pointer-events-auto scale-100 opacity-100" : "pointer-events-none scale-90 opacity-0"}`}
+				>
+					<span className={`relative flex h-10 w-10 items-center justify-center rounded-m-pill shadow-m-pop active:bg-m-surface-2 ${hasUnread || working ? "bg-m-accent-soft text-m-accent-soft-text" : "bg-m-surface text-m-text"}`}>
+						<ArrowDown size={20} strokeWidth={1.75} />
+						{(hasUnread || working) && <span aria-hidden className={`absolute right-0 top-0 size-2.5 rounded-full bg-m-accent ${working ? "animate-pulse motion-reduce:animate-none" : ""}`} />}
+					</span>
+				</button>
+			</div>
 		</div>
 	);
 }

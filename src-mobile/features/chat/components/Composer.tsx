@@ -2,16 +2,17 @@ import { Camera, FileText, FolderOpen, GitBranch, ImagePlus, Lightbulb, Monitor,
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../../core/api";
 import { baseName } from "../../../core/lib/format";
+import { nav, paths } from "../../../core/nav";
 import { usePref } from "../../../core/stores/prefs";
-import { useSession } from "../../../core/stores/sessions";
+import { useSession, useSessions } from "../../../core/stores/sessions";
 import { BottomSheet, IconButton, MenuRow, Spinner, Switch, toast } from "../../../ui";
 import { ActionTile } from "../../../ui/ActionTile";
 import { useChat, useChatUi } from "../ChatContext";
 import { contextTone, formatContextPercent, queueChipText, resolveContextPercent } from "../lib/context";
-import { takeComposerAction } from "../lib/drafts";
+import { draftBook, takeComposerAction } from "../lib/drafts";
 import { BEHAVIOR_HINT, BEHAVIOR_LABEL, type StreamBehavior } from "../lib/prompt";
 import { commandAction, commandInput, detectSlashQuery, type SlashCmd } from "../lib/slash";
-import { saveUnsent, UNSENT_DEBOUNCE_MS } from "../lib/unsent";
+import { clearUnsent, saveUnsent, UNSENT_DEBOUNCE_MS } from "../lib/unsent";
 import { ComposerCapsule, type ComposerApi } from "./ComposerCapsule";
 import { useKeyboardOpen } from "./ComposerToolbar";
 import { ContextSheet } from "./ContextSheet";
@@ -87,10 +88,21 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 	};
 
 	const togglePlan = async () => {
+		const next = !planOn;
 		try {
-			const r = await api<{ on: boolean }>("POST", `/sessions/${sessionId}/plan-mode`, {});
+			const r = await api<{ on: boolean; sessionId?: string }>("POST", `/sessions/${sessionId}/plan-mode`, { on: next });
 			controller.patchState({ planMode: r.on });
 			toast(r.on ? "规划模式已开启" : "规划模式已关闭");
+			if (r.sessionId && r.sessionId !== sessionId) {
+				const text = apiRef.current?.get() ?? controller.lastText;
+				draftBook.stash(r.sessionId, text, controller.state.atts);
+				draftBook.forget(sessionId);
+				if (text.trim() !== "") saveUnsent(r.sessionId, text);
+				clearUnsent(sessionId);
+				controller.markDraftTransferred?.(r.sessionId);
+				void useSessions.getState().refresh().catch(() => {});
+				nav.replace(paths.chat(r.sessionId));
+			}
 		} catch (e) {
 			toast(`切换失败：${errorMessage(e)}`, { kind: "error" });
 		}

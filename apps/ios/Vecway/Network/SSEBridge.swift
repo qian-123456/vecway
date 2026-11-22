@@ -171,10 +171,13 @@ public final class SSEBridge: @unchecked Sendable {
             self.delegate = delegate
         }
 
-        func cancel() {
-            delegate.markManuallyClosed()
+        func cancel(notifyMessage: String? = nil) {
+            let shouldNotify = delegate.markManuallyClosed(shouldNotifyTerminal: notifyMessage != nil)
             task.cancel()
             session.invalidateAndCancel()
+            if shouldNotify, let notifyMessage {
+                delegate.callbacks.onError(notifyMessage)
+            }
         }
     }
 
@@ -223,7 +226,9 @@ public final class SSEBridge: @unchecked Sendable {
             delegate = SSEStreamDelegateBase(
                 streamId: streamId,
                 callbacks: callbacks,
-                onCleanup: { [weak self] id in self?.removeStreamIfMatching(streamId: id) }
+                onCleanup: { [weak self] id, delegateId in
+                    self?.removeStreamIfMatching(streamId: id, delegateId: delegateId)
+                }
             )
         case .lanTls, .ipv6Tls:
             guard let pinHex = expectedCertSha256,
@@ -237,7 +242,9 @@ public final class SSEBridge: @unchecked Sendable {
                 expectedHex: pinHex,
                 channel: channel,
                 callbacks: callbacks,
-                onCleanup: { [weak self] id in self?.removeStreamIfMatching(streamId: id) }
+                onCleanup: { [weak self] id, delegateId in
+                    self?.removeStreamIfMatching(streamId: id, delegateId: delegateId)
+                }
             )
         }
 
@@ -280,8 +287,17 @@ public final class SSEBridge: @unchecked Sendable {
         let context = StreamContext(streamId: streamId, session: session, task: task, delegate: delegate)
 
         lock.lock()
+        let previous = streams[streamId]
+        if previous == nil && streams.count >= Self.maxConcurrentStreams {
+            lock.unlock()
+            session.invalidateAndCancel()
+            callbacks.onError("实时事件流数量已达上限（最多 \(Self.maxConcurrentStreams) 路）")
+            return
+        }
         streams[streamId] = context
         lock.unlock()
+
+        previous?.cancel()
 
         task.resume()
     }
@@ -293,21 +309,27 @@ public final class SSEBridge: @unchecked Sendable {
         existing?.cancel()
     }
 
-    public func closeAll() {
+    public func closeAll(notifyDisconnected: Bool = false) {
         lock.lock()
         let all = Array(streams.values)
         streams.removeAll()
         lock.unlock()
+        let message = notifyDisconnected ? "channel_switched" : nil
         for ctx in all {
-            ctx.cancel()
+            ctx.cancel(notifyMessage: message)
         }
     }
 
-    private func removeStreamIfMatching(streamId: String) {
+    private func removeStreamIfMatching(streamId: String, delegateId: ObjectIdentifier) {
         lock.lock()
-        let existing = streams.removeValue(forKey: streamId)
+        let removed: StreamContext?
+        if let current = streams[streamId], ObjectIdentifier(current.delegate) == delegateId {
+            removed = streams.removeValue(forKey: streamId)
+        } else {
+            removed = nil
+        }
         lock.unlock()
-        existing?.session.invalidateAndCancel()
+        removed?.session.invalidateAndCancel()
     }
 }
 
@@ -315,7 +337,7 @@ public final class SSEBridge: @unchecked Sendable {
 private class SSEStreamDelegateBase: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     let streamId: String
     let callbacks: SSEStreamCallbacks
-    let onCleanup: @Sendable (String) -> Void
+    let onCleanup: @Sendable (String, ObjectIdentifier) -> Void
 
     let stateLock = NSLock()
     var parser = SSELineParser()
@@ -326,7 +348,7 @@ private class SSEStreamDelegateBase: NSObject, URLSessionDataDelegate, @unchecke
     init(
         streamId: String,
         callbacks: SSEStreamCallbacks,
-        onCleanup: @escaping @Sendable (String) -> Void
+        onCleanup: @escaping @Sendable (String, ObjectIdentifier) -> Void
     ) {
         self.streamId = streamId
         self.callbacks = callbacks
@@ -334,10 +356,19 @@ private class SSEStreamDelegateBase: NSObject, URLSessionDataDelegate, @unchecke
         super.init()
     }
 
-    func markManuallyClosed() {
+    @discardableResult
+    func markManuallyClosed(shouldNotifyTerminal: Bool = false) -> Bool {
         stateLock.lock()
         manuallyClosed = true
+        let shouldNotify: Bool
+        if shouldNotifyTerminal, !terminalReported {
+            terminalReported = true
+            shouldNotify = true
+        } else {
+            shouldNotify = false
+        }
         stateLock.unlock()
+        return shouldNotify
     }
 
     func urlSession(
@@ -395,7 +426,7 @@ private class SSEStreamDelegateBase: NSObject, URLSessionDataDelegate, @unchecke
         let mismatch = recordedMismatch
         stateLock.unlock()
 
-        defer { onCleanup(streamId) }
+        defer { onCleanup(streamId, ObjectIdentifier(self)) }
         guard !closed else { return }
 
         if let mismatch {
@@ -453,7 +484,7 @@ private final class PinnedSSEStreamDelegate: SSEStreamDelegateBase, @unchecked S
         expectedHex: String,
         channel: NativeChannel,
         callbacks: SSEStreamCallbacks,
-        onCleanup: @escaping @Sendable (String) -> Void
+        onCleanup: @escaping @Sendable (String, ObjectIdentifier) -> Void
     ) {
         self.expectedDigest = expectedDigest
         self.expectedHex = expectedHex

@@ -163,6 +163,9 @@ export function NewSessionSheet({ open, onClose, defaultCwd, onSelectDirectory }
 	const dirsRequest = useRef(0);
 	const modelsRequest = useRef(0);
 	const createPending = useRef(false);
+	const createRequest = useRef(0);
+	const openRef = useRef(open);
+	openRef.current = open;
 
 	const loadDirs = useCallback(() => {
 		const request = ++dirsRequest.current;
@@ -182,13 +185,23 @@ export function NewSessionSheet({ open, onClose, defaultCwd, onSelectDirectory }
 
 	// Opening restarts the wizard and refetches the directory list.
 	useEffect(() => {
-		if (!open) return;
+		if (!open) {
+			++createRequest.current;
+			createPending.current = false;
+			setCreating(false);
+			return;
+		}
 		dispatch({ type: "reset", cwd: null });
-		setCreating(createPending.current);
+		setCreating(false);
 		setDirs({ data: null, error: null, loading: true });
 		setModels({ data: null, error: null, loading: false, cwd: null });
 		loadDirs();
-		return () => { ++dirsRequest.current; ++modelsRequest.current; };
+		return () => {
+			++dirsRequest.current;
+			++modelsRequest.current;
+			++createRequest.current;
+			createPending.current = false;
+		};
 	}, [open, loadDirs]);
 
 
@@ -208,25 +221,33 @@ export function NewSessionSheet({ open, onClose, defaultCwd, onSelectDirectory }
 
 	useEffect(() => {
 		if (!open || state.step !== "model" || defaultModel !== null) return;
+		let alive = true;
 		api<{ defaultModel?: string | null }>("GET", "/left/settings")
-			.then((r) => setDefaultModel(r.defaultModel ?? ""))
-			.catch(() => setDefaultModel(""));
+			.then((r) => { if (alive) setDefaultModel(r.defaultModel ?? ""); })
+			.catch(() => { if (alive) setDefaultModel(""); });
+		return () => { alive = false; };
 	}, [open, state.step, defaultModel]);
 
 	const create = async () => {
 		const input = createInput(state, dirs.data ?? []);
 		if (!input || createPending.current) return;
+		const request = ++createRequest.current;
 		createPending.current = true;
 		setCreating(true);
 		try {
 			const { id } = await useSessions.getState().createSession(input);
+			if (!openRef.current || request !== createRequest.current) return;
 			onClose();
 			nav.push(paths.chat(id));
 		} catch (e) {
-			toast(`新建失败：${errorMessage(e)}`, { kind: "error" });
+			if (openRef.current && request === createRequest.current) {
+				toast(`新建失败：${errorMessage(e)}`, { kind: "error" });
+			}
 		} finally {
-			createPending.current = false;
-			setCreating(false);
+			if (request === createRequest.current) {
+				createPending.current = false;
+				setCreating(false);
+			}
 		}
 	};
 

@@ -39,7 +39,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -339,13 +339,18 @@ struct Backlog {
     exit: Option<Option<i32>>,
 }
 
+struct AttachState {
+    subs: usize,
+    generation: u64,
+}
+
 /// One PTY exposed over HTTP. Output goes through `backlog` (replay for late
 /// subscribers) and `tx` (live); both updated under the backlog lock so a
 /// subscriber never misses or duplicates a chunk.
 struct TermEntry {
     backlog: Mutex<Backlog>,
     tx: broadcast::Sender<Arc<Out>>,
-    subs: AtomicUsize,
+    attach: Mutex<AttachState>,
     closed: AtomicBool,
     pty_id: Mutex<Option<String>>,
     owner: Option<String>,
@@ -401,18 +406,20 @@ fn remove_term(id: &str) {
     }
 }
 
-/// Kill + forget `id` after `grace` unless someone is attached by then.
-fn reap_if_unattached(id: String, entry: Arc<TermEntry>, grace: Duration) {
+/// Kill + forget `id` after `grace` unless someone attached/detached since `expected_gen`.
+fn reap_if_unattached(id: String, entry: Arc<TermEntry>, grace: Duration, expected_gen: u64) {
     tokio::spawn(async move {
         tokio::time::sleep(grace).await;
-        reap_unattached_now(&id, &entry);
+        reap_unattached_now(&id, &entry, expected_gen);
     });
 }
 
-fn reap_unattached_now(id: &str, entry: &TermEntry) {
+fn reap_unattached_now(id: &str, entry: &TermEntry, expected_gen: u64) {
     let removed = {
         let mut registry = terms().lock();
-        if entry.subs.load(Ordering::SeqCst) == 0
+        let attach = entry.attach.lock();
+        if attach.subs == 0
+            && attach.generation == expected_gen
             && !entry.preserve_on_detach.load(Ordering::SeqCst)
             && registry
                 .get(id)
@@ -453,7 +460,10 @@ fn open_term(
             exit: None,
         }),
         tx,
-        subs: AtomicUsize::new(0),
+        attach: Mutex::new(AttachState {
+            subs: 0,
+            generation: 0,
+        }),
         closed: AtomicBool::new(false),
         pty_id: Mutex::new(None),
         owner,
@@ -467,7 +477,7 @@ fn open_term(
     *entry.pty_id.lock() = Some(pty_id);
     let id = uuid::Uuid::new_v4().to_string();
     terms().lock().insert(id.clone(), entry.clone());
-    reap_if_unattached(id.clone(), entry, grace);
+    reap_if_unattached(id.clone(), entry, grace, 0);
     Ok(id)
 }
 
@@ -524,8 +534,19 @@ struct Attach {
 
 impl Drop for Attach {
     fn drop(&mut self) {
-        if self.entry.subs.fetch_sub(1, Ordering::SeqCst) == 1 {
-            reap_if_unattached(self.id.clone(), self.entry.clone(), DETACH_GRACE);
+        let reap_gen = {
+            let mut attach = self.entry.attach.lock();
+            attach.subs -= 1;
+            attach.generation += 1;
+            (attach.subs == 0).then_some(attach.generation)
+        };
+        if let Some(generation) = reap_gen {
+            reap_if_unattached(
+                self.id.clone(),
+                self.entry.clone(),
+                DETACH_GRACE,
+                generation,
+            );
         }
     }
 }
@@ -546,7 +567,11 @@ type TermStream = stream::BoxStream<'static, Result<Event, Infallible>>;
 fn attach_stream(id: String, entry: Arc<TermEntry>, shutdown: watch::Receiver<bool>) -> TermStream {
     use futures_util::StreamExt as _;
     // Subscribe and snapshot under the backlog lock (see `TermEntry`).
-    entry.subs.fetch_add(1, Ordering::SeqCst);
+    {
+        let mut attach = entry.attach.lock();
+        attach.subs += 1;
+        attach.generation += 1;
+    }
     let (rx, replay, exit) = {
         let b = entry.backlog.lock();
         let replay: Vec<u8> = b.buf.iter().copied().collect();
@@ -715,7 +740,10 @@ mod tests {
                     exit: None,
                 }),
                 tx,
-                subs: AtomicUsize::new(0),
+                attach: Mutex::new(AttachState {
+                    subs: 0,
+                    generation: 0,
+                }),
                 closed: AtomicBool::new(false),
                 pty_id: Mutex::new(None),
                 owner: Some(owner.to_owned()),
@@ -737,7 +765,7 @@ mod tests {
         assert!(!second_entry.closed.load(Ordering::SeqCst));
         assert!(!foreign_entry.closed.load(Ordering::SeqCst));
         preserve_device_work(&owner);
-        reap_unattached_now(&second, &second_entry);
+        reap_unattached_now(&second, &second_entry, 0);
         assert!(get_term(&second).is_ok());
         assert!(!second_entry.closed.load(Ordering::SeqCst));
         remove_term(&second);
@@ -835,5 +863,56 @@ mod tests {
         ];
         assert_eq!(latest_assistant_text(&items).as_deref(), Some("plan"));
         assert_eq!(latest_assistant_text(&[]), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn detach_grace_timer_ignores_stale_generation() {
+        let (tx, _) = broadcast::channel(4);
+        let entry = Arc::new(TermEntry {
+            backlog: Mutex::new(Backlog {
+                buf: VecDeque::new(),
+                exit: None,
+            }),
+            tx,
+            attach: Mutex::new(AttachState {
+                subs: 0,
+                generation: 0,
+            }),
+            closed: AtomicBool::new(false),
+            pty_id: Mutex::new(None),
+            owner: None,
+            title: "terminal".into(),
+            preserve_on_detach: AtomicBool::new(false),
+        });
+        let id = uuid::Uuid::new_v4().to_string();
+        terms().lock().insert(id.clone(), entry.clone());
+
+        // Spawn initial grace timer for generation 0, then attach and detach before it fires.
+        reap_if_unattached(id.clone(), entry.clone(), Duration::from_millis(40), 0);
+        let (_sd_tx, sd_rx) = watch::channel(false);
+        let s1 = attach_stream(id.clone(), entry.clone(), sd_rx);
+        assert_eq!(entry.attach.lock().generation, 1);
+        // Wait past the gen-0 timer while still attached, then drop & re-attach quickly.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(get_term(&id).is_ok());
+        drop(s1);
+        assert_eq!(entry.attach.lock().generation, 2);
+
+        // Stale generation-0 or generation-2 reap after a re-attach/detach cycle must not reap.
+        let (_sd_tx2, sd_rx2) = watch::channel(false);
+        let s2 = attach_stream(id.clone(), entry.clone(), sd_rx2);
+        assert_eq!(entry.attach.lock().generation, 3);
+        drop(s2);
+        assert_eq!(entry.attach.lock().generation, 4);
+
+        reap_unattached_now(&id, &entry, 0);
+        reap_unattached_now(&id, &entry, 2);
+        assert!(get_term(&id).is_ok());
+        assert!(!entry.closed.load(Ordering::SeqCst));
+
+        // Matching generation 4 while detached does reap.
+        reap_unattached_now(&id, &entry, 4);
+        assert!(get_term(&id).is_err());
+        assert!(entry.closed.load(Ordering::SeqCst));
     }
 }

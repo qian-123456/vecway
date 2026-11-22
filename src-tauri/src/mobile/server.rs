@@ -917,6 +917,44 @@ fn cap_chars(s: &mut String, max: usize) {
     }
 }
 
+/// Re-link visible items' `parent_id` across dropped hidden entries so the
+/// client tree does not break when hidden nodes (`custom_message` with
+/// `display: false`, `custom` system-prompt-digest, etc.) are filtered out.
+fn relink_hidden_parents(items: &mut [crate::contracts::TranscriptItem]) {
+    let hidden_parents: HashMap<String, Option<String>> = items
+        .iter()
+        .filter(|i| i.hidden && !i.id.is_empty())
+        .map(|i| (i.id.clone(), i.parent_id.clone()))
+        .collect();
+    if hidden_parents.is_empty() {
+        return;
+    }
+    let max_steps = hidden_parents.len();
+    for item in items.iter_mut().filter(|i| !i.hidden) {
+        let Some(first_parent) = item
+            .parent_id
+            .as_deref()
+            .and_then(|pid| hidden_parents.get(pid))
+        else {
+            continue;
+        };
+        let mut next = first_parent.as_deref();
+        let mut steps = 1usize;
+        while let Some(pid) = next {
+            let Some(parent) = hidden_parents.get(pid) else {
+                break;
+            };
+            steps += 1;
+            if steps > max_steps {
+                next = None;
+                break;
+            }
+            next = parent.as_deref();
+        }
+        item.parent_id = next.map(str::to_string);
+    }
+}
+
 /// Normalized transcript page (same shape as the desktop `get_transcript`),
 /// with hidden items dropped and bulky tool payloads truncated.
 async fn transcript<B: Backend>(
@@ -943,6 +981,7 @@ async fn transcript<B: Backend>(
     .map_err(|e| bad_gateway(e.to_string()))?
     .map_err(|e| bad_gateway(format!("读取记录失败: {e}")))?;
     let mut page = page;
+    relink_hidden_parents(&mut page.items);
     page.items.retain(|i| !i.hidden);
     let (has_more, oldest_index, total_items) = match (from, q.limit) {
         (0, Some(raw_limit)) => {

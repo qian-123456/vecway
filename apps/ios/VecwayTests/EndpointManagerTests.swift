@@ -692,4 +692,112 @@ final class EndpointManagerTests: XCTestCase {
         XCTAssertEqual(idempotent.certSha256, trustedFP)
         XCTAssertEqual(idempotent.candidates.lanTls, "https://192.168.1.50:7790")
     }
+
+    func testStaleReprobeDoesNotOverwriteManualChannelSwitch() async throws {
+        final class ProbeGate: @unchecked Sendable {
+            private let lock = NSLock()
+            private var startedContinuation: CheckedContinuation<Void, Never>?
+            private var didStart = false
+            private var releaseContinuation: CheckedContinuation<TransportResponse, Error>?
+            private var pendingResponse: Result<TransportResponse, Error>?
+
+            func waitUntilStarted() async {
+                await withCheckedContinuation { cont in
+                    lock.lock()
+                    if didStart {
+                        lock.unlock()
+                        cont.resume()
+                    } else {
+                        startedContinuation = cont
+                        lock.unlock()
+                    }
+                }
+            }
+
+            func blockProbe() async throws -> TransportResponse {
+                try await withCheckedThrowingContinuation { cont in
+                    lock.lock()
+                    didStart = true
+                    let started = startedContinuation
+                    startedContinuation = nil
+                    if let pending = pendingResponse {
+                        pendingResponse = nil
+                        lock.unlock()
+                        started?.resume()
+                        cont.resume(with: pending)
+                    } else {
+                        releaseContinuation = cont
+                        lock.unlock()
+                        started?.resume()
+                    }
+                }
+            }
+
+            func resumeProbe(with response: TransportResponse) {
+                lock.lock()
+                let cont = releaseContinuation
+                releaseContinuation = nil
+                if cont == nil {
+                    pendingResponse = .success(response)
+                }
+                lock.unlock()
+                cont?.resume(returning: response)
+            }
+        }
+
+        final class ChangeLog: @unchecked Sendable {
+            private let lock = NSLock()
+            private var entries: [NativeChannel?] = []
+            func append(_ ch: NativeChannel?) {
+                lock.lock()
+                entries.append(ch)
+                lock.unlock()
+            }
+            func snapshot() -> [NativeChannel?] {
+                lock.lock()
+                defer { lock.unlock() }
+                return entries
+            }
+        }
+
+        let store = makeSeededStore(ipv6: nil)
+        let mock = MockHTTPTransport()
+        let gate = ProbeGate()
+        let changes = ChangeLog()
+
+        mock.setSendHandler { channel, _, path, _ in
+            if channel == .lanTls && path == "/api/device" {
+                return try await gate.blockProbe()
+            }
+            if path == "/api/device" {
+                return Self.okJSON(["id": "dev1"])
+            }
+            return Self.okJSON([:])
+        }
+
+        let manager = EndpointManager(store: store, transport: mock, lanProbeTimeout: 2.0, remoteProbeTimeout: 2.0)
+        manager.onActiveChannelChanged = { ch, _ in
+            changes.append(ch)
+        }
+
+        // Start a background reprobeConnection() that stalls while probing LAN TLS.
+        let staleReprobe = Task { await manager.reprobeConnection() }
+        await gate.waitUntilStarted()
+
+        // User manually switches to Tunnel while the old LAN probe is still in flight.
+        let switched = try await manager.switchChannel(.tunnel)
+        XCTAssertEqual(switched.activeChannel, .tunnel)
+        XCTAssertEqual(switched.preferredChannel, .tunnel)
+
+        // Now allow the superseded LAN probe to resolve as reachable.
+        gate.resumeProbe(with: Self.okJSON(["id": "dev1"]))
+        let staleResult = await staleReprobe.value
+
+        // The stale reprobe MUST NOT overwrite the manual Tunnel selection.
+        XCTAssertEqual(staleResult.activeChannel, .tunnel)
+        XCTAssertEqual(manager.currentStatus().activeChannel, .tunnel)
+        XCTAssertEqual(manager.currentStatus().preferredChannel, .tunnel)
+        XCTAssertEqual(try store.load()?.preferredChannel, .tunnel)
+        XCTAssertEqual(changes.snapshot(), [.tunnel])
+    }
 }

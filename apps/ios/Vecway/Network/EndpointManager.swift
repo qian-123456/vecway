@@ -127,6 +127,7 @@ public final class EndpointManager: @unchecked Sendable {
     private var activeUrl: String?
     private var pinMismatch: NativePinMismatch?
     private var isUnauthorized = false
+    private var stateGeneration: UInt64 = 0
     private var listeners: [UUID: @Sendable (NativeEndpointStatus) -> Void] = [:]
 
     public var onWillUnpair: (@Sendable () -> Void)?
@@ -258,14 +259,15 @@ public final class EndpointManager: @unchecked Sendable {
         try store.save(newCredentials)
         transport.invalidateSessions()
 
-        let (status, changed): (NativeEndpointStatus, Bool) = lock.withLock {
+        let (status, changed, generation): (NativeEndpointStatus, Bool, UInt64) = lock.withLock {
             let didChange = activeChannel != matched.channel || activeUrl != matched.url
             cachedCredentials = newCredentials
             activeChannel = matched.channel
             activeUrl = matched.url
             pinMismatch = nil
             isUnauthorized = false
-            return (buildStatusLocked(), didChange)
+            stateGeneration &+= 1
+            return (buildStatusLocked(), didChange, stateGeneration)
         }
 
         notifyListeners(status)
@@ -277,7 +279,8 @@ public final class EndpointManager: @unchecked Sendable {
         await syncCandidatesFromSettings(
             channel: matched.channel,
             baseURL: matched.url,
-            credentials: newCredentials
+            credentials: newCredentials,
+            expectedGeneration: generation
         )
         return currentStatus()
     }
@@ -293,6 +296,7 @@ public final class EndpointManager: @unchecked Sendable {
             activeUrl = nil
             pinMismatch = nil
             isUnauthorized = false
+            stateGeneration &+= 1
             return buildStatusLocked()
         }
 
@@ -348,6 +352,7 @@ public final class EndpointManager: @unchecked Sendable {
 
         lock.withLock {
             cachedCredentials = creds
+            stateGeneration &+= 1
         }
 
         return await reprobeConnection()
@@ -368,6 +373,7 @@ public final class EndpointManager: @unchecked Sendable {
             try store.save(creds)
             lock.withLock {
                 cachedCredentials = creds
+                stateGeneration &+= 1
             }
             return await reprobeConnection()
         }
@@ -379,6 +385,10 @@ public final class EndpointManager: @unchecked Sendable {
             throw TransportError.missingCertificatePin(target)
         }
 
+        let switchGeneration: UInt64 = lock.withLock {
+            stateGeneration &+= 1
+            return stateGeneration
+        }
         let timeout = target == .lanTls ? lanProbeTimeout : remoteProbeTimeout
         let outcome = await probeSingle(
             channel: target,
@@ -388,18 +398,37 @@ public final class EndpointManager: @unchecked Sendable {
         )
         switch outcome {
         case .reachable(let ch, let url):
-            guard var latest = currentCredentials() else {
-                throw TransportError.unpaired
-            }
             if let mismatch = lock.withLock({ pinMismatch }) {
                 throw TransportError.pinMismatch(mismatch)
             }
+            guard currentCredentials() != nil else {
+                throw TransportError.unpaired
+            }
+            let stale = lock.withLock { switchGeneration != stateGeneration }
+            if stale {
+                return currentStatus()
+            }
+            guard var latest = currentCredentials() else {
+                throw TransportError.unpaired
+            }
             latest.preferredChannel = target
             try store.save(latest)
-            lock.withLock {
+            let committed = lock.withLock { () -> Bool in
+                guard switchGeneration == stateGeneration, pinMismatch == nil else {
+                    return false
+                }
                 cachedCredentials = latest
+                return true
             }
-            return await finalizeConnectedChannel(channel: ch, url: url, credentials: latest)
+            guard committed else {
+                return currentStatus()
+            }
+            return await finalizeConnectedChannel(
+                channel: ch,
+                url: url,
+                credentials: latest,
+                expectedGeneration: switchGeneration
+            )
 
         case .pinMismatch(let mismatch):
             recordPinMismatch(mismatch)
@@ -426,15 +455,25 @@ public final class EndpointManager: @unchecked Sendable {
     // MARK: - Channel Probing & Candidate Sync
 
     public func reprobeConnection() async -> NativeEndpointStatus {
-        guard let creds = currentCredentials() else {
-            let status: NativeEndpointStatus = lock.withLock {
+        let (credsOpt, generation): (StoredCredentials?, UInt64) = lock.withLock {
+            if cachedCredentials == nil {
+                cachedCredentials = try? store.load()
+            }
+            return (cachedCredentials, stateGeneration)
+        }
+        guard let creds = credsOpt else {
+            let status: NativeEndpointStatus? = lock.withLock {
+                guard generation == stateGeneration else { return nil }
                 activeChannel = nil
                 activeUrl = nil
                 pinMismatch = nil
                 return buildStatusLocked()
             }
-            notifyListeners(status)
-            return status
+            if let status {
+                notifyListeners(status)
+                return status
+            }
+            return currentStatus()
         }
 
         // SECURITY: Once a certificate pin mismatch is detected, stay hard-blocked until
@@ -459,9 +498,17 @@ public final class EndpointManager: @unchecked Sendable {
                 credentials: creds,
                 timeout: preferredTimeout
             )
+            if lock.withLock({ generation != stateGeneration }) {
+                return currentStatus()
+            }
             switch outcome {
             case .reachable(let ch, let url):
-                return await finalizeConnectedChannel(channel: ch, url: url, credentials: creds)
+                return await finalizeConnectedChannel(
+                    channel: ch,
+                    url: url,
+                    credentials: creds,
+                    expectedGeneration: generation
+                )
             case .pinMismatch(let mismatch):
                 recordPinMismatch(mismatch)
                 return currentStatus()
@@ -481,9 +528,17 @@ public final class EndpointManager: @unchecked Sendable {
                 credentials: creds,
                 timeout: lanProbeTimeout
             )
+            if lock.withLock({ generation != stateGeneration }) {
+                return currentStatus()
+            }
             switch lanOutcome {
             case .reachable(let ch, let url):
-                return await finalizeConnectedChannel(channel: ch, url: url, credentials: creds)
+                return await finalizeConnectedChannel(
+                    channel: ch,
+                    url: url,
+                    credentials: creds,
+                    expectedGeneration: generation
+                )
             case .pinMismatch(let mismatch):
                 recordPinMismatch(mismatch)
                 return currentStatus()
@@ -524,6 +579,10 @@ public final class EndpointManager: @unchecked Sendable {
                 return collected
             }
 
+            if lock.withLock({ generation != stateGeneration }) {
+                return currentStatus()
+            }
+
             // SECURITY: Pin mismatch on IPv6 TLS MUST hard-block immediately even if Tunnel succeeded.
             for (_, outcome) in outcomes {
                 if case .pinMismatch(let mismatch) = outcome {
@@ -534,10 +593,20 @@ public final class EndpointManager: @unchecked Sendable {
 
             // Priority: ipv6_tls > tunnel.
             if case .reachable(let ch, let url) = outcomes[.ipv6Tls] {
-                return await finalizeConnectedChannel(channel: ch, url: url, credentials: creds)
+                return await finalizeConnectedChannel(
+                    channel: ch,
+                    url: url,
+                    credentials: creds,
+                    expectedGeneration: generation
+                )
             }
             if case .reachable(let ch, let url) = outcomes[.tunnel] {
-                return await finalizeConnectedChannel(channel: ch, url: url, credentials: creds)
+                return await finalizeConnectedChannel(
+                    channel: ch,
+                    url: url,
+                    credentials: creds,
+                    expectedGeneration: generation
+                )
             }
             for (_, outcome) in outcomes {
                 if case .unauthorized = outcome {
@@ -547,10 +616,14 @@ public final class EndpointManager: @unchecked Sendable {
             }
         }
 
-        let offlineStatus: NativeEndpointStatus = lock.withLock {
+        let offlineStatus: NativeEndpointStatus? = lock.withLock {
+            guard generation == stateGeneration else { return nil }
             activeChannel = nil
             activeUrl = nil
             return buildStatusLocked()
+        }
+        guard let offlineStatus else {
+            return currentStatus()
         }
         notifyListeners(offlineStatus)
         return offlineStatus
@@ -619,6 +692,7 @@ public final class EndpointManager: @unchecked Sendable {
         pinMismatch = mismatch
         activeChannel = nil
         activeUrl = nil
+        stateGeneration &+= 1
         status = buildStatusLocked()
         lock.unlock()
 
@@ -724,28 +798,44 @@ public final class EndpointManager: @unchecked Sendable {
     private func finalizeConnectedChannel(
         channel: NativeChannel,
         url: String,
-        credentials: StoredCredentials
+        credentials: StoredCredentials,
+        expectedGeneration: UInt64? = nil
     ) async -> NativeEndpointStatus {
-        let (status, changed): (NativeEndpointStatus, Bool) = lock.withLock {
+        let result: (status: NativeEndpointStatus, changed: Bool)? = lock.withLock {
+            if let expectedGeneration, expectedGeneration != stateGeneration {
+                return nil
+            }
+            guard pinMismatch == nil, cachedCredentials != nil else {
+                return nil
+            }
             let didChange = activeChannel != channel || activeUrl != url
             activeChannel = channel
             activeUrl = url
             isUnauthorized = false
             return (buildStatusLocked(), didChange)
         }
-        notifyListeners(status)
-        if changed {
+        guard let result else {
+            return currentStatus()
+        }
+        notifyListeners(result.status)
+        if result.changed {
             onActiveChannelChanged?(channel, url)
         }
 
-        await syncCandidatesFromSettings(channel: channel, baseURL: url, credentials: credentials)
+        await syncCandidatesFromSettings(
+            channel: channel,
+            baseURL: url,
+            credentials: credentials,
+            expectedGeneration: expectedGeneration
+        )
         return currentStatus()
     }
 
     private func syncCandidatesFromSettings(
         channel: NativeChannel,
         baseURL: String,
-        credentials: StoredCredentials
+        credentials: StoredCredentials,
+        expectedGeneration: UInt64? = nil
     ) async {
         guard let response = try? await transport.send(
             channel: channel,
@@ -765,6 +855,9 @@ public final class EndpointManager: @unchecked Sendable {
         }
 
         let updateResult: (StoredCredentials, NativeEndpointStatus)? = lock.withLock {
+            if let expectedGeneration, expectedGeneration != stateGeneration {
+                return nil
+            }
             guard var latest = cachedCredentials, pinMismatch == nil else {
                 return nil
             }

@@ -14,9 +14,11 @@ vi.mock("../../ui", async (orig) => {
 	return { ...real, toast: h.toast };
 });
 
-import type { Item } from "../../core/types";
+import type { Item, TranscriptPage } from "../../core/types";
+import { events } from "../../core/sse";
 import { ChatController } from "./chatStore";
-import { filterToLeafPath, treeVersions } from "./lib/tree";
+import { EMPTY_TRANSCRIPT, mergePage } from "./lib/transcript";
+import { extractTreeParents, filterToLeafPath, treeVersions } from "./lib/tree";
 
 function row(id: string, parentId: string | null, kind: string): Item {
 	return { id, parentId, role: kind === "user" ? "user" : kind === "assistant" ? "assistant" : "system", kind, text: id, thinking: "", tools: [], images: [], ts: null, streaming: false };
@@ -39,6 +41,52 @@ describe("filterToLeafPath (mobile Items)", () => {
 	});
 	it("renders unfiltered without a known leaf", () => {
 		expect(filterToLeafPath(branched(), null)).toHaveLength(5);
+	});
+	it("preserves user messages when hidden and tool_result ancestors are supplied via parentById / treeParents", () => {
+		const page: TranscriptPage = {
+			items: [
+				{ id: "u1", parentId: null, kind: "user", text: "hi" },
+				{ id: "h1", parentId: "u1", kind: "custom", hidden: true },
+				{ id: "a1", parentId: "h1", kind: "assistant", text: "", toolCalls: [{ id: "c1", name: "bash", args: {} }] },
+				{ id: "tr1", parentId: "a1", kind: "tool_result", toolResult: { toolCallId: "c1", text: "ok" } },
+				{ id: "a2", parentId: "tr1", kind: "assistant", text: "done" },
+				// Abandoned sibling branch under u1
+				{ id: "a1-old", parentId: "u1", kind: "assistant", text: "old" },
+			],
+			nextOffset: 100,
+		};
+		const merged = mergePage(EMPTY_TRANSCRIPT, page);
+		expect(merged.state.parentById).toMatchObject({ u1: null, h1: "u1", a1: "h1", tr1: "a1", a2: "tr1" });
+		const treeParents = extractTreeParents({
+			tree: [
+				{
+					entry: { id: "u1", parentId: null },
+					children: [
+						{
+							entry: { id: "h1", parentId: "u1" },
+							children: [
+								{
+									entry: { id: "a1", parentId: "h1" },
+									children: [
+										{
+											entry: { id: "tr1", parentId: "a1" },
+											children: [{ entry: { id: "a2", parentId: "tr1" }, children: [] }],
+										},
+									],
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(filterToLeafPath(merged.state.items, "a2", merged.state.parentById).map((i) => i.id)).toEqual(["u1", "a1", "a2"]);
+		expect(filterToLeafPath(merged.state.items, "a2", treeParents).map((i) => i.id)).toEqual(["u1", "a1", "a2"]);
+	});
+	it("falls back safely without hiding user messages when the parent chain is broken", () => {
+		const items = [row("u1", null, "user"), row("a1", "missing-hidden", "assistant")];
+		expect(filterToLeafPath(items, "a1").map((i) => i.id)).toEqual(["u1", "a1"]);
+		expect(filterToLeafPath(items, "a1", { u1: null, a1: "missing-hidden" }).map((i) => i.id)).toEqual(["u1", "a1"]);
 	});
 });
 
@@ -110,5 +158,88 @@ describe("ChatController tree actions", () => {
 		c.composer = { get: () => "edited", set: vi.fn(), focus: vi.fn(), clear: vi.fn() };
 		await c.send("edited", "followUp");
 		expect(c.state.treeEdit).toBeNull();
+	});
+	it("rebuilds blocks immediately on editResendFromTree, switchTreeVersion, and cancelTreeEdit", async () => {
+		const c = new ChatController("s1");
+		apiMock.mockResolvedValue({ editorText: "edited" });
+		const items = branched();
+		const t = { ...c.state.transcript, items };
+		c.store.setState({ working: false, transcript: t, leafId: "a1", blocks: filterToLeafPath(items, "a1").map((i) => ({ type: "notice" as const, id: i.id, text: i.text, src: [i] })) });
+
+		await c.switchTreeVersion("a2");
+		expect(c.state.blocks.some((b) => b.type === "turn" && b.user?.id === "u2")).toBe(true);
+		expect(c.state.blocks.some((b) => b.type === "turn" && b.user?.id === "u1")).toBe(false);
+
+		await c.editResendFromTree("u2", "u2");
+		expect(c.state.leafId).toBe("root");
+		expect(c.state.blocks.some((b) => b.type === "turn" && b.user?.id === "u2")).toBe(false);
+
+		await c.cancelTreeEdit();
+		expect(c.state.leafId).toBe("a2");
+		expect(c.state.blocks.some((b) => b.type === "turn" && b.user?.id === "u2")).toBe(true);
+	});
+
+	it("keeps treeEdit armed when send fails pre-dispatch validation", async () => {
+		const c = new ChatController("s1");
+		c.store.setState({
+			treeEdit: { entryId: "u1", prevLeafId: "a1" },
+			atts: [{ id: 1, name: "a.png", isImage: true, url: "", status: "up" }],
+		});
+		expect(await c.send("", "followUp")).toBe(false);
+		expect(c.state.treeEdit).toEqual({ entryId: "u1", prevLeafId: "a1" });
+
+		expect(await c.send("hello", "followUp")).toBe(false);
+		expect(c.state.treeEdit).toEqual({ entryId: "u1", prevLeafId: "a1" });
+
+		apiMock.mockResolvedValueOnce({ output: "ok" });
+		c.store.setState({ atts: [] });
+		expect(await c.send("/help", "followUp")).toBe(true);
+		expect(c.state.treeEdit).toEqual({ entryId: "u1", prevLeafId: "a1" });
+	});
+
+	it("preserves user message hi after fetchTree with hidden and tool_result entries and refreshes tree on touch", async () => {
+		vi.useFakeTimers();
+		try {
+			let leaf = "a2";
+			const page: TranscriptPage = {
+				items: [
+					{ id: "u1", parentId: null, kind: "user", text: "hi" },
+					{ id: "h1", parentId: "u1", kind: "custom", hidden: true },
+					{ id: "a1", parentId: "h1", kind: "assistant", text: "", toolCalls: [{ id: "c1", name: "bash", args: {} }] },
+					{ id: "tr1", parentId: "a1", kind: "tool_result", toolResult: { toolCallId: "c1", text: "ok" } },
+					{ id: "a2", parentId: "tr1", kind: "assistant", text: "done" },
+				],
+				nextOffset: 10,
+				tailId: "a2",
+			};
+			apiMock.mockImplementation(async (_m: string, path: string) => {
+				if (path.includes("/transcript")) return page;
+				if (path.endsWith("/tree")) {
+					return {
+						leafId: leaf,
+						entries: [
+							{ id: "u1", parentId: null },
+							{ id: "h1", parentId: "u1" },
+							{ id: "a1", parentId: "h1" },
+							{ id: "tr1", parentId: "a1" },
+							{ id: "a2", parentId: "tr1" },
+						],
+					};
+				}
+				return {};
+			});
+			const c = new ChatController("s1");
+			c.start();
+			await vi.advanceTimersByTimeAsync(10);
+			expect(c.state.blocks.some((b) => b.type === "turn" && b.user?.text === "hi")).toBe(true);
+
+			leaf = "a1";
+			events.emit("touch", { sessionId: "s1" } as never);
+			await vi.advanceTimersByTimeAsync(200);
+			expect(c.state.leafId).toBe("a1");
+			c.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

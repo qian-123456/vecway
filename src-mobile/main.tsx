@@ -46,7 +46,7 @@ async function boot() {
 		});
 		bridge.onForegroundResync?.(() => {
 			if (!active || isUnauthorized()) return;
-			reconnectEvents();
+			reconnectEvents(true);
 			void useSessions.getState().refresh().catch(() => {});
 		});
 		createRoot(document.getElementById("root")!).render(

@@ -19,7 +19,7 @@ import { PendingCards } from "./components/PendingCards";
 import { SelectionToolbar } from "./components/SelectionToolbar";
 import { TurnView } from "./components/TurnView";
 import type { Turn } from "./lib/turns";
-import { queueFirstSend } from "./lib/drafts";
+import { draftBook, queueFirstSend } from "./lib/drafts";
 import { PLAN_OFF } from "../../../src/features/chat/plan/planStatus";
 
 class RO {
@@ -386,5 +386,58 @@ describe("Chat UI at 390x844 viewport", () => {
 		expect(screen.getByRole("button", { name: "工具菜单" })).toBeTruthy();
 		expect(screen.getByLabelText("消息输入框")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "语音输入" })).toBeTruthy();
+	});
+});
+describe("First-send recovery & draft plan-mode promotion", () => {
+	it("restores queued first message into composer when controller.send returns false", async () => {
+		queueFirstSend("s-fail", "不能丢失的首条消息");
+		const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+			throw new Error("QuotaExceededError");
+		});
+		try {
+			await act(async () => {
+				render(<ChatPage route={{ name: "chat", path: "/s/s-fail", params: { id: "s-fail" }, query: {} }} />);
+			});
+			const input = screen.getByLabelText("消息输入框") as HTMLTextAreaElement;
+			expect(input.value).toBe("不能丢失的首条消息");
+		} finally {
+			setItemSpy.mockRestore();
+		}
+	});
+
+	it("transfers draft text and replaces route when toggling plan mode materializes a draft", async () => {
+		const draftId = "mobile-draft-plan-1";
+		const realId = "sess-plan-real-1";
+		const c = new ChatController(draftId);
+		c.store.setState({ atts: [{ id: 1, name: "note.txt", isImage: false, url: "", status: "ok", path: "/tmp/note.txt" }] });
+		const replaceSpy = vi.spyOn(nav, "replace");
+		apiMock.mockImplementation(async (method: string, path: string) => {
+			if (method === "POST" && path === `/sessions/${draftId}/plan-mode`) {
+				return { on: true, sessionId: realId };
+			}
+			return {};
+		});
+		try {
+			render(wrap(c, <Composer sessionId={draftId} />));
+			const input = screen.getByLabelText("消息输入框") as HTMLTextAreaElement;
+			fireEvent.input(input, { target: { value: "未发送的草稿" } });
+			await act(async () => {
+				fireEvent.click(screen.getByRole("button", { name: "添加" }));
+			});
+			await act(async () => {
+				fireEvent.click(screen.getByRole("switch", { name: "规划模式" }));
+			});
+			expect(apiMock).toHaveBeenCalledWith("POST", `/sessions/${draftId}/plan-mode`, { on: true });
+			expect(draftBook.restore(realId)).toMatchObject({
+				text: "未发送的草稿",
+				atts: [{ name: "note.txt", path: "/tmp/note.txt" }],
+			});
+			expect(replaceSpy).toHaveBeenCalledWith(`/s/${realId}`);
+		} finally {
+			replaceSpy.mockRestore();
+			draftBook.forget(draftId);
+			draftBook.forget(realId);
+			c.dispose();
+		}
 	});
 });

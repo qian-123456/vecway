@@ -14,6 +14,8 @@ export interface TranscriptState {
 	tailId: string | null;
 	/** Per assistant item id: request stats (duration/ttft are not part of the normalized Item). */
 	stats: Record<string, RequestStat>;
+	/** Raw id → parentId for every transcript entry (including hidden/tool_result rows dropped during normalization). */
+	parentById?: Record<string, string | null>;
 	/** True when older visible items exist before `oldestIndex` on the server. */
 	hasMore: boolean;
 	/** Exclusive upper index into server visible items for the next `loadOlder()` page. */
@@ -27,6 +29,7 @@ export const EMPTY_TRANSCRIPT: TranscriptState = {
 	offset: 0,
 	tailId: null,
 	stats: {},
+	parentById: {},
 	hasMore: false,
 	oldestIndex: null,
 	loadingOlder: false,
@@ -87,7 +90,18 @@ export function mergePage(prev: TranscriptState, page?: TranscriptPage | null): 
 	const base = page.reset ? EMPTY_TRANSCRIPT : prev;
 	let items = base.items;
 	const stats = { ...base.stats };
+	let parentById = base.parentById ?? {};
+	let parentChanged = false;
 	const raw = (page.items ?? []).filter((r): r is TranscriptItem => !!r);
+	for (const r of raw) {
+		if (!r.id) continue;
+		const nextParent = r.parentId ?? null;
+		if (parentById[r.id] !== nextParent || !(r.id in parentById)) {
+			if (!parentChanged) parentById = { ...parentById };
+			parentById[r.id] = nextParent;
+			parentChanged = true;
+		}
+	}
 	let patched = false;
 	const rest: TranscriptItem[] = [];
 	for (const r of raw) {
@@ -126,12 +140,13 @@ export function mergePage(prev: TranscriptState, page?: TranscriptPage | null): 
 	const changed =
 		!!page.reset ||
 		patched ||
+		parentChanged ||
 		merged !== items ||
 		offset !== prev.offset ||
 		tailId !== prev.tailId ||
 		hasMore !== prev.hasMore ||
 		oldestIndex !== prev.oldestIndex;
-	return { state: { items: merged, offset, tailId, stats, hasMore, oldestIndex, loadingOlder }, newUserTexts, changed };
+	return { state: { items: merged, offset, tailId, stats, parentById, hasMore, oldestIndex, loadingOlder }, newUserTexts, changed };
 }
 
 /**
@@ -144,6 +159,17 @@ export function prependOlderPage(prev: TranscriptState, page?: TranscriptPage | 
 		return { state: { ...prev, loadingOlder: false }, newUserTexts: [], changed: false };
 	}
 	const raw = (page.items ?? []).filter((r): r is TranscriptItem => !!r);
+	let parentById = prev.parentById ?? {};
+	let parentChanged = false;
+	for (const r of raw) {
+		if (!r.id) continue;
+		const nextParent = r.parentId ?? null;
+		if (parentById[r.id] !== nextParent || !(r.id in parentById)) {
+			if (!parentChanged) parentById = { ...parentById };
+			parentById[r.id] = nextParent;
+			parentChanged = true;
+		}
+	}
 	const older = normalizeTranscript(raw);
 	markUnresolved(older, raw);
 	const stats = { ...prev.stats };
@@ -180,13 +206,14 @@ export function prependOlderPage(prev: TranscriptState, page?: TranscriptPage | 
 	const items = uniqueOlder.length > 0 ? [...uniqueOlder, ...keptPrev] : keptPrev;
 	const hasMore = typeof page.hasMore === "boolean" ? page.hasMore : false;
 	const oldestIndex = typeof page.oldestIndex === "number" ? page.oldestIndex : hasMore ? prev.oldestIndex : 0;
-	const changed = uniqueOlder.length > 0 || consumedPrev.size > 0;
+	const changed = uniqueOlder.length > 0 || consumedPrev.size > 0 || parentChanged;
 	return {
 		state: {
 			items,
 			offset: prev.offset,
 			tailId: prev.tailId,
 			stats,
+			parentById,
 			hasMore,
 			oldestIndex,
 			loadingOlder: false,

@@ -16,8 +16,9 @@ vi.mock("../../core/nav", () => ({
 	},
 }));
 
+const apiMock = vi.fn();
 vi.mock("../../core/api", () => ({
-	api: vi.fn().mockResolvedValue({ dirs: [] }),
+	api: (...args: unknown[]) => apiMock(...args),
 	errorMessage: (e: unknown) => String(e),
 }));
 
@@ -36,14 +37,33 @@ vi.mock("../../core/stores/sessions", () => ({
 }));
 
 import { MenuSheet } from "./MenuSheet";
+import { useTree } from "./treeStore";
+import { events } from "../../core/sse";
+
+const EMPTY_TREE = {
+	pinned: [],
+	globalGroup: null,
+	workspaceGroups: [],
+	unassignedGroups: [],
+	deletedSessions: [],
+	archived: [],
+};
 
 beforeEach(() => {
 	vi.clearAllMocks();
 	delete window.__VECWAY_NATIVE__;
+	useTree.setState({ data: null, error: null, loading: false, mode: "code", open: {}, expanded: {} });
+	apiMock.mockImplementation(async (_method: string, path: string) => {
+		if (path === "/left/dirs") return { dirs: [] };
+		if (path.startsWith("/left/sessions")) return EMPTY_TREE;
+		if (path === "/left/todos") return { todos: [] };
+		return {};
+	});
 });
 
 afterEach(() => {
 	cleanup();
+	vi.useRealTimers();
 	delete window.__VECWAY_NATIVE__;
 });
 describe("MenuSheet (Left Navigation Sheet)", () => {
@@ -177,5 +197,52 @@ describe("MenuSheet (Left Navigation Sheet)", () => {
 		});
 		await waitFor(() => expect(switchChannel).toHaveBeenCalledWith("lan_tls"));
 		expect(screen.queryByRole("button", { name: "切回局域网" })).toBeNull();
+	});
+
+	it("revalidates cached tree on open and ignores stale out-of-order inbox responses", async () => {
+		vi.useFakeTimers();
+		useTree.setState({ data: EMPTY_TREE });
+
+		let resolveFirst!: (v: unknown) => void;
+		let resolveSecond!: (v: unknown) => void;
+		const first = { promise: new Promise<unknown>((r) => { resolveFirst = r; }), resolve: (v: unknown) => resolveFirst(v) };
+		const second = { promise: new Promise<unknown>((r) => { resolveSecond = r; }), resolve: (v: unknown) => resolveSecond(v) };
+		let inboxCalls = 0;
+		apiMock.mockImplementation((_method: string, path: string) => {
+			if (path.startsWith("/left/sessions")) return Promise.resolve(EMPTY_TREE);
+			if (path === "/left/todos") return Promise.resolve({ todos: [] });
+			if (path === "/left/inbox") {
+				inboxCalls += 1;
+				return inboxCalls === 1 ? first.promise : second.promise;
+			}
+			return Promise.resolve({});
+		});
+
+		render(<MenuSheet open onClose={vi.fn()} />);
+		expect(apiMock).toHaveBeenCalledWith("GET", "/left/sessions?mode=code");
+
+		act(() => {
+			events.emit("session", { sessionId: "s1" });
+			vi.advanceTimersByTime(400);
+		});
+		expect(inboxCalls).toBe(2);
+
+		await act(async () => {
+			second.resolve({ unread: [{ id: "s1", label: "#1", title: "new", status: "idle", updatedAt: "2026-11-22T00:00:00Z", cwd: "/p", live: false }] });
+			await Promise.resolve();
+		});
+		expect(screen.getByRole("button", { name: "收件箱，1 项待处理" })).toBeTruthy();
+
+		await act(async () => {
+			first.resolve({
+				unread: [
+					{ id: "s1", label: "#1", title: "old1", status: "idle", updatedAt: "2026-11-22T00:00:00Z", cwd: "/p", live: false },
+					{ id: "s2", label: "#2", title: "old2", status: "idle", updatedAt: "2026-11-22T00:00:00Z", cwd: "/p", live: false },
+					{ id: "s3", label: "#3", title: "old3", status: "idle", updatedAt: "2026-11-22T00:00:00Z", cwd: "/p", live: false },
+				],
+			});
+			await Promise.resolve();
+		});
+		expect(screen.getByRole("button", { name: "收件箱，1 项待处理" })).toBeTruthy();
 	});
 });

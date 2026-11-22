@@ -12,9 +12,11 @@ export function visibleTreeSessions(tree: SessionTree): TreeSession[] {
 	add(tree.pinned ?? []);
 	for (const group of [tree.globalGroup, ...(tree.workspaceGroups ?? [])]) {
 		if (!group) continue;
-		for (const subgroup of [...group.subgroups, ...group.deletedSubgroups]) add(subgroup.sessions);
+		for (const subgroup of [...(group.subgroups ?? []), ...(group.deletedSubgroups ?? [])]) {
+			add(subgroup?.sessions ?? []);
+		}
 	}
-	for (const group of tree.unassignedGroups ?? []) add(group.sessions);
+	for (const group of tree.unassignedGroups ?? []) add(group?.sessions ?? []);
 	add(tree.deletedSessions ?? []);
 	return [...sessions.values()];
 }

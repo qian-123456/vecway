@@ -321,7 +321,50 @@ fn status_code(f: &FileState) -> &'static str {
     }
 }
 
-fn git_status_impl(dir: &Path) -> Result<Value, ApiError> {
+struct GitRepo {
+    top: PathBuf,
+    top_in_roots: bool,
+}
+
+fn resolve_git_repo(sc: &Scope) -> Result<GitRepo, ApiError> {
+    let raw_top = git_ok(&sc.cwd, &["rev-parse", "--show-toplevel"])
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let top = std::fs::canonicalize(raw_top.trim())
+        .map_err(|_| err(StatusCode::NOT_FOUND, "仓库目录不存在"))?;
+    let top_in_roots = sc.roots.iter().any(|r| top.starts_with(r));
+    Ok(GitRepo { top, top_in_roots })
+}
+
+fn canon_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut cur = path;
+    while std::fs::symlink_metadata(cur).is_err() {
+        tail.push(cur.file_name()?);
+        cur = cur.parent()?;
+    }
+    let mut base = std::fs::canonicalize(cur).ok()?;
+    for seg in tail.into_iter().rev() {
+        base.push(seg);
+    }
+    Some(base)
+}
+
+fn ensure_repo_path_in_roots(sc: &Scope, repo: &GitRepo, rel: &str) -> Result<(), ApiError> {
+    if repo.top_in_roots {
+        return Ok(());
+    }
+    let candidate = repo.top.join(rel);
+    let Some(canon) = canon_existing_ancestor(&candidate) else {
+        return Err(err(StatusCode::FORBIDDEN, "路径不在允许范围内"));
+    };
+    if sc.roots.iter().any(|r| canon.starts_with(r)) {
+        Ok(())
+    } else {
+        Err(err(StatusCode::FORBIDDEN, "路径不在允许范围内"))
+    }
+}
+
+fn git_status_in_dir(dir: &Path, guard: Option<(&Scope, &GitRepo)>) -> Result<Value, ApiError> {
     let Some(st) = gstatus::status(dir, true) else {
         return Ok(json!({"isRepo": false, "branch": null, "files": []}));
     };
@@ -329,6 +372,9 @@ fn git_status_impl(dir: &Path) -> Result<Value, ApiError> {
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let files: Vec<Value> = parse_xy(&raw.stdout)
         .iter()
+        .filter(|f| {
+            guard.is_none_or(|(sc, repo)| ensure_repo_path_in_roots(sc, repo, &f.path).is_ok())
+        })
         .take(1000)
         .map(|f| {
             json!({
@@ -342,6 +388,11 @@ fn git_status_impl(dir: &Path) -> Result<Value, ApiError> {
         })
         .collect();
     Ok(json!({"isRepo": true, "branch": st.branch, "files": files}))
+}
+
+#[cfg(test)]
+fn git_status_impl(dir: &Path) -> Result<Value, ApiError> {
+    git_status_in_dir(dir, None)
 }
 
 fn stage_impl(dir: &Path, paths: &[String], stage: bool) -> Result<(), ApiError> {
@@ -430,7 +481,14 @@ async fn git_status<B: Backend>(
     UrlPath(id): UrlPath<String>,
 ) -> Result<Json<Value>, ApiError> {
     let sc = scope(&ctx, &id).await?;
-    blocking(move || git_status_impl(&sc.cwd).map(Json)).await
+    blocking(move || {
+        let Ok(repo) = resolve_git_repo(&sc) else {
+            return git_status_in_dir(&sc.cwd, None).map(Json);
+        };
+        let guard = (!repo.top_in_roots).then_some((&sc, &repo));
+        git_status_in_dir(&repo.top, guard).map(Json)
+    })
+    .await
 }
 
 async fn git_branches<B: Backend>(
@@ -463,26 +521,37 @@ async fn git_diff<B: Backend>(
 ) -> Result<Json<Value>, ApiError> {
     let sc = scope(&ctx, &id).await?;
     blocking(move || {
+        let repo = resolve_git_repo(&sc)?;
         let path = q.path.as_deref().filter(|p| !p.is_empty());
+        if let Some(p) = path {
+            git_pathspec(p)?;
+            ensure_repo_path_in_roots(&sc, &repo, p)?;
+        } else if !repo.top_in_roots {
+            return Err(err(StatusCode::FORBIDDEN, "路径不在允许范围内"));
+        }
         let diff = if let Some(sha) = q.commit.as_deref().filter(|c| !c.is_empty()) {
             if !valid_sha(sha) {
                 return Err(err(StatusCode::BAD_REQUEST, "非法提交哈希"));
             }
-            if let Some(p) = path {
-                git_pathspec(p)?;
-            }
-            history::diff(&sc.cwd, path, Some(sha)).map_err(|e| err(StatusCode::BAD_REQUEST, e))?
+            history::diff(&repo.top, path, Some(sha))
+                .map_err(|e| err(StatusCode::BAD_REQUEST, e))?
         } else if q.staged {
-            staged_diff(&sc.cwd, path)?
+            staged_diff(&repo.top, path)?
         } else {
-            if let Some(p) = path {
-                git_pathspec(p)?;
-            }
-            history::diff(&sc.cwd, path, None).map_err(|e| err(StatusCode::BAD_REQUEST, e))?
+            history::diff(&repo.top, path, None).map_err(|e| err(StatusCode::BAD_REQUEST, e))?
         };
         Ok(Json(json!({ "diff": diff })))
     })
     .await
+}
+
+fn stage_in_scope(sc: &Scope, paths: &[String], stage: bool) -> Result<(), ApiError> {
+    let repo = resolve_git_repo(sc)?;
+    for p in paths {
+        git_pathspec(p)?;
+        ensure_repo_path_in_roots(sc, &repo, p)?;
+    }
+    stage_impl(&repo.top, paths, stage)
 }
 
 async fn git_stage<B: Backend>(
@@ -491,7 +560,7 @@ async fn git_stage<B: Backend>(
     Json(body): Json<PathsBody>,
 ) -> Result<Json<Value>, ApiError> {
     let sc = scope(&ctx, &id).await?;
-    blocking(move || stage_impl(&sc.cwd, &body.paths, true).map(|_| Json(json!({"ok": true}))))
+    blocking(move || stage_in_scope(&sc, &body.paths, true).map(|_| Json(json!({"ok": true}))))
         .await
 }
 
@@ -501,8 +570,20 @@ async fn git_unstage<B: Backend>(
     Json(body): Json<PathsBody>,
 ) -> Result<Json<Value>, ApiError> {
     let sc = scope(&ctx, &id).await?;
-    blocking(move || stage_impl(&sc.cwd, &body.paths, false).map(|_| Json(json!({"ok": true}))))
+    blocking(move || stage_in_scope(&sc, &body.paths, false).map(|_| Json(json!({"ok": true}))))
         .await
+}
+
+fn commit_in_scope(sc: &Scope, message: &str) -> Result<String, ApiError> {
+    let repo = resolve_git_repo(sc)?;
+    if !repo.top_in_roots {
+        let staged = git_ok(&repo.top, &["diff", "--cached", "--name-only", "-z"])
+            .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+        for rel in staged.split('\0').filter(|p| !p.is_empty()) {
+            ensure_repo_path_in_roots(sc, &repo, rel)?;
+        }
+    }
+    commit_impl(&repo.top, message)
 }
 
 async fn git_commit<B: Backend>(
@@ -511,7 +592,7 @@ async fn git_commit<B: Backend>(
     Json(body): Json<CommitBody>,
 ) -> Result<Json<Value>, ApiError> {
     let sc = scope(&ctx, &id).await?;
-    blocking(move || commit_impl(&sc.cwd, &body.message).map(|o| Json(json!({"output": o})))).await
+    blocking(move || commit_in_scope(&sc, &body.message).map(|o| Json(json!({"output": o})))).await
 }
 
 async fn git_suggest<B: Backend>(

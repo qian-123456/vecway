@@ -123,6 +123,7 @@ export function SearchPage(_props: PageProps) {
 				</div>
 			</header>
 			<PullToRefresh onRefresh={() => Promise.all([useTree.getState().load(), search()])} className="pb-[calc(var(--m-safe-bottom)+24px)]">
+				<div className="m-kb-pad">
 				{!hasQuery && (
 					<EmptyState
 						icon={<Search size={26} strokeWidth={1.75} />}
@@ -157,6 +158,7 @@ export function SearchPage(_props: PageProps) {
 						{!loading && !error && !visibleResult.sessions.length && !visibleResult.branches.length && <EmptyState icon={<Search size={26} />} title="没有匹配的会话" hint="尝试其他关键词，或切换空间与归档范围" />}
 					</>
 				)}
+				</div>
 			</PullToRefresh>
 			<ActionSheet open={chooser !== null} title={chooser?.title} items={chooser?.items ?? []} onClose={() => setChooser(null)} />
 			{node}

@@ -1,7 +1,9 @@
 import { ClipboardList, Folder, GitBranch, MessagesSquare, Server, Terminal } from "lucide-react";
-import type { ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
+import { errorMessage } from "../../../core/api";
 import { nav, paths } from "../../../core/nav";
-import { BottomSheet, MenuRow } from "../../../ui";
+import { DRAFT_PREFIX, isDraftId } from "../../../core/types";
+import { BottomSheet, MenuRow, toast } from "../../../ui";
 import { usePlanExecution } from "../../panels/usePlanExecution";
 
 interface Entry {
@@ -22,26 +24,60 @@ const ENTRIES: Entry[] = [
 	{ label: "服务", hint: "正在运行的本地服务和端口", icon: icon(Server), to: paths.services },
 ];
 
-export function HeaderMenu({ open, onClose, sessionId }: { open: boolean; onClose: () => void; sessionId: string }) {
-	const { executing } = usePlanExecution(sessionId);
-	const entries = executing
+type HeaderMenuProps =
+	| { open: boolean; onClose: () => void; sessionId: string; resolveSessionId?: () => Promise<string> }
+	| { open: boolean; onClose: () => void; sessionId?: string; resolveSessionId: () => Promise<string> };
+
+export function HeaderMenu({ open, onClose, sessionId, resolveSessionId }: HeaderMenuProps) {
+	const [pending, setPending] = useState(false);
+	const pendingRef = useRef(false);
+	const openRef = useRef(open);
+	openRef.current = open;
+	const { executing } = usePlanExecution(sessionId || `${DRAFT_PREFIX}menu`);
+	const isDraftOrMissing = !sessionId || isDraftId(sessionId);
+	const entries = !isDraftOrMissing && executing
 		? [...ENTRIES, { label: "执行计划", hint: "查看已批准的计划与执行状态", icon: icon(ClipboardList), to: paths.plan }]
 		: ENTRIES;
+	const handleSelect = async (entry: Entry, disabled: boolean) => {
+		if (disabled || pendingRef.current) return;
+		if (sessionId) {
+			onClose();
+			nav.push(entry.to(sessionId));
+			return;
+		}
+		if (!resolveSessionId) return;
+		pendingRef.current = true;
+		setPending(true);
+		try {
+			const id = await resolveSessionId();
+			if (!openRef.current) return;
+			onClose();
+			nav.push(entry.to(id));
+		} catch (err) {
+			if (openRef.current) toast(`打开工具失败：${errorMessage(err)}`, { kind: "error" });
+		} finally {
+			pendingRef.current = false;
+			setPending(false);
+		}
+	};
+
 	return (
 		<BottomSheet open={open} onClose={onClose} title="工具">
 			<div className="pb-3">
-				{entries.map((e) => (
-					<MenuRow
-						key={e.label}
-						icon={e.icon}
-						label={e.label}
-						hint={e.hint}
-						onClick={() => {
-							onClose();
-							nav.push(e.to(sessionId));
-						}}
-					/>
-				))}
+				{entries.map((e) => {
+					const sidechatDisabled = e.to === paths.sidechat && isDraftOrMissing;
+					const disabled = sidechatDisabled || pending;
+					return (
+						<MenuRow
+							key={e.label}
+							icon={e.icon}
+							label={e.label}
+							hint={sidechatDisabled ? "发送第一条消息后可用" : e.hint}
+							disabled={disabled}
+							onClick={() => void handleSelect(e, disabled)}
+						/>
+					);
+				})}
 			</div>
 		</BottomSheet>
 	);

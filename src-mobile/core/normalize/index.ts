@@ -89,7 +89,7 @@ export function normalizeTranscript(raw: readonly (TranscriptItem | null | undef
 			const host = lastAssistant(out);
 			if (host) host.tools.push(orphan);
 			else {
-				const item = emptyItem(it.id, "system", kind);
+				const item = emptyItem(it.id, "system", kind, it.parentId ?? null);
 				item.text = r.text || "";
 				item.ts = it.ts || null;
 				item.tools = [{ ...orphan, status: "done" }];

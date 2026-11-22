@@ -115,7 +115,15 @@ export function ChatPage({ route }: PageProps) {
 	useEffect(() => {
 		if (!controller || controller.id !== id) return;
 		const first = takeFirstSend(id);
-		if (first !== null) void controller.send(first, "followUp");
+		if (first === null) return;
+		let cancelled = false;
+		void controller.send(first, "followUp").then((sent) => {
+			if (cancelled || sent) return;
+			if (!controller.composer?.get()) controller.composer?.set(first);
+		});
+		return () => {
+			cancelled = true;
+		};
 	}, [controller, id]);
 	useEffect(() => {
 		const c = new ChatController(id);

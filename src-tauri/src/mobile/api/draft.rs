@@ -287,9 +287,34 @@ pub async fn set_thinking(id: &str, level: String) -> bool {
     true
 }
 
+/// RAII guard holding `Draft.sending = true` until handoff completes or the
+/// future is dropped/cancelled.
+struct ClaimGuard {
+    entry: Entry,
+    armed: bool,
+}
+
+impl ClaimGuard {
+    fn new(entry: Entry) -> Self {
+        Self { entry, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ClaimGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.entry.lock().sending = false;
+        }
+    }
+}
+
 /// Mark the draft as sending. Only one concurrent send may own a draft; a
 /// duplicate is rejected instead of delivering the prompt twice.
-fn claim(id: &str) -> Result<Option<Entry>, ApiError> {
+fn claim(id: &str) -> Result<Option<ClaimGuard>, ApiError> {
     let Some(entry) = entry(id) else {
         return Ok(None);
     };
@@ -303,12 +328,12 @@ fn claim(id: &str) -> Result<Option<Entry>, ApiError> {
         }
         d.sending = true;
     }
-    Ok(Some(entry))
+    Ok(Some(ClaimGuard::new(entry)))
 }
 
 /// Await the one start shared by prewarm/send, apply the newest settings, then
 /// run `send`. Draft state is removed only after the command succeeds; on
-/// failure the draft (and its text on the client) is kept for a retry.
+/// failure or cancellation the claim is released for a retry.
 pub async fn handoff<B, F, Fut, T>(
     ctx: &Ctx<B>,
     id: &str,
@@ -319,32 +344,21 @@ where
     F: FnOnce(String, Selection) -> Fut,
     Fut: Future<Output = Result<T, ApiError>>,
 {
-    let Some(entry) = claim(id)? else {
+    let Some(mut guard) = claim(id)? else {
         return Ok(None);
     };
-    let outcome = async {
-        let info = spawn(ctx, &entry)
-            .await
-            .map_err(|e| ApiError(axum::http::StatusCode::BAD_GATEWAY, e))?;
-        let real = info.session_id.clone();
-        let selection = entry.lock().selection.clone();
-        let result = send(real.clone(), selection).await?;
-        Ok::<_, ApiError>((real, result))
-    }
-    .await;
-    match outcome {
-        Ok((real, result)) => {
-            registry().lock().drafts.remove(id);
-            // Dropping the entry releases the activity guard; the real
-            // session is then governed by normal recycling.
-            entry.lock().activity = None;
-            Ok(Some((real, result)))
-        }
-        Err(e) => {
-            entry.lock().sending = false;
-            Err(e)
-        }
-    }
+    let info = spawn(ctx, &guard.entry)
+        .await
+        .map_err(|e| ApiError(axum::http::StatusCode::BAD_GATEWAY, e))?;
+    let real = info.session_id.clone();
+    let selection = guard.entry.lock().selection.clone();
+    let result = send(real.clone(), selection).await?;
+    guard.disarm();
+    registry().lock().drafts.remove(id);
+    // Dropping the entry releases the activity guard; the real
+    // session is then governed by normal recycling.
+    guard.entry.lock().activity = None;
+    Ok(Some((real, result)))
 }
 
 #[cfg(test)]
@@ -389,9 +403,13 @@ mod tests {
         let e = create("/tmp/draft-unit-a".into(), SpaceMode::Code, None, None).await;
         assert_ne!(a.session_id, e.session_id);
 
-        // Only one send may own a draft at a time.
-        assert!(claim(&a.session_id).unwrap().is_some());
+        // Only one send may own a draft at a time; dropping the guard releases it.
+        let claim_guard = claim(&a.session_id).unwrap().unwrap();
         assert!(claim(&a.session_id).is_err());
+        drop(claim_guard);
+        let _claim_again = claim(&a.session_id).unwrap().unwrap();
+        assert!(claim(&a.session_id).is_err());
+        drop(_claim_again);
         assert!(claim("mobile-draft-missing").unwrap().is_none());
         for id in [
             &a.session_id,

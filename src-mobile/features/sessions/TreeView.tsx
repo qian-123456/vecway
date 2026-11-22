@@ -230,8 +230,8 @@ export function TreeView({
 	const newInWorktree = async (target: { cwd: string; label: string }) => {
 		try {
 			const res = await api<{ dirs: DirEntry[] }>("GET", "/left/dirs");
-			const project = data?.workspaceGroups.find((g) =>
-				g.workspace.path === target.cwd || g.subgroups.some((s) => (s.createCwd ?? s.path) === target.cwd),
+			const project = (data?.workspaceGroups ?? []).find((g) =>
+				g.workspace?.path === target.cwd || (g.subgroups ?? []).some((s) => (s.createCwd ?? s.path) === target.cwd),
 			);
 			// Worktrees may live anywhere on disk; only the registered workspace owns them.
 			const matching = (res.dirs ?? []).filter((d) => d.kind === "worktree" &&

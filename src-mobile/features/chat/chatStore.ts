@@ -42,7 +42,7 @@ import {
 	type TranscriptState,
 } from "./lib/transcript";
 import { buildBlocks, reuseBlocks, type Block } from "./lib/turns";
-import { filterToLeafPath, treeVersions, type TreeVersions } from "./lib/tree";
+import { extractTreeParents, filterToLeafPath, treeVersions, type TreeVersions } from "./lib/tree";
 import { clearUnsent, loadUnsent, saveUnsent } from "./lib/unsent";
 import type { Goal } from "./components/GoalSheet";
 
@@ -173,6 +173,16 @@ interface AskReplayProgress {
 	/** Retained until POST is acknowledged or a newer pending id proves it was consumed. */
 	attempt?: { requestId: string; qIndex: number; toggled: string[] };
 }
+function sameParents(a: Readonly<Record<string, string | null>>, b: Readonly<Record<string, string | null>>): boolean {
+	const keysA = Object.keys(a);
+	const keysB = Object.keys(b);
+	if (keysA.length !== keysB.length) return false;
+	for (const k of keysA) {
+		if (!Object.prototype.hasOwnProperty.call(b, k) || a[k] !== b[k]) return false;
+	}
+	return true;
+}
+
 
 export class ChatController {
 	readonly store: StoreApi<ChatState>;
@@ -192,6 +202,7 @@ export class ChatController {
 	private treeSequence = 0;
 	private treeFetched = false;
 	private treeDirty = false;
+	private treeParents: Record<string, string | null> = {};
 	private stateInflight: Promise<void> | null = null;
 	private stateAgain = false;
 	private pendingsInflight: Promise<void> | null = null;
@@ -309,6 +320,7 @@ export class ChatController {
 			}),
 			events.on("touch", (d) => {
 				if (!d || !d.sessionId || d.sessionId === this.id) {
+					this.treeDirty = true;
 					this.scheduleFetch(150);
 					void this.syncPendings();
 				}
@@ -380,14 +392,25 @@ export class ChatController {
 			if (this.draftTarget) saveUnsent(this.draftTarget, text);
 		}
 	}
+	/** Mark draft ownership transferred to a materialized real session (e.g. plan-mode promotion). */
+	markDraftTransferred(targetId: string): void {
+		this.draftTransferred = true;
+		this.draftTarget = targetId;
+		this.touchDraft.cancel();
+	}
 
 	/* ------------------------------------------------------------ transcript */
+
+	private combinedParents(t: TranscriptState = this.state.transcript): Record<string, string | null> {
+		const base = t.parentById ?? {};
+		return Object.keys(this.treeParents).length > 0 ? { ...base, ...this.treeParents } : base;
+	}
 
 	private rebuild(t: TranscriptState, leafId: string | null = this.state.leafId): Block[] {
 		// Only the root→leaf path is the live conversation; sibling branches
 		// (created by navigation / edit-&-resend) stay in the buffer but out
 		// of the view. Unknown leaf (offline, never fetched) renders as before.
-		return reuseBlocks(this.state.blocks, buildBlocks(filterToLeafPath(t.items, leafId), t.stats));
+		return reuseBlocks(this.state.blocks, buildBlocks(filterToLeafPath(t.items, leafId, this.combinedParents(t)), t.stats));
 	}
 
 	async fetchTranscript(): Promise<void> {
@@ -529,11 +552,14 @@ export class ChatController {
 		const sequence = ++this.treeSequence;
 		const activity = this.activitySequence;
 		try {
-			const r = await api<{ leafId?: string | null }>("GET", `/sessions/${this.id}/tree`);
+			const r = await api<{ leafId?: string | null; tree?: unknown; entries?: unknown }>("GET", `/sessions/${this.id}/tree`);
 			if (this.disposed || sequence !== this.treeSequence || activity !== this.activitySequence) return;
 			this.treeFetched = true;
+			const nextParents = extractTreeParents(r);
+			const parentsChanged = !sameParents(this.treeParents, nextParents);
+			this.treeParents = nextParents;
 			const leafId = r.leafId ?? null;
-			if (leafId === this.state.leafId) return;
+			if (leafId === this.state.leafId && !parentsChanged) return;
 			this.set({ leafId, blocks: this.rebuild(this.state.transcript, leafId) });
 		} catch {
 			// Offline / busy: keep the previous leaf and its filtering.
@@ -1033,8 +1059,6 @@ export class ChatController {
 
 	/** Returns true when the text was consumed (composer should already have been cleared by the caller on true). */
 	async send(text: string, behavior: StreamBehavior): Promise<boolean> {
-		// A send after edit-&-resend creates the sibling branch; drop the banner.
-		if (this.state.treeEdit) this.set({ treeEdit: null });
 		const delivery = this.state.delivery;
 		if (delivery) {
 			// "sending" = dispatch still in flight: a double-tap lands here and must not alarm the user;
@@ -1103,7 +1127,7 @@ export class ChatController {
 		// Persist before dispatch: a reload while awaiting HTTP is ambiguous too.
 		try { localStorage.setItem(deliveryKey(id), JSON.stringify({ ...delivery, atts: savedAtts.map((a) => ({ ...a, url: "" })) })); }
 		catch { toast("无法保存发送状态，消息尚未发送，请检查浏览器存储", { kind: "error" }); return false; }
-		this.set({ delivery });
+		this.set({ delivery, ...(this.state.treeEdit ? { treeEdit: null } : {}) });
 		const opt: OptimisticMsg = { id: `o${++this.optSeq}`, text: prompt, imageUrls: savedAtts.filter((a) => a.isImage && a.url).map((a) => a.url) };
 		this.composer?.set("");
 		this.lastText = "";
@@ -1254,7 +1278,7 @@ export class ChatController {
 
 	/** Sibling versions of an entry (for the long-press menu). */
 	versionsFor(entryId: string): TreeVersions | null {
-		return treeVersions(this.state.transcript.items, this.state.leafId, entryId);
+		return treeVersions(this.state.transcript.items, this.state.leafId, entryId, this.combinedParents());
 	}
 
 	/**
@@ -1282,9 +1306,11 @@ export class ChatController {
 			const text = r.editorText?.trim() ? r.editorText : fallbackText;
 			// A user target rewinds past itself: the leaf lands on its parent.
 			// Set it now so the view refilters without waiting for /tree.
+			const nextLeafId = this.state.transcript.items.find((it) => it.id === entryId)?.parentId ?? null;
 			this.set({
 				treeEdit: { entryId, prevLeafId: this.state.leafId },
-				leafId: this.state.transcript.items.find((it) => it.id === entryId)?.parentId ?? null,
+				leafId: nextLeafId,
+				blocks: this.rebuild(this.state.transcript, nextLeafId),
 			});
 			this.composer?.set(text, true);
 			this.treeDirty = true;
@@ -1304,7 +1330,7 @@ export class ChatController {
 			await api("POST", `/sessions/${this.id}/navigate-tree`, { entryId });
 			if (this.disposed) return;
 			// The target entry becomes the leaf; fetchTree confirms afterwards.
-			this.set({ leafId: entryId, treeEdit: null });
+			this.set({ leafId: entryId, treeEdit: null, blocks: this.rebuild(this.state.transcript, entryId) });
 			this.treeDirty = true;
 			this.scheduleFetch(150);
 		} catch (e) {
@@ -1320,7 +1346,8 @@ export class ChatController {
 		if (edit.prevLeafId) {
 			try {
 				await api("POST", `/sessions/${this.id}/navigate-tree`, { entryId: edit.prevLeafId });
-				this.set({ leafId: edit.prevLeafId });
+				if (this.disposed) return;
+				this.set({ leafId: edit.prevLeafId, blocks: this.rebuild(this.state.transcript, edit.prevLeafId) });
 				this.treeDirty = true;
 				this.scheduleFetch(150);
 			} catch (e) {

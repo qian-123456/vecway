@@ -9,6 +9,7 @@ import { ActionTile } from "../../ui/ActionTile";
 import { ChatHeader } from "../chat/components/ChatHeader";
 import { ComposerCapsule, type ComposerApi } from "../chat/components/ComposerCapsule";
 import { useKeyboardOpen } from "../chat/components/ComposerToolbar";
+import { HeaderMenu } from "../chat/components/HeaderMenu";
 import { ModelThinkingSheet } from "../chat/components/ModelThinkingSheet";
 import type { ModelSource } from "../chat/components/useModelFacts";
 import { draftBook, queueComposerAction, queueFirstSend, type ComposerAction } from "../chat/lib/drafts";
@@ -20,6 +21,7 @@ import type { DirEntry } from "./tree";
 export function HomePage(_props: PageProps) {
 	const [newOpen, setNewOpen] = useState(false);
 	const [menuOpen, setMenuOpen] = useState(false);
+	const [toolMenu, setToolMenu] = useState(false);
 	const [plusOpen, setPlusOpen] = useState(false);
 	const [modelOpen, setModelOpen] = useState(false);
 	const [sending, setSending] = useState(false);
@@ -122,7 +124,13 @@ export function HomePage(_props: PageProps) {
 		try {
 			const id = await prepareDraft();
 			queueFirstSend(id, text);
-			apiRef.current?.clear();
+			const cur = apiRef.current?.get();
+			if (cur === value) {
+				apiRef.current?.clear();
+			} else if (cur !== undefined) {
+				const extra = cur.startsWith(value) ? cur.slice(value.length) : cur;
+				draftBook.stash(id, extra, []);
+			}
 			nav.replace(paths.chat(id));
 		} catch (e) {
 			toast(`创建会话失败：${errorMessage(e)}`, { kind: "error" });
@@ -159,6 +167,7 @@ export function HomePage(_props: PageProps) {
 			<ChatHeader
 				title="Vecway"
 				onMenu={() => setMenuOpen(true)}
+				onTools={() => setToolMenu(true)}
 			/>
 			<div className="m-kb-lift relative flex min-h-0 flex-1 flex-col justify-center px-6 pb-8">
 				<div className="text-center">
@@ -236,12 +245,13 @@ export function HomePage(_props: PageProps) {
 					<ActionTile icon={<PenLine size={24} />} label="草图" onClick={() => void openAction("sketch")} />
 				</div>
 				<div className="pt-3 pb-3">
-					<MenuRow icon={<FolderOpen size={22} />} label="在项目中工作" hint="选择项目目录" onClick={() => void openAction("workspace")} />
+					<MenuRow icon={<FolderOpen size={22} />} label="在项目中工作" hint="选择项目目录" onClick={() => { setPlusOpen(false); setDirectoryOpen(true); }} />
 					<MenuRow icon={<Target size={22} />} label="目标" hint="设定后会持续朝它推进" onClick={() => void openAction("goal")} />
 					<div className="flex min-h-13 items-center gap-4 py-1 pr-4 pl-5"><Lightbulb size={22} className="shrink-0 text-m-text-2" /><span className="flex-1 whitespace-nowrap text-m-md">规划模式</span><Switch label="规划模式" checked={planOn} disabled={sending} onChange={setPlanOn} /></div>
 				</div>
 			</BottomSheet>
 			<MenuSheet open={menuOpen} onClose={() => setMenuOpen(false)} onNewSession={() => setNewOpen(true)} />
+			<HeaderMenu open={toolMenu} onClose={() => setToolMenu(false)} resolveSessionId={ensureDraft} />
 			<NewSessionSheet open={newOpen} onClose={() => setNewOpen(false)} defaultCwd={directory?.path} />
 			<NewSessionSheet open={directoryOpen} onClose={() => setDirectoryOpen(false)} defaultCwd={directory?.path} onSelectDirectory={(dir) => {
 				if (dir.path !== directory?.path) { creating.current = null; appliedPlan.current = false; }

@@ -25,6 +25,8 @@ struct Mock {
     /// HTTP status the fake push service answers with.
     push_status: Mutex<u16>,
     voice_calls: Mutex<Vec<super::api::voice::AudioPayload>>,
+    cwd_override: Mutex<Option<String>>,
+    repo_root_override: Mutex<Option<String>>,
     voice_result: Mutex<Result<Value, (StatusCode, Value)>>,
 }
 
@@ -39,11 +41,14 @@ impl Backend for Mock {
             pending: Some(PendingKind::Question),
             archived,
             file: self.file.clone(),
-            cwd: std::path::Path::new(&self.file)
-                .parent()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned(),
+            cwd: self.cwd_override.lock().clone().unwrap_or_else(|| {
+                std::path::Path::new(&self.file)
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+            repo_root: self.repo_root_override.lock().clone(),
             ..Default::default()
         };
         vec![
@@ -170,6 +175,8 @@ fn harness() -> Harness {
             push_status: Mutex::new(201),
             voice_calls: Mutex::new(Vec::new()),
             voice_result: Mutex::new(Ok(json!({ "text": "受控转写" }))),
+            cwd_override: Mutex::new(None),
+            repo_root_override: Mutex::new(None),
         },
         db: Arc::new(parking_lot::Mutex::new(auth::test_db())),
         shutdown: rx,
@@ -2826,4 +2833,250 @@ fn pairing_url_includes_lan_tls_and_fingerprint_for_tunnel_target_and_trims_slas
     assert!(app_url.contains("&lt=https%3A%2F%2F192.168.1.10%3A7790"));
     assert!(app_url.contains("&fp=AA%3ABB%3ACC"));
     assert!(app_url.contains("&tn=https%3A%2F%2Fdemo.trycloudflare.com"));
+}
+
+#[tokio::test]
+async fn transcript_preserves_parent_chain_across_dropped_hidden_items() {
+    let h = harness();
+    let cookie = pair(&h).await;
+    let lines = [
+        json!({
+            "id": "u1",
+            "parentId": null,
+            "type": "message",
+            "message": { "role": "user", "content": [{ "type": "text", "text": "hi" }] }
+        }),
+        json!({
+            "id": "h-custom-msg",
+            "parentId": "u1",
+            "type": "custom_message",
+            "customType": "context",
+            "content": "hidden custom message",
+            "display": false
+        }),
+        json!({
+            "id": "h-digest",
+            "parentId": "h-custom-msg",
+            "type": "custom",
+            "customType": "system-prompt-digest",
+            "data": { "hash": "abc" }
+        }),
+        json!({
+            "id": "a1",
+            "parentId": "h-digest",
+            "type": "message",
+            "message": { "role": "assistant", "content": [{ "type": "text", "text": "hello!" }] }
+        }),
+    ]
+    .into_iter()
+    .map(|v| format!("{v}\n"))
+    .collect::<String>();
+    std::fs::write(&h.ctx.backend.file, lines).unwrap();
+
+    let (status, _, body) = call(&h, get("/api/sessions/a/transcript", Some(&cookie))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "hidden items must stay omitted: {body}");
+    assert_eq!(items[0]["id"], "u1");
+    assert_eq!(items[1]["id"], "a1");
+    assert_eq!(
+        items[1]["parentId"].as_str(),
+        Some("u1"),
+        "assistant parentId must bypass dropped hidden entries: {body}"
+    );
+}
+
+#[tokio::test]
+async fn draft_handoff_cancellation_releases_claim_for_retry() {
+    let h = harness();
+    let draft = super::api::draft::create(
+        h.dir.to_string_lossy().into_owned(),
+        crate::contracts::SpaceMode::Code,
+        None,
+        None,
+    )
+    .await;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_never_tx, never_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let mut fut = Box::pin(super::api::draft::handoff(
+        &h.ctx,
+        &draft.session_id,
+        |_real, _sel| async move {
+            let _ = started_tx.send(());
+            let _ = never_rx.await;
+            Ok::<_, server::ApiError>(())
+        },
+    ));
+    tokio::select! {
+        _ = &mut fut => panic!("handoff should still be pending"),
+        _ = started_rx => {}
+    }
+    let conflict = super::api::draft::handoff(&h.ctx, &draft.session_id, |_real, _sel| async {
+        Ok::<_, server::ApiError>("dup")
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(conflict.0, StatusCode::CONFLICT);
+    // Dropping the in-flight `handoff` future must release the `sending` claim.
+    drop(fut);
+
+    let retried = super::api::draft::handoff(&h.ctx, &draft.session_id, |_real, _sel| async {
+        Ok::<_, server::ApiError>("ok")
+    })
+    .await
+    .expect("retry after cancelled handoff must not fail with 409 CONFLICT");
+    assert_eq!(retried, Some(("mock-real-1".into(), "ok")));
+}
+
+#[tokio::test]
+async fn git_actions_work_for_session_rooted_in_repo_subdirectory() {
+    use crate::git::cmd::git_ok;
+
+    let h = harness();
+    let cookie = pair(&h).await;
+    let repo = h.dir.join("repo");
+    let subdir = repo.join("packages").join("app");
+    std::fs::create_dir_all(&subdir).unwrap();
+    let g = |args: &[&str]| git_ok(&repo, args).unwrap();
+    g(&["init", "-q"]);
+    g(&["config", "user.name", "t"]);
+    g(&["config", "user.email", "t@example.com"]);
+    g(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(repo.join("root.txt"), "root\n").unwrap();
+    std::fs::write(subdir.join("file.txt"), "one\n").unwrap();
+    g(&["add", "-A"]);
+    g(&["commit", "-q", "-m", "init"]);
+    std::fs::write(subdir.join("file.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(repo.join("root.txt"), "root\nchanged\n").unwrap();
+
+    // 1. Session in subdirectory with `repo_root` pointing to the repository root.
+    *h.ctx.backend.cwd_override.lock() = Some(subdir.to_string_lossy().into_owned());
+    *h.ctx.backend.repo_root_override.lock() = Some(repo.to_string_lossy().into_owned());
+
+    let (s, _, body) = call(&h, get("/api/sessions/a/git/status", Some(&cookie))).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let st: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(st["isRepo"], true);
+
+    let (s, _, body) = call(
+        &h,
+        post(
+            "/api/sessions/a/git/stage",
+            &cookie,
+            json!({ "paths": ["packages/app/file.txt"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    let (s, _, body) = call(
+        &h,
+        get(
+            "/api/sessions/a/git/diff?path=packages/app/file.txt&staged=true",
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let staged_diff: Value = serde_json::from_str(&body).unwrap();
+    assert!(staged_diff["diff"].as_str().unwrap().contains("+two"));
+
+    let (s, _, body) = call(
+        &h,
+        post(
+            "/api/sessions/a/git/unstage",
+            &cookie,
+            json!({ "paths": ["packages/app/file.txt"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    let (s, _, body) = call(
+        &h,
+        get(
+            "/api/sessions/a/git/diff?path=packages/app/file.txt&staged=false",
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let unstaged_diff: Value = serde_json::from_str(&body).unwrap();
+    assert!(unstaged_diff["diff"].as_str().unwrap().contains("+two"));
+
+    let (s, _, body) = call(
+        &h,
+        post(
+            "/api/sessions/a/git/stage",
+            &cookie,
+            json!({ "paths": ["packages/app/file.txt"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    let (s, _, body) = call(
+        &h,
+        post(
+            "/api/sessions/a/git/commit",
+            &cookie,
+            json!({ "message": "update subdir file" }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(
+        g(&["log", "-1", "--format=%s"]).trim(),
+        "update subdir file"
+    );
+
+    // 2. Without `repo_root`, paths inside `sc.cwd` succeed while paths outside `sc.roots` are forbidden.
+    *h.ctx.backend.repo_root_override.lock() = None;
+    std::fs::write(subdir.join("file.txt"), "one\ntwo\nthree\n").unwrap();
+
+    let (s, _, body) = call(&h, get("/api/sessions/a/git/status", Some(&cookie))).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let filtered: Value = serde_json::from_str(&body).unwrap();
+    let paths: Vec<&str> = filtered["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.contains(&"packages/app/file.txt"));
+    assert!(!paths.contains(&"root.txt"));
+
+    let (s, _, body) = call(
+        &h,
+        post(
+            "/api/sessions/a/git/stage",
+            &cookie,
+            json!({ "paths": ["packages/app/file.txt"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    let (s, _, _) = call(
+        &h,
+        post(
+            "/api/sessions/a/git/stage",
+            &cookie,
+            json!({ "paths": ["root.txt"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    let (s, _, _) = call(
+        &h,
+        get(
+            "/api/sessions/a/git/diff?path=root.txt&staged=false",
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
 }

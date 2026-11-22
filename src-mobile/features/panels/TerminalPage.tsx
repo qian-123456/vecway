@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ApiError, api, apiUrl, errorMessage } from "../../core/api";
 import { createEventSource } from "../../core/nativeBridge";
-import type { EventSourceLike } from "../../core/sse";
+import { events, type EventSourceLike } from "../../core/sse";
 import type { PageProps } from "../../core/nav";
 import { isUnauthorized, useConnection } from "../../core/stores/connection";
 import { Button, EmptyState, IconButton, PageHeader, confirm, toast } from "../../ui";
@@ -148,11 +148,23 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 			setPhase("exited");
 			setDetail(code !== null ? `退出码 ${code}` : "");
 		});
-		es.onerror = () => {
+		es.onerror = (ev) => {
 			if (source.current !== es || isUnauthorized()) return;
 			if (exited.current || !alive.current) return;
 			es.close();
 			if (source.current === es) source.current = null;
+			if (ev instanceof Error && ev.message === "channel_switched") {
+				retries.current = 0;
+				window.clearTimeout(retryTimer.current);
+				if (!activeRef.current || document.visibilityState === "hidden") {
+					setPhase("dropped");
+					return;
+				}
+				setPhase("reconnecting");
+				setDetail("");
+				attach();
+				return;
+			}
 			retries.current += 1;
 			if (!activeRef.current || document.visibilityState === "hidden") { setPhase("dropped"); return; }
 			const delay = reconnectDelay(retries.current);
@@ -328,6 +340,15 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 				if (activeRef.current && termId.current && !exited.current && !source.current) { retries.current = 0; attach(); }
 			};
 			document.addEventListener("visibilitychange", onVisible);
+			const offResync = events.on("resync", () => {
+				if (!alive.current || isUnauthorized() || exited.current) return;
+				if (!activeRef.current || !termId.current || document.visibilityState === "hidden") return;
+				if (!source.current || source.current.readyState === 2) {
+					window.clearTimeout(retryTimer.current);
+					retries.current = 0;
+					attach();
+				}
+			});
 			const schemeObserver = new MutationObserver(() => {
 				const c = terminalColors();
 				t.options.theme = c;
@@ -336,6 +357,7 @@ function TerminalPane({ sessionId, tabId, active, onClosed }: { sessionId: strin
 			schemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-theme"] });
 			setBg(terminalColors().background);
 			cleanup = () => {
+				offResync();
 				document.removeEventListener("visibilitychange", onVisible);
 				schemeObserver.disconnect();
 				ro.disconnect();
