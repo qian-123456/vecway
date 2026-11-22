@@ -47,7 +47,7 @@ export function ChatHeader({
 					aria-label={ariaLabel ?? (displaySubtitle ? `${displayTitle}，${displaySubtitle}` : displayTitle)}
 					onClick={onTitleClick ?? onModel}
 					disabled={!clickable}
-					className="flex min-h-11 min-w-0 max-w-full flex-col items-start justify-center rounded-m-md px-2 py-1 text-left transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover disabled:cursor-default disabled:active:bg-transparent"
+					className="m-press flex min-h-11 min-w-0 max-w-full flex-col items-start justify-center rounded-m-md px-2 py-1 text-left active:bg-m-surface-hover disabled:cursor-default disabled:active:bg-transparent"
 				>
 					<span className="flex max-w-full items-center gap-1">
 						<span className="min-w-0 truncate text-m-sm font-semibold tracking-[-0.01em] whitespace-nowrap text-m-text">

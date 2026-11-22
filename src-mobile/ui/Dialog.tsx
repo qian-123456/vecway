@@ -29,7 +29,7 @@ export function Dialog({
 			<div
 				role="dialog"
 				aria-modal="true"
-				className={`relative flex max-h-full w-full max-w-sm flex-col overflow-hidden rounded-m-xl bg-m-bg-elev text-m-text shadow-m-pop transition duration-180 ease-m ${visible ? "scale-100 opacity-100" : "scale-95 opacity-0"}`}
+				className={`relative flex max-h-full w-full max-w-sm flex-col overflow-hidden rounded-m-xl border border-m-border bg-m-bg-elev text-m-text shadow-m-pop transition-[opacity,transform] duration-180 ease-m motion-reduce:transform-none ${visible ? "scale-100 opacity-100" : "scale-[0.96] opacity-0"}`}
 			>
 				<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pt-6 pb-2">
 					{title != null && <div className="mb-2 text-m-lg font-medium break-words">{title}</div>}
@@ -105,12 +105,12 @@ export function DialogHost() {
 			title={shown.title}
 			actions={
 				<>
-					<button type="button" className={`${BTN} text-m-accent active:bg-m-surface-hover`} onClick={() => settle(shown.id, false)}>
+					<button type="button" className={`${BTN} m-press text-m-accent active:bg-m-surface-hover`} onClick={() => settle(shown.id, false)}>
 						{shown.cancelText ?? "取消"}
 					</button>
 					<button
 						type="button"
-						className={`${BTN} active:opacity-85 ${shown.danger ? "bg-m-danger-bg text-m-danger" : "bg-m-text text-m-bg"}`}
+						className={`${BTN} m-press active:opacity-85 ${shown.danger ? "bg-m-danger-bg text-m-danger" : "bg-m-text text-m-bg"}`}
 						onClick={() => settle(shown.id, true)}
 					>
 						{shown.confirmText ?? "确定"}

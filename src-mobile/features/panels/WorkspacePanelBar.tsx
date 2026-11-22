@@ -29,7 +29,7 @@ export function WorkspacePanelBar({ sessionId, current }: { sessionId: string; c
 							event.preventDefault();
 							if (current !== panel.current) nav.push(panel.to(sessionId));
 						}}
-						className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center whitespace-nowrap rounded-m-pill px-3 text-m-sm font-medium active:bg-m-surface-2 ${current === panel.current ? "bg-m-accent-soft text-m-accent-soft-text" : "text-m-text-2"}`}
+						className={`m-press inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center whitespace-nowrap rounded-m-pill px-3 text-m-sm font-medium active:bg-m-surface-2 ${current === panel.current ? "bg-m-accent-soft text-m-accent-soft-text" : "text-m-text-2"}`}
 					>
 						{panel.label}
 					</a>

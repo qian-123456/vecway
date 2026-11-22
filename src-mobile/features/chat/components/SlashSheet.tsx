@@ -59,7 +59,7 @@ export function SlashPopup({ sessionId, query, onPick }: { sessionId: string; qu
 	const groups = useMemo(() => (cmds ? groupCommands(filterCommands(cmds, query)) : []), [cmds, query]);
 	return (
 		<div
-			className="absolute inset-x-4 bottom-full z-(--z-banner) mb-2 max-h-[40vh] overflow-y-auto overscroll-contain rounded-m-lg bg-m-bg-elev py-1 shadow-m-pop"
+			className="m-popover-surface absolute inset-x-4 bottom-full z-(--z-banner) mb-2 max-h-[40vh] overflow-y-auto overscroll-contain rounded-m-lg border border-m-border bg-m-bg-elev py-1"
 			// Keep the keyboard open while tapping a row.
 			onPointerDown={(e) => e.preventDefault()}
 		>

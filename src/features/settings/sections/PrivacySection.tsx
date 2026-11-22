@@ -2,6 +2,7 @@
  * values (placeholders sent upstream instead of values) and the omp privacy keys. */
 import { Edit2, Eye, EyeOff, Plus, ShieldCheck, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { tNow, useT } from "../../../stores/language";
 import { isComposing, useEscapeKey } from "../../../lib/hooks";
 import type { SecretEntry, SecretEntryPatch } from "../../../lib/contracts";
@@ -188,9 +189,9 @@ function AddSecretDialog({
 		}
 	};
 
-	return (
+	return createPortal(
 		<div
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-xs animate-in fade-in duration-150"
+			className="apple-modal-backdrop fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-md"
 			onMouseDown={(e) => {
 				backdropPressedRef.current = e.target === e.currentTarget;
 			}}
@@ -203,7 +204,7 @@ function AddSecretDialog({
 				role="dialog"
 				aria-modal="true"
 				aria-label={t("settingsSectionsPrivacy.privacy.addTitle")}
-				className="w-[440px] max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--border-divider)] bg-[var(--bg-panel)] p-5 shadow-apple-modal text-[var(--text)] transition-all animate-in zoom-in-95 duration-150"
+				className="apple-modal-panel apple-modal-surface w-[440px] max-w-[calc(100vw-2rem)] rounded-2xl hairline p-5 shadow-apple-modal text-[var(--text)]"
 				onKeyDown={(e) => {
 					if (e.key === "Enter" && !e.shiftKey && !isComposing(e) && value.trim() && !busy) {
 						e.preventDefault();
@@ -260,7 +261,8 @@ function AddSecretDialog({
 					</Button>
 				</div>
 			</div>
-		</div>
+		</div>,
+		document.body,
 	);
 }
 
@@ -304,9 +306,9 @@ function EditSecretDialog({
 		}
 	};
 
-	return (
+	return createPortal(
 		<div
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-xs animate-in fade-in duration-150"
+			className="apple-modal-backdrop fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-md"
 			onMouseDown={(e) => {
 				backdropPressedRef.current = e.target === e.currentTarget;
 			}}
@@ -319,7 +321,7 @@ function EditSecretDialog({
 				role="dialog"
 				aria-modal="true"
 				aria-label={t("settingsSectionsPrivacy.privacy.editTitle")}
-				className="w-[440px] max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--border-divider)] bg-[var(--bg-panel)] p-5 shadow-apple-modal text-[var(--text)] transition-all animate-in zoom-in-95 duration-150"
+				className="apple-modal-panel apple-modal-surface w-[440px] max-w-[calc(100vw-2rem)] rounded-2xl hairline p-5 shadow-apple-modal text-[var(--text)]"
 				onKeyDown={(e) => {
 					if (e.key === "Enter" && !e.shiftKey && !isComposing(e) && !busy) {
 						e.preventDefault();
@@ -376,7 +378,8 @@ function EditSecretDialog({
 					</Button>
 				</div>
 			</div>
-		</div>
+		</div>,
+		document.body,
 	);
 }
 

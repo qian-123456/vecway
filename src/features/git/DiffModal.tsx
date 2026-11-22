@@ -514,7 +514,7 @@ export function DiffModal({
 		<div
 			style={{ zIndex: Z_LAYER.modal }}
 			className={clsx(
-				"fixed inset-0 flex items-center justify-center bg-[var(--overlay)] backdrop-blur-md p-3",
+				"apple-modal-backdrop fixed inset-0 flex items-center justify-center bg-[var(--overlay)] backdrop-blur-md p-3",
 				// Overlay title bar: keep the dialog below the macOS traffic lights.
 				isMac && "pt-10",
 			)}
@@ -524,7 +524,7 @@ export function DiffModal({
 		>
 			<div
 				ref={dialogRef}
-				className="flex h-full w-full flex-col overflow-hidden rounded-2xl bg-[var(--bg-panel)] shadow-apple-modal hairline text-neutral-200"
+				className="apple-modal-panel apple-modal-surface flex h-full w-full flex-col overflow-hidden rounded-2xl shadow-apple-modal hairline text-neutral-200"
 				onMouseDown={(e) => e.stopPropagation()}
 			>
 				{/* Top Bar */}

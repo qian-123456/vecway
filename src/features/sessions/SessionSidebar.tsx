@@ -1320,7 +1320,7 @@ export function SessionSidebar() {
 			onClick={() => {
 				setModeMenuOpen((v) => !v);
 			}}
-			className="group relative flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-left transition-colors hover:bg-[var(--bg-hover)]/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+			className="group relative flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-left transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] hover:bg-[var(--bg-hover)]/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 			title={t("sidebar.modeTooltip", { mode: modeMeta.label })}
 		>
 			<ModeSwitcherIcon size={16} className="shrink-0 text-indigo-400" />
@@ -1331,7 +1331,7 @@ export function SessionSidebar() {
 				size={14}
 				strokeWidth={2}
 				className={clsx(
-					"shrink-0 text-neutral-500 transition-transform group-hover:text-neutral-300",
+					"shrink-0 text-neutral-500 transition-transform duration-150 ease-[var(--ease-out)] group-hover:text-neutral-300",
 					modeMenuOpen && "rotate-180 text-neutral-300",
 				)}
 			/>
@@ -1347,7 +1347,7 @@ export function SessionSidebar() {
 			aria-label={t("sidebar.inbox")}
 			title={t("sidebar.inbox")}
 			className={clsx(
-				"relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
+				"relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
 				centerView === "inbox"
 					? "bg-[var(--bg-active-fill)] text-indigo-400"
 					: "text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200",
@@ -1367,7 +1367,7 @@ export function SessionSidebar() {
 			onClick={() => useSearchDialog.getState().openDialog()}
 			aria-label={t("common.search")}
 			title={`${t("sidebar.searchSessions")} (⌘F)`}
-			className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+			className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 		>
 			<Search size={16} strokeWidth={1.5} />
 		</button>
@@ -1376,7 +1376,7 @@ export function SessionSidebar() {
 		<button
 			type="button"
 			onClick={toggleSidebar}
-			className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+			className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 			title={t("sidebar.collapseSidebar", { shortcut: "⌘B" })}
 		>
 			<PanelLeftClose size={16} strokeWidth={1.5} />
@@ -1446,7 +1446,7 @@ export function SessionSidebar() {
 						type="button"
 						onClick={() => void startNewSession()}
 						className={clsx(
-							"group relative flex h-9.5 w-full items-center justify-center gap-1.5 rounded-lg text-[13.5px] font-semibold transition-all active:scale-[0.985] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
+							"group relative flex h-9.5 w-full items-center justify-center gap-1.5 rounded-lg text-[13.5px] font-semibold transition-[background-color,border-color,box-shadow,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
 							isDark
 								? "border border-white/[0.10] bg-white/[0.07] text-white shadow-xs hover:border-white/[0.18] hover:bg-white/[0.12]"
 								: "border border-black/[0.08] bg-white text-[var(--text)] shadow-[0_1px_3px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] hover:bg-white hover:border-black/[0.14] hover:shadow-[0_2px_6px_rgba(0,0,0,0.09),0_1px_3px_rgba(0,0,0,0.04)]",
@@ -1558,7 +1558,7 @@ export function SessionSidebar() {
 						onClose={() => setModeMenuOpen(false)}
 						triggerRef={modeSwitcherRef}
 					>
-						<div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-500 whitespace-nowrap">
+						<div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.02em] text-neutral-500 whitespace-nowrap">
 							{t("sidebar.switchMode")}
 						</div>
 						{SPACE_MODES.map((mode) => {
@@ -1650,7 +1650,7 @@ export function SessionSidebar() {
 								setFilterPopoverOpen((v) => !v);
 							}}
 							className={clsx(
-								"inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
+								"inline-flex h-6 w-6 items-center justify-center rounded-md transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
 								activeFilterCount > 0 || filterPopoverOpen
 									? "bg-[var(--accent)]/10 text-[var(--accent)]"
 									: "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]",
@@ -1673,7 +1673,7 @@ export function SessionSidebar() {
 								setAddProjectMenuOpen((v) => !v);
 							}}
 							className={clsx(
-								"inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
+								"inline-flex h-6 w-6 items-center justify-center rounded-md transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
 								addProjectMenuOpen
 									? "bg-[var(--bg-hover)] text-[var(--text)]"
 									: "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]",
@@ -1794,7 +1794,7 @@ export function SessionSidebar() {
 										{/* 1. Structured Session Groups (分组与新建分组放在所有会话上方) */}
 										<div className="px-2 mb-2">
 											<div className="mx-1 mb-1 flex items-center justify-between rounded-md py-1">
-												<span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)]">
+												<span className="text-[10px] font-semibold uppercase tracking-[0.02em] text-[var(--text-dim)]">
 													{t("sidebar.groups")} {modeGroups.length > 0 && `(${modeGroups.length})`}
 												</span>
 												<button
@@ -1805,7 +1805,7 @@ export function SessionSidebar() {
 														setNewGroupOpen(true);
 													}}
 													title={t("sidebar.newGroup")}
-													className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] shrink-0 transition-all duration-150 ease-out focus:opacity-100 focus-visible:opacity-100"
+													className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] shrink-0 transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus:opacity-100 focus-visible:opacity-100"
 												>
 													<Plus size={13} />
 												</button>
@@ -1877,7 +1877,7 @@ export function SessionSidebar() {
 																			}}
 																			title={t("sidebar.createSessionInGroup")}
 																			disabled={!globalWs || creatingKey !== null}
-																			className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] disabled:opacity-40 shrink-0 transition-all duration-150 ease-out focus:opacity-100 focus-visible:opacity-100"
+																			className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] disabled:opacity-40 shrink-0 transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus:opacity-100 focus-visible:opacity-100"
 																		>
 																			{grpCreating ? (
 																				<Loader2 size={13} className="animate-spin" />
@@ -1898,7 +1898,7 @@ export function SessionSidebar() {
 																				);
 																			}}
 																			title={t("sidebar.groupActions")}
-																			className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] shrink-0 transition-all duration-150 ease-out focus:opacity-100 focus-visible:opacity-100"
+																			className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] shrink-0 transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus:opacity-100 focus-visible:opacity-100"
 																		>
 																			<MoreHorizontal size={13} />
 																		</button>
@@ -2013,7 +2013,7 @@ export function SessionSidebar() {
 																			className="text-[var(--text-dim)] group-hover/chunk:text-[var(--text)] shrink-0 transition-transform"
 																		/>
 																	)}
-																	<span className="truncate uppercase tracking-wider text-[10px]">
+																	<span className="truncate uppercase tracking-[0.02em] text-[10px]">
 																		{chunk.label}
 																	</span>
 																</span>
@@ -2136,7 +2136,7 @@ export function SessionSidebar() {
 																	: t("sidebar.newSessionTooltip")
 															}
 															disabled={creatingKey !== null}
-															className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] disabled:opacity-40 shrink-0 transition-all duration-150 ease-out focus:opacity-100 focus-visible:opacity-100"
+															className="rounded p-1 text-[var(--text-dim)] opacity-50 hover:opacity-100 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] disabled:opacity-40 shrink-0 transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus:opacity-100 focus-visible:opacity-100"
 														>
 															{isCreatingHeader ? (
 																<Loader2 size={13} className="animate-spin" />
@@ -2356,7 +2356,7 @@ export function SessionSidebar() {
 																onClick={() =>
 																	setSectionCount(dirMoreKey, visibleDirCount + UNASSIGNED_DIR_STEP)
 																}
-																className="flex items-center gap-1 rounded-md px-2 py-1 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+																className="flex items-center gap-1 rounded-md px-2 py-1 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 															>
 																<Plus size={11} className="shrink-0" />
 																<span>
@@ -2371,7 +2371,7 @@ export function SessionSidebar() {
 															<button
 																type="button"
 																onClick={() => setSectionCount(dirMoreKey, UNASSIGNED_DIR_LIMIT)}
-																className="flex items-center gap-0.5 rounded-md px-2 py-1 text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+																className="flex items-center gap-0.5 rounded-md px-2 py-1 text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 															>
 																<ChevronDown size={11} className="shrink-0 rotate-180" />
 																<span>{t("sidebar.collapse")}</span>
@@ -2392,7 +2392,7 @@ export function SessionSidebar() {
 																grouped.unassigned,
 															)
 														}
-														className="flex items-center gap-1 rounded-md px-2 py-1 text-[var(--text-muted)] hover:text-amber-300 hover:bg-[var(--bg-hover)] transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+														className="flex items-center gap-1 rounded-md px-2 py-1 text-[var(--text-muted)] hover:text-amber-300 hover:bg-[var(--bg-hover)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 													>
 														<Archive size={11} className="shrink-0" />
 														<span className="whitespace-nowrap">{t("sidebar.archiveAll")} ({grouped.unassigned.length})</span>
@@ -2403,7 +2403,7 @@ export function SessionSidebar() {
 														onClick={() =>
 															requestAssign(grouped.unassigned.map((s) => s.id))
 														}
-														className="flex items-center gap-1 rounded-md px-2 py-1 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+														className="flex items-center gap-1 rounded-md px-2 py-1 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 													>
 														<FolderInput size={11} className="shrink-0" />
 														<span className="whitespace-nowrap">{t("sidebar.assignToWorkspace")}</span>
@@ -2590,10 +2590,10 @@ export function SessionSidebar() {
 						title={t("sidebar.updateAvailableTooltip", {
 							version: appUpdateInfo?.version ?? "",
 						})}
-						className="group/upd relative flex h-5 w-5 items-center justify-center overflow-hidden rounded-[5px] bg-[var(--accent)] text-[var(--bg)] shadow-xs transition-all duration-200 ease-[cubic-bezier(0.25,1,0.5,1)] hover:w-[48px] hover:bg-[var(--accent-hover)] active:scale-95 shrink-0 px-1"
+						className="group/upd relative flex h-5 w-5 items-center justify-center overflow-hidden rounded-[5px] bg-[var(--accent)] text-[var(--bg)] shadow-xs transition-[width,background-color,transform] duration-200 ease-[var(--ease-spring)] hover:w-[48px] hover:bg-[var(--accent-hover)] active:scale-[0.97] shrink-0 px-1"
 					>
 						<ArrowDownToLine size={11} strokeWidth={2} className="shrink-0" />
-						<span className="max-w-0 overflow-hidden text-[10px] font-semibold leading-none whitespace-nowrap opacity-0 transition-all duration-200 ease-[cubic-bezier(0.25,1,0.5,1)] group-hover/upd:max-w-[28px] group-hover/upd:opacity-100 group-hover/upd:ml-1">
+						<span className="max-w-0 overflow-hidden text-[10px] font-semibold leading-none whitespace-nowrap opacity-0 transition-[max-width,opacity,margin] duration-200 ease-[var(--ease-spring)] group-hover/upd:max-w-[28px] group-hover/upd:opacity-100 group-hover/upd:ml-1">
 							{t("sidebar.updateAction")}
 						</span>
 					</button>
@@ -2604,7 +2604,7 @@ export function SessionSidebar() {
 					onClick={() => openSettingsTarget("quota")}
 					aria-label={t("sidebar.quota")}
 					title={t("sidebar.quota")}
-					className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+					className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 				>
 					<Gauge size={15} strokeWidth={1.75} />
 				</button>
@@ -2626,7 +2626,7 @@ export function SessionSidebar() {
 						onClose={() => setPlusMenu(null)}
 						triggerRef={plusTriggerRef}
 					>
-						<div className="px-3 py-1 text-[10px] text-neutral-500 font-semibold uppercase tracking-wider whitespace-nowrap">
+						<div className="px-3 py-1 text-[10px] text-neutral-500 font-semibold uppercase tracking-[0.02em] whitespace-nowrap">
 							{t("sidebar.newSession")}
 						</div>
 						<button
@@ -2908,7 +2908,7 @@ export function SessionList({
 						<button
 							type="button"
 							onClick={() => onSetCount(moreKey, visibleCount + step)}
-							className="flex items-center gap-1 rounded-md px-2 py-1 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+							className="flex items-center gap-1 rounded-md px-2 py-1 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 						>
 							<Plus size={11} className="shrink-0" />
 							<span>{t("sidebar.expandCount", { count: expandable })}</span>
@@ -2921,7 +2921,7 @@ export function SessionList({
 						<button
 							type="button"
 							onClick={() => onSetCount(moreKey, limit)}
-							className="flex items-center gap-0.5 rounded-md px-2 py-1 text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+							className="flex items-center gap-0.5 rounded-md px-2 py-1 text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 						>
 							<ChevronDown size={11} className="shrink-0 rotate-180" />
 							<span>{t("sidebar.collapse")}</span>
@@ -3091,7 +3091,7 @@ function CollapsibleSubgroup({
 									e.stopPropagation();
 									onCreateSession(ws, sub.createCwd!);
 								}}
-								className="shrink-0 rounded p-1 text-[var(--text-muted)] opacity-55 hover:opacity-100 transition-all hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] disabled:opacity-40 focus-visible:opacity-100"
+								className="shrink-0 rounded p-1 text-[var(--text-muted)] opacity-55 hover:opacity-100 transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] disabled:opacity-40 focus-visible:opacity-100"
 								title={t("sidebar.createSessionInSubgroup")}
 							>
 								{isCreatingSubgroup ? (
@@ -3109,7 +3109,7 @@ function CollapsibleSubgroup({
 									e.stopPropagation();
 									onBatchArchive();
 								}}
-								className="shrink-0 rounded p-0.5 text-[var(--text-dim)] opacity-50 hover:opacity-100 transition-all hover:bg-neutral-700/60 hover:text-amber-300 focus-visible:opacity-100"
+								className="shrink-0 rounded p-0.5 text-[var(--text-dim)] opacity-50 hover:opacity-100 transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] hover:bg-neutral-700/60 hover:text-amber-300 focus-visible:opacity-100"
 								title={t("sidebar.archiveSubgroupAll")}
 							>
 								<Archive size={11} />
@@ -3218,7 +3218,7 @@ function DeletedWorktreesFolder({
 							e.stopPropagation();
 							void onBatchArchive(t("sidebar.cleanedWorktrees"), allDeleted);
 						}}
-						className="mr-1 shrink-0 rounded p-0.5 text-[var(--text-dim)] opacity-50 hover:opacity-100 transition-all hover:bg-neutral-700/60 hover:text-amber-300 focus-visible:opacity-100"
+						className="mr-1 shrink-0 rounded p-0.5 text-[var(--text-dim)] opacity-50 hover:opacity-100 transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] hover:bg-neutral-700/60 hover:text-amber-300 focus-visible:opacity-100"
 						title={t("sidebar.archiveCleanedWorktreesAll")}
 					>
 						<Archive size={11} />
@@ -3254,7 +3254,7 @@ function DeletedWorktreesFolder({
 									onClick={() =>
 										onSetCount(wtMoreKey, visibleSubgroupsCount + DELETED_WT_STEP)
 									}
-									className="flex items-center gap-1 rounded-md px-2 py-1 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+									className="flex items-center gap-1 rounded-md px-2 py-1 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 								>
 									<Plus size={11} className="shrink-0" />
 									<span>
@@ -3269,7 +3269,7 @@ function DeletedWorktreesFolder({
 								<button
 									type="button"
 									onClick={() => onSetCount(wtMoreKey, DELETED_WT_LIMIT)}
-									className="flex items-center gap-0.5 rounded-md px-2 py-1 text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+									className="flex items-center gap-0.5 rounded-md px-2 py-1 text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 								>
 									<ChevronDown size={11} className="shrink-0 rotate-180" />
 									<span>{t("sidebar.collapse")}</span>
@@ -3454,7 +3454,7 @@ function UnassignedDirSubgroup({
 								dismissHover();
 								onArchive();
 							}}
-							className="rounded p-0.5 text-[var(--text-dim)] opacity-60 hover:opacity-100 hover:bg-neutral-700/60 hover:text-amber-300 transition-all"
+							className="rounded p-0.5 text-[var(--text-dim)] opacity-60 hover:opacity-100 hover:bg-neutral-700/60 hover:text-amber-300 transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]"
 							title={t("sidebar.archiveDirAll")}
 						>
 							<Archive size={11} />

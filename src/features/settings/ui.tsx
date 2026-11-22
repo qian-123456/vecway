@@ -39,7 +39,7 @@ export function SectionHeader({
 		<div>
 			<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
 				<div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-					<h2 className="text-[18px] font-semibold leading-7 tracking-[-0.02em] text-[var(--text)]">{title}</h2>
+					<h2 className="text-[18px] font-semibold leading-7 tracking-[-0.022em] text-[var(--text)]">{title}</h2>
 					{aside && <span className="whitespace-nowrap text-xs text-[var(--text-dim)]">{aside}</span>}
 				</div>
 				{actions && <div className="flex max-w-full shrink-0 flex-wrap items-center gap-2">{actions}</div>}
@@ -83,7 +83,7 @@ export function SettingsCard({
 				<div className="px-1">
 					{hasHeading && (
 						<div className="flex items-baseline gap-2">
-							<h3 className="text-[13px] font-semibold text-[var(--text)]">{title}</h3>
+							<h3 className="text-[13px] font-semibold tracking-[-0.01em] text-[var(--text)]">{title}</h3>
 							{aside && <span className="text-[11px] text-[var(--text-dim)]">{aside}</span>}
 						</div>
 					)}
@@ -160,9 +160,9 @@ export function SettingRow({
 					: undefined
 			}
 			className={clsx(
-				"px-4 py-3 transition-colors first:rounded-t-xl last:rounded-b-xl",
+				"px-4 py-3 transition-[background-color] duration-150 ease-[var(--ease-out)] first:rounded-t-xl last:rounded-b-xl",
 				clickable &&
-					"group cursor-pointer hover:bg-[var(--bg-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color-mix(in_srgb,var(--accent)_35%,transparent)]",
+					"group cursor-pointer hover:bg-[var(--bg-hover)] active:bg-[var(--bg-active-fill)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color-mix(in_srgb,var(--accent)_35%,transparent)]",
 			)}
 		>
 			<div className={clsx("flex", stacked ? "flex-col gap-2" : "flex-wrap items-center justify-between gap-x-4 gap-y-2")}>
@@ -323,7 +323,7 @@ export function SaveIndicator({
 // ── Buffered input ───────────────────────────────────────────────────
 
 export const INPUT_CLASS =
-	"rounded-lg hairline bg-[var(--well-bg)] px-3 py-1.5 text-xs text-[var(--text)] placeholder:text-[var(--text-muted)] focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)] focus:outline-none transition-all";
+	"rounded-lg hairline bg-[var(--well-bg)] px-3 py-1.5 text-xs text-[var(--text)] placeholder:text-[var(--text-muted)] transition-[border-color,background-color,box-shadow] duration-150 ease-[var(--ease-out)] focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)] focus:outline-none";
 
 export interface CommitInputProps {
 	/** Committed value from the store; the draft resyncs when it changes. */
@@ -477,7 +477,7 @@ export function normalizeHours(raw: string): string {
 }
 /** Shared button chrome; `Button` and the legacy class constants compose from these. */
 const BUTTON_BASE =
-	"inline-flex items-center justify-center gap-1.5 rounded-lg transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--accent)_45%,transparent)] disabled:opacity-50 disabled:pointer-events-none";
+	"inline-flex items-center justify-center gap-1.5 rounded-lg transition-[background-color,color,border-color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--accent)_45%,transparent)] disabled:opacity-50 disabled:pointer-events-none";
 
 const BUTTON_VARIANT: Record<ButtonVariant, string> = {
 	primary:
@@ -601,4 +601,4 @@ export function Chip({
 
 /** Trigger button for ModelSelect pickers in settings rows. */
 export const MODEL_PICKER_BUTTON_CLASS =
-	"flex h-8 min-w-[140px] max-w-full sm:max-w-[260px] items-center justify-between gap-2 rounded-lg hairline bg-[var(--bg-active-fill)] px-3 text-left text-xs text-[var(--text)] transition-all hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] active:scale-[0.98] disabled:opacity-50";
+	"flex h-8 min-w-[140px] max-w-full sm:max-w-[260px] items-center justify-between gap-2 rounded-lg hairline bg-[var(--bg-active-fill)] px-3 text-left text-xs text-[var(--text)] transition-[background-color,color,box-shadow,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] active:scale-[0.97] disabled:opacity-50";

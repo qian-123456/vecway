@@ -71,7 +71,7 @@ export function ListRow({
 	const cls = `m-list-row flex w-full items-center gap-4 pl-4 text-left ${className}`;
 	if (onClick) {
 		return (
-			<button type="button" onClick={onClick} disabled={disabled} className={`${cls} active:bg-m-surface-hover disabled:opacity-40`}>
+			<button type="button" onClick={onClick} disabled={disabled} className={`${cls} transition-colors duration-(--m-dur-fast) ease-m active:bg-m-surface-hover disabled:opacity-40`}>
 				{inner}
 			</button>
 		);
@@ -105,7 +105,7 @@ export function MenuRow({
 			onClick={onClick}
 			disabled={disabled}
 			aria-current={selected || undefined}
-			className={`flex min-h-13 w-full items-center gap-4 px-5 py-2.5 text-left active:bg-m-surface-hover disabled:opacity-40 ${
+			className={`flex min-h-13 w-full items-center gap-4 px-5 py-2.5 text-left transition-colors duration-(--m-dur-fast) ease-m active:bg-m-surface-hover disabled:opacity-40 ${
 				danger ? "text-m-danger" : selected ? "text-m-accent" : "text-m-text"
 			}`}
 		>

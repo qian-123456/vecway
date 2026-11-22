@@ -21,6 +21,7 @@ export function SettingsOverlay() {
 function SettingsOverlayInner() {
 	const { t } = useT();
 	const closeSettings = useUi((s) => s.closeSettings);
+	const settingsInstant = useUi((s) => s.settingsInstant);
 	const dialogRef = useRef<HTMLDivElement>(null);
 
 	useSettingsEscape(closeSettings);
@@ -43,7 +44,8 @@ function SettingsOverlayInner() {
 
 	return (
 		<div
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] backdrop-blur-md p-3 md:p-6"
+			data-instant={settingsInstant ? "true" : undefined}
+			className="apple-modal-backdrop fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] backdrop-blur-md p-3 md:p-6"
 			onMouseDown={(e) => {
 				if (e.target === e.currentTarget) closeSettings();
 			}}
@@ -54,7 +56,8 @@ function SettingsOverlayInner() {
 				aria-modal="true"
 				aria-labelledby="settings-dialog-title"
 				tabIndex={-1}
-				className="flex h-[80vh] max-h-[820px] w-[920px] max-w-[calc(100vw-1.5rem)] md:max-w-[calc(100vw-3rem)] flex-col overflow-hidden rounded-2xl bg-[var(--bg-panel)] text-neutral-200 shadow-apple-modal hairline outline-none"
+				data-instant={settingsInstant ? "true" : undefined}
+				className="apple-modal-panel apple-modal-surface flex h-[80vh] max-h-[820px] w-[920px] max-w-[calc(100vw-1.5rem)] md:max-w-[calc(100vw-3rem)] flex-col overflow-hidden rounded-2xl text-neutral-200 shadow-apple-modal hairline outline-none"
 				onMouseDown={(e) => e.stopPropagation()}
 				onKeyDown={(e) => {
 					if (isComposing(e)) return;
@@ -112,7 +115,7 @@ function SettingsOverlayInner() {
 					<button
 						type="button"
 						onClick={closeSettings}
-						className="flex h-6 w-6 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-100 active:scale-95"
+						className="flex h-6 w-6 items-center justify-center rounded-md text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-neutral-100 active:scale-[0.97]"
 						title={`${t("common.close")} (Esc)`}
 						aria-label={t("common.close")}
 					>

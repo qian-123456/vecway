@@ -46,7 +46,7 @@ export function IconButton({
 			className={`group/icon-button relative flex h-11 min-w-11 shrink-0 items-center justify-center rounded-[10px] disabled:opacity-35 ${className}`}
 		>
 			<span
-				className={`flex ${disc} items-center justify-center rounded-[10px] transition-colors duration-(--m-dur-fast) ${VARIANTS[variant]}`}
+				className={`flex ${disc} items-center justify-center rounded-[10px] transition-[background-color,color,opacity,transform] duration-(--m-dur-press) ease-m group-active/icon-button:group-enabled/icon-button:scale-[0.94] motion-reduce:group-active/icon-button:scale-100 ${VARIANTS[variant]}`}
 			>
 				{icon}
 			</span>
@@ -54,7 +54,7 @@ export function IconButton({
 				<span
 					aria-hidden
 					className={`absolute top-0.5 right-0.5 flex items-center justify-center rounded-m-pill bg-m-danger font-medium whitespace-nowrap text-white ${
-						badge === true ? "h-2.5 w-2.5" : "h-[18px] min-w-[18px] px-1 text-[11px] leading-none"
+						badge === true ? "h-2.5 w-2.5" : "h-[18px] min-w-[18px] px-1 text-[11px] leading-none tabular-nums"
 					}`}
 				>
 					{typeof badge === "number" ? (badge > 99 ? "99+" : badge) : null}

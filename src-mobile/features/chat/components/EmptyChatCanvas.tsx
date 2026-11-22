@@ -31,7 +31,7 @@ export function EmptyChatCanvas({
 						disabled={!onPickDirectory}
 						aria-label={directoryPath ? `当前目录：${directoryPath}，点击切换` : "选择当前目录"}
 						onClick={onPickDirectory}
-						className="inline-flex max-w-full items-center gap-1.5 border-b border-dashed border-m-border-strong pb-0.5 text-m-text transition-opacity active:opacity-70 disabled:border-transparent disabled:active:opacity-100"
+						className="inline-flex max-w-full items-center gap-1.5 border-b border-dashed border-m-border-strong pb-0.5 text-m-text transition-opacity duration-(--m-dur-press) ease-m active:opacity-70 disabled:border-transparent disabled:active:opacity-100"
 					>
 						{hasDirectory ? (
 							<FolderOpen size={19} strokeWidth={1.85} className="shrink-0 text-m-accent" aria-hidden />
@@ -56,7 +56,7 @@ export function EmptyChatCanvas({
 								key={item.id}
 								type="button"
 								onClick={() => nav.push(paths.chat(item.id))}
-								className="flex min-h-10 w-full items-center justify-between gap-3 py-2 text-left text-m-sm text-m-text transition-opacity active:opacity-65"
+								className="flex min-h-10 w-full items-center justify-between gap-3 py-2 text-left text-m-sm text-m-text transition-opacity duration-(--m-dur-press) ease-m active:opacity-65"
 							>
 								<span className="inline-flex min-w-0 items-center gap-2">
 									<History size={14} strokeWidth={1.75} className="shrink-0 text-m-text-3" aria-hidden />

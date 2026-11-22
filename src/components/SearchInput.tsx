@@ -153,7 +153,7 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(functi
 					onClick={clear}
 					aria-label={t("components.clearSearch")}
 					title={t("components.clearSearch")}
-					className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 transition-colors hover:text-neutral-300"
+					className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 transition-[color,transform] duration-150 ease-[var(--ease-out)] hover:text-neutral-300 active:scale-[0.97]"
 				>
 					<X className="h-3 w-3" />
 				</button>
@@ -251,7 +251,7 @@ export function CollapsibleSearchInput({
 				onClick={() => setExpanded(true)}
 				aria-label={label}
 				title={label}
-				className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full hairline bg-[var(--well-bg)] text-neutral-400 transition-all hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+				className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full hairline bg-[var(--well-bg)] text-neutral-400 transition-[background-color,color,border-color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
 			>
 				<Search size={iconSize} />
 			</button>

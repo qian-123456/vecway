@@ -332,7 +332,7 @@ export function PopoverSelect({
 				<div className="flex min-w-0 flex-1 flex-col gap-1">
 					<div
 						className={clsx(
-							"flex min-w-0 items-center rounded-lg hairline bg-[var(--well-bg)] transition-all",
+							"flex min-w-0 items-center rounded-lg hairline bg-[var(--well-bg)] transition-[box-shadow,border-color] duration-150 ease-[var(--ease-out)]",
 							"focus-within:ring-1 focus-within:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)]",
 							customError && "ring-1 ring-[var(--status-error)]/60",
 						)}
@@ -374,7 +374,7 @@ export function PopoverSelect({
 							title={t("settingsCore.popoverSelect.confirmCustomAria")}
 							onClick={commitCustom}
 							className={clsx(
-								"mr-1 inline-flex shrink-0 items-center justify-center rounded-md p-1 transition-colors cursor-pointer",
+								"mr-1 inline-flex shrink-0 items-center justify-center rounded-md p-1 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] cursor-pointer",
 								"bg-[color-mix(in_srgb,var(--accent)_16%,transparent)] text-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_26%,transparent)]",
 								"disabled:pointer-events-none disabled:opacity-40",
 							)}
@@ -389,7 +389,7 @@ export function PopoverSelect({
 					disabled={disabled}
 					onClick={exitCustomMode}
 					className={clsx(
-						"inline-flex shrink-0 items-center gap-1 rounded-lg hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] whitespace-nowrap cursor-pointer transition-all",
+						"inline-flex shrink-0 items-center gap-1 rounded-lg hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] whitespace-nowrap cursor-pointer transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]",
 						"disabled:pointer-events-none disabled:opacity-40",
 						size === "sm" ? "px-2 py-1" : "px-2.5 py-1.5",
 					)}
@@ -422,7 +422,7 @@ export function PopoverSelect({
 				}}
 				onKeyDown={handleTriggerKeyDown}
 				className={clsx(
-					"inline-flex min-w-0 flex-1 items-center justify-between gap-2 rounded-lg hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] text-xs text-[var(--text)] whitespace-nowrap cursor-pointer transition-all",
+					"inline-flex min-w-0 flex-1 items-center justify-between gap-2 rounded-lg hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] text-xs text-[var(--text)] whitespace-nowrap cursor-pointer transition-[background-color,color,border-color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]",
 					size === "sm" ? "px-2.5 py-1" : "px-3 py-1.5",
 					"focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] focus:outline-none",
 					"disabled:cursor-not-allowed disabled:opacity-50",
@@ -442,7 +442,7 @@ export function PopoverSelect({
 					<span className="truncate text-[var(--text-muted)]">{placeholderText}</span>
 				)}
 				<ChevronDown
-					className={clsx("size-3.5 shrink-0 text-[var(--text-muted)] transition-transform", open && "rotate-180")}
+					className={clsx("size-3.5 shrink-0 text-[var(--text-muted)] transition-transform duration-150 ease-[var(--ease-out)]", open && "rotate-180")}
 				/>
 			</button>
 
@@ -454,7 +454,7 @@ export function PopoverSelect({
 					title={editCustomLabel}
 					onClick={enterCustomMode}
 					className={clsx(
-						"inline-flex shrink-0 items-center justify-center rounded-lg hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] whitespace-nowrap cursor-pointer transition-all",
+						"inline-flex shrink-0 items-center justify-center rounded-lg hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] whitespace-nowrap cursor-pointer transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]",
 						"disabled:cursor-not-allowed disabled:opacity-40",
 						size === "sm" ? "px-1.5 py-1" : "px-2 py-1.5",
 					)}
@@ -471,7 +471,7 @@ export function PopoverSelect({
 				ignoreRefs={[triggerRef]}
 				onDismiss={handleDismiss}
 				className={clsx(
-					"rounded-xl hairline bg-[var(--bg-panel)] shadow-apple-modal max-w-[min(22rem,calc(100vw-16px))]",
+					"rounded-xl hairline vibrancy-popover shadow-apple-modal max-w-[min(22rem,calc(100vw-16px))]",
 					menuClassName,
 				)}
 				style={menuWidth > 0 ? { minWidth: menuWidth } : undefined}
@@ -507,10 +507,10 @@ export function PopoverSelect({
 								}}
 								onClick={() => selectItem(idx)}
 								className={clsx(
-									"flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors",
+									"flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]",
 									isDisabled ? "cursor-not-allowed opacity-45" : "cursor-pointer",
 									isActive && !isDisabled && "bg-[var(--bg-hover)]",
-									isSelected && !isActive && "bg-[var(--bg-selected)]",
+									isSelected && !isActive && "bg-[color-mix(in_srgb,var(--accent)_12%,var(--bg-selected))]",
 								)}
 							>
 								<span className="mt-0.5 flex size-3.5 shrink-0 items-center justify-center">

@@ -2583,7 +2583,7 @@ export function Composer({
 								type="button"
 								onClick={() => void setPlanMode(false)}
 								title={t("chat.planMode.clickToDisable")}
-								className="flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 hover:bg-amber-500/20"
+								className="flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 transition-[background-color,transform] duration-150 ease-[var(--ease-out)] hover:bg-amber-500/20 active:scale-[0.97]"
 							>
 								<Lightbulb size={11} />
 								{t("chat.planMode.enabled")}
@@ -2595,7 +2595,7 @@ export function Composer({
 								type="button"
 								onClick={() => setPlanIntent(false)}
 								title={t("chat.planMode.clickToDisable")}
-								className="flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 hover:bg-amber-500/20"
+								className="flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 transition-[background-color,transform] duration-150 ease-[var(--ease-out)] hover:bg-amber-500/20 active:scale-[0.97]"
 							>
 								<Lightbulb size={11} />
 								{t("chat.planMode.enabled")}
@@ -2610,7 +2610,7 @@ export function Composer({
 									else setAutomationIntent(false);
 								}}
 								title={t("chat.automationMode.clickToDisable")}
-								className="flex items-center gap-1 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-600 dark:text-cyan-400 hover:bg-cyan-500/20"
+								className="flex items-center gap-1 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-600 dark:text-cyan-400 transition-[background-color,transform] duration-150 ease-[var(--ease-out)] hover:bg-cyan-500/20 active:scale-[0.97]"
 							>
 								<Clock size={11} />
 								{t("chat.automationMode.enabled")}
@@ -2631,7 +2631,7 @@ export function Composer({
 							type="button"
 							onClick={() => setPrefillHint(sessionId, null)}
 							aria-label={t("schedules.draftDismiss")}
-							className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--text-40)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+							className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--text-40)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:scale-[0.97]"
 						>
 							<X size={10} />
 						</button>
@@ -2687,7 +2687,7 @@ export function Composer({
 						<button
 							type="button"
 							onClick={() => void cancelCompaction(sessionId)}
-							className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-rose-500 transition-colors hover:bg-rose-500/10"
+							className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-rose-500 transition-[background-color,transform] duration-150 ease-[var(--ease-out)] hover:bg-rose-500/10 active:scale-[0.97]"
 						>
 							<X size={12} />
 							<span>{t("chat.context.cancelCompaction")}</span>
@@ -2985,7 +2985,7 @@ export function Composer({
 							aria-label={t("composer.addAria")}
 							title={t("composer.addTitle")}
 							className={clsx(
-								"flex h-7 shrink-0 w-7 items-center justify-center rounded-md hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] transition-colors",
+								"flex h-7 shrink-0 w-7 items-center justify-center rounded-md transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] active:scale-[0.97]",
 								addMenuOpen ? "bg-[var(--ghost-hover,var(--bg-hover))] text-[var(--text)]" : "text-[var(--text-60,var(--text-muted))]",
 							)}
 						>
@@ -3063,7 +3063,7 @@ export function Composer({
 								}}
 								aria-label={t("composer.viewHeldQueue")}
 								title={t("composer.clickToViewHeldQueue")}
-								className="flex items-center gap-1 rounded-full bg-[var(--ghost-hover,var(--bg-active-fill))] px-2 py-0.5 text-[11px] text-[var(--text-60,var(--text-muted))] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-colors"
+								className="flex items-center gap-1 rounded-full bg-[var(--ghost-hover,var(--bg-active-fill))] px-2 py-0.5 text-[11px] text-[var(--text-60,var(--text-muted))] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:scale-[0.97]"
 							>
 								<CornerDownRight size={11} />
 								<span>{t("composer.heldCount", { count: held.length })}</span>
@@ -3107,7 +3107,7 @@ export function Composer({
 									aria-label={voice.state === "recording" ? t("composer.voiceStop") : voice.state === "transcribing" ? t("composer.voiceTranscribing") : t("composer.voiceStart")}
 									title={voice.state === "recording" ? t("composer.voiceStop") : voice.state === "transcribing" ? t("composer.voiceTranscribing") : t("composer.voiceStart")}
 									aria-pressed={voice.state === "recording"}
-									className={clsx("flex h-7 w-7 items-center justify-center transition-colors disabled:opacity-50", voice.state === "recording" ? "text-red-500" : "text-[var(--text-muted)] hover:text-[var(--text)]")}
+									className={clsx("flex h-7 w-7 items-center justify-center rounded-md transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover,var(--bg-hover))] active:scale-[0.97] disabled:opacity-50 disabled:active:scale-100", voice.state === "recording" ? "text-red-500" : "text-[var(--text-muted)] hover:text-[var(--text)]")}
 								>
 									{voice.state === "starting" || voice.state === "transcribing" ? <Loader2 size={15} className="animate-spin" /> : <Mic size={15} />}
 								</button>
@@ -3116,7 +3116,7 @@ export function Composer({
 								<button
 									type="button"
 									onClick={() => requestTakeover(sessionId)}
-									className="press-scale flex shrink-0 items-center whitespace-nowrap rounded-full bg-purple-600 px-3 py-1 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-purple-500 active:bg-purple-700"
+									className="flex shrink-0 items-center whitespace-nowrap rounded-full bg-purple-600 px-3 py-1 text-xs font-semibold text-white shadow-sm transition-[background-color,transform] duration-150 ease-[var(--ease-out)] hover:bg-purple-500 active:scale-[0.97] active:bg-purple-700"
 								>
 									{t("composer.takeover")}
 								</button>
@@ -3134,10 +3134,10 @@ export function Composer({
 												altAction: FOLLOW_UP_LABEL[streamingAltAction],
 											})}
 											className={clsx(
-												"flex h-7 w-7 items-center justify-center rounded-full transition-all duration-150",
+												"flex h-7 w-7 items-center justify-center rounded-full transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)]",
 												busy
 													? "bg-[var(--bg-active-fill)] text-[var(--text-30,var(--text-dim))] cursor-not-allowed"
-													: "bg-[var(--text)] text-[var(--bg)] hover:opacity-85 active:scale-95",
+													: "bg-[var(--text)] text-[var(--bg)] hover:opacity-85 active:scale-[0.97]",
 											)}
 										>
 											<ArrowUp size={14} />
@@ -3150,7 +3150,7 @@ export function Composer({
 										disabled={isAborting}
 										aria-label={t("composer.stopCurrentTurn")}
 										title={isAborting ? t("composer.stoppingCurrentTurn") : t("composer.stopCurrentTurn")}
-										className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--text)] text-[var(--bg)] hover:opacity-85 disabled:opacity-50 transition-opacity"
+										className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--text)] text-[var(--bg)] transition-[opacity,transform] duration-150 ease-[var(--ease-out)] hover:opacity-85 active:scale-[0.97] disabled:opacity-50 disabled:active:scale-100"
 									>
 										{isAborting ? (
 											<Loader2 size={13} className="animate-spin" />
@@ -3180,9 +3180,9 @@ export function Composer({
 												})
 									}
 									className={clsx(
-										"flex h-7 w-7 items-center justify-center rounded-full transition-all duration-150",
+										"flex h-7 w-7 items-center justify-center rounded-full transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)]",
 										(hasPayload || canResume) && !busy && !pendingTreeEdit
-											? "bg-[var(--text)] text-[var(--bg)] hover:opacity-85 active:scale-95"
+											? "bg-[var(--text)] text-[var(--bg)] hover:opacity-85 active:scale-[0.97]"
 											: "bg-[var(--bg-active-fill)] text-[var(--text-30,var(--text-dim))] cursor-not-allowed",
 									)}
 								>

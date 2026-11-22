@@ -27,9 +27,7 @@ export function Switch({
 				className={`relative h-[31px] w-[51px] rounded-m-pill transition-colors duration-(--m-dur) ease-m ${checked ? "bg-m-accent" : "bg-m-surface-2"}`}
 			>
 				<span
-					className={`absolute top-[2px] left-[2px] h-[27px] w-[27px] rounded-m-pill bg-white shadow-[0_2px_6px_rgb(0_0_0/0.25)] transition-transform duration-(--m-dur) ease-m ${
-						checked ? "translate-x-5" : ""
-					}`}
+					className="m-switch-knob absolute top-[2px] left-[2px] h-[27px] rounded-m-pill bg-white shadow-[0_2px_6px_rgb(0_0_0/0.25)]"
 				/>
 			</span>
 		</button>
@@ -64,7 +62,7 @@ export function Segmented<T extends string>({
 						aria-checked={on}
 						disabled={disabled}
 						onClick={() => !on && onChange(o.value)}
-						className={`min-h-10 min-w-11 flex-1 rounded-[8px] px-3 text-m-sm whitespace-nowrap transition-colors duration-(--m-dur-fast) disabled:opacity-40 ${
+						className={`m-press min-h-10 min-w-11 flex-1 rounded-[8px] px-3 text-m-sm whitespace-nowrap disabled:opacity-40 ${
 							on ? "bg-m-segment-on font-medium text-m-text shadow-xs" : "text-m-text-2"
 						}`}
 					>
@@ -97,7 +95,7 @@ export function Stepper({
 	disabled?: boolean;
 }) {
 	const v = value ?? 0;
-	const btn = "flex h-11 w-11 shrink-0 items-center justify-center rounded-[8px] border border-m-border bg-m-surface text-m-text active:bg-m-surface-2 disabled:opacity-35";
+	const btn = "m-press flex h-11 w-11 shrink-0 items-center justify-center rounded-[8px] border border-m-border bg-m-surface text-m-text active:bg-m-surface-2 disabled:opacity-35";
 	return (
 		<div className="flex items-center gap-1.5">
 			<button type="button" aria-label="减少" className={btn} disabled={disabled || (value != null && v <= min)} onClick={() => onCommit(Math.max(min, v - step))}>
@@ -123,7 +121,7 @@ export function Stepper({
 					e.currentTarget.value = String(next);
 					if (next !== value) onCommit(next);
 				}}
-				className="h-11 min-w-11 w-20 rounded-m-sm bg-m-surface px-2 text-center text-m-md text-m-text outline-none focus:ring-2 focus:ring-m-accent"
+				className="h-11 min-w-11 w-20 rounded-m-sm bg-m-surface px-2 text-center text-m-md tabular-nums text-m-text outline-none focus:ring-2 focus:ring-m-accent"
 			/>
 			<button type="button" aria-label="增加" className={btn} disabled={disabled || (value != null && v >= max)} onClick={() => onCommit(Math.min(max, v + step))}>
 				<Plus size={18} />

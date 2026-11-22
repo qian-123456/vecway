@@ -441,13 +441,13 @@ export default function App() {
 			<div
 				id="app-wallpaper-background"
 				aria-hidden
-				className="pointer-events-none fixed inset-0 z-0 bg-cover bg-center transition-all duration-300"
+				className="pointer-events-none fixed inset-0 z-0 bg-cover bg-center transition-[filter,opacity] duration-300 ease-[var(--ease-out)]"
 				style={{ backgroundImage: "var(--app-wallpaper-url)" }}
 			/>
 			<div
 				id="app-wallpaper-veil"
 				aria-hidden
-				className="pointer-events-none fixed inset-0 z-0 transition-all duration-300"
+				className="pointer-events-none fixed inset-0 z-0 transition-[background-color,opacity] duration-300 ease-[var(--ease-out)]"
 			/>
 			{/* Body row: the sidebar spans the full height beside the center/right status bar. */}
 			<div className="relative z-10 flex min-h-0 flex-1">
@@ -475,7 +475,7 @@ export default function App() {
 						>
 							<div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2" />
 							<div
-								className={`pointer-events-none absolute inset-y-0 left-1/2 w-[2px] -translate-x-1/2 transition-colors ${draggingSide === "left" ? "bg-[#0A84FF]/60" : "bg-[var(--border-divider)] group-hover/handle:bg-[#0A84FF]/60"}`}
+								className={`pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 transition-[width,background-color] duration-150 ease-[var(--ease-out)] ${draggingSide === "left" ? "w-[2px] bg-[var(--accent)]/65" : "w-[1px] bg-[var(--border-divider)] group-hover/handle:w-[2px] group-hover/handle:bg-[var(--accent)]/65"}`}
 							/>
 						</div>
 					</>
@@ -515,7 +515,7 @@ export default function App() {
 									>
 										<div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2" />
 										<div
-											className={`pointer-events-none absolute inset-y-0 left-1/2 w-[2px] -translate-x-1/2 transition-colors ${draggingSide === "right" ? "bg-[#0A84FF]/60" : "bg-[var(--border-divider)] group-hover/handle:bg-[#0A84FF]/60"}`}
+											className={`pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 transition-[width,background-color] duration-150 ease-[var(--ease-out)] ${draggingSide === "right" ? "w-[2px] bg-[var(--accent)]/65" : "w-[1px] bg-[var(--border-divider)] group-hover/handle:w-[2px] group-hover/handle:bg-[var(--accent)]/65"}`}
 										/>
 									</div>
 								)}

@@ -73,11 +73,11 @@ const ACTIONS: Record<ShortcutId, ((e: KeyboardEvent) => boolean) | undefined> =
 	"settings.toggle": () => {
 		const ui = useUi.getState();
 		if (ui.centerView === "settings") ui.closeSettings();
-		else ui.openSettings();
+		else ui.openSettings(undefined, { instant: true });
 		return true;
 	},
 	"shortcuts.show": () => {
-		useUi.getState().openSettings("shortcuts");
+		useUi.getState().openSettings("shortcuts", { instant: true });
 		return true;
 	},
 	"search.sessions": () => (focusSidebarSearch(), true),

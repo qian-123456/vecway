@@ -310,7 +310,7 @@ export function RightWorkspaceDrawer({
 									aria-selected={selected}
 									disabled={!effectiveId}
 									onClick={() => effectiveId && setTab(effectiveId, tab.id)}
-									className={`inline-flex min-h-9 shrink-0 items-center justify-center rounded-m-pill px-3 text-m-xs font-medium whitespace-nowrap transition-colors ${
+									className={`m-press inline-flex min-h-9 shrink-0 items-center justify-center rounded-m-pill px-3 text-m-xs font-medium whitespace-nowrap ${
 										selected
 											? "bg-m-accent-soft text-m-accent-soft-text"
 											: "text-m-text-2 active:bg-m-surface-hover"

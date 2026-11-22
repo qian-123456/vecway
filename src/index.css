@@ -34,6 +34,9 @@ input[type="number"] {
 		"Courier New", monospace;
 	--ease-spring: cubic-bezier(0.25, 1, 0.5, 1);
 	--ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+	--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+	--ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 /*
@@ -194,16 +197,18 @@ input[type="number"] {
 	--status-renamed: #64D2FF;
 
 	/* Apple HIG vibrancy, hairline, overlay & shadow tokens (dark palette default) */
-	--chrome-glass: rgba(28, 28, 30, 0.78);
-	--popover-glass: rgba(36, 36, 38, 0.85);
+	--chrome-glass: rgba(28, 28, 30, 0.76);
+	--popover-glass: rgba(34, 34, 38, 0.86);
+	--modal-glass: color-mix(in oklab, var(--bg-panel) 94%, transparent);
+	--rim-light: rgba(255, 255, 255, 0.13);
+	--rim-light-subtle: rgba(255, 255, 255, 0.07);
 	--hairline: rgba(255, 255, 255, 0.08);
 	--hairline-strong: rgba(255, 255, 255, 0.14);
-	--overlay: rgba(0, 0, 0, 0.55);
+	--overlay: rgba(0, 0, 0, 0.52);
 	--well-bg: rgba(0, 0, 0, 0.35);
 	--switch-off: #39393D;
-	--shadow-apple-card: 0 0 0 0.5px var(--hairline), 0 4px 16px rgba(0, 0, 0, 0.35);
-	--shadow-apple-modal: 0 0 0 0.5px var(--hairline-strong), 0 16px 40px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.25);
-
+	--shadow-apple-card: inset 0 0.5px 0 var(--rim-light-subtle), 0 0 0 0.5px var(--hairline), 0 4px 16px rgba(0, 0, 0, 0.34);
+	--shadow-apple-modal: inset 0 0.5px 0 var(--rim-light), 0 0 0 0.5px var(--hairline-strong), 0 18px 44px rgba(0, 0, 0, 0.54), 0 2px 8px rgba(0, 0, 0, 0.24);
 	/* Elevated Composer & raised ear surface tokens (dark default) */
 	--bg-ear: color-mix(in oklab, var(--bg-panel) 76%, var(--bg));
 	--composer-surface: color-mix(in oklab, var(--bg-panel) 94%, #ffffff 3%);
@@ -235,7 +240,14 @@ input[type="number"] {
 	/* Apple HIG spring & sheet curves */
 	--ease-spring: cubic-bezier(0.25, 1, 0.5, 1);
 	--ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
-
+	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+	--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+	--ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+	--dur-press: 140ms;
+	--dur-tip: 125ms;
+	--dur-popover: 180ms;
+	--dur-modal: 220ms;
+	--dur-toast: 360ms;
 	/* Chat typography, controlled by the font-size setting (data-font-size).
 	 * Tailwind v4 operates without @tailwindcss/typography; markdown styling is handled
 	 * via [&_*] child selectors in src/components/Markdown.tsx.
@@ -874,17 +886,20 @@ html[data-theme="everforest-light"],
 html[data-theme="sakura"],
 html[data-theme="glacier"],
 html[data-theme="lavender"] {
-	--chrome-glass: color-mix(in oklab, var(--bg) 94%, var(--text) 4.2%);
-	--popover-glass: color-mix(in oklab, #ffffff 88%, var(--bg));
+	--chrome-glass: color-mix(in oklab, var(--bg) 92%, var(--text) 4.2%);
+	--popover-glass: color-mix(in oklab, #ffffff 86%, var(--bg));
+	--modal-glass: color-mix(in oklab, var(--bg-panel) 95%, #ffffff 3%);
+	--rim-light: rgba(255, 255, 255, 0.82);
+	--rim-light-subtle: rgba(255, 255, 255, 0.62);
 	--hairline: rgba(0, 0, 0, 0.08);
 	--hairline-strong: rgba(0, 0, 0, 0.14);
 	--border-divider: color-mix(in oklab, var(--text) 8.5%, transparent);
 	--bg-active-fill: rgba(0, 0, 0, 0.06);
-	--overlay: rgba(0, 0, 0, 0.30);
-	--well-bg: rgba(0, 0, 0, 0.04);
+	--overlay: rgba(0, 0, 0, 0.28);
+	--well-bg: rgba(0, 0, 0, 0.045);
 	--switch-off: #E9E9EB;
-	--shadow-apple-card: 0 0 0 0.5px var(--hairline), 0 2px 12px rgba(0, 0, 0, 0.08);
-	--shadow-apple-modal: 0 0 0 0.5px var(--hairline-strong), 0 16px 40px rgba(0, 0, 0, 0.15), 0 2px 6px rgba(0, 0, 0, 0.08);
+	--shadow-apple-card: inset 0 0.5px 0 var(--rim-light-subtle), 0 0 0 0.5px var(--hairline), 0 2px 12px rgba(0, 0, 0, 0.07);
+	--shadow-apple-modal: inset 0 0.5px 0 var(--rim-light), 0 0 0 0.5px var(--hairline-strong), 0 18px 42px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.07);
 	--bg-ear: color-mix(in oklab, var(--bg) 90%, var(--text) 5%);
 	--composer-surface: color-mix(in oklab, #ffffff 84%, var(--bg));
 	--composer-border: color-mix(in oklab, var(--text) 11%, transparent);
@@ -1086,8 +1101,10 @@ input[type="radio"] {
 		transform 140ms var(--ease-spring),
 		box-shadow 140ms ease;
 }
-.settings-range:hover:not(:disabled)::-webkit-slider-thumb {
-	transform: scale(1.08);
+@media (hover: hover) and (pointer: fine) {
+	.settings-range:hover:not(:disabled)::-webkit-slider-thumb {
+		transform: scale(1.08);
+	}
 }
 .settings-range:active:not(:disabled)::-webkit-slider-thumb {
 	transform: scale(1.02);
@@ -1264,13 +1281,18 @@ html[data-ui-scale="large"] {
 /* Vibrancy surfaces */
 .vibrancy-chrome {
 	background-color: var(--chrome-glass);
-	backdrop-filter: blur(20px) saturate(190%);
-	-webkit-backdrop-filter: blur(20px) saturate(190%);
+	backdrop-filter: blur(24px) saturate(190%);
+	-webkit-backdrop-filter: blur(24px) saturate(190%);
 }
 .vibrancy-popover {
 	background-color: var(--popover-glass);
-	backdrop-filter: blur(28px) saturate(190%);
-	-webkit-backdrop-filter: blur(28px) saturate(190%);
+	backdrop-filter: blur(28px) saturate(195%);
+	-webkit-backdrop-filter: blur(28px) saturate(195%);
+}
+.apple-modal-surface {
+	background-color: var(--modal-glass);
+	backdrop-filter: blur(32px) saturate(185%);
+	-webkit-backdrop-filter: blur(32px) saturate(185%);
 }
 
 /* Optical Composer elevation: theme-tinted halo, subtle edge dispersion, and top specular rim */
@@ -1316,6 +1338,11 @@ html[data-ui-scale="large"] {
 		-webkit-backdrop-filter: none !important;
 	}
 	.vibrancy-popover {
+		background-color: var(--bg-panel) !important;
+		backdrop-filter: none !important;
+		-webkit-backdrop-filter: none !important;
+	}
+	.apple-modal-surface {
 		background-color: var(--bg-panel) !important;
 		backdrop-filter: none !important;
 		-webkit-backdrop-filter: none !important;
@@ -1435,11 +1462,11 @@ html[data-mode="light"] .liquid-glass {
 	}
 }
 .sa-sheet-in {
-	animation: sa-sheet-in 0.2s ease-out;
+	animation: sa-sheet-in 220ms var(--ease-out);
 	background-color: color-mix(in oklab, var(--bg-panel) 62%, transparent);
 }
 .sa-seg-thumb {
-	transition: transform 0.18s ease;
+	transition: transform 200ms var(--ease-out);
 }
 @media (prefers-reduced-motion: reduce) {
 	.sa-sheet-in {
@@ -1619,10 +1646,155 @@ html[data-wallpaper="true"] .fixed.inset-0.bg-\[var\(--overlay\)\] {
 
 /* Interactive press-scale */
 .press-scale {
-	transition: transform 200ms cubic-bezier(0.25, 1, 0.5, 1);
+	transition: transform var(--dur-press) var(--ease-out);
 }
 .press-scale:active {
 	transform: scale(0.97);
+}
+
+/* Apple fluid surface transitions (origin-aware popovers, centered modals, interruptible toasts, tactile switches) */
+.apple-popover-surface {
+	transform-origin: var(--popover-origin, top left);
+	opacity: 1;
+	transform: scale(1);
+	transition:
+		opacity var(--dur-popover) var(--ease-out),
+		transform var(--dur-popover) var(--ease-out);
+}
+@starting-style {
+	.apple-popover-surface {
+		opacity: 0;
+		transform: scale(0.96);
+	}
+}
+.apple-popover-surface[data-positioned="false"] {
+	opacity: 0;
+	transform: scale(0.96);
+	transition: none;
+}
+.apple-popover-surface[data-instant="true"] {
+	transition-duration: 0ms;
+}
+
+.apple-tooltip-surface {
+	transform-origin: var(--popover-origin, bottom left);
+	opacity: 1;
+	transform: scale(1);
+	transition:
+		opacity var(--dur-tip) var(--ease-out),
+		transform var(--dur-tip) var(--ease-out);
+}
+@starting-style {
+	.apple-tooltip-surface {
+		opacity: 0;
+		transform: scale(0.97);
+	}
+}
+.apple-tooltip-surface[data-positioned="false"] {
+	opacity: 0;
+	transform: scale(0.97);
+	transition: none;
+}
+.apple-tooltip-surface[data-instant="true"] {
+	transition-duration: 0ms;
+}
+
+.apple-modal-backdrop {
+	opacity: 1;
+	transition: opacity var(--dur-modal) var(--ease-out);
+}
+@starting-style {
+	.apple-modal-backdrop {
+		opacity: 0;
+	}
+}
+.apple-modal-backdrop[data-instant="true"] {
+	transition-duration: 0ms;
+}
+
+.apple-modal-panel {
+	transform-origin: center;
+	opacity: 1;
+	transform: scale(1) translateY(0);
+	transition:
+		opacity var(--dur-modal) var(--ease-out),
+		transform var(--dur-modal) var(--ease-out);
+}
+@starting-style {
+	.apple-modal-panel {
+		opacity: 0;
+		transform: scale(0.97) translateY(4px);
+	}
+}
+.apple-modal-panel[data-instant="true"] {
+	transition-duration: 0ms;
+}
+
+.apple-toast {
+	opacity: 1;
+	transform: translateY(0) scale(1);
+	transition:
+		opacity var(--dur-toast) ease,
+		transform var(--dur-toast) var(--ease-drawer);
+}
+@starting-style {
+	.apple-toast {
+		opacity: 0;
+		transform: translateY(14px) scale(0.97);
+	}
+}
+.apple-toast[data-exiting="true"] {
+	opacity: 0;
+	transform: translateY(8px) scale(0.97);
+	transition:
+		opacity 180ms var(--ease-out),
+		transform 180ms var(--ease-out);
+}
+
+.apple-seg-thumb {
+	transition:
+		transform 220ms var(--ease-out),
+		width 220ms var(--ease-out);
+}
+.apple-seg-thumb[data-ready="false"] {
+	transition: none;
+}
+
+/* Apple macOS/iOS tactile switch thumb elongation on press */
+.apple-switch-knob {
+	transition:
+		transform 220ms var(--ease-out),
+		width 140ms var(--ease-out);
+}
+button[role="switch"]:active:not(:disabled) .apple-switch-knob {
+	width: 19px;
+}
+button[role="switch"][aria-checked="true"]:active:not(:disabled) .apple-switch-knob {
+	transform: translateX(15px);
+}
+
+/* Pointer-gated subtle icon button scale for media controls */
+@media (hover: hover) and (pointer: fine) {
+	.apple-hover-lift {
+		transition: transform var(--dur-press) var(--ease-out), background-color var(--dur-press) var(--ease-out), color var(--dur-press) var(--ease-out);
+	}
+	.apple-hover-lift:hover {
+		transform: scale(1.06);
+	}
+}
+.apple-hover-lift:active {
+	transform: scale(0.96);
+}
+
+@media (prefers-contrast: more) {
+	:root {
+		--hairline: rgba(255, 255, 255, 0.24);
+		--hairline-strong: rgba(255, 255, 255, 0.36);
+	}
+	html[data-mode="light"] {
+		--hairline: rgba(0, 0, 0, 0.24);
+		--hairline-strong: rgba(0, 0, 0, 0.36);
+	}
 }
 
 /* Tabular nums */
@@ -1680,7 +1852,7 @@ html[data-wallpaper="true"] .fixed.inset-0.bg-\[var\(--overlay\)\] {
 	}
 }
 .start-rise {
-	animation: start-rise 0.3s ease-out backwards;
+	animation: start-rise 260ms var(--ease-out) backwards;
 }
 @media (prefers-reduced-motion: reduce) {
 	.start-rise {
@@ -2251,11 +2423,37 @@ button:active,
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.press-scale {
+	.press-scale,
+	.apple-seg-thumb,
+	.apple-switch-knob,
+	.apple-hover-lift {
 		transition: none;
 	}
-	.press-scale:active {
+	.press-scale:active,
+	.apple-hover-lift:hover,
+	.apple-hover-lift:active {
 		transform: none;
+	}
+	button[role="switch"]:active:not(:disabled) .apple-switch-knob {
+		width: 16px;
+	}
+	.apple-popover-surface,
+	.apple-tooltip-surface,
+	.apple-modal-panel,
+	.apple-toast {
+		transform: none !important;
+		transition: opacity 150ms ease;
+	}
+	@starting-style {
+		.apple-popover-surface,
+		.apple-tooltip-surface,
+		.apple-modal-panel,
+		.apple-toast {
+			transform: none;
+		}
+	}
+	.apple-modal-backdrop {
+		transition: opacity 150ms ease;
 	}
 	#app-wallpaper-background,
 	#app-wallpaper-veil {

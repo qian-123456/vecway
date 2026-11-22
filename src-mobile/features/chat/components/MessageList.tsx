@@ -364,7 +364,7 @@ export function MessageList({ sessionId, onPickDirectory }: { sessionId: string;
 					disabled={!showJump}
 					className={`flex h-11 w-11 items-center justify-center transition-[opacity,scale] duration-(--m-dur-fast) ease-m motion-reduce:transition-none ${showJump ? "pointer-events-auto scale-100 opacity-100" : "pointer-events-none scale-90 opacity-0"}`}
 				>
-					<span className={`relative flex h-10 w-10 items-center justify-center rounded-m-pill shadow-m-pop active:bg-m-surface-2 ${hasUnread || working ? "bg-m-accent-soft text-m-accent-soft-text" : "bg-m-surface text-m-text"}`}>
+					<span className={`relative flex h-10 w-10 items-center justify-center rounded-m-pill shadow-m-pop transition-[background-color,transform] duration-(--m-dur-press) ease-m active:scale-95 active:bg-m-surface-2 ${hasUnread || working ? "bg-m-accent-soft text-m-accent-soft-text" : "bg-m-surface text-m-text"}`}>
 						<ArrowDown size={20} strokeWidth={1.75} />
 						{(hasUnread || working) && <span aria-hidden className={`absolute right-0 top-0 size-2.5 rounded-full bg-m-accent ${working ? "animate-pulse motion-reduce:animate-none" : ""}`} />}
 					</span>

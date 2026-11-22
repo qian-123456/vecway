@@ -271,7 +271,7 @@ export function CreateBranchDialog({
 			role="dialog"
 			aria-modal="true"
 			aria-label={t("chat.pill.createAndCheckoutBranch")}
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] backdrop-blur-xs p-4"
+			className="apple-modal-backdrop fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] backdrop-blur-md p-4"
 			onMouseDown={(e) => {
 				backdropPressedRef.current = e.target === e.currentTarget;
 			}}
@@ -282,7 +282,7 @@ export function CreateBranchDialog({
 			}}
 		>
 			<div
-				className="w-[440px] max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--line,var(--border-divider))] bg-[var(--bg-panel)] p-5 shadow-apple-modal text-[var(--text)] transition-all animate-in fade-in zoom-in-95 duration-150"
+				className="apple-modal-panel apple-modal-surface w-[440px] max-w-[calc(100vw-2rem)] rounded-2xl hairline p-5 shadow-apple-modal text-[var(--text)]"
 				onClick={(e) => e.stopPropagation()}
 				onKeyDown={(e) => {
 					if (isComposing(e)) return;

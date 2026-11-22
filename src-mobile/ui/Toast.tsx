@@ -69,7 +69,7 @@ export function ToastHost() {
 				<div
 					key={t.id}
 					role="status"
-					className={`m-selectable pointer-events-auto flex max-w-full items-center gap-2 rounded-m-md px-4 py-3 text-m-sm shadow-m-pop transition duration-200 starting:translate-y-2 starting:opacity-0 ${
+					className={`m-selectable pointer-events-auto flex max-w-full items-center gap-2 rounded-m-md px-4 py-3 text-m-sm shadow-m-pop transition-[opacity,transform] duration-(--m-dur-fast) ease-m starting:translate-y-2 starting:opacity-0 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 ${
 						t.kind === "error" ? "bg-m-danger-bg text-m-danger" : "bg-m-text text-m-bg"
 					}`}
 				>

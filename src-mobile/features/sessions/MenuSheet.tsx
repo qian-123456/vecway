@@ -269,7 +269,7 @@ export function MenuSheet({
 						<IconButton variant="plain" size="sm" icon={<Search size={19} strokeWidth={1.8} />} label="搜索会话" onClick={() => go(paths.search())} />
 						<div className="relative">
 							<IconButton variant="plain" size="sm" icon={<Bell size={19} strokeWidth={1.8} />} label={badge > 0 ? `收件箱，${badge} 项待处理` : "收件箱"} onClick={() => go(paths.inbox())} />
-							{badge > 0 && <span aria-hidden="true" className="pointer-events-none absolute right-1 top-1 rounded-m-pill bg-m-danger px-1 text-[10px] leading-4 text-m-bg">{badge > 99 ? "99+" : badge}</span>}
+							{badge > 0 && <span aria-hidden="true" className="pointer-events-none absolute right-1 top-1 rounded-m-pill bg-m-danger px-1 text-[10px] leading-4 tabular-nums text-m-bg">{badge > 99 ? "99+" : badge}</span>}
 						</div>
 					</div>
 				</header>
@@ -315,7 +315,7 @@ export function MenuSheet({
 							aria-haspopup="menu"
 							aria-expanded={filterOpen}
 							onClick={() => setFilterOpen((v) => !v)}
-							className={`inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+							className={`m-press inline-flex h-8 w-8 items-center justify-center rounded-md ${
 								filterOpen ? "bg-m-surface text-m-text" : "text-m-text-3 active:bg-m-surface-hover active:text-m-text"
 							}`}
 						>
@@ -330,7 +330,7 @@ export function MenuSheet({
 									onClose();
 									onNewSession();
 								}}
-								className="inline-flex h-8 w-8 items-center justify-center rounded-md text-m-text-3 transition-colors active:bg-m-surface-hover active:text-m-text"
+								className="m-press inline-flex h-8 w-8 items-center justify-center rounded-md text-m-text-3 active:bg-m-surface-hover active:text-m-text"
 							>
 								<FolderPlus size={15} strokeWidth={1.85} />
 							</button>
@@ -340,7 +340,7 @@ export function MenuSheet({
 						<div
 							role="menu"
 							aria-label="视图方式"
-							className="absolute right-3 top-full z-(--z-banner) mt-1 w-40 rounded-[10px] border border-m-border bg-m-bg-elev p-1 shadow-m-pop"
+							className="m-popover-surface absolute right-3 top-full z-(--z-banner) mt-1 w-40 rounded-[10px] border border-m-border bg-m-bg-elev p-1"
 						>
 							<div className="px-2 py-1 text-[11px] text-m-text-3">分组方式</div>
 							<button

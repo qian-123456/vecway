@@ -292,7 +292,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 			}}
 			title={t("rightPanel.closeTab")}
 			aria-label={t("rightPanel.closeTab")}
-			className="shrink-0 rounded p-0.5 text-neutral-400 opacity-70 transition-all hover:bg-neutral-700 hover:text-neutral-100 hover:opacity-100"
+			className="shrink-0 rounded p-0.5 text-neutral-400 opacity-70 transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)] hover:bg-neutral-700 hover:text-neutral-100 hover:opacity-100 active:scale-[0.97]"
 		>
 			<X size={size} />
 		</button>
@@ -309,7 +309,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 				}}
 				title={t("rightPanel.collapseToService")}
 				aria-label={t("rightPanel.collapseToService")}
-				className="shrink-0 rounded p-0.5 text-neutral-400 transition-colors hover:bg-neutral-700 hover:text-neutral-100"
+				className="shrink-0 rounded p-0.5 text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-neutral-700 hover:text-neutral-100 active:scale-[0.97]"
 			>
 				<Minus size={size} />
 			</button>
@@ -318,7 +318,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 	return (
 		<div
 			className={clsx(
-				"relative flex h-10 shrink-0 items-center gap-1 border-b border-[var(--border-divider)] bg-neutral-950/80 pr-1.5 select-none",
+				"relative flex h-10 shrink-0 items-center gap-1 border-b border-[var(--border-divider)] vibrancy-chrome pr-1.5 select-none",
 				rightMaximized && trafficLightsVisible ? "pl-[78px]" : "pl-1.5",
 			)}
 		>
@@ -362,7 +362,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 								}}
 								style={{ flexBasis: MAX_TAB_WIDTH, minWidth: MIN_TAB_WIDTH }}
 								className={clsx(
-									"group relative flex h-full shrink cursor-pointer items-center rounded-t-lg px-2 text-xs transition-colors",
+									"group relative flex h-full shrink cursor-pointer items-center rounded-t-lg px-2 text-xs transition-[background-color,color] duration-150 ease-[var(--ease-out)]",
 									tab.active
 										? "bg-[var(--bg-panel)] text-neutral-100 before:pointer-events-none before:absolute before:bottom-0 before:-left-1.5 before:h-1.5 before:w-1.5 before:bg-[radial-gradient(circle_at_0_0,transparent_6px,var(--bg-panel)_6.5px)] after:pointer-events-none after:absolute after:bottom-0 after:-right-1.5 after:h-1.5 after:w-1.5 after:bg-[radial-gradient(circle_at_100%_0,transparent_6px,var(--bg-panel)_6.5px)]"
 										: "text-neutral-400 hover:bg-neutral-800/50 hover:text-neutral-200",
@@ -392,9 +392,9 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 									)}
 								>
 									{tab.lead}
-									<span className="shrink-0 whitespace-nowrap">{tab.label}</span>
+									<span className="shrink-0 whitespace-nowrap tracking-[-0.015em]">{tab.label}</span>
 									{tab.badge > 0 && (
-										<span className="shrink-0 rounded-full bg-neutral-700/80 px-1 text-[9px] font-medium leading-none text-neutral-300">
+										<span className="shrink-0 rounded-full bg-neutral-700/80 px-1 text-[9px] font-medium leading-none tabular-nums text-neutral-300">
 											{tab.badge}
 										</span>
 									)}
@@ -421,7 +421,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 						title={t("rightPanel.allTabsWithHidden", { count: hidden.length })}
 						aria-label={t("rightPanel.allTabs")}
 						className={clsx(
-							"flex h-6 shrink-0 items-center gap-0.5 rounded-md px-1.5 text-[11px] transition-colors",
+							"flex h-6 shrink-0 items-center gap-0.5 rounded-md px-1.5 text-[11px] tabular-nums transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]",
 							overflowOpen
 								? "bg-neutral-800 text-neutral-100"
 								: "text-neutral-400 hover:bg-neutral-800/80 hover:text-neutral-200",
@@ -437,7 +437,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 					type="button"
 					onClick={() => setMenuOpen((v) => !v)}
 					className={clsx(
-						"flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors",
+						"flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]",
 						menuOpen
 							? "bg-neutral-800 text-neutral-100"
 							: "text-neutral-400 hover:bg-neutral-800/80 hover:text-neutral-200",
@@ -452,7 +452,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 			<button
 				type="button"
 				onClick={toggleRightMaximized}
-				className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-800/80 hover:text-neutral-200"
+				className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-neutral-800/80 hover:text-neutral-200 active:scale-[0.97]"
 				title={rightMaximized ? t("rightPanel.restorePanel") : t("rightPanel.maximizePanel")}
 				aria-label={rightMaximized ? t("rightPanel.restorePanel") : t("rightPanel.maximizePanel")}
 			>
@@ -462,7 +462,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 			<button
 				type="button"
 				onClick={toggleRight}
-				className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-800/80 hover:text-neutral-200"
+				className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-neutral-800/80 hover:text-neutral-200 active:scale-[0.97]"
 				title={t("rightPanel.collapsePanel")}
 				aria-label={t("rightPanel.collapsePanel")}
 			>
@@ -486,7 +486,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 							setTabMenu(null);
 							void item.run();
 						}}
-						className="flex w-full items-center px-3 py-1.5 text-left text-neutral-300 transition-colors hover:bg-neutral-800/60 hover:text-neutral-100"
+						className="flex w-full items-center px-3 py-1.5 text-left text-neutral-300 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-neutral-800/60 hover:text-neutral-100 active:scale-[0.985]"
 					>
 						{item.label}
 					</button>
@@ -512,14 +512,14 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 							setOverflowOpen(false);
 						}}
 						className={clsx(
-							"group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors",
+							"group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]",
 							tab.active ? "bg-neutral-800 text-neutral-100" : "text-neutral-300 hover:bg-neutral-800/60",
 						)}
 					>
 						{tab.lead}
 						<span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap">{tab.label}</span>
 						{tab.badge > 0 && (
-							<span className="shrink-0 text-[10px] text-neutral-500">{tab.badge}</span>
+							<span className="shrink-0 text-[10px] tabular-nums text-neutral-500">{tab.badge}</span>
 						)}
 						<div className="hidden shrink-0 items-center group-hover:flex">
 							{detachButton(tab, 12)}
@@ -550,7 +550,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 							setRightTab("terminal");
 							setMenuOpen(false);
 						}}
-						className="flex w-full items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 pr-3 py-2 text-left text-neutral-300 transition-colors hover:bg-neutral-800/60 hover:text-neutral-100"
+						className="flex w-full items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 pr-3 py-2 text-left text-neutral-300 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-neutral-800/60 hover:text-neutral-100 active:scale-[0.985]"
 					>
 						<SquareTerminal size={14} className="shrink-0 text-emerald-400" />
 						<span>{t("rightPanel.newTerminal")}</span>
@@ -575,7 +575,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 									setMenuOpen(false);
 								}}
 								className={clsx(
-									"flex w-full items-center justify-between gap-3 whitespace-nowrap rounded-lg px-2.5 py-2 text-left transition-colors",
+									"flex w-full items-center justify-between gap-3 whitespace-nowrap rounded-lg px-2.5 py-2 text-left transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]",
 									sideChatBlocked
 										? "cursor-not-allowed text-neutral-600"
 										: activeTab === tab.id
@@ -589,7 +589,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 								</div>
 								<div className="flex items-center gap-1.5">
 									{badge > 0 && (
-										<span className="rounded-full bg-neutral-700/80 px-1.5 text-[10px] font-medium leading-tight text-neutral-300">
+										<span className="rounded-full bg-neutral-700/80 px-1.5 text-[10px] font-medium leading-tight tabular-nums text-neutral-300">
 											{badge}
 										</span>
 									)}

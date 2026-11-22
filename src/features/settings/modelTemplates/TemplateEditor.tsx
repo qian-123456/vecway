@@ -163,7 +163,7 @@ export function TemplateEditor({
 	return createPortal(
 		<div
 			style={{ zIndex: Z_LAYER.modal }}
-			className="fixed inset-0 flex items-center justify-center bg-[var(--overlay)] p-6 backdrop-blur-sm"
+			className="apple-modal-backdrop fixed inset-0 flex items-center justify-center bg-[var(--overlay)] p-6 backdrop-blur-md"
 			onMouseDown={(e) => {
 				if (e.target === e.currentTarget && !saving) onClose();
 			}}
@@ -174,7 +174,7 @@ export function TemplateEditor({
 				aria-modal="true"
 				aria-labelledby="model-template-editor-title"
 				tabIndex={-1}
-				className="flex h-[min(86vh,760px)] w-[760px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl bg-[var(--bg-panel)] p-4 text-[var(--text)] shadow-apple-modal hairline outline-none"
+				className="apple-modal-panel apple-modal-surface flex h-[min(86vh,760px)] w-[760px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl p-4 text-[var(--text)] shadow-apple-modal hairline outline-none"
 				onMouseDown={(e) => e.stopPropagation()}
 				onKeyDown={(e) => {
 					e.stopPropagation();

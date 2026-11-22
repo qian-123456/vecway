@@ -406,7 +406,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 						<button
 							type="button"
 							onClick={toggleSidebar}
-							className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-200 active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+							className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-200 active:scale-[0.97] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 							title={`${t("topbar.expandSidebar")} (⌘B)`}
 						>
 							<PanelLeftOpen size={16} strokeWidth={1.5} />
@@ -423,7 +423,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 									<button
 										type="button"
 										onClick={() => selectSession(parentId)}
-										className="flex shrink-0 items-center gap-1 rounded-md bg-[var(--bg-active-fill)] px-2 py-0.5 text-xs text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-neutral-100 active:scale-95 transition-all"
+										className="flex shrink-0 items-center gap-1 rounded-md bg-[var(--bg-active-fill)] px-2 py-0.5 text-xs text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-neutral-100 active:scale-[0.97] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)]"
 										title={t("shell.backToParent", { name: parentSession ? sessionDisplayName(parentSession) : parentId })}
 									>
 										<span>←</span>
@@ -465,7 +465,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 							) : (
 								<span
 									onDoubleClick={startEditTitle}
-									className="min-w-0 max-w-[200px] @[460px]:max-w-[320px] @[640px]:max-w-[450px] cursor-pointer select-none truncate text-[13px] font-semibold tracking-[-0.015em] text-neutral-100 underline-offset-4 hover:text-[var(--text)] hover:underline decoration-neutral-600 transition-colors"
+									className="min-w-0 max-w-[200px] @[460px]:max-w-[320px] @[640px]:max-w-[450px] cursor-pointer select-none truncate text-[13px] font-semibold tracking-[-0.015em] text-neutral-100 underline-offset-4 hover:text-[var(--text)] hover:underline decoration-neutral-600 transition-colors duration-150 ease-[var(--ease-out)]"
 									title={t("shell.renameSessionTip", {
 										name: sessionDisplayName(activeSession),
 										cwd: activeSession.cwd ? t("shell.sessionPath", { path: activeSession.cwd }) : "",
@@ -493,7 +493,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 									<button
 										type="button"
 										onClick={goBack}
-										className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md py-0.5 pl-1 pr-2 text-left text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-100 active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+										className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md py-0.5 pl-1 pr-2 text-left text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-100 active:scale-[0.97] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 										title={t("shell.backToTarget", { target: backTarget.kind === "session" ? t("shell.targetSession") : t("shell.targetHome"), text: backText })}
 									>
 										<ArrowLeft size={14} strokeWidth={1.75} className="shrink-0" />
@@ -510,17 +510,17 @@ export const CenterHeader = React.memo(function CenterHeader({
 										<button
 											type="button"
 											onClick={leaveSchedulesSubpage}
-											className="shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[13px] font-medium text-neutral-400 transition-colors hover:bg-[var(--bg-active-fill)] hover:text-neutral-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+											className="shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[13px] font-medium tracking-[-0.015em] text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-active-fill)] hover:text-neutral-100 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
 										>
 											{t(CENTER_TITLE_KEY[effectiveCenterView] as string)}
 										</button>
 										<span className="shrink-0 text-neutral-600">/</span>
-										<span className="min-w-0 truncate text-[13px] font-medium text-neutral-200">
+										<span className="min-w-0 truncate text-[13px] font-medium tracking-[-0.015em] text-neutral-200">
 											{schedulesSubpageTitle}
 										</span>
 									</>
 								) : (
-									<span className="text-[13px] font-medium text-neutral-300 shrink-0">
+									<span className="text-[13px] font-medium tracking-[-0.015em] text-neutral-300 shrink-0">
 										{t(CENTER_TITLE_KEY[effectiveCenterView] as string)}
 									</span>
 								)
@@ -567,7 +567,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 									disabled={!activeSession.cwd}
 									onClick={handleOpenInFinder}
 									title={activeSession.cwd ? t("shell.revealInFinder", { path: activeSession.cwd }) : t("shell.noCwd")}
-									className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-800/80 hover:text-neutral-200 disabled:opacity-30 transition-colors"
+									className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-800/80 hover:text-neutral-200 disabled:opacity-30 active:scale-[0.97] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)]"
 								>
 									<FolderOpen size={14} />
 								</button>
@@ -579,7 +579,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 									onClick={() => setShareOpen((v) => !v)}
 									title={t("shell.shareAndExport")}
 									className={clsx(
-										"flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+										"flex h-7 w-7 items-center justify-center rounded-md active:scale-[0.97] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)]",
 										shareOpen
 											? "bg-neutral-800 text-neutral-100"
 											: "text-neutral-400 hover:bg-neutral-800/80 hover:text-neutral-200",
@@ -596,7 +596,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 									offset={6}
 									onDismiss={() => setShareOpen(false)}
 									ignoreRefs={[shareBtnRef]}
-									className="w-max rounded-lg border border-neutral-700 bg-neutral-900 p-1 text-xs shadow-xl"
+									className="w-max p-1 text-xs"
 								>
 									<button
 										type="button"
@@ -604,7 +604,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 											if (activeSession) useShareSelection.getState().begin(activeSession.id);
 											setShareOpen(false);
 										}}
-										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]"
 									>
 										<ImageIcon size={13} className="shrink-0" />
 										<span>{t("shell.shareAsImage")}</span>
@@ -612,7 +612,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 									<button
 										type="button"
 										onClick={handleShareLink}
-										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]"
 									>
 										<Link2 size={13} className="shrink-0" />
 										<span>{t("shell.createShareLinkAction")}</span>
@@ -620,7 +620,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 									<button
 										type="button"
 										onClick={handleCopyMarkdown}
-										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]"
 									>
 										<Copy size={13} className="shrink-0" />
 										<span>{t("shell.copyAsMarkdown")}</span>
@@ -628,7 +628,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 									<button
 										type="button"
 										onClick={handleExportHtml}
-										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]"
 									>
 										<FileDown size={13} className="shrink-0" />
 										<span>{t("shell.exportAsHtml")}</span>
@@ -636,7 +636,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 									<button
 										type="button"
 										onClick={handleMobilePair}
-										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
+										className="flex w-full items-center gap-2 whitespace-nowrap rounded px-2.5 pr-3 py-1.5 text-neutral-300 hover:bg-[var(--bg-hover)] hover:text-[var(--text)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]"
 									>
 										<QrCode size={13} className="shrink-0" />
 										<span>{t("shell.mobileScan")}</span>
@@ -652,7 +652,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 							aria-label={t("topbar.terminal")}
 							title={`${t("topbar.terminal")} (${isMac ? "⌘" : "Ctrl+"}\`)`}
 							className={clsx(
-								"relative flex h-7 w-7 items-center justify-center rounded-lg active:scale-95 transition-all",
+								"relative flex h-7 w-7 items-center justify-center rounded-lg active:scale-[0.97] transition-[background-color,color,border-color,transform] duration-150 ease-[var(--ease-out)]",
 								isTerminalOpen
 									? "border border-indigo-500/40 bg-indigo-600/20 text-indigo-300"
 									: "text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-200",
@@ -667,7 +667,7 @@ export const CenterHeader = React.memo(function CenterHeader({
 							<button
 								type="button"
 								onClick={toggleRight}
-								className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-200 active:scale-95 transition-all"
+								className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-200 active:scale-[0.97] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)]"
 								title={`${t("topbar.expandRightPanel")} (⌘J)`}
 							>
 								<PanelRightOpen size={15} />

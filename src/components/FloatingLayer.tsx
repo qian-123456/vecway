@@ -89,6 +89,21 @@ export type Placement =
 	| "left-start"
 	| "center";
 
+const ORIGIN_BY_PLACEMENT: Record<Placement, string> = {
+	"bottom-start": "top left",
+	"bottom-end": "top right",
+	"top-start": "bottom left",
+	"top-end": "bottom right",
+	"right-start": "top left",
+	"left-start": "top right",
+	center: "center",
+};
+
+/** Transform-origin matching the anchor edge so popovers scale out of their trigger. */
+export function originForPlacement(placement: Placement): string {
+	return ORIGIN_BY_PLACEMENT[placement];
+}
+
 /** A DOM element, a measured rect, or a pointer position (context menus). */
 export type Anchor = Element | DOMRect | { x: number; y: number };
 
@@ -261,6 +276,10 @@ export interface FloatingLayerProps {
 	/** Esc pressed inside a text field within this layer is left to that field
 	 * (it cancels its own edit) instead of dismissing the layer. Default: dismiss. */
 	deferEscapeToEditors?: boolean;
+	/** Skip entrance transition (e.g. keyboard-triggered command dialogs or warm tooltips). */
+	instant?: boolean;
+	/** Surface entrance motion preset. Default `"popover"`. */
+	surfaceMotion?: "popover" | "tooltip" | "none";
 	className?: string;
 	style?: CSSProperties;
 	role?: string;
@@ -321,6 +340,8 @@ export function FloatingLayer({
 	onDismiss,
 	ignoreRefs,
 	deferEscapeToEditors = false,
+	instant = false,
+	surfaceMotion = "popover",
 	className,
 	style,
 	children,
@@ -405,9 +426,13 @@ export function FloatingLayer({
 		<div
 			ref={ref}
 			{...rest}
+			data-positioned={pos ? "true" : "false"}
+			data-instant={instant ? "true" : undefined}
 			data-layer={layer}
 			className={clsx(
 				"fixed overflow-y-auto rounded-xl border border-[var(--border-divider)] vibrancy-popover shadow-apple-modal backdrop-blur-2xl",
+				surfaceMotion === "popover" && "apple-popover-surface",
+				surfaceMotion === "tooltip" && "apple-tooltip-surface",
 				className,
 			)}
 			style={{
@@ -419,14 +444,15 @@ export function FloatingLayer({
 				position: "fixed",
 				// Position must never animate: a `duration-*` class would otherwise
 				// transition left/top from the -9999 pre-measure spot (flies in from the far left).
-				transitionProperty: "none",
+				transitionProperty: pos ? "opacity, transform" : "none",
 				zIndex: z,
 				left: pos?.left ?? -9999,
 				top: pos?.bottomY === undefined ? (pos?.top ?? -9999) : "auto",
 				bottom: pos?.bottomY === undefined ? undefined : window.innerHeight - pos.bottomY,
 				maxHeight: pos?.maxHeight,
 				visibility: pos ? "visible" : "hidden",
-			}}
+				"--popover-origin": originForPlacement(pos?.placement ?? placement),
+			} as CSSProperties}
 		>
 			{children}
 		</div>,

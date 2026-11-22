@@ -81,6 +81,8 @@ export interface ModalProps {
 	backdropBlur?: boolean;
 	/** Extra classes for the backdrop overlay. */
 	backdropClassName?: string;
+	/** Skip entrance transition (e.g. keyboard-triggered search/command modals). */
+	instant?: boolean;
 	children: ReactNode;
 }
 
@@ -102,6 +104,7 @@ export function Modal({
 	closeOnEscape = true,
 	backdropBlur = true,
 	backdropClassName,
+	instant = false,
 	children,
 }: ModalProps) {
 	const { t } = useT();
@@ -183,9 +186,10 @@ export function Modal({
 		<div
 			ref={backdropRef}
 			data-layer="modal"
+			data-instant={instant ? "true" : undefined}
 			style={{ zIndex: Z_LAYER.modal }}
 			className={clsx(
-				"fixed inset-0 flex items-center justify-center p-4",
+				"apple-modal-backdrop fixed inset-0 flex items-center justify-center p-4",
 				backdropBlur && "backdrop-blur-md",
 				backdropClassName ?? "bg-[var(--overlay)]",
 			)}
@@ -212,8 +216,9 @@ export function Modal({
 				aria-labelledby={hasTitle ? titleId : undefined}
 				aria-label={hasTitle ? undefined : ariaLabel}
 				tabIndex={-1}
+				data-instant={instant ? "true" : undefined}
 				className={clsx(
-					"flex max-h-[85vh] flex-col rounded-2xl bg-[var(--bg-panel)] shadow-apple-modal hairline outline-none",
+					"apple-modal-panel apple-modal-surface flex max-h-[85vh] flex-col rounded-2xl shadow-apple-modal hairline outline-none",
 					SIZE_CLASS[size],
 					className,
 				)}
@@ -234,7 +239,7 @@ export function Modal({
 								onClick={onClose}
 								title={t("components.closeEsc")}
 								aria-label={t("common.close")}
-								className="rounded-md p-1 text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-200"
+								className="rounded-md p-1 text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-[0.97]"
 							>
 								<X className="h-3.5 w-3.5" />
 							</button>

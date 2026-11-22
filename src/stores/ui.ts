@@ -249,6 +249,8 @@ export interface UiState {
 	settingsRequest: number;
 	/** True while the latest settings request is unconsumed by SettingsPage. */
 	settingsPending: boolean;
+	/** True when settings was opened via a keyboard shortcut (0ms instant entrance). */
+	settingsInstant: boolean;
 	modal: { name: string; props: Record<string, unknown> } | null;
 	selectSession(id: string | null): void;
 	/** Drop the current session and its "last session" fallback; shows the blank home view. */
@@ -259,7 +261,7 @@ export interface UiState {
 	returnToSession(): void;
 	openDoc(path: string): void;
 	setCenter(v: CenterView): void;
-	openSettings(section?: string, opts?: { focusKey?: string }): void;
+	openSettings(section?: string, opts?: { focusKey?: string; instant?: boolean }): void;
 	closeSettings(): void;
 	/** Open (if needed) and activate `t`; never replaces another open tab. `null` deactivates. */
 	setRightTab(t: RightTab | null): void;
@@ -305,6 +307,7 @@ export const useUi = create<UiState>((set) => ({
 	settingsFocus: null,
 	settingsRequest: 0,
 	settingsPending: false,
+	settingsInstant: false,
 	modal: null,
 	selectSession: (id) => {
 		if (id) writeStorage(STORAGE_KEYS.lastSession, id);
@@ -376,6 +379,7 @@ export const useUi = create<UiState>((set) => ({
 			settingsFocus: opts?.focusKey ?? null,
 			settingsRequest: s.settingsRequest + 1,
 			settingsPending: true,
+			settingsInstant: Boolean(opts?.instant),
 			rightMaximized: false,
 		})),
 	closeSettings: () =>
@@ -387,6 +391,7 @@ export const useUi = create<UiState>((set) => ({
 				settingsSection: null,
 				settingsFocus: null,
 				settingsPending: false,
+				settingsInstant: false,
 			};
 		}),
 	setRightTab: (t) =>

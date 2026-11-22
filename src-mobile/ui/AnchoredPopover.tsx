@@ -217,6 +217,7 @@ export function AnchoredPopover({
 				ref={panelRef}
 				role="dialog"
 				aria-modal="true"
+				data-visible={visible ? "true" : "false"}
 				aria-label={typeof activeTitle === "string" ? activeTitle : undefined}
 				style={{
 					left: `${pos.left}px`,
@@ -226,7 +227,7 @@ export function AnchoredPopover({
 					maxHeight: `${pos.maxHeight}px`,
 					transformOrigin: pos.origin,
 				}}
-				className={`fixed flex flex-col overflow-hidden rounded-m-lg border border-m-border bg-m-bg-elev text-m-text shadow-m-pop transition-[opacity,transform] duration-(--m-dur-fast) ease-m ${
+				className={`m-popover-surface fixed flex flex-col overflow-hidden rounded-m-lg border border-m-border bg-m-bg-elev text-m-text ${
 					visible
 						? "scale-100 translate-y-0 opacity-100"
 						: pos.fromTop

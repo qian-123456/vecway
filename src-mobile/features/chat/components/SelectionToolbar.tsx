@@ -262,7 +262,7 @@ export function SelectionToolbar({
 				top: `${pos.top}px`,
 				maxWidth: `calc(100vw - ${EDGE_PAD * 2}px)`,
 			}}
-			className="fixed z-(--z-modal) overflow-hidden rounded-m-lg border border-m-border bg-m-bg-elev text-m-text shadow-m-pop"
+			className="m-popover-surface fixed z-(--z-modal) overflow-hidden rounded-m-lg border border-m-border bg-m-bg-elev text-m-text"
 		>
 			{target !== null ? (
 				<div className="flex w-[min(312px,calc(100vw-24px))] flex-col gap-2 p-2.5">

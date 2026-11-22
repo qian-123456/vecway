@@ -285,7 +285,7 @@ export function SettingsPage({ onClose, initialSection }: SettingsPageProps = {}
 		<div ref={rootRef} className="@container flex h-full min-h-0 overflow-hidden bg-transparent text-neutral-200">
 			{/* Left Navigation Bar */}
 			<div className="flex w-48 @[760px]:w-52 @[860px]:w-56 shrink-0 flex-col overflow-hidden border-r border-[var(--border-divider)] vibrancy-chrome p-2.5">
-				<div className="mb-2 flex items-center gap-1.5 rounded-lg hairline bg-[var(--well-bg)] px-2 py-1.5 focus-within:ring-1 focus-within:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]">
+				<div className="mb-2 flex items-center gap-1.5 rounded-lg hairline bg-[var(--well-bg)] px-2 py-1.5 transition-shadow duration-150 ease-[var(--ease-out)] focus-within:ring-1 focus-within:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]">
 					<Search className="h-3 w-3 shrink-0 text-neutral-500" />
 					<div className="relative min-w-0 flex-1">
 						<input
@@ -329,7 +329,7 @@ export function SettingsPage({ onClose, initialSection }: SettingsPageProps = {}
 								setNavQuery("");
 								searchRef.current?.focus();
 							}}
-							className="shrink-0 rounded p-0.5 text-neutral-500 hover:text-neutral-300 active:scale-95 transition-all"
+							className="shrink-0 rounded p-0.5 text-neutral-500 transition-[color,transform] duration-150 ease-[var(--ease-out)] hover:text-neutral-300 active:scale-[0.97]"
 						>
 							<X className="h-3 w-3" />
 						</button>
@@ -343,7 +343,7 @@ export function SettingsPage({ onClose, initialSection }: SettingsPageProps = {}
 					) : (
 						navGroupsMatched.map((group) => (
 							<div key={group.id} className="space-y-0.5">
-								<div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold text-neutral-500">
+								<div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold tracking-[-0.005em] text-neutral-500">
 									{group.title}
 								</div>
 								{group.items.map((sec) => {
@@ -362,9 +362,9 @@ export function SettingsPage({ onClose, initialSection }: SettingsPageProps = {}
 													moveNav(sec.id, e.key === "ArrowDown" ? 1 : -1);
 												}
 											}}
-											className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--accent)_35%,transparent)] active:scale-[0.98] ${
+											className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-[background-color,color] duration-120 ease-[var(--ease-out)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--accent)_35%,transparent)] ${
 												isActive
-													? "bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-[var(--text)] font-semibold shadow-xs"
+													? "bg-[color-mix(in_srgb,var(--accent)_16%,transparent)] font-semibold text-[var(--text)] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--accent)_24%,transparent)]"
 													: "text-neutral-400 hover:bg-[var(--bg-active-fill)] hover:text-neutral-200"
 											}`}
 										>

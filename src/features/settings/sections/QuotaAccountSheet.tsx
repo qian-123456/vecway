@@ -245,7 +245,7 @@ export function QuotaAccountSheet({
 
 	return createPortal(
 		<div
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-6 backdrop-blur-xs"
+			className="apple-modal-backdrop fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-6 backdrop-blur-md"
 			onMouseDown={(e) => {
 				backdropPressedRef.current = e.target === e.currentTarget;
 			}}
@@ -260,7 +260,7 @@ export function QuotaAccountSheet({
 				role="dialog"
 				aria-modal="true"
 				aria-label={t("quota.sheet.dialogAria", { brand: brand.name })}
-				className="animate-in fade-in zoom-in-95 flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-[var(--border-divider)] bg-[var(--bg-panel)] shadow-2xl duration-200"
+				className="apple-modal-panel apple-modal-surface flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl hairline shadow-apple-modal"
 				onClick={(e) => e.stopPropagation()}
 			>
 				<div className="flex items-center justify-between gap-3 border-b border-[var(--border-divider)] px-4 py-3.5">

@@ -189,7 +189,8 @@ export function BottomSheet({
 				aria-modal="true"
 				aria-label={typeof activeTitle === "string" ? activeTitle : undefined}
 				tabIndex={-1}
-				className={`absolute inset-x-0 bottom-0 flex flex-col overflow-hidden rounded-t-m-xl bg-m-bg-elev text-m-text outline-none transition-transform duration-300 ease-m-sheet ${visible ? "translate-y-0" : "translate-y-full"} ${className}`}
+				data-visible={visible ? "true" : "false"}
+				className={`m-sheet-surface absolute inset-x-0 bottom-0 flex flex-col overflow-hidden rounded-t-m-xl bg-m-bg-elev text-m-text outline-none ${visible ? "translate-y-0" : "translate-y-full"} ${className}`}
 				style={{
 					boxSizing: "border-box",
 					// --m-vh is the visual height; add keyboard inset back for this body-fixed box.

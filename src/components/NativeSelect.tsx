@@ -24,7 +24,7 @@ export const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
 					disabled={disabled}
 					className={clsx(
 						"peer w-full appearance-none rounded-lg hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] pl-3 pr-8 py-1.5 text-xs text-[var(--text)] cursor-pointer",
-						"focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] focus:outline-none transition-all",
+						"focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] focus:outline-none transition-[background-color,color,border-color,box-shadow] duration-150 ease-[var(--ease-out)]",
 						"disabled:cursor-not-allowed disabled:opacity-50",
 						"[&>option]:bg-[var(--bg-panel)] [&>option]:text-[var(--text)]",
 						className,

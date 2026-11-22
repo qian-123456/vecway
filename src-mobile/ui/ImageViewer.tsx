@@ -338,7 +338,7 @@ export function ImageViewerHost() {
 								aria-label="上一张"
 								disabled={activeIndex === 0}
 								onClick={() => setViewerIndex(activeIndex - 1)}
-								className="absolute top-1/2 left-2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-m-pill bg-m-bg-elev/85 text-m-text ring-1 ring-m-border transition-opacity active:scale-95 disabled:opacity-35"
+								className="absolute top-1/2 left-2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-m-pill bg-m-bg-elev/85 text-m-text ring-1 ring-m-border transition-[opacity,transform] duration-(--m-dur-press) ease-m active:scale-95 disabled:opacity-35"
 							>
 								<ChevronLeft size={20} />
 							</button>
@@ -347,7 +347,7 @@ export function ImageViewerHost() {
 								aria-label="下一张"
 								disabled={activeIndex === count - 1}
 								onClick={() => setViewerIndex(activeIndex + 1)}
-								className="absolute top-1/2 right-2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-m-pill bg-m-bg-elev/85 text-m-text ring-1 ring-m-border transition-opacity active:scale-95 disabled:opacity-35"
+								className="absolute top-1/2 right-2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-m-pill bg-m-bg-elev/85 text-m-text ring-1 ring-m-border transition-[opacity,transform] duration-(--m-dur-press) ease-m active:scale-95 disabled:opacity-35"
 							>
 								<ChevronRight size={20} />
 							</button>
@@ -363,7 +363,7 @@ export function ImageViewerHost() {
 										aria-label={`切换到第 ${i + 1} 张`}
 										aria-current={i === activeIndex ? "true" : undefined}
 										onClick={() => setViewerIndex(i)}
-										className={`h-10 w-10 shrink-0 overflow-hidden rounded-m-sm border transition-all ${
+										className={`h-10 w-10 shrink-0 overflow-hidden rounded-m-sm border transition-[border-color,opacity,box-shadow,transform] duration-(--m-dur-press) ease-m active:scale-95 ${
 											i === activeIndex
 												? "border-m-accent opacity-100 ring-2 ring-m-accent"
 												: "border-m-border opacity-60 hover:opacity-90"

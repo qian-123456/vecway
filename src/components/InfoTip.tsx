@@ -11,31 +11,70 @@ export interface InfoTipProps {
 	className?: string;
 }
 
+const WARM_WINDOW_MS = 400;
+const OPEN_DELAY_MS = 240;
+let activeCount = 0;
+let lastClosedAt = 0;
+
 /**
  * Compact info-circle icon that reveals a non-truncating explanation card in a
  * `FloatingLayer` (above modals/popovers per docs/LAYERS.md).
  */
 export function InfoTip({ text, label, className }: InfoTipProps) {
 	const btnRef = useRef<HTMLButtonElement>(null);
+	const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const [hovered, setHovered] = useState(false);
 	const [pinned, setPinned] = useState(false);
 	const [focused, setFocused] = useState(false);
+	const [isInstant, setIsInstant] = useState(false);
 
-	const clearTimer = () => {
+	const clearTimers = () => {
+		if (openTimerRef.current !== null) {
+			clearTimeout(openTimerRef.current);
+			openTimerRef.current = null;
+		}
 		if (closeTimerRef.current !== null) {
 			clearTimeout(closeTimerRef.current);
 			closeTimerRef.current = null;
 		}
 	};
 
-	useEffect(() => clearTimer, []);
+	useEffect(() => clearTimers, []);
 
 	const open = hovered || pinned || focused;
 
+	useEffect(() => {
+		if (!open) return;
+		activeCount += 1;
+		return () => {
+			activeCount = Math.max(0, activeCount - 1);
+			lastClosedAt = Date.now();
+		};
+	}, [open]);
+
 	const scheduleClose = () => {
-		clearTimer();
+		clearTimers();
 		closeTimerRef.current = setTimeout(() => setHovered(false), 120);
+	};
+
+	const handleMouseEnter = () => {
+		clearTimers();
+		if (open) {
+			setHovered(true);
+			return;
+		}
+		const warm = activeCount > 0 || Date.now() - lastClosedAt < WARM_WINDOW_MS;
+		if (warm) {
+			setIsInstant(true);
+			setHovered(true);
+			return;
+		}
+		openTimerRef.current = setTimeout(() => {
+			openTimerRef.current = null;
+			setIsInstant(false);
+			setHovered(true);
+		}, OPEN_DELAY_MS);
 	};
 
 	return (
@@ -45,16 +84,21 @@ export function InfoTip({ text, label, className }: InfoTipProps) {
 				type="button"
 				aria-label={label ?? text}
 				aria-expanded={open}
-				onMouseEnter={() => {
-					clearTimer();
-					setHovered(true);
-				}}
+				onMouseEnter={handleMouseEnter}
 				onMouseLeave={scheduleClose}
-				onFocus={() => setFocused(true)}
+				onFocus={() => {
+					clearTimers();
+					if (!open) setIsInstant(false);
+					setFocused(true);
+				}}
 				onBlur={() => setFocused(false)}
-				onClick={() => setPinned((prev) => !prev)}
+				onClick={() => {
+					clearTimers();
+					if (!open) setIsInstant(false);
+					setPinned((prev) => !prev);
+				}}
 				className={clsx(
-					"inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus:text-neutral-200 focus:outline-none",
+					"inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus:text-neutral-200 focus:outline-none active:scale-[0.95]",
 					pinned && "bg-[var(--bg-hover)] text-neutral-200",
 					className,
 				)}
@@ -67,16 +111,19 @@ export function InfoTip({ text, label, className }: InfoTipProps) {
 					placement="top-start"
 					offset={6}
 					layer="popover"
+					surfaceMotion="tooltip"
+					instant={isInstant}
 					onDismiss={() => {
+						clearTimers();
 						setPinned(false);
 						setHovered(false);
 						setFocused(false);
 					}}
 					ignoreRefs={[btnRef]}
-					onMouseEnter={clearTimer}
+					onMouseEnter={clearTimers}
 					onMouseLeave={scheduleClose}
 					role="tooltip"
-					className="max-w-[290px] whitespace-normal break-words rounded-lg border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2.5 py-2 text-[11px] leading-relaxed text-neutral-200 shadow-lg"
+					className="max-w-[290px] whitespace-normal break-words rounded-lg hairline vibrancy-popover px-2.5 py-2 text-[11px] leading-relaxed text-neutral-200 shadow-apple-modal"
 				>
 					{text}
 				</FloatingLayer>

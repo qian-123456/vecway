@@ -111,7 +111,7 @@ export function ImagePreviewModal({
 			data-layer="lightbox"
 			role="dialog"
 			aria-modal="true"
-			className="fixed inset-0 flex items-center justify-center bg-[var(--overlay)] p-4 select-none"
+			className="apple-modal-backdrop fixed inset-0 flex items-center justify-center bg-[var(--overlay)] p-4 select-none"
 			style={{ zIndex: Z_LAYER.lightbox }}
 			onClick={onClose}
 			onWheel={handleWheel}
@@ -136,7 +136,7 @@ export function ImagePreviewModal({
 				<button
 					type="button"
 					onClick={onClose}
-					className="flex h-9 w-9 items-center justify-center rounded-full bg-black/75 text-white/80 backdrop-blur-md border border-white/10 shadow-sm hover:scale-110 hover:bg-black hover:text-white transition-all cursor-pointer pointer-events-auto"
+					className="apple-hover-lift pointer-events-auto flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-white/10 bg-black/75 text-white/80 shadow-sm backdrop-blur-md transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-black hover:text-white"
 					title={t("components.closeEsc")}
 				>
 					<X size={18} strokeWidth={2} />
@@ -151,20 +151,20 @@ export function ImagePreviewModal({
 						e.stopPropagation();
 						prev();
 					}}
-					className="absolute left-6 top-1/2 -translate-y-1/2 z-20 flex h-11 w-11 items-center justify-center rounded-full bg-black/60 text-white/80 backdrop-blur-md border border-white/10 shadow-lg hover:scale-110 hover:bg-black/90 hover:text-white transition-all cursor-pointer group"
+					className="apple-hover-lift group absolute left-6 top-1/2 z-20 flex h-11 w-11 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-white/10 bg-black/60 text-white/80 shadow-lg backdrop-blur-md transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-black/90 hover:text-white"
 					title={t("components.prevImage")}
 				>
 					<ChevronLeft
 						size={24}
 						strokeWidth={2.5}
-						className="group-hover:-translate-x-0.5 transition-transform"
+						className="transition-[translate,transform] duration-150 ease-[var(--ease-out)] group-hover:-translate-x-0.5"
 					/>
 				</button>
 			)}
 
 			{/* Main Image Container */}
 			<div
-				className="relative max-h-[85vh] max-w-[85vw] flex items-center justify-center overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--bg-panel)] p-2 shadow-apple-modal transition-transform duration-200"
+				className="relative flex max-h-[85vh] max-w-[85vw] items-center justify-center overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--bg-panel)] p-2 shadow-apple-modal"
 				onClick={(e) => e.stopPropagation()}
 			>
 				{failedPath === current.path ? (
@@ -180,7 +180,7 @@ export function ImagePreviewModal({
 						src={convertFileSrc(current.path)}
 						alt={t("components.imageIndex", { index: index + 1 })}
 						onError={() => setFailedPath(current.path)}
-						className="max-h-[78vh] max-w-full rounded-xl object-contain animate-in fade-in zoom-in-95 duration-150"
+						className="apple-modal-panel max-h-[78vh] max-w-full rounded-xl object-contain"
 					/>
 				)}
 			</div>
@@ -193,13 +193,13 @@ export function ImagePreviewModal({
 						e.stopPropagation();
 						next();
 					}}
-					className="absolute right-6 top-1/2 -translate-y-1/2 z-20 flex h-11 w-11 items-center justify-center rounded-full bg-black/60 text-white/80 backdrop-blur-md border border-white/10 shadow-lg hover:scale-110 hover:bg-black/90 hover:text-white transition-all cursor-pointer group"
+					className="apple-hover-lift group absolute right-6 top-1/2 z-20 flex h-11 w-11 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-white/10 bg-black/60 text-white/80 shadow-lg backdrop-blur-md transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-black/90 hover:text-white"
 					title={t("components.nextImage")}
 				>
 					<ChevronRight
 						size={24}
 						strokeWidth={2.5}
-						className="group-hover:translate-x-0.5 transition-transform"
+						className="transition-[translate,transform] duration-150 ease-[var(--ease-out)] group-hover:translate-x-0.5"
 					/>
 				</button>
 			)}
@@ -215,10 +215,10 @@ export function ImagePreviewModal({
 							key={img.path || i}
 							type="button"
 							onClick={() => setIndex(i)}
-							className={`relative h-12 w-12 shrink-0 overflow-hidden rounded-lg border transition-all cursor-pointer ${
+							className={`relative h-12 w-12 shrink-0 cursor-pointer overflow-hidden rounded-lg border transition-[border-color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96] ${
 								i === index
 									? "border-amber-400 scale-105 shadow-md ring-2 ring-amber-400/30"
-									: "border-white/10 opacity-60 hover:opacity-100 hover:scale-100"
+									: "border-white/10 opacity-60 hover:opacity-100"
 							}`}
 							title={t("components.jumpToImage", { index: i + 1 })}
 						>

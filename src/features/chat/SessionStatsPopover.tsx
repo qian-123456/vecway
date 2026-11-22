@@ -48,7 +48,7 @@ export function SessionStatsPopover({
 			ignoreRefs={ignoreRefs}
 			onDismiss={onClose}
 			className={clsx(
-				"w-72 p-3.5 text-[var(--text)] select-none animate-in fade-in zoom-in-95 duration-100",
+				"w-72 p-3.5 text-[var(--text)] select-none",
 				className,
 			)}
 		>
@@ -61,7 +61,7 @@ export function SessionStatsPopover({
 				<button
 					type="button"
 					onClick={onClose}
-					className="rounded-md p-1 text-[var(--text-40)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] active:scale-95 transition-all"
+					className="rounded-md p-1 text-[var(--text-40)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] active:scale-[0.97] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)]"
 				>
 					<X size={12} />
 				</button>

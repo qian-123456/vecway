@@ -18,9 +18,9 @@ import { notifyCopied } from "./copyFeedback";
 import { clipboardWriteMessage } from "./ipc";
 import { tNow } from "../stores/language";
 const CANCEL_BTN_CLASS =
-	"press-scale whitespace-nowrap rounded-lg border border-[var(--border-divider)] px-3 py-1.5 text-xs text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200 transition-colors";
+	"whitespace-nowrap rounded-lg border border-[var(--border-divider)] px-3 py-1.5 text-xs text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-[0.97]";
 const OK_BTN_CLASS =
-	"press-scale whitespace-nowrap rounded-lg px-4 py-1.5 text-xs font-medium text-white transition-colors";
+	"whitespace-nowrap rounded-lg px-4 py-1.5 text-xs font-medium text-white transition-[background-color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]";
 const OK_TONE = { normal: "bg-[#0A84FF] hover:bg-[#0A84FF]/90", danger: "bg-[#FF453A] hover:bg-[#FF453A]/90" };
 
 function ConfirmDialogView({
@@ -65,7 +65,7 @@ function ConfirmDialogView({
 		<div
 			data-layer="modal"
 			style={{ zIndex: Z_LAYER.modal }}
-			className="fixed inset-0 flex items-center justify-center bg-[var(--overlay)] backdrop-blur-sm p-6"
+			className="apple-modal-backdrop fixed inset-0 flex items-center justify-center bg-[var(--overlay)] backdrop-blur-sm p-6"
 			onMouseDown={(e) => {
 				backdropPressedRef.current = e.target === e.currentTarget;
 			}}
@@ -79,7 +79,7 @@ function ConfirmDialogView({
 				role="dialog"
 				aria-modal="true"
 				aria-labelledby={titleId}
-				className="w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(85vh,560px)] flex flex-col rounded-2xl bg-[var(--bg-panel)] p-5 text-neutral-300 shadow-apple-modal hairline"
+				className="apple-modal-panel apple-modal-surface w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(85vh,560px)] flex flex-col rounded-2xl p-5 text-neutral-300 shadow-apple-modal hairline"
 				onKeyDown={(e) => {
 					e.stopPropagation();
 					if (isComposing(e)) return;
@@ -127,7 +127,7 @@ function ConfirmDialogView({
 						title={tNow("components.closeEsc")}
 						aria-label={tNow("shell.closeDialog")}
 						onClick={cancel}
-						className="press-scale rounded-lg p-1 text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-100 transition-colors"
+						className="rounded-lg p-1 text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-neutral-100 active:scale-[0.97]"
 					>
 						<X size={15} />
 					</button>

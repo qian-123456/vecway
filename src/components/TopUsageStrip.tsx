@@ -139,11 +139,11 @@ export function TopUsageStrip({ hasRightBadge = false }: { hasRightBadge?: boole
 			type="button"
 			onClick={() => openSettingsTarget("quota")}
 			title={t("topbar.openUsageTip")}
-			className="group inline-flex min-w-0 shrink items-center gap-2 overflow-hidden rounded-md px-1.5 py-1 -mx-1 text-[11.5px] text-[var(--text-muted)] tabular-nums transition-colors hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] active:opacity-80 cursor-pointer"
+			className="group inline-flex min-w-0 shrink items-center gap-2 overflow-hidden rounded-md px-1.5 py-1 -mx-1 text-[11.5px] text-[var(--text-muted)] tabular-nums transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] active:scale-[0.97] cursor-pointer"
 		>
 			<span className="shrink-0 whitespace-nowrap">
 				{t("topbar.recent30dPrefix")}{" "}
-				<strong className="font-mono font-semibold text-[var(--text)]">
+				<strong className="font-mono font-semibold tabular-nums text-[var(--text)]">
 					{summary.formattedTotal}
 				</strong>{" "}
 				tokens

@@ -67,7 +67,7 @@ export function ComposerModelControls({
 					}}
 					title={planPreview ? t("composer.planModelTitle") : modelLabel}
 					className={clsx(
-						"flex min-w-0 max-w-full items-center gap-1 rounded-md py-1 text-[12px] text-[var(--text-60,var(--text-muted))] transition-colors hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)]",
+						"flex min-w-0 max-w-full items-center gap-1 rounded-md py-1 text-[12px] text-[var(--text-60,var(--text-muted))] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover,var(--bg-hover))] hover:text-[var(--text)] active:scale-[0.97]",
 						toolbarTier >= TIER_TIGHT ? "px-1.5" : "px-2",
 					)}
 				>

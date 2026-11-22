@@ -18,6 +18,9 @@
 	--m-fs-xs: 12.5px;
 	--m-lh-body: 27px;
 	--m-ls-body: 0;
+	--m-ls-display: -0.024em;
+	--m-ls-title: -0.02em;
+	--m-ls-xs: 0.01em;
 	/* Message text size; Settings ▸ 外观 overrides it at runtime (displayPrefs). */
 	--m-msg-fs: var(--m-fs-body);
 	--m-heading-size: var(--m-fs-display);
@@ -45,8 +48,10 @@
 	--m-touch: 44px;
 
 	/* Motion */
-	--m-ease: cubic-bezier(0.2, 0, 0, 1);
+	--m-ease: cubic-bezier(0.23, 1, 0.32, 1);
+	--m-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 	--m-ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+	--m-dur-press: 130ms;
 	--m-dur-fast: 160ms;
 	--m-dur: 260ms;
 	--m-dur-sheet: 380ms;
@@ -118,8 +123,10 @@ html[data-scheme="dark"] {
 	--m-drawer-bg: color-mix(in srgb, var(--m-bg-elev) 75%, var(--m-bg));
 	--m-drawer-active: color-mix(in srgb, var(--m-accent) 16%, transparent);
 	--m-scrim: rgb(0 0 0 / 0.58);
-	--m-shadow-pop: 0 12px 32px rgb(0 0 0 / 0.5);
-	--m-shadow-card: 0 1px 2px rgb(0 0 0 / 0.28);
+	--m-rim-light: rgb(255 255 255 / 0.13);
+	--m-rim-light-subtle: rgb(255 255 255 / 0.07);
+	--m-shadow-pop: inset 0 0.5px 0 var(--m-rim-light), 0 14px 36px rgb(0 0 0 / 0.54), 0 2px 6px rgb(0 0 0 / 0.28);
+	--m-shadow-card: inset 0 0.5px 0 var(--m-rim-light-subtle), 0 1px 2px rgb(0 0 0 / 0.28);
 	--m-glow: radial-gradient(120% 56% at 50% 108%, color-mix(in srgb, var(--m-accent) 24%, transparent), color-mix(in srgb, var(--m-accent) 8%, transparent) 46%, transparent 74%);
 }
 
@@ -170,8 +177,10 @@ html[data-scheme="light"] {
 	--m-drawer-bg: var(--m-bg);
 	--m-drawer-active: color-mix(in srgb, var(--m-accent) 12%, var(--m-card));
 	--m-scrim: rgb(15 18 28 / 0.3);
-	--m-shadow-pop: 0 10px 28px rgb(18 22 33 / 0.14), 0 1px 2px rgb(18 22 33 / 0.06);
-	--m-shadow-card: 0 1px 3px rgb(18 22 33 / 0.06);
+	--m-rim-light: rgb(255 255 255 / 0.82);
+	--m-rim-light-subtle: rgb(255 255 255 / 0.62);
+	--m-shadow-pop: inset 0 0.5px 0 var(--m-rim-light), 0 12px 32px rgb(18 22 33 / 0.14), 0 2px 6px rgb(18 22 33 / 0.07);
+	--m-shadow-card: inset 0 0.5px 0 var(--m-rim-light-subtle), 0 1px 3px rgb(18 22 33 / 0.06);
 	--m-glow: radial-gradient(120% 56% at 50% 108%, color-mix(in srgb, var(--m-accent) 16%, transparent), color-mix(in srgb, var(--m-accent) 6%, transparent) 46%, transparent 74%);
 }
 

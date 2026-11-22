@@ -279,7 +279,7 @@ export function ComposerCapsule({
 						type="button"
 						aria-label="添加"
 						onClick={onPlus}
-						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-m-text-2 transition-colors hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
+						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-m-text-2 transition-[background-color,color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
 					>
 						<Plus size={18} strokeWidth={2} />
 					</button>
@@ -290,7 +290,7 @@ export function ComposerCapsule({
 							aria-label={modelTriggerLabel}
 							onClick={onModel ?? onThinking}
 							disabled={!onModel && !onThinking}
-							className="flex h-8 min-w-0 max-w-full flex-initial items-center gap-1 rounded-lg px-2 text-left transition-colors hover:bg-m-surface active:bg-m-surface-2 disabled:cursor-default"
+							className="flex h-8 min-w-0 max-w-full flex-initial items-center gap-1 rounded-lg px-2 text-left transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface active:scale-[0.98] active:bg-m-surface-2 disabled:cursor-default disabled:active:scale-100"
 						>
 							{hasModel && (
 								<span className="min-w-0 truncate text-[12.5px] font-medium text-m-text">
@@ -317,7 +317,7 @@ export function ComposerCapsule({
 							title={`上下文用量：${contextText}`}
 							onClick={onContext}
 							disabled={!onContext}
-							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-m-surface active:bg-m-surface-2 disabled:opacity-60 ${contextToneClass}`}
+							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface active:scale-95 active:bg-m-surface-2 disabled:opacity-60 disabled:active:scale-100 ${contextToneClass}`}
 						>
 							<ContextIndicator text={contextText} percent={contextPercent} compact />
 						</button>
@@ -329,7 +329,7 @@ export function ComposerCapsule({
 						aria-pressed={recording}
 						disabled={transcribing}
 						onClick={() => void toggleRecording()}
-						className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors ${
+						className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-[background-color,color,transform] duration-(--m-dur-press) ease-m ${
 							recording
 								? "m-pulse bg-m-danger text-white"
 								: "text-m-text-2 hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
@@ -344,7 +344,7 @@ export function ComposerCapsule({
 							type="button"
 							aria-label="停止"
 							onClick={onStop}
-							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-m-text text-m-bg transition-transform active:scale-95"
+							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-m-text text-m-bg transition-transform duration-(--m-dur-press) ease-m active:scale-95"
 						>
 							<Square size={11} fill="currentColor" />
 						</button>
@@ -355,7 +355,7 @@ export function ComposerCapsule({
 							aria-label="发送"
 							disabled={!canSend}
 							onClick={submit}
-							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
+							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-[background-color,color,transform,opacity] duration-(--m-dur-press) ease-m ${
 								canSend
 									? "cursor-pointer bg-m-text text-m-bg shadow-xs active:scale-95"
 									: "cursor-not-allowed bg-m-surface-2 text-m-text-3"

@@ -42,7 +42,7 @@ export function Button({
 			onClick={onClick}
 			disabled={disabled || busy}
 			aria-busy={busy || undefined}
-			className={`relative inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-[10px] font-medium whitespace-nowrap transition-[opacity,background-color] duration-(--m-dur-fast) disabled:opacity-40 ${sz} ${
+			className={`m-press relative inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-[10px] font-medium whitespace-nowrap disabled:opacity-40 ${sz} ${
 				block ? "w-full" : ""
 			} ${VARIANTS[variant]} ${className}`}
 		>

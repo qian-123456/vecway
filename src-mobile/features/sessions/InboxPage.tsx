@@ -90,7 +90,7 @@ function InboxRow({ s, onOpen, onSeen }: { s: TreeSession; onOpen: () => void; o
 									aria-busy={reading || undefined}
 									aria-label={`标记已读：${sessionName(s)}`}
 									onClick={() => void markRead()}
-									className="relative inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-[10px] border border-m-border bg-m-surface px-4 text-m-sm font-medium whitespace-nowrap text-m-text transition-[opacity,background-color] duration-(--m-dur-fast) active:bg-m-surface-2 disabled:opacity-40"
+									className="m-press relative inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-[10px] border border-m-border bg-m-surface px-4 text-m-sm font-medium whitespace-nowrap text-m-text active:bg-m-surface-2 disabled:opacity-40"
 								>
 									{reading ? <Spinner size={16} /> : null}
 									已读

@@ -350,9 +350,9 @@ export function SessionView({
 											behavior: "smooth",
 										});
 								}}
-								className="absolute bottom-3 left-1/2 z-20 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--line)] bg-[var(--bg-panel)] text-[var(--text-60)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
+								className="group vibrancy-popover shadow-apple-modal hairline absolute bottom-3 left-1/2 z-20 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full text-[var(--text-60)] transition-[background-color,color] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
 							>
-								<ArrowDown size={16} />
+								<ArrowDown size={16} className="transition-transform duration-150 ease-[var(--ease-out)] group-active:scale-[0.9]" />
 								{scrollPill.hasNewMessages && (
 									<span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border-2 border-[var(--bg-panel)] bg-[var(--text-40)]" />
 								)}

@@ -178,7 +178,7 @@ export function ModelPicker({
 										<span className="mt-0.5 block text-m-xs break-words text-m-text-3">正在使用 {selected.name || selected.id}</span>
 									)}
 								</span>
-								<span className="shrink-0 text-m-sm text-m-text-3">{g.models.length}</span>
+								<span className="shrink-0 text-m-sm tabular-nums text-m-text-3">{g.models.length}</span>
 								<ChevronRight size={18} className="shrink-0 text-m-text-3" aria-hidden />
 							</button>
 						))}

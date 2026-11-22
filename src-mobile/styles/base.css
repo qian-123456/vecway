@@ -49,6 +49,7 @@
 	--radius-m-pill: var(--m-r-pill);
 	--text-m-xs: var(--m-fs-xs);
 	--text-m-xs--line-height: 18px;
+	--text-m-xs--letter-spacing: var(--m-ls-xs);
 	--text-m-sm: var(--m-fs-sm);
 	--text-m-sm--line-height: 20px;
 	--text-m-md: var(--m-fs-md);
@@ -59,8 +60,10 @@
 	--text-m-lg--line-height: 26px;
 	--text-m-title: var(--m-fs-title);
 	--text-m-title--line-height: 34px;
+	--text-m-title--letter-spacing: var(--m-ls-title);
 	--text-m-display: var(--m-fs-display);
 	--text-m-display--line-height: 38px;
+	--text-m-display--letter-spacing: var(--m-ls-display);
 	--font-m-sans: var(--m-font-sans);
 	--font-m-mono: var(--m-font-mono);
 	--shadow-m-pop: var(--m-shadow-pop);
@@ -68,6 +71,7 @@
 	--shadow-m-composer: var(--m-composer-shadow);
 	--ease-m: var(--m-ease);
 	--ease-m-sheet: var(--m-ease-sheet);
+	--ease-m-in-out: var(--m-ease-in-out);
 }
 
 /* Layer scale (Tailwind: z-(--z-sheet)). Never use raw z-index numbers in components. */
@@ -133,9 +137,14 @@ body {
 		font: inherit;
 		color: inherit;
 	}
+	button,
+	[role="button"] {
+		touch-action: manipulation;
+		-webkit-user-select: none;
+		user-select: none;
+	}
 	button {
 		cursor: pointer;
-		touch-action: manipulation;
 	}
 	/* iOS zooms into inputs below 16px. */
 	input,
@@ -288,6 +297,96 @@ html[data-scheme="light"] .m-glass-btn:active {
 		background-color: var(--m-surface);
 	}
 }
+@layer components {
+	/* Crisp iOS tactile press scale without overriding explicit color/opacity transitions. */
+	.m-press {
+		transition:
+			transform var(--m-dur-press) var(--m-ease),
+			background-color var(--m-dur-fast) var(--m-ease),
+			border-color var(--m-dur-fast) var(--m-ease),
+			color var(--m-dur-fast) var(--m-ease),
+			opacity var(--m-dur-fast) var(--m-ease);
+	}
+	.m-press:active:not(:disabled) {
+		transform: scale(0.97);
+	}
+
+	/* iOS switch thumb: single property (transform) and single cascade layer for resting, checked, and pressed states. */
+	.m-switch-knob {
+		width: 27px;
+		transform: translateX(0);
+		transition:
+			transform var(--m-dur) var(--m-ease),
+			width var(--m-dur-press) var(--m-ease);
+	}
+	button[role="switch"][aria-checked="true"] .m-switch-knob {
+		transform: translateX(20px);
+	}
+	button[role="switch"]:active:not(:disabled) .m-switch-knob {
+		width: 33px;
+	}
+	button[role="switch"][aria-checked="true"]:active:not(:disabled) .m-switch-knob {
+		transform: translateX(14px);
+	}
+
+	/* Floating sheet surface with specular top rim shadow; transitions both Tailwind translate and drag transform. */
+	.m-sheet-surface {
+		box-shadow: var(--m-shadow-pop);
+		transition:
+			translate 300ms var(--m-ease-sheet),
+			transform 300ms var(--m-ease-sheet),
+			opacity var(--m-dur-fast) var(--m-ease);
+	}
+	@starting-style {
+		.m-sheet-surface:not([data-visible="false"]) {
+			opacity: 0;
+			transform: translateY(20px);
+		}
+	}
+
+	/* Contextual popover surface with scale(0.96) + opacity @starting-style entrance. */
+	.m-popover-surface {
+		box-shadow: var(--m-shadow-pop);
+		opacity: 1;
+		transform: scale(1) translateY(0);
+		transition:
+			opacity var(--m-dur-fast) var(--m-ease),
+			transform var(--m-dur-fast) var(--m-ease);
+	}
+	@starting-style {
+		.m-popover-surface:not([data-visible="false"]) {
+			opacity: 0;
+			transform: scale(0.96) translateY(-2px);
+		}
+	}
+
+	/* Native-feeling contained touch scroll pane. */
+	.m-scroll-pane {
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		-webkit-overflow-scrolling: touch;
+	}
+}
+
+@media (prefers-reduced-transparency: reduce) {
+	.m-popover-surface,
+	.m-sheet-surface {
+		background-color: var(--m-bg-elev);
+		backdrop-filter: none;
+		-webkit-backdrop-filter: none;
+	}
+}
+
+@media (prefers-contrast: more) {
+	html[data-scheme="dark"] {
+		--m-border: rgb(255 255 255 / 0.24);
+		--m-border-strong: rgb(255 255 255 / 0.38);
+	}
+	html[data-scheme="light"] {
+		--m-border: rgb(20 20 26 / 0.22);
+		--m-border-strong: rgb(20 20 26 / 0.36);
+	}
+}
 
 @media (prefers-reduced-motion: reduce) {
 	html,
@@ -314,6 +413,41 @@ html[data-scheme="light"] .m-glass-btn:active {
 	.m-glass-btn:active,
 	html[data-scheme="light"] .m-glass-btn:active {
 		transform: none;
+	}
+	.m-press {
+		transition:
+			background-color var(--m-dur-fast) var(--m-ease),
+			border-color var(--m-dur-fast) var(--m-ease),
+			color var(--m-dur-fast) var(--m-ease),
+			opacity var(--m-dur-fast) var(--m-ease);
+	}
+	.m-press:active:not(:disabled) {
+		transform: none;
+	}
+	.m-switch-knob {
+		transition: none;
+	}
+	button[role="switch"]:active:not(:disabled) .m-switch-knob {
+		width: 27px;
+	}
+	button[role="switch"][aria-checked="true"]:active:not(:disabled) .m-switch-knob {
+		transform: translateX(20px);
+	}
+	.m-sheet-surface,
+	.m-popover-surface {
+		translate: none !important;
+		transform: none !important;
+		transition: opacity 150ms var(--m-ease) !important;
+	}
+	.m-sheet-surface[data-visible="false"],
+	.m-popover-surface[data-visible="false"] {
+		opacity: 0;
+	}
+	@starting-style {
+		.m-sheet-surface,
+		.m-popover-surface {
+			transform: none;
+		}
 	}
 	[class*="active:scale-"]:active {
 		transform: none !important;

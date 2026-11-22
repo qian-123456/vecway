@@ -183,7 +183,7 @@ const TRACE_GUTTER_PAD = "px-8 @min-[864px]:px-3";
 
 /** 20px-square ghost icon button, matching the AnswerFooter actions. */
 const USER_ACTION_BTN =
-	"flex h-5 w-5 items-center justify-center rounded text-[var(--text-30)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]";
+	"flex h-5 w-5 items-center justify-center rounded text-[var(--text-30)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] active:scale-[0.97]";
 
 /**
  * User message: right-aligned Codex bubble (70% max width, 22px radius,
@@ -356,7 +356,7 @@ export const UserRow = React.memo(function UserRow({
 						<button
 							type="button"
 							onClick={closeEditor}
-							className="rounded-md px-2.5 py-1 text-[var(--text-60)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
+							className="rounded-md px-2.5 py-1 text-[var(--text-60)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] active:scale-[0.97]"
 						>
 							{t("common.cancel")}
 						</button>
@@ -364,7 +364,7 @@ export const UserRow = React.memo(function UserRow({
 							type="button"
 							disabled={resending || !draft.trim()}
 							onClick={() => void resendEdited()}
-							className="rounded-md bg-[var(--text)] px-2.5 py-1 text-[var(--bg)] transition-opacity hover:opacity-90 disabled:opacity-40"
+							className="rounded-md bg-[var(--text)] px-2.5 py-1 text-[var(--bg)] transition-[opacity,transform] duration-150 ease-[var(--ease-out)] hover:opacity-90 active:scale-[0.97] disabled:opacity-40 disabled:active:scale-100"
 						>
 							{resending ? t("chat.message.resending") : t("chat.message.resend")}
 						</button>
@@ -1097,7 +1097,7 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 							<button
 								type="button"
 								onClick={() => setForceOpenSteps(true)}
-								className="rounded-full border border-[var(--line)] px-2.5 py-1 text-[11px] font-medium text-[var(--text-60)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
+								className="rounded-full border border-[var(--line)] px-2.5 py-1 text-[11px] font-medium text-[var(--text-60)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] active:scale-[0.97]"
 							>
 								{t("chat.message.expandStepsAction")}
 							</button>
@@ -1106,7 +1106,7 @@ const TurnBlockRow = React.memo(function TurnBlockRow({
 							type="button"
 							disabled={retryingTurn}
 							onClick={() => void retryTurn()}
-							className="rounded-full bg-[var(--text)] px-3 py-1 text-[11px] font-medium text-[var(--bg-panel)] transition-opacity hover:opacity-85 disabled:opacity-50"
+							className="rounded-full bg-[var(--text)] px-3 py-1 text-[11px] font-medium text-[var(--bg-panel)] transition-[opacity,transform] duration-150 ease-[var(--ease-out)] hover:opacity-85 active:scale-[0.97] disabled:opacity-50 disabled:active:scale-100"
 						>
 							{t("chat.message.retryThisTurn")}
 						</button>
@@ -1166,7 +1166,7 @@ export function TurnErrorCard({
 						onClick={onDismiss}
 						aria-label={t("chat.message.dismissError")}
 						title={t("chat.message.dismissError")}
-						className="-mr-1 -mt-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--text-40)] transition-colors hover:bg-rose-500/12 hover:text-rose-500"
+						className="-mr-1 -mt-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--text-40)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-rose-500/12 hover:text-rose-500 active:scale-[0.97]"
 					>
 						<X className="h-3.5 w-3.5" aria-hidden="true" />
 					</button>
@@ -1181,14 +1181,14 @@ export function TurnErrorCard({
 					type="button"
 					disabled={retrying}
 					onClick={onRetry}
-					className="rounded-full bg-[var(--text)] px-3 py-1 text-[11px] font-medium text-[var(--bg-panel)] transition-opacity hover:opacity-85 disabled:opacity-50"
+					className="rounded-full bg-[var(--text)] px-3 py-1 text-[11px] font-medium text-[var(--bg-panel)] transition-[opacity,transform] duration-150 ease-[var(--ease-out)] hover:opacity-85 active:scale-[0.97] disabled:opacity-50 disabled:active:scale-100"
 				>
 					{t("chat.message.retryThisTurn")}
 				</button>
 				<button
 					type="button"
 					onClick={onSwitchModel}
-					className="rounded-full border border-[var(--line)] bg-[var(--bg-panel)] px-3 py-1 text-[11px] font-medium text-[var(--text-60)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
+					className="rounded-full border border-[var(--line)] bg-[var(--bg-panel)] px-3 py-1 text-[11px] font-medium text-[var(--text-60)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] active:scale-[0.97]"
 				>
 					{t("chat.message.switchModel")}
 				</button>
@@ -2766,7 +2766,7 @@ export function MessageList({
 						<button
 							type="button"
 							onClick={onRetryTranscript}
-							className="mt-3 flex items-center gap-1 rounded px-2 py-1 text-[12px] text-[var(--text-40)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
+							className="mt-3 flex items-center gap-1 rounded px-2 py-1 text-[12px] text-[var(--text-40)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)] active:scale-[0.97]"
 						>
 							<RotateCcw size={12} />
 							<span>{t("chat.message.retryLoading")}</span>

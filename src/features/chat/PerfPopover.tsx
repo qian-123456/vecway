@@ -80,7 +80,7 @@ export function PerfPopover({
 			ignoreRefs={ignoreRefs}
 			onDismiss={onClose}
 			className={clsx(
-				"w-80 p-3.5 text-[var(--text)] select-none animate-in fade-in zoom-in-95 duration-100",
+				"w-80 p-3.5 text-[var(--text)] select-none",
 				className,
 			)}
 		>

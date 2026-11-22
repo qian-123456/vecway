@@ -2,6 +2,7 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { AlertTriangle, FolderOpen, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { parseDocument } from "yaml";
 import { confirmDialog, errMsg } from "../../../lib/dialogs";
 import { useEscapeKey } from "../../../lib/hooks";
@@ -149,9 +150,9 @@ export function RawFilesDialog({ onClose }: { onClose: () => void }) {
 		}
 	};
 
-	return (
+	return createPortal(
 		<div
-			className="fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-xs animate-in fade-in duration-150"
+			className="apple-modal-backdrop fixed inset-0 z-(--z-modal) flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-md"
 			onMouseDown={(e) => {
 				backdropPressedRef.current = e.target === e.currentTarget;
 			}}
@@ -165,11 +166,11 @@ export function RawFilesDialog({ onClose }: { onClose: () => void }) {
 				role="dialog"
 				aria-modal="true"
 				aria-label={t("memoryRules.rawFiles.title")}
-				className="flex h-[80vh] w-full max-w-3xl flex-col gap-3 rounded-xl border border-[var(--line)] bg-[var(--bg-elevated,var(--bg))] p-5 shadow-xl"
+				className="apple-modal-panel apple-modal-surface flex h-[80vh] w-full max-w-3xl flex-col gap-3 rounded-2xl hairline shadow-apple-modal p-5"
 			>
 				<div className="flex items-center justify-between">
-					<h2 className="text-base font-semibold">{t("memoryRules.rawFiles.title")}</h2>
-					<button type="button" aria-label={t("memoryRules.rawFiles.close")} onClick={() => void close()} className="shrink-0 rounded p-1 hover:bg-[var(--bg-hover,transparent)]">
+					<h2 className="text-base font-semibold tracking-[-0.018em]">{t("memoryRules.rawFiles.title")}</h2>
+					<button type="button" aria-label={t("memoryRules.rawFiles.close")} onClick={() => void close()} className="press-scale shrink-0 rounded-md p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover,transparent)] hover:text-[var(--text)]">
 						<X size={16} />
 					</button>
 				</div>
@@ -217,6 +218,7 @@ export function RawFilesDialog({ onClose }: { onClose: () => void }) {
 					</div>
 				</div>
 			</div>
-		</div>
+		</div>,
+		document.body,
 	);
 }

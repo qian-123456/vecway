@@ -26,7 +26,7 @@ export function ModeSwitch({ onChange }: { onChange?: () => void }) {
 		<div ref={ref} className="relative shrink-0">
 			<button type="button" aria-haspopup="menu" aria-expanded={open}
 				aria-label={`${modeLabel(mode)}空间${sessions ? `，${sessions.length} 个会话${busyCount ? `，${busyCount} 个运行中或待回复` : ""}` : ""}，点击切换`}
-				onClick={() => setOpen((v) => !v)} className="flex min-h-10 items-center rounded-lg px-2 text-m-md font-semibold text-m-text transition-colors active:bg-m-surface-hover">
+				onClick={() => setOpen((v) => !v)} className="m-press flex min-h-10 items-center rounded-lg px-2 text-m-md font-semibold text-m-text active:bg-m-surface-hover">
 				<span className="relative inline-flex items-center gap-1.5 whitespace-nowrap">
 					<Icon size={16} strokeWidth={1.85} className="shrink-0 text-m-accent" />
 					<span>{modeLabel(mode)}</span>
@@ -34,7 +34,7 @@ export function ModeSwitch({ onChange }: { onChange?: () => void }) {
 					{busyCount > 0 && <span aria-label="当前空间有运行中或待回复的会话" className="size-2 shrink-0 rounded-full bg-m-accent m-pulse" />}
 				</span>
 			</button>
-			{open && <div role="menu" aria-label="切换空间" className="absolute left-1 top-full z-(--z-banner) mt-1 w-52 max-w-[calc(100vw-24px)] rounded-m-lg border border-m-border bg-m-bg/95 backdrop-blur-xl p-1.5 shadow-lg">
+			{open && <div role="menu" aria-label="切换空间" className="m-popover-surface absolute left-1 top-full z-(--z-banner) mt-1 w-52 max-w-[calc(100vw-24px)] rounded-m-lg border border-m-border bg-m-bg/95 backdrop-blur-xl p-1.5">
 				<div className="px-2 py-1 text-m-xs text-m-text-3">切换空间</div>
 				{MODES.map(([m, label]) => {
 					const ItemIcon = SPACE_MODE_META[m].icon;

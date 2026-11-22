@@ -159,6 +159,7 @@ function SearchDialogBody() {
 		<Modal
 			onClose={closeDialog}
 			size="none"
+			instant
 			ariaLabel={t("sessions.searchDialogAria")}
 			className="h-[min(560px,85vh)] w-full max-w-xl overflow-hidden"
 		>
@@ -203,7 +204,7 @@ function SearchDialogBody() {
 					title={t("sessions.searchFilters")}
 					onClick={() => setFilterOpen((v) => !v)}
 					className={clsx(
-						"flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[12px] transition-colors hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
+						"flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[12px] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
 						activeFilterCount > 0 ? "text-[var(--text)] bg-[var(--bg-active-fill)]" : "text-neutral-400",
 					)}
 				>
@@ -220,7 +221,7 @@ function SearchDialogBody() {
 					onClick={() => setFilters((f) => ({ ...f, includeArchived: !f.includeArchived }))}
 					title={filters.includeArchived ? t("sessions.clickToExcludeArchived") : t("sessions.clickToIncludeArchived")}
 					className={clsx(
-						"flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[12px] transition-colors hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
+						"flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[12px] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]",
 						filters.includeArchived ? "text-neutral-300" : "text-neutral-500",
 					)}
 				>
@@ -323,7 +324,7 @@ function OptionButton({
 			}}
 			onClick={onPick}
 			className={clsx(
-				"flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors focus-visible:outline-none",
+				"flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left focus-visible:outline-none",
 				active ? "bg-[var(--bg-active-fill)]" : "hover:bg-[var(--bg-hover)]",
 			)}
 		>
@@ -421,7 +422,7 @@ function SessionRowBody({
 					</span>
 				)}
 				<span
-					className="shrink-0 whitespace-nowrap text-[11px] leading-5 text-neutral-500"
+					className="shrink-0 whitespace-nowrap text-[11px] leading-5 tabular-nums text-neutral-500"
 					title={absoluteTime(session.updatedAt || session.createdAt)}
 				>
 					{relativeTime(session.updatedAt || session.createdAt)}

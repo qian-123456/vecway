@@ -184,7 +184,7 @@ export function OrphanInlinePanel({
 	if (orphans.length === 0) return null;
 
 	return (
-		<div className="mb-2 rounded-lg border border-amber-600/40 bg-neutral-900 p-2.5 text-xs text-neutral-200 shadow-lg animate-in fade-in duration-100 select-none">
+		<div className="mb-2 rounded-xl border border-amber-600/40 bg-neutral-900 p-2.5 text-xs text-neutral-200 shadow-apple-card select-none">
 			{/* Panel Header */}
 			<div className="flex items-center justify-between pb-1.5 border-b border-neutral-800">
 				<div className="flex items-center gap-1.5 font-medium text-neutral-100">

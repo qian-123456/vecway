@@ -237,12 +237,12 @@ export function BottomBar() {
 						title={telemetryLabel}
 						aria-label={telemetryLabel}
 						aria-expanded={statsOpen}
-						className="group flex w-max shrink-0 items-center gap-1.5 rounded-[6px] px-1.5 py-0.5 -ml-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer"
+						className="group flex w-max shrink-0 items-center gap-1.5 rounded-[6px] px-1.5 py-0.5 -ml-1.5 text-[var(--text-muted)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] active:scale-[0.97] cursor-pointer"
 					>
 						<Gauge
 							size={11.5}
 							className={clsx(
-								"shrink-0 transition-colors",
+								"shrink-0 transition-colors duration-150 ease-[var(--ease-out)]",
 								streaming
 									? "text-indigo-400 animate-pulse"
 									: "text-[var(--text-dim)] group-hover:text-indigo-400",
@@ -271,7 +271,7 @@ export function BottomBar() {
 							<span className="text-[var(--text-dim)]">·</span>
 							<Coins
 								size={11}
-								className="shrink-0 text-[var(--text-dim)] transition-colors group-hover:text-amber-400"
+								className="shrink-0 text-[var(--text-dim)] transition-colors duration-150 ease-[var(--ease-out)] group-hover:text-amber-400"
 							/>
 							<span className="font-mono tabular-nums">
 								{stats.totalTokens == null ? "—" : formatTokens(stats.totalTokens)}
@@ -311,7 +311,7 @@ export function BottomBar() {
 							: "",
 					})}
 					className={clsx(
-						"flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer",
+						"flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] active:scale-[0.97] cursor-pointer",
 						perfOpen && "bg-[var(--bg-hover)] text-[var(--text)]",
 					)}
 				>
@@ -341,14 +341,14 @@ export function BottomBar() {
 							aria-label={`${t("bottomBar.viewGitPanel")}: ${branch}${dirty > 0 ? ` +${dirty}` : ""}`}
 							title={`${t("bottomBar.viewGitPanel")}: ${branch}${dirty > 0 ? ` +${dirty}` : ""}`}
 							className={clsx(
-								"flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 -mr-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] cursor-pointer",
+								"flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 -mr-1.5 text-[var(--text-muted)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] active:scale-[0.97] cursor-pointer",
 								rightTab === "git" && rightOpen && "bg-[var(--bg-active-fill)] text-[var(--text)]",
 							)}
 						>
 							<GitBranch
 								size={11}
 								className={clsx(
-									"shrink-0 transition-colors",
+									"shrink-0 transition-colors duration-150 ease-[var(--ease-out)]",
 									rightTab === "git" && rightOpen ? "text-indigo-400" : "text-[var(--text-dim)]",
 								)}
 							/>
