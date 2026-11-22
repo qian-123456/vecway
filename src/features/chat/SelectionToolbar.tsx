@@ -7,6 +7,7 @@
 import clsx from "clsx";
 import { ArrowUp, CornerUpLeft, MessageSquareQuote } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { LIGHTBOX_SELECTOR } from "../../components/FloatingLayer";
 import { SelectionBubble } from "../../components/SelectionBubble";
 import { isComposing } from "../../lib/hooks";
 import { type AnnotationTarget, useComposer } from "../../stores/composer";
@@ -355,6 +356,7 @@ export function SelectionToolbar({
 			setSel({ text, itemId, answerPart, label, occurrence, rect, range: range.cloneRange() });
 		};
 		const onDown = (e: Event) => {
+			if (e.target instanceof Element && e.target.closest(LIGHTBOX_SELECTOR)) return;
 			if (isInteractiveInput(e.target)) return;
 			const inBox = boxRef.current?.contains(e.target as Node) ?? false;
 			pressStartedOutside = !inBox && !container.contains(e.target as Node);
@@ -406,6 +408,7 @@ export function SelectionToolbar({
 		if (!sel) return;
 		const onKey = (e: globalThis.KeyboardEvent) => {
 			if (e.key !== "Escape" || isComposing({ nativeEvent: e, key: e.key })) return;
+			if (document.querySelector(LIGHTBOX_SELECTOR)) return;
 			// Claim the key so it does not also abort a running turn.
 			claimEscape(e);
 			// Esc is an explicit discard: a typed comment is dropped, not staged.

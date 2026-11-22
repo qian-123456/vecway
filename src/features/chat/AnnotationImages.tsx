@@ -3,8 +3,9 @@
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ImagePlus, X } from "lucide-react";
-import { type ClipboardEvent, useCallback, useRef, useState } from "react";
+import { Image as ImageIcon, ImageOff, ImagePlus, X } from "lucide-react";
+import { type ClipboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { ImagePreviewModal } from "../../components/ImagePreviewModal";
 import { errMsg } from "../../lib/dialogs";
 import { clipboardFilePaths, importImageFile, saveClipboardImage } from "../../lib/ipc";
 import { toast } from "../../lib/toast";
@@ -156,42 +157,124 @@ export function AnnotationImageButton({ onClick, busy }: { onClick: () => void; 
 	);
 }
 
-/** Compact thumbnails; pass `onRemove` for the editable variant (× button). */
+function AnnotationThumbTile({
+	path,
+	alt,
+	removeLabel,
+	cannotPreviewTitle,
+	onOpen,
+	onRemove,
+}: {
+	path: string;
+	alt: string;
+	removeLabel: string;
+	cannotPreviewTitle: string;
+	onOpen: () => void;
+	onRemove?: () => void;
+}) {
+	const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
+	useEffect(() => {
+		setStatus("loading");
+	}, [path]);
+
+	return (
+		<div
+			className="group/thumb relative h-10 w-10 shrink-0 overflow-hidden rounded-md border border-[var(--line,var(--border))] bg-[var(--well-bg)]"
+			title={status === "error" ? cannotPreviewTitle : path}
+		>
+			<button
+				type="button"
+				onMouseDown={(e) => e.preventDefault()}
+				onClick={(e) => {
+					e.stopPropagation();
+					onOpen();
+				}}
+				aria-label={alt}
+				className="relative flex h-full w-full cursor-pointer items-center justify-center focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+			>
+				{status === "error" ? (
+					<ImageOff size={14} className="text-[var(--text-40)]" aria-hidden="true" />
+				) : (
+					<>
+						{status === "loading" && (
+							<ImageIcon size={14} className="absolute text-[var(--text-30)]" aria-hidden="true" />
+						)}
+						<img
+							src={convertFileSrc(path)}
+							alt={alt}
+							onLoad={() => setStatus("loaded")}
+							onError={() => setStatus("error")}
+							className={`h-full w-full object-cover transition-opacity duration-150 ${status === "loaded" ? "opacity-100" : "opacity-0"}`}
+							draggable={false}
+						/>
+					</>
+				)}
+				<div className="pointer-events-none absolute inset-0 bg-white/10 opacity-0 transition-opacity duration-150 group-hover/thumb:opacity-100" />
+			</button>
+			{onRemove && (
+				<button
+					type="button"
+					aria-label={removeLabel}
+					title={removeLabel}
+					// Keep focus in the comment input (blur would otherwise save/close).
+					onMouseDown={(e) => e.preventDefault()}
+					onClick={(e) => {
+						e.stopPropagation();
+						onRemove();
+					}}
+					className="absolute right-0 top-0 z-10 flex h-4 w-4 items-center justify-center rounded-bl bg-black/60 text-white opacity-80 hover:opacity-100"
+				>
+					<X size={10} />
+				</button>
+			)}
+		</div>
+	);
+}
+
+/** Compact thumbnails with loading/error placeholder and click-to-preview; pass `onRemove` for the editable variant (× button). */
 export function AnnotationImageStrip({
 	paths,
 	onRemove,
+	onOpenPath,
 	className = "",
 }: {
 	paths: readonly string[] | undefined;
 	onRemove?: (path: string) => void;
+	/** Optional external preview handler (e.g. sent message gallery); defaults to built-in lightbox. */
+	onOpenPath?: (path: string, index: number) => void;
 	className?: string;
 }) {
 	const { t } = useT();
+	const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 	if (!paths || paths.length === 0) return null;
 	return (
-		<div className={`flex flex-wrap gap-1.5 ${className}`}>
-			{paths.map((p) => (
-				<div
-					key={p}
-					className="group/thumb relative h-10 w-10 shrink-0 overflow-hidden rounded-md border border-[var(--line,var(--border))]"
-					title={p}
-				>
-					<img src={convertFileSrc(p)} alt={t("chat.annotation.imageAlt")} className="h-full w-full object-cover" draggable={false} />
-					{onRemove && (
-						<button
-							type="button"
-							aria-label={t("chat.annotation.removeImage")}
-							title={t("chat.annotation.removeImage")}
-							// Keep focus in the comment input (blur would otherwise save/close).
-							onMouseDown={(e) => e.preventDefault()}
-							onClick={() => onRemove(p)}
-							className="absolute right-0 top-0 flex h-4 w-4 items-center justify-center rounded-bl bg-black/60 text-white opacity-80 hover:opacity-100"
-						>
-							<X size={10} />
-						</button>
-					)}
-				</div>
-			))}
-		</div>
+		<>
+			<div className={`flex flex-wrap gap-1.5 ${className}`}>
+				{paths.map((p, i) => (
+					<AnnotationThumbTile
+						key={p}
+						path={p}
+						alt={t("chat.annotation.imageAlt")}
+						removeLabel={t("chat.annotation.removeImage")}
+						cannotPreviewTitle={t("chat.cannotPreview", { path: p })}
+						onOpen={() => {
+							if (onOpenPath) onOpenPath(p, i);
+							else setPreviewIndex(i);
+						}}
+						onRemove={onRemove ? () => onRemove(p) : undefined}
+					/>
+				))}
+			</div>
+			{!onOpenPath && previewIndex !== null && (
+				<ImagePreviewModal
+					images={paths.map((p, idx) => ({
+						path: p,
+						marker: t("chat.execution.imageMarker", { num: idx + 1 }),
+					}))}
+					initialIndex={previewIndex}
+					onClose={() => setPreviewIndex(null)}
+				/>
+			)}
+		</>
 	);
 }

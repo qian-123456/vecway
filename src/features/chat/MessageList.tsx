@@ -62,7 +62,7 @@ import { useShareSelection } from "./share/shareStore";
 import { useLineClampOverflow } from "../../lib/useLineClamp";
 import { AttachmentThumb, FileChip } from "./ImageChips";
 import { AutoGrowTextarea } from "./AutoGrowTextarea";
-import { QuoteCards } from "./AnnotationQuote";
+import { collectQuoteCardImages, QuoteCards } from "./AnnotationQuote";
 import { parseAnnotationQuotes } from "./annotationQuoteParse";
 import { ImagePreviewModal } from "../../components/ImagePreviewModal";
 import {
@@ -215,7 +215,8 @@ export const UserRow = React.memo(function UserRow({
 	const [expanded, setExpanded] = useState(false);
 	const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 	const textRef = useRef<HTMLDivElement>(null);
-	// Edit state survives the row being virtualized away (keyed by item id).
+	const quoteWrapRef = useRef<HTMLDivElement>(null);
+	const [quoteOverflowing, setQuoteOverflowing] = useState(false);
 	const [editing, setEditing] = useState(() => hasEditDraft(item.id));
 	const [draft, setDraft] = useState(() => getEditDraft(item.id) ?? "");
 	const [resending, setResending] = useState(false);
@@ -253,9 +254,39 @@ export const UserRow = React.memo(function UserRow({
 		() => images.filter((img): img is ImageAttachment & { path: string } => Boolean(img.path)),
 		[images],
 	);
+	const quoteImageSet = useMemo(
+		() => (quotes ? collectQuoteCardImages(quotes.cards) : null),
+		[quotes],
+	);
+	const topImages = useMemo(
+		() => (quoteImageSet ? validImages.filter((img) => !quoteImageSet.has(img.path)) : validImages),
+		[validImages, quoteImageSet],
+	);
+	const openImageByPath = useCallback(
+		(path: string) => {
+			const idx = validImages.findIndex((img) => img.path === path);
+			if (idx >= 0) setPreviewIndex(idx);
+		},
+		[validImages],
+	);
 
-	const collapsible = useLineClampOverflow(textRef, "line-clamp-4", 4, [userText, editing]);
-
+	const textCollapsible = useLineClampOverflow(textRef, "line-clamp-4", 4, [userText, editing, Boolean(quotes)]);
+	useLayoutEffect(() => {
+		if (!quotes || editing) {
+			setQuoteOverflowing(false);
+			return;
+		}
+		const el = quoteWrapRef.current;
+		if (!el) return;
+		const measure = () => {
+			setQuoteOverflowing(el.scrollHeight > 144);
+		};
+		measure();
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		return () => ro.disconnect();
+	}, [quotes, editing, rawText]);
+	const collapsible = quotes ? quoteOverflowing : textCollapsible;
 	const fileAttachments = useMemo(() => {
 		const seen = new Set<string>();
 		const out: Array<{ index: number; path: string }> = [];
@@ -306,18 +337,21 @@ export const UserRow = React.memo(function UserRow({
 			id={`msg-${item.id}`}
 			className="group/user-row relative flex w-full flex-col items-end gap-1.5 py-1"
 		>
-			{(validImages.length > 0 || fileAttachments.length > 0) && (
+			{(topImages.length > 0 || fileAttachments.length > 0) && (
 				<div className="flex max-w-[70%] flex-wrap items-start justify-end gap-1.5">
-					{validImages.map((img, i) => (
-						<AttachmentThumb
-							key={img.id}
-							path={img.path}
-							index={i + 1}
-							showIndex={validImages.length > 1}
-							variant="bubble"
-							onOpen={() => setPreviewIndex(i)}
-						/>
-					))}
+					{topImages.map((img) => {
+						const galleryIndex = validImages.indexOf(img);
+						return (
+							<AttachmentThumb
+								key={img.id}
+								path={img.path}
+								index={galleryIndex + 1}
+								showIndex={validImages.length > 1}
+								variant="bubble"
+								onOpen={() => setPreviewIndex(galleryIndex)}
+							/>
+						);
+					})}
 					{fileAttachments.map((f) => (
 						<FileChip key={`file-${f.path}`} path={f.path} index={f.index} variant="bubble" />
 					))}
@@ -372,17 +406,38 @@ export const UserRow = React.memo(function UserRow({
 				</div>
 			) : showBubble ? (
 				<div className={USER_BUBBLE_CLASS}>
-					{quotes && <QuoteCards cards={quotes.cards} />}
-					{(!quotes || quotes.body) && (
+					{quotes ? (
+						<div
+							ref={quoteWrapRef}
+							className={clsx(
+								!expanded && quoteOverflowing && "max-h-[136px] overflow-hidden [mask-image:linear-gradient(to_bottom,black_75%,transparent_100%)]",
+							)}
+						>
+							<QuoteCards cards={quotes.cards} onOpenImage={openImageByPath} />
+							{quotes.body && (
+								<div
+									ref={textRef}
+									className="mt-2 whitespace-pre-wrap break-words"
+								>
+									{renderUserTextWithChips(quotes.body, (num) => {
+										void openImageOrExplain(
+											images,
+											num,
+											setPreviewIndex,
+										);
+									})}
+								</div>
+							)}
+						</div>
+					) : (
 						<div
 							ref={textRef}
 							className={clsx(
 								"whitespace-pre-wrap break-words",
-								quotes && "mt-2",
 								!expanded && collapsible && "line-clamp-4",
 							)}
 						>
-							{renderUserTextWithChips(quotes ? quotes.body : rawText, (num) => {
+							{renderUserTextWithChips(rawText, (num) => {
 								void openImageOrExplain(
 									images,
 									num,

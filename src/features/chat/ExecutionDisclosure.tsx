@@ -19,7 +19,7 @@ import { AttachmentThumb } from "./ImageChips";
 import { collectUserImages } from "../../stores/live";
 import { openImageOrExplain } from "./imageAvailability";
 import { renderUserTextWithChips, stripImageMarkers } from "./userTextChips";
-import { QuoteCards } from "./AnnotationQuote";
+import { collectQuoteCardImages, QuoteCards } from "./AnnotationQuote";
 import { parseAnnotationQuotes } from "./annotationQuoteParse";
 import { useDisplayPrefs } from "../../stores/displayPrefs";
 import { useLive } from "../../stores/live";
@@ -187,20 +187,31 @@ export function UserMessageBubble({
 	);
 	const hasBody = stripImageMarkers(text).length > 0 || /\[(?:File|文件)\s*#|📎\s*#/u.test(text);
 	const quotes = useMemo(() => parseAnnotationQuotes(text), [text]);
+	const quoteImageSet = useMemo(
+		() => (quotes ? collectQuoteCardImages(quotes.cards) : null),
+		[quotes],
+	);
+	const topImages = useMemo(
+		() => (quoteImageSet ? images.filter((img) => !quoteImageSet.has(img.path)) : images),
+		[images, quoteImageSet],
+	);
 	return (
 		<>
-			{images.length > 0 && (
+			{topImages.length > 0 && (
 				<div className="flex max-w-[70%] flex-wrap items-start justify-end gap-1.5">
-					{images.map((img, i) => (
-						<AttachmentThumb
-							key={img.id}
-							path={img.path}
-							index={i + 1}
-							showIndex={images.length > 1}
-							variant="bubble"
-							onOpen={() => setPreview(i)}
-						/>
-					))}
+					{topImages.map((img) => {
+						const galleryIndex = images.indexOf(img);
+						return (
+							<AttachmentThumb
+								key={img.id}
+								path={img.path}
+								index={galleryIndex + 1}
+								showIndex={images.length > 1}
+								variant="bubble"
+								onOpen={() => setPreview(galleryIndex)}
+							/>
+						);
+					})}
 				</div>
 			)}
 			{preview !== null && images.length > 0 && (
@@ -215,7 +226,15 @@ export function UserMessageBubble({
 			)}
 			{hasBody ? (
 				<div className={bubbleClass}>
-					{quotes && <QuoteCards cards={quotes.cards} />}
+					{quotes && (
+						<QuoteCards
+							cards={quotes.cards}
+							onOpenImage={(path) => {
+								const idx = images.findIndex((img) => img.path === path);
+								if (idx >= 0) setPreview(idx);
+							}}
+						/>
+					)}
 					{(!quotes || quotes.body) && (
 						<div className={quotes ? "mt-2 whitespace-pre-wrap break-words" : "whitespace-pre-wrap break-words"}>
 							{renderUserTextWithChips(quotes ? quotes.body : text, (num) => {

@@ -28,8 +28,11 @@ pub struct Runtime {
     pub dialogs: Vec<(String, bool)>,
     /// `stopReason` of the latest assistant `message_end`.
     pub last_stop_reason: Option<String>,
+    /// Latest live activity timestamp observed on the bus (`PromptSent`,
+    /// `agent_start`, `message_end`, `agent_end`), so `updated_at` advances
+    /// immediately even before the transcript watcher catches up.
+    pub last_activity_at: Option<String>,
 }
-
 impl Runtime {
     /// `Some(true)` if an approval dialog is open, `Some(false)` for other dialogs.
     pub fn dialog_kind(&self) -> Option<bool> {
@@ -79,6 +82,34 @@ pub struct Change {
 
 const DIALOG_METHODS: [&str; 4] = ["select", "confirm", "input", "editor"];
 
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn parse_frame_activity_ts(frame: &Value) -> String {
+    let str_ts = frame
+        .pointer("/message/timestamp")
+        .and_then(Value::as_str)
+        .or_else(|| frame.get("timestamp").and_then(Value::as_str));
+    if let Some(s) = str_ts {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+            return dt
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        }
+    }
+    let ms_ts = frame
+        .pointer("/message/timestamp")
+        .and_then(Value::as_i64)
+        .or_else(|| frame.get("timestamp").and_then(Value::as_i64));
+    if let Some(ms) = ms_ts {
+        if let Some(dt) = chrono::DateTime::from_timestamp_millis(ms) {
+            return dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        }
+    }
+    now_rfc3339()
+}
+
 /// Fold one event into `rt`; `pending` is the currently persisted pending kind.
 pub fn apply(rt: &mut Runtime, pending: Option<PendingKind>, ev: &LiveEvent) -> Change {
     let before = rt.clone();
@@ -91,6 +122,7 @@ pub fn apply(rt: &mut Runtime, pending: Option<PendingKind>, ev: &LiveEvent) -> 
                 rt.live = true;
                 rt.phase = Phase::Working;
                 rt.last_stop_reason = None;
+                rt.last_activity_at = Some(parse_frame_activity_ts(frame));
             }
             Some("message_end") => {
                 if let Some(msg) = frame.get("message") {
@@ -101,6 +133,7 @@ pub fn apply(rt: &mut Runtime, pending: Option<PendingKind>, ev: &LiveEvent) -> 
                             .map(str::to_string);
                     }
                 }
+                rt.last_activity_at = Some(parse_frame_activity_ts(frame));
             }
             Some("extension_ui_request") => {
                 let method = frame
@@ -131,6 +164,7 @@ pub fn apply(rt: &mut Runtime, pending: Option<PendingKind>, ev: &LiveEvent) -> 
                 let stop = last_assistant_stop(frame).or_else(|| rt.last_stop_reason.clone());
                 rt.phase = Phase::Settled;
                 rt.dialogs.clear();
+                rt.last_activity_at = Some(parse_frame_activity_ts(frame));
                 new_pending = Some(if stop.as_deref() == Some("error") {
                     PendingKind::Error
                 } else {
@@ -146,6 +180,7 @@ pub fn apply(rt: &mut Runtime, pending: Option<PendingKind>, ev: &LiveEvent) -> 
             new_pending = after_dialog_closed(rt, pending);
         }
         LiveEvent::PromptSent => {
+            rt.last_activity_at = Some(now_rfc3339());
             if matches!(pending, Some(PendingKind::Review | PendingKind::Question)) {
                 new_pending = rt.dialog_pending();
             }
@@ -708,5 +743,22 @@ mod tests {
         );
         // Stale dialog pending from a dead process is ignored.
         assert_eq!(d(&|i| i.pending = Some(P::Approval)), (S::Idle, None));
+    }
+
+    #[test]
+    fn live_activity_updates_last_activity_at() {
+        let mut rt = Runtime::default();
+        apply(&mut rt, None, &LiveEvent::PromptSent);
+        assert!(rt.last_activity_at.is_some());
+
+        let ts = "2026-11-22T08:25:00.000Z";
+        apply(
+            &mut rt,
+            None,
+            &frame(
+                json!({"type": "message_end", "message": {"role": "assistant", "stopReason": "stop", "timestamp": ts}}),
+            ),
+        );
+        assert_eq!(rt.last_activity_at.as_deref(), Some(ts));
     }
 }

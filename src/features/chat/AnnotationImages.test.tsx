@@ -18,7 +18,9 @@ vi.mock("../../lib/ipc", () => ({
 }));
 vi.mock("../../lib/toast", () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() } }));
 
-import { useAnnotationImages } from "./AnnotationImages";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach } from "vitest";
+import { AnnotationImageStrip, useAnnotationImages } from "./AnnotationImages";
 
 /** A minimal clipboard event typed as the hook's real parameter, with its preventDefault spy exposed. */
 const pasteEvent = (files: File[], types = ["Files"]) => {
@@ -77,5 +79,20 @@ describe("useAnnotationImages", () => {
 		rerender({ p: ["/clip/old.png", "/clip/b.png"] });
 		act(() => result.current.remove("/clip/old.png"));
 		expect(onChange).toHaveBeenLastCalledWith(["/clip/b.png"]);
+	});
+});
+
+describe("AnnotationImageStrip", () => {
+	afterEach(cleanup);
+
+	it("renders a placeholder on image error and opens the lightbox on click", () => {
+		const { container } = render(<AnnotationImageStrip paths={["/clip/a.png", "/clip/b.png"]} />);
+		const imgs = container.querySelectorAll("img");
+		expect(imgs).toHaveLength(2);
+		fireEvent.error(imgs[0]);
+		expect(container.querySelectorAll("img")).toHaveLength(1);
+		const buttons = screen.getAllByRole("button", { name: "批注图片" });
+		fireEvent.click(buttons[0]);
+		expect(document.querySelector('[data-layer="lightbox"]')).toBeTruthy();
 	});
 });

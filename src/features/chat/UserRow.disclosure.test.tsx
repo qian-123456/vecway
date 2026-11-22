@@ -159,6 +159,34 @@ describe("UserRow long message inline disclosure", () => {
 		expect(container.querySelector(".line-clamp-4")).toBeTruthy();
 		expect(screen.getByRole("button", { name: /查看更多|view more/i })).toBeTruthy();
 	});
+
+	it("collapses tall quoted messages behind 查看更多 and renders quote images as clickable previews", () => {
+		heights = { scroll: 240, client: 120 };
+		const quoted = [
+			"[1]",
+			"> first quote line",
+			"批注：first comment [图片: /clip/q1.png]",
+			"",
+			"[2]",
+			"> second quote line",
+			"批注：second comment",
+			"",
+			"主消息正文",
+		].join("\n");
+		const { container } = render(<UserRow sessionId="s1" item={userItem(quoted)} />);
+		// Raw [图片: path] text must not appear in the bubble.
+		expect(container.textContent).not.toContain("[图片:");
+		expect(container.textContent).not.toContain("/clip/q1.png");
+		// Quote bubble is collapsed initially behind 查看更多.
+		expect(container.querySelector(".max-h-\\[136px\\]")).toBeTruthy();
+		const toggleBtn = screen.getByRole("button", { name: /查看更多|view more/i });
+		fireEvent.click(toggleBtn);
+		expect(container.querySelector(".max-h-\\[136px\\]")).toBeNull();
+		// Clicking the quote image thumbnail opens the lightbox.
+		const thumbBtn = screen.getByRole("button", { name: "批注图片" });
+		fireEvent.click(thumbBtn);
+		expect(document.querySelector('[data-layer="lightbox"]')).toBeTruthy();
+	});
 });
 
 describe("UserRow cold message edit", () => {

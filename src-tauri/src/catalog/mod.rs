@@ -735,6 +735,14 @@ fn recompute_inner(state: &AppState, ids: Option<Vec<String>>, refresh: bool) {
             let mut meta =
                 scan::build_meta_with_aliases(s, &row, &git, &workspaces, &aliases, parent_id);
             let rt = c.runtime.get(id).cloned().unwrap_or_default();
+            if let Some(act_ts) = rt.last_activity_at.as_deref().and_then(parse_ts) {
+                let act_utc = act_ts.with_timezone(&chrono::Utc);
+                if parse_ts(&meta.updated_at)
+                    .is_none_or(|cur| act_utc > cur.with_timezone(&chrono::Utc))
+                {
+                    meta.updated_at = act_utc.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                }
+            }
             let is_live = !rt.exited && (rt.live || live.contains(id));
             let path = s.path.to_string_lossy();
             let external_pid = if is_live {

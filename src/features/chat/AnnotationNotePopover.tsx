@@ -3,7 +3,7 @@
 
 import { Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type Anchor, FloatingLayer } from "../../components/FloatingLayer";
+import { type Anchor, FloatingLayer, LIGHTBOX_SELECTOR } from "../../components/FloatingLayer";
 import { claimEscape } from "../../lib/escapeClaim";
 import { isComposing } from "../../lib/hooks";
 import { type Annotation, useComposer } from "../../stores/composer";
@@ -96,11 +96,13 @@ export function AnnotationNotePopover({
 		// even though it lives outside the anchor's DOM subtree. Pointerdown (not
 		// click) on window capture: it fires first and nothing can swallow it.
 		const onDown = (e: Event) => {
+			if (e.target instanceof Element && e.target.closest(LIGHTBOX_SELECTOR)) return;
 			if (popRef.current?.contains(e.target as Node)) return;
 			finish.current(true);
 		};
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key !== "Escape" || isComposing(e)) return;
+			if (document.querySelector(LIGHTBOX_SELECTOR)) return;
 			claimEscape(e);
 			e.stopPropagation();
 			finish.current(false);

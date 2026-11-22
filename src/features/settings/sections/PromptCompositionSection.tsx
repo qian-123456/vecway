@@ -315,7 +315,7 @@ export function PromptCompositionSection() {
 								)}
 								{comp.contextWindow != null && comp.contextWindow > 0 && (
 									<span className="text-neutral-400">
-										{t("promptComposition.shareOfContext", { pct: sharePct(comp.totalTokens, comp.contextWindow).toFixed(1) })}
+										{t("promptComposition.shareOfContext", { pct: sharePct(comp.reportedTokens ?? comp.totalTokens, comp.contextWindow).toFixed(1) })}
 									</span>
 								)}
 							</div>

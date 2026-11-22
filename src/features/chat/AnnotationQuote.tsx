@@ -6,7 +6,34 @@ import clsx from "clsx";
 import { useRef, useState } from "react";
 import { useLineClampOverflow } from "../../lib/useLineClamp";
 import { useT } from "../../stores/language";
+import { AnnotationImageStrip } from "./AnnotationImages";
 import type { QuoteCard } from "./annotationQuoteParse";
+
+const QUOTE_IMAGE_REF_RE = /\[(?:图片|Image):\s*([^\]]+)\]/gu;
+
+/** Extract `[图片: path]` / `[Image: path]` references from a quote card's comment. */
+export function splitCommentImages(comment: string | undefined): { text: string; images: string[] } {
+	if (!comment) return { text: "", images: [] };
+	const images: string[] = [];
+	const text = comment
+		.replace(QUOTE_IMAGE_REF_RE, (_match, rawPath: string) => {
+			const p = rawPath.trim();
+			if (p && !images.includes(p)) images.push(p);
+			return "";
+		})
+		.replace(/[ \t]+\n/g, "\n")
+		.trim();
+	return { text, images };
+}
+
+/** Collect every unique image path embedded in `cards` (for deduplicating bubble-top strips). */
+export function collectQuoteCardImages(cards: readonly QuoteCard[]): Set<string> {
+	const out = new Set<string>();
+	for (const c of cards) {
+		for (const p of splitCommentImages(c.comment).images) out.add(p);
+	}
+	return out;
+}
 
 const QUOTE_LINES = 3;
 
@@ -92,32 +119,49 @@ function QuoteStrip({ card }: { card: QuoteCard }) {
 }
 
 /** Quote/note pairs at the top of a sent user bubble; numbers only when there are several. */
-export function QuoteCards({ cards }: { cards: readonly QuoteCard[] }) {
+export function QuoteCards({
+	cards,
+	onOpenImage,
+}: {
+	cards: readonly QuoteCard[];
+	/** Optional external preview handler (shares the message's ImagePreviewModal gallery). */
+	onOpenImage?: (path: string) => void;
+}) {
 	const numbered = cards.length > 1;
 	return (
-		<div className="flex flex-col gap-3 text-[13px] leading-5">
-			{cards.map((c, i) => (
-				<div
-					key={c.n}
-					data-testid="user-quote-card"
-					className={clsx(
-						"flex gap-2",
-						i > 0 && "border-t border-[var(--ghost-hover)] pt-3",
-					)}
-				>
-					{/* Number sits in its own column so quote text and comment share one left edge. */}
-					{numbered && (
-						<span className="shrink-0 whitespace-nowrap pl-0.5 text-[12px] tabular-nums text-[var(--text-40)]">{c.n}</span>
-					)}
-					<div className="flex min-w-0 flex-1 flex-col gap-1.5">
-						{(c.quote || c.label) && <QuoteStrip card={c} />}
-						{c.comment && (
-							// border-l-2 + pl-2 mirrors the quote strip so the comment starts exactly under the quoted text.
-							<div className="whitespace-pre-wrap break-words border-l-2 border-transparent pl-2 text-[var(--text)]">{c.comment}</div>
+		<div className="flex flex-col gap-2 text-[13px] leading-5">
+			{cards.map((c, i) => {
+				const { text: commentText, images: commentImages } = splitCommentImages(c.comment);
+				return (
+					<div
+						key={c.n}
+						data-testid="user-quote-card"
+						className={clsx(
+							"flex gap-2",
+							i > 0 && "border-t border-[var(--ghost-hover)] pt-2",
 						)}
+					>
+						{/* Number sits in its own column so quote text and comment share one left edge. */}
+						{numbered && (
+							<span className="shrink-0 whitespace-nowrap pl-0.5 text-[12px] tabular-nums text-[var(--text-40)]">{c.n}</span>
+						)}
+						<div className="flex min-w-0 flex-1 flex-col gap-1">
+							{(c.quote || c.label) && <QuoteStrip card={c} />}
+							{commentText && (
+								// border-l-2 + pl-2 mirrors the quote strip so the comment starts exactly under the quoted text.
+								<div className="whitespace-pre-wrap break-words border-l-2 border-transparent pl-2 text-[var(--text)]">{commentText}</div>
+							)}
+							{commentImages.length > 0 && (
+								<AnnotationImageStrip
+									paths={commentImages}
+									onOpenPath={onOpenImage ? (path) => onOpenImage(path) : undefined}
+									className="border-l-2 border-transparent pl-2 pt-0.5"
+								/>
+							)}
+						</div>
 					</div>
-				</div>
-			))}
+				);
+			})}
 		</div>
 	);
 }

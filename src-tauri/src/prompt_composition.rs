@@ -850,8 +850,24 @@ pub async fn prompt_composition_probe(
     ))
 }
 
-/// Fallback probe results per cwd for [`session_prompt_composition`]: a session that is not live
-/// has no prompt of its own to read, and re-spawning omp on every popover open costs seconds.
+/// Cache key for [`fallback_cache`]: invalidates when cwd, default model, visualize
+/// setting, or native privacy snapshot changes.
+fn fallback_cache_key(cwd: &str, settings: &Settings) -> String {
+    let model = settings
+        .new_session_model
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("");
+    format!(
+        "{cwd}\0{model}\0{}\0{}",
+        settings.visualize_enabled,
+        crate::privacy::native_hash()
+    )
+}
+
+/// Fallback probe results per cwd+shape for [`session_prompt_composition`]: a session that
+/// is not live has no prompt of its own to read, and re-spawning omp on every popover open
+/// costs seconds.
 // `OnceLock` rather than `LazyLock`: the crate's MSRV (1.77) predates `LazyLock`.
 fn fallback_cache(
 ) -> &'static std::sync::Mutex<std::collections::HashMap<String, PromptComposition>> {
@@ -863,7 +879,7 @@ fn fallback_cache(
 
 /// Composition of a session's own prompt. A live session answers `get_state` on its running RPC
 /// process (instant, and its real prompt); otherwise this falls back to the throwaway probe,
-/// cached per cwd for the app's lifetime.
+/// cached per cwd and prompt-shaping settings.
 #[tauri::command]
 pub async fn session_prompt_composition(
     state: tauri::State<'_, AppState>,
@@ -886,7 +902,10 @@ pub async fn session_prompt_composition(
             }
         }
     }
-    let key = cwd.trim().to_string();
+    let key = {
+        let settings = state.settings.read();
+        fallback_cache_key(cwd.trim(), &settings)
+    };
     if let Some(hit) = fallback_cache()
         .lock()
         .ok()
@@ -1163,6 +1182,18 @@ mod tests {
             count(&sessions),
             "probe must not create session files"
         );
+    }
+
+    #[test]
+    fn fallback_cache_key_tracks_settings() {
+        let mut s = Settings::default();
+        let k1 = fallback_cache_key("/repo", &s);
+        s.new_session_model = Some("p/m".to_string());
+        let k2 = fallback_cache_key("/repo", &s);
+        assert_ne!(k1, k2);
+        s.visualize_enabled = !s.visualize_enabled;
+        let k3 = fallback_cache_key("/repo", &s);
+        assert_ne!(k2, k3);
     }
 
     fn walkdir_count(dir: &std::path::Path) -> usize {

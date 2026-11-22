@@ -419,6 +419,7 @@ export const VisualizeBlock = React.memo(function VisualizeBlock({
 	const { t } = useT();
 	const darkTheme = useIsDark();
 	if (streaming) {
+		const generatedLines = html ? html.split("\n").length : 0;
 		return (
 			<div
 				className={clsx(
@@ -427,7 +428,11 @@ export const VisualizeBlock = React.memo(function VisualizeBlock({
 				)}
 			>
 				<Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
-				<span>{t("visualize.generating")}</span>
+				<span className="tabular-nums">
+					{generatedLines > 0
+						? t("visualize.generatingLines", { lines: generatedLines })
+						: t("visualize.generating")}
+				</span>
 			</div>
 		);
 	}

@@ -298,29 +298,35 @@ async fn run_bus_loop(state: AppState, mut bus: tokio::sync::broadcast::Receiver
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         };
 
-        let (session_id, live_ev) = match ev {
+        let (session_id, live_ev, refresh_file) = match ev {
             AppEvent::RpcFrame { session_id, frame } => {
                 // status::apply only inspects lifecycle/dialog frames; skip
                 // high-frequency streaming deltas before locking the catalog.
+                let kind = frame.get("type").and_then(serde_json::Value::as_str);
                 if !matches!(
-                    frame.get("type").and_then(serde_json::Value::as_str),
+                    kind,
                     Some("agent_start" | "message_end" | "extension_ui_request" | "agent_end")
                 ) {
                     continue;
                 }
-                (session_id, LiveEvent::Frame(frame.as_ref().clone()))
+                let refresh_file = matches!(kind, Some("message_end" | "agent_end"));
+                (
+                    session_id,
+                    LiveEvent::Frame(frame.as_ref().clone()),
+                    refresh_file,
+                )
             }
             AppEvent::RpcProcess {
                 session_id,
                 running,
                 exit_code,
-            } => (session_id, LiveEvent::Process { running, exit_code }),
+            } => (session_id, LiveEvent::Process { running, exit_code }, false),
             AppEvent::UiResponded {
                 session_id,
                 request_id,
-            } => (session_id, LiveEvent::UiResponded { request_id }),
-            AppEvent::PromptSent { session_id } => (session_id, LiveEvent::PromptSent),
-            AppEvent::SessionAccepted { session_id } => (session_id, LiveEvent::Accepted),
+            } => (session_id, LiveEvent::UiResponded { request_id }, false),
+            AppEvent::PromptSent { session_id } => (session_id, LiveEvent::PromptSent, true),
+            AppEvent::SessionAccepted { session_id } => (session_id, LiveEvent::Accepted, false),
             _ => continue,
         };
 
@@ -362,6 +368,21 @@ async fn run_bus_loop(state: AppState, mut bus: tokio::sync::broadcast::Receiver
             .await;
         }
         if change.pending.is_some() || change.unread.is_some() || change.runtime {
+            if refresh_file {
+                let path = {
+                    let c = cat().lock();
+                    c.by_id.get(&session_id).map(|s| s.path.clone())
+                }
+                .or_else(|| {
+                    crate::rpc::get_handle(&session_id).and_then(|h| {
+                        let p = h.session_file.read().clone();
+                        (!p.is_empty()).then(|| std::path::PathBuf::from(p))
+                    })
+                });
+                if let Some(p) = path {
+                    super::refresh_paths(&state, vec![p]).await;
+                }
+            }
             super::recompute_async(&state, Some(vec![session_id])).await;
         }
     }
