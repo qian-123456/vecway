@@ -84,6 +84,39 @@ describe("selected model capabilities", () => {
 		const literal = { ...selected, id: "gpt-6.1-sol:high", reasoning: false, thinking: [] };
 		expect(resolveModelCapabilities("sub2api-smart/gpt-6.1-sol:high", [selected, literal])).toEqual(literal);
 	});
+
+	it("resolves a slash-containing catalog id like magpie/agy-cli/gemini-4-hydrogen while respecting exact provider identity", () => {
+		const magpie: ModelOption = {
+			provider: "magpie",
+			id: "agy-cli/gemini-4-hydrogen",
+			name: "Gemini 4 Hydrogen",
+			contextWindow: 1_000_000,
+		};
+		const otherShort: ModelOption = {
+			provider: "other",
+			id: "gemini-4-hydrogen",
+			name: "Other",
+			contextWindow: 128_000,
+		};
+
+		expect(resolveModelCapabilities("agy-cli/gemini-4-hydrogen", [otherShort, magpie])).toEqual(magpie);
+		expect(resolveModelCapabilities("agy-cli/gemini-4-hydrogen", [otherShort])).toBeNull();
+
+		const agyDirect: ModelOption = { ...otherShort, provider: "agy-cli", contextWindow: 200_000 };
+		expect(resolveModelCapabilities("agy-cli/gemini-4-hydrogen", [magpie, agyDirect])).toEqual(agyDirect);
+
+		// Explicit live provider/id must never borrow capabilities from magpie's slash-id entry.
+		expect(
+			resolveModelCapabilities("agy-cli/gemini-4-hydrogen", [magpie], {
+				provider: "agy-cli",
+				id: "gemini-4-hydrogen",
+			})?.contextWindow,
+		).toBeUndefined();
+
+		// Ambiguous slash-id across multiple providers never guesses.
+		const secondBridge: ModelOption = { ...magpie, provider: "bridge2", contextWindow: 500_000 };
+		expect(resolveModelCapabilities("agy-cli/gemini-4-hydrogen", [magpie, secondBridge])).toBeNull();
+	});
 });
 
 describe("parseSelection / composeSelection", () => {

@@ -43,6 +43,8 @@ const h = vi.hoisted(() => ({
 	rolesRead: vi.fn(async (..._a: unknown[]) => ({}) as unknown),
 	rolesSet: vi.fn(async (..._a: unknown[]) => ({}) as unknown),
 	materialize: vi.fn(async (_id: string) => "never"),
+	sessionSnapshot: vi.fn(async () => ({}) as Record<string, unknown>),
+	catalogOverride: null as ModelOption[] | null,
 }));
 
 vi.mock("../../lib/ipc", async (importOriginal) => {
@@ -54,7 +56,7 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
 		ompModelRolesRead: h.rolesRead,
 		ompModelRolesSet: h.rolesSet,
 		sessionUsage: vi.fn(async () => ({ available: false, tokens: 0 })),
-		sessionSnapshot: vi.fn(async () => ({})),
+		sessionSnapshot: h.sessionSnapshot,
 		skillsList: vi.fn(async () => ({ skills: [], extensions: [] })),
 		listWorkspaceFiles: vi.fn(async () => []),
 		listModels: vi.fn(async () => ({ models: [], source: "cli", completeness: "unverified" })),
@@ -80,9 +82,9 @@ vi.mock("../../lib/events", async (importOriginal) => {
 	return { ...orig, onPrivacyChanged: async () => () => {} };
 });
 vi.mock("../../stores/modelCatalog", () => ({
-	useModelOptions: () => MODELS,
-	useModelCatalog: Object.assign(vi.fn(() => MODELS), {
-		getState: () => ({ models: MODELS, refresh: () => Promise.resolve() }),
+	useModelOptions: () => h.catalogOverride ?? MODELS,
+	useModelCatalog: Object.assign(vi.fn(() => h.catalogOverride ?? MODELS), {
+		getState: () => ({ models: h.catalogOverride ?? MODELS, refresh: () => Promise.resolve() }),
 	}),
 }));
 vi.mock("../../components/ModelSelect", () => ({
@@ -157,6 +159,9 @@ beforeEach(() => {
 	h.materialize.mockClear();
 	h.rolesSet.mockReset();
 	h.rolesSet.mockImplementation(async (_cwd, _scope, _table, _name, value) => snap(String(value)));
+	h.sessionSnapshot.mockReset();
+	h.sessionSnapshot.mockImplementation(async () => ({}));
+	h.catalogOverride = null;
 	useComposer.setState({ drafts: {}, annotations: {}, images: {}, files: {}, history: [] });
 	useLive.setState({ sessions: {} });
 	useSessions.setState({ sessions: {} } as never);
@@ -589,5 +594,67 @@ describe("Composer plan preview before the command is sent", () => {
 		expect(chipModel()).toBe("model-a");
 		expect(thinkingText()).toBe("low");
 		expect(sent("set_model")).toHaveLength(0);
+	});
+});
+
+describe("Composer external session context window", () => {
+	const EXT = "ext-magpie-s1";
+
+	it("resolves slash-containing catalog id agy-cli/gemini-4-hydrogen under magpie for external sessions", async () => {
+		h.catalogOverride = [
+			{
+				provider: "magpie",
+				id: "agy-cli/gemini-4-hydrogen",
+				name: "Gemini 4 Hydrogen",
+				contextWindow: 1_000_000,
+				reasoning: true,
+			},
+		];
+		h.sessionSnapshot.mockResolvedValue({ contextTokens: 50_000 });
+		useSessions.setState({
+			sessions: {
+				[EXT]: { id: EXT, cwd: "/work/ext", model: "agy-cli/gemini-4-hydrogen", status: "external" },
+			},
+		} as never);
+
+		render(<Composer sessionId={EXT} readonly />);
+		await flush();
+
+		const ctxBtn = Array.from(document.querySelectorAll("button")).find((button) =>
+			button.title.includes("5%"),
+		);
+		expect(ctxBtn).toBeTruthy();
+		fireEvent.click(ctxBtn!);
+		expect(document.body.textContent).toContain("50k / 1M");
+		expect(document.body.textContent).not.toContain("undefined");
+	});
+
+	it("displays unknown context window cleanly when an external session model is not in the catalog", async () => {
+		h.catalogOverride = [
+			{
+				provider: "other",
+				id: "gemini-4-hydrogen",
+				name: "Gemini 4 Hydrogen",
+				contextWindow: 128_000,
+			},
+		];
+		h.sessionSnapshot.mockResolvedValue({ contextTokens: 50_000 });
+		useSessions.setState({
+			sessions: {
+				[EXT]: { id: EXT, cwd: "/work/ext", model: "agy-cli/gemini-4-hydrogen", status: "external" },
+			},
+		} as never);
+
+		render(<Composer sessionId={EXT} readonly />);
+		await flush();
+
+		const ctxBtn = Array.from(document.querySelectorAll("button")).find(
+			(button) => button.title === "上下文窗口",
+		);
+		expect(ctxBtn).toBeTruthy();
+		fireEvent.click(ctxBtn!);
+		expect(document.body.textContent).toContain("50k / 未知");
+		expect(document.body.textContent).not.toContain("undefined");
+		expect(document.body.textContent).not.toContain("contextWindow");
 	});
 });

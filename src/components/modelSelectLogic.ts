@@ -2,7 +2,7 @@
  * Pure helpers behind the shared `ModelSelect`: thinking-suffix parse/compose,
  * role → model resolution (omp `modelRoles`), and the recent-models list.
  */
-import { type ModelOption, parseModels, resolveThinkingLevels, toModelKey } from "../lib/models";
+import { findCatalogModel, type ModelOption, parseModels, resolveThinkingLevels, toModelKey } from "../lib/models";
 import { tNow } from "../stores/language";
 
 /** Thinking levels accepted as a trailing `:<level>` on a model/role selector. */
@@ -77,14 +77,6 @@ export type RoleResolution =
 	/** Neither role nor `default` configured; omp picks automatically. */
 	| { kind: "auto" };
 
-function findModel(selector: string, models: ModelOption[] | null): ModelOption | null {
-	if (!models) return null;
-	return (
-		models.find((m) => toModelKey(m.provider, m.id) === selector) ??
-		(selector.includes("/") ? null : (models.find((m) => m.id === selector) ?? null))
-	);
-}
-
 /**
  * Resolve an exact configured selector, including its optional thinking suffix.
  * Only metadata for that same provider/model may override the catalog; never
@@ -95,9 +87,17 @@ export function resolveModelCapabilities(
 	models: ModelOption[] | null,
 	liveModel?: unknown,
 ): ModelOption | null {
-	const catalog = findModel(selector, models) ?? findModel(parseSelection(selector).selector, models);
 	const live = parseModels([liveModel])[0];
-	const key = catalog ? toModelKey(catalog.provider, catalog.id) : parseSelection(selector).selector;
+	const parsedSelector = parseSelection(selector).selector;
+	const exactLiveMatch = Boolean(
+		live &&
+			(toModelKey(live.provider, live.id) === selector ||
+				toModelKey(live.provider, live.id) === parsedSelector),
+	);
+	const catalog = exactLiveMatch
+		? (models?.find((m) => m.provider === live!.provider && m.id === live!.id) ?? null)
+		: (findCatalogModel(selector, models) ?? findCatalogModel(parsedSelector, models));
+	const key = catalog ? toModelKey(catalog.provider, catalog.id) : parsedSelector;
 	if (!live || toModelKey(live.provider, live.id) !== key) return catalog;
 	return {
 		...live,
@@ -138,10 +138,10 @@ export function resolveRole(
 	models: ModelOption[] | null,
 ): RoleResolution {
 	const own = followRole(roles, role, new Set());
-	if (own) return { kind: "model", ...own, model: findModel(own.selector, models) };
+	if (own) return { kind: "model", ...own, model: findCatalogModel(own.selector, models) };
 	if (role !== "default") {
 		const def = followRole(roles, "default", new Set());
-		if (def) return { kind: "followDefault", ...def, model: findModel(def.selector, models) };
+		if (def) return { kind: "followDefault", ...def, model: findCatalogModel(def.selector, models) };
 	}
 	return { kind: "auto" };
 }

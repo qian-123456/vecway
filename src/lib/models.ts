@@ -145,6 +145,28 @@ export function parseModels(data: unknown): ModelOption[] {
 }
 
 /**
+ * Look up a catalog entry by selector. Exact `provider/id` matches always win;
+ * otherwise falls back to an unambiguous full-`id` match (covering both bare IDs
+ * and slash-containing IDs such as `"agy-cli/gemini-4-hydrogen"` under `"magpie"`).
+ * Never strips prefixes or guesses when multiple providers share the same `id`.
+ */
+export function findCatalogModel(
+	selector: string,
+	availableModels?: readonly ModelOption[] | null,
+): ModelOption | null {
+	if (!availableModels || !selector) return null;
+	const exact = availableModels.find((m) => toModelKey(m.provider, m.id) === selector);
+	if (exact) return exact;
+	let byId: ModelOption | null = null;
+	for (const m of availableModels) {
+		if (m.id !== selector) continue;
+		if (byId) return null;
+		byId = m;
+	}
+	return byId;
+}
+
+/**
  * First candidate that names a model (non-empty key), resolved against the catalog.
  * `??` is not enough: a live `get_state` can carry an empty/partial `model` (`""`, `{}`)
  * that is non-nullish yet resolves to the placeholder while the session meta knows the
@@ -175,24 +197,7 @@ export function resolveCurrentModel(
 		if (!trimmed) {
 			return { value: "", label: tNow("models.placeholder") };
 		}
-		const slashIndex = trimmed.indexOf("/");
-		if (slashIndex > 0) {
-			const provider = trimmed.slice(0, slashIndex).trim();
-			const id = trimmed.slice(slashIndex + 1).trim();
-			const key = toModelKey(provider, id);
-			const matched = availableModels?.find(
-				(m) => m.provider === provider && m.id === id,
-			);
-			return {
-				value: key,
-				provider,
-				id,
-				label: matched?.id ?? key,
-			};
-		}
-		// id only (no slash)
-		const id = trimmed;
-		const matched = availableModels?.find((m) => m.id === id);
+		const matched = findCatalogModel(trimmed, availableModels);
 		if (matched) {
 			const key = toModelKey(matched.provider, matched.id);
 			return {
@@ -202,10 +207,23 @@ export function resolveCurrentModel(
 				label: matched.id,
 			};
 		}
+		const slashIndex = trimmed.indexOf("/");
+		if (slashIndex > 0) {
+			const provider = trimmed.slice(0, slashIndex).trim();
+			const id = trimmed.slice(slashIndex + 1).trim();
+			const key = toModelKey(provider, id);
+			return {
+				value: key,
+				provider,
+				id,
+				label: key,
+			};
+		}
+		// id only (no slash, not uniquely matched in catalog)
 		return {
-			value: id,
-			id,
-			label: id,
+			value: trimmed,
+			id: trimmed,
+			label: trimmed,
 		};
 	}
 
@@ -221,11 +239,17 @@ export function resolveCurrentModel(
 			return { value: "", label: tNow("models.placeholder") };
 		}
 
-		// If provider missing, resolve from availableModels by id
+		// If provider missing, resolve unambiguously from availableModels
 		if (id && !provider && availableModels) {
-			const matched = availableModels.find((m) => m.id === id);
+			const matched = findCatalogModel(id, availableModels);
 			if (matched) {
-				provider = matched.provider;
+				const key = toModelKey(matched.provider, matched.id);
+				return {
+					value: key,
+					provider: matched.provider,
+					id: matched.id,
+					label: matched.id || key,
+				};
 			}
 		}
 
@@ -280,9 +304,7 @@ export function buildSetModelPayload(
 	const trimmed = selectedValue.trim();
 	if (!trimmed) return null;
 
-	const matched = availableModels?.find(
-		(x) => toModelKey(x.provider, x.id) === trimmed,
-	);
+	const matched = findCatalogModel(trimmed, availableModels);
 	if (matched) {
 		return {
 			type: "set_model",

@@ -942,23 +942,39 @@ export function Composer({
 	const contextRaw = live?.state?.contextUsage;
 	// Catalog window (models.yml, refreshed when Settings ▸ 上下文窗口 writes) wins over the
 	// window baked into the running omp process, so a settings change shows up immediately.
-	const contextWindow = currentModelOption?.contextWindow;
+	const rawWindow = currentModelOption?.contextWindow;
+	const contextWindow =
+		typeof rawWindow === "number" && Number.isFinite(rawWindow) && rawWindow > 0 ? rawWindow : undefined;
 	const liveUsage =
 		typeof contextRaw === "object" && contextRaw !== null ? (contextRaw as Record<string, unknown>) : null;
 	const draftBaseTokens = useDraftBaseContext(isLocalDraft, sessionId, effectiveCwd);
-	const contextUsageObj: Record<string, unknown> | null = liveUsage
-		? contextWindow
-			? { ...liveUsage, contextWindow, percent: typeof liveUsage.tokens === "number" ? (liveUsage.tokens / contextWindow) * 100 : undefined }
-			: planChoice || (current.value && sessionCurrent.value && current.value !== sessionCurrent.value)
-				? { ...liveUsage, contextWindow: undefined, percent: undefined }
-				: liveUsage
-		: (snapshot?.contextTokens ?? (isLocalDraft ? draftBaseTokens : null)) != null
-			? {
-					tokens: snapshot?.contextTokens ?? draftBaseTokens,
+	const contextUsageObj: Record<string, unknown> | null = (() => {
+		if (liveUsage) {
+			if (contextWindow) {
+				const { percent: _pct, ...rest } = liveUsage;
+				return {
+					...rest,
 					contextWindow,
-					percent: contextWindow ? ((snapshot?.contextTokens ?? draftBaseTokens!) / contextWindow) * 100 : undefined,
-				}
-			: null;
+					...(typeof liveUsage.tokens === "number"
+						? { percent: (liveUsage.tokens / contextWindow) * 100 }
+						: {}),
+				};
+			}
+			if (planChoice || (current.value && sessionCurrent.value && current.value !== sessionCurrent.value)) {
+				const { contextWindow: _cw, percent: _pct, ...rest } = liveUsage;
+				return rest;
+			}
+			return liveUsage;
+		}
+		const fallbackTokens = snapshot?.contextTokens ?? (isLocalDraft ? draftBaseTokens : null);
+		if (fallbackTokens == null) return null;
+		return {
+			tokens: fallbackTokens,
+			...(contextWindow
+				? { contextWindow, percent: (fallbackTokens / contextWindow) * 100 }
+				: {}),
+		};
+	})();
 	const contextPct =
 		typeof contextUsageObj?.percent === "number"
 			? contextUsageObj.percent

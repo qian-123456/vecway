@@ -249,19 +249,23 @@ export function ContextRing({
 	let percentage = 0;
 
 	const rawTokens =
-		usageObj && typeof usageObj.tokens === "number" ? usageObj.tokens : undefined;
+		usageObj && typeof usageObj.tokens === "number" && Number.isFinite(usageObj.tokens)
+			? usageObj.tokens
+			: undefined;
 	const rawWindow =
-		usageObj && typeof usageObj.contextWindow === "number"
+		usageObj &&
+		typeof usageObj.contextWindow === "number" &&
+		Number.isFinite(usageObj.contextWindow) &&
+		usageObj.contextWindow > 0
 			? usageObj.contextWindow
 			: undefined;
 
-	if (typeof rawTokens === "number" && typeof rawWindow === "number" && rawWindow > 0) {
+	if (typeof rawTokens === "number" && typeof rawWindow === "number") {
 		fraction = Math.max(0, rawTokens / rawWindow);
 		percentage = fraction * 100;
 	}
 
-	const knownUsage = typeof rawTokens === "number" && Number.isFinite(rawTokens) &&
-		typeof rawWindow === "number" && Number.isFinite(rawWindow) && rawWindow > 0;
+	const knownUsage = typeof rawTokens === "number" && typeof rawWindow === "number";
 	const pctInt = Math.round(percentage);
 
 	// Ring colour
@@ -388,9 +392,10 @@ export function ContextRing({
 					{/* Header: usage numbers + compact action (outside click dismisses the popover). */}
 					<div className="flex min-h-[24px] items-center gap-2 px-3 py-0.5">
 						<span className="whitespace-nowrap text-[12px] leading-[15px] text-[var(--text-40)]">{t("chat.context.window")}</span>
-						{typeof rawTokens === "number" && typeof rawWindow === "number" && rawWindow > 0 && (
+						{typeof rawTokens === "number" && (
 							<span className="whitespace-nowrap text-[12px] leading-[15px] tabular-nums text-[var(--text-60)]">
-								{compactTokens(rawTokens)} / {compactTokens(rawWindow)}
+								{compactTokens(rawTokens)} /{" "}
+								{typeof rawWindow === "number" ? compactTokens(rawWindow) : t("chat.context.windowUnknown")}
 							</span>
 						)}
 						{compacting && onCancelCompact ? (
@@ -492,8 +497,27 @@ export function ContextRing({
 							</div>
 							{usageObj && (
 								<div className="mt-2 space-y-1 text-[12px] leading-[15px] text-[var(--text-40)]">
+									{typeof rawTokens === "number" && (
+										<div className="flex justify-between">
+											<span>{t("chat.context.used")}</span>
+											<span className="font-mono text-[var(--text)]">{compactTokens(rawTokens)}</span>
+										</div>
+									)}
+									<div className="flex justify-between">
+										<span>{t("chat.context.window")}</span>
+										<span className="font-mono text-[var(--text)]">
+											{typeof rawWindow === "number" ? compactTokens(rawWindow) : t("chat.context.windowUnknown")}
+										</span>
+									</div>
 									{Object.entries(usageObj)
-										.filter(([k]) => k !== "percent")
+										.filter(
+											([k, v]) =>
+												k !== "percent" &&
+												k !== "tokens" &&
+												k !== "contextWindow" &&
+												v != null &&
+												v !== "",
+										)
 										.map(([k, v]) => (
 											<div key={k} className="flex justify-between">
 												<span>{k}</span>
