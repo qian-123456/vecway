@@ -15,6 +15,8 @@
 	--color-m-text: var(--m-text);
 	--color-m-text-2: var(--m-text-2);
 	--color-m-text-3: var(--m-text-3);
+	--color-m-text-quiet: var(--m-text-quiet);
+	--color-m-text-faint: var(--m-text-faint);
 	--color-m-accent: var(--m-accent);
 	--color-m-accent-text: var(--m-accent-text);
 	--color-m-accent-soft: var(--m-accent-soft);
@@ -366,11 +368,56 @@ html[data-scheme="light"] .m-glass-btn:active {
 		overscroll-behavior: contain;
 		-webkit-overflow-scrolling: touch;
 	}
+
+	/* iOS 26 Liquid Glass circular floating button */
+	.m-liquid-orb {
+		background-color: var(--m-liquid-bg);
+		border: 1px solid var(--m-liquid-border);
+		box-shadow: var(--m-liquid-shadow);
+		backdrop-filter: blur(22px) saturate(180%);
+		-webkit-backdrop-filter: blur(22px) saturate(180%);
+		transition:
+			transform var(--m-dur-press) var(--m-ease),
+			background-color var(--m-dur-fast) var(--m-ease),
+			border-color var(--m-dur-fast) var(--m-ease);
+	}
+	.m-liquid-orb:active:not(:disabled) {
+		transform: scale(0.94);
+	}
+
+	/* iOS 26 Liquid Glass floating segmented track and active glass lens */
+	.m-liquid-track {
+		background-color: var(--m-liquid-bg);
+		border: 1px solid var(--m-liquid-border);
+		box-shadow: var(--m-liquid-shadow);
+		backdrop-filter: blur(22px) saturate(180%);
+		-webkit-backdrop-filter: blur(22px) saturate(180%);
+	}
+	.m-liquid-lens {
+		background-color: var(--m-liquid-pill);
+		box-shadow:
+			inset 0 1px 0 var(--m-rim-light),
+			0 1px 4px rgb(0 0 0 / 0.14);
+		transition:
+			transform var(--m-dur) var(--m-ease),
+			width var(--m-dur) var(--m-ease),
+			background-color var(--m-dur-fast) var(--m-ease);
+	}
+	.m-liquid-surface {
+		background-color: color-mix(in srgb, var(--m-bg-elev) 88%, transparent);
+		border: 1px solid var(--m-liquid-border);
+		box-shadow: var(--m-shadow-pop);
+		backdrop-filter: blur(24px) saturate(180%);
+		-webkit-backdrop-filter: blur(24px) saturate(180%);
+	}
 }
 
 @media (prefers-reduced-transparency: reduce) {
 	.m-popover-surface,
-	.m-sheet-surface {
+	.m-sheet-surface,
+	.m-liquid-orb,
+	.m-liquid-track,
+	.m-liquid-surface {
 		background-color: var(--m-bg-elev);
 		backdrop-filter: none;
 		-webkit-backdrop-filter: none;

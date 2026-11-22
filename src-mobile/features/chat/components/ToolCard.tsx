@@ -45,15 +45,15 @@ const KIND_ICON: Record<ToolKind, LucideIcon> = {
 };
 
 function StateMark({ state }: { state: ToolState }) {
-	if (state === "run") return <Spinner size={14} className="text-m-text-3" />;
+	if (state === "run") return <Spinner size={12} className="text-m-text-quiet" />;
 	if (state === "bad")
 		return (
-			<span className="inline-flex items-center gap-1 whitespace-nowrap text-m-xs text-m-danger">
-				<CircleAlert size={16} strokeWidth={1.75} aria-hidden />
+			<span className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] text-m-danger">
+				<CircleAlert size={13} strokeWidth={1.75} aria-hidden />
 				失败
 			</span>
 		);
-	if (state === "ok") return <Check size={16} strokeWidth={1.75} aria-label="完成" className="text-m-text-3" />;
+	if (state === "ok") return <Check size={13} strokeWidth={1.75} aria-label="完成" className="text-m-text-faint" />;
 	return null;
 }
 
@@ -115,36 +115,57 @@ export const ToolCard = memo(function ToolCard({ id, tool, state }: { id: string
 	const Icon = KIND_ICON[line.kind];
 	const args = prettyArgs(tool.args);
 	const hasResult = tool.status !== "running" || tool.result !== "";
+	const isError = state === "bad";
+	const isRunning = state === "run";
+	const isCodeTarget = line.kind === "shell" || line.kind === "read" || line.kind === "edit";
 	return (
 		<div>
 			<button
 				type="button"
 				onClick={toggle}
 				aria-expanded={open}
-				className="-mx-1.5 flex min-h-10 w-[calc(100%+12px)] items-start gap-2.5 rounded-m-sm px-2 py-2 text-left transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+				className="-mx-1.5 flex min-h-8 w-[calc(100%+12px)] items-center gap-1.5 rounded-m-sm px-1.5 py-1 text-left transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
 			>
-				<Icon size={16} strokeWidth={1.8} aria-hidden className="mt-0.5 shrink-0 text-m-text-3" />
-				<span className="min-w-0 flex-1 text-m-xs leading-5 text-m-text-2">
-					<span className="font-medium text-m-text">{line.verb}</span>
-					{line.target && <span className="break-words text-m-text-3 [overflow-wrap:anywhere]"> {line.target}</span>}
+				<Icon
+					size={14}
+					strokeWidth={1.75}
+					aria-hidden
+					className={`shrink-0 ${isError ? "text-m-danger" : "text-m-text-quiet"}`}
+				/>
+				<span className={`min-w-0 flex-1 truncate text-[13.5px] leading-6 ${isRunning ? "m-shimmer" : ""}`}>
+					<span className={isError ? "text-m-danger" : "text-m-text-2"}>{line.verb}</span>
+					{line.target && (
+						<span
+							className={`ml-1.5 text-m-text-quiet ${
+								isCodeTarget ? "font-m-mono text-[12px]" : ""
+							}`}
+						>
+							{line.target}
+						</span>
+					)}
 				</span>
-				<span className="mt-0.5 flex shrink-0 items-center">
+				<span className="flex shrink-0 items-center">
 					<StateMark state={state} />
 				</span>
-				<ChevronRight size={15} strokeWidth={1.8} aria-hidden className={`mt-0.5 shrink-0 text-m-text-3 transition-transform ${open ? "rotate-90" : ""}`} />
+				<ChevronRight
+					size={12}
+					strokeWidth={1.75}
+					aria-hidden
+					className={`shrink-0 text-m-text-faint transition-transform duration-(--m-dur-fast) ${open ? "rotate-90" : ""}`}
+				/>
 			</button>
 			{open && (
-				<div className="mt-1 mb-2 space-y-3 rounded-m-md border border-m-border bg-m-card p-3.5 shadow-m-card">
-					<div className="whitespace-nowrap font-m-mono text-m-xs text-m-text-3">{tool.name}</div>
+				<div className="mt-1 mb-2 space-y-2.5 rounded-m-md border border-m-border bg-m-card p-3 shadow-m-card">
+					<div className="whitespace-nowrap font-m-mono text-[11px] text-m-text-quiet">{tool.name}</div>
 					{args && (
 						<div>
-							<div className="mb-1 text-m-xs text-m-text-3">参数</div>
+							<div className="mb-1 text-[11px] text-m-text-quiet">参数</div>
 							<Pre text={args} />
 						</div>
 					)}
 					{hasResult && (
 						<div>
-							<div className="mb-1 flex items-center justify-between gap-2 text-m-xs text-m-text-3">
+							<div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-m-text-quiet">
 								<span>{tool.status === "error" ? "错误" : "结果"}</span>
 								<Button size="sm" variant="ghost" onClick={() => void copyText(tool.result).then((ok) => toast(ok ? "已复制" : "复制失败", { kind: ok ? "success" : "error" }))}>复制完整输出</Button>
 							</div>

@@ -228,15 +228,14 @@ export function ComposerCapsule({
 						type="button"
 						aria-label="停止"
 						onClick={onStop}
-						className="px-1 py-0.5 font-medium whitespace-nowrap text-m-danger active:opacity-70"
+						className="m-press rounded-full bg-m-danger-bg px-2.5 py-0.5 font-medium whitespace-nowrap text-m-danger active:opacity-80"
 					>
 						停止
 					</button>
 				</div>
 			)}
-			<div className="relative flex flex-col rounded-(--m-composer-radius) border border-m-composer-border bg-m-composer-bg shadow-m-composer transition-[border-color,box-shadow,background-color] duration-(--m-dur-fast) focus-within:border-m-border-strong">
+			<div className="relative flex flex-col rounded-(--m-composer-radius) border border-m-composer-border bg-m-composer-bg shadow-m-composer backdrop-blur-xl transition-[border-color,box-shadow,background-color] duration-(--m-dur-fast) focus-within:border-m-border-strong focus-within:shadow-m-pop">
 				{top != null && <div className="p-2.5 pb-0">{top}</div>}
-			{/* Top Row: full-width auto-growing textarea only */}
 			<textarea
 				ref={ta}
 				rows={1}
@@ -279,7 +278,7 @@ export function ComposerCapsule({
 						type="button"
 						aria-label="添加"
 						onClick={onPlus}
-						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-m-text-2 transition-[background-color,color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
+						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-m-surface/55 text-m-text-2 transition-[background-color,color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
 					>
 						<Plus size={18} strokeWidth={2} />
 					</button>
@@ -290,7 +289,7 @@ export function ComposerCapsule({
 							aria-label={modelTriggerLabel}
 							onClick={onModel ?? onThinking}
 							disabled={!onModel && !onThinking}
-							className="flex h-8 min-w-0 max-w-full flex-initial items-center gap-1 rounded-lg px-2 text-left transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface active:scale-[0.98] active:bg-m-surface-2 disabled:cursor-default disabled:active:scale-100"
+							className="flex h-8 min-w-0 max-w-full flex-initial items-center gap-1 rounded-lg px-2 text-left transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface/70 active:scale-[0.98] active:bg-m-surface-2 disabled:cursor-default disabled:active:scale-100"
 						>
 							{hasModel && (
 								<span className="min-w-0 truncate text-[12.5px] font-medium text-m-text">

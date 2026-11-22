@@ -1,4 +1,4 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronLeft, MoreHorizontal } from "lucide-react";
 import {
 	useCallback,
 	useEffect,
@@ -11,7 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import { errorMessage } from "../../core/api";
 import { DRAFT_PREFIX } from "../../core/types";
-import { IconButton, toast } from "../../ui";
+import { AnchoredPopover, MenuRow, toast } from "../../ui";
 import { useOverlay } from "../../ui/overlay";
 import { FilesPanel } from "./FilesPage";
 import { GitPanel } from "./GitPage";
@@ -20,7 +20,7 @@ import { PlanPanel } from "./PlanPage";
 import { ServicesPanel } from "./ServicesPage";
 import { SidechatPanel } from "./SidechatPage";
 import { TerminalPanel } from "./TerminalPage";
-import { useRightDrawer, type WorkspaceTab } from "./rightDrawerStore";
+import { tabHeaderKey, useRightDrawer, type WorkspaceTab } from "./rightDrawerStore";
 import { usePlanExecution } from "./usePlanExecution";
 
 const BASE_TABS: ReadonlyArray<{ id: WorkspaceTab; label: string }> = [
@@ -192,6 +192,18 @@ export function RightWorkspaceDrawer({
 		[plan.hasPlan, activeTab],
 	);
 
+	const tabHeader = useRightDrawer((s) => (effectiveId ? s.tabHeaders?.[tabHeaderKey(effectiveId, activeTab)] : undefined));
+	const moreActions = tabHeader?.moreActions ?? [];
+	const sidechatSwitcher = activeTab === "sidechat" ? tabHeader?.sidechatSwitcher : undefined;
+	const activeTabMeta = tabs.find((t) => t.id === activeTab);
+	const headerTitle = tabHeader?.title?.trim() || activeTabMeta?.label || "工作区";
+
+	const [moreOpen, setMoreOpen] = useState(false);
+	const moreBtnRef = useRef<HTMLButtonElement>(null);
+	useEffect(() => {
+		if (!open || moreActions.length === 0) setMoreOpen(false);
+	}, [open, activeTab, effectiveId, moreActions.length]);
+
 	// Nothing to keep alive yet if drawer has never been opened for this session.
 	if (!open && visitedTabs.length === 0) return null;
 
@@ -287,40 +299,106 @@ export function RightWorkspaceDrawer({
 				}`}
 				style={{ paddingTop: "var(--m-safe-top)" }}
 			>
-				<header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-m-border px-2">
-					<IconButton
-						variant="plain"
-						size="sm"
-						icon={<ChevronRight size={20} strokeWidth={1.85} />}
-						label="返回对话"
-						onClick={closeDrawer}
-					/>
+				<header className="shrink-0 px-3 pt-2 pb-2.5">
+					<div className="grid grid-cols-[36px_minmax(0,1fr)_36px] items-center gap-2 pb-2">
+						<button
+							type="button"
+							aria-label="返回对话"
+							onClick={closeDrawer}
+							className="m-liquid-orb inline-flex h-9 w-9 items-center justify-center rounded-full text-m-text"
+						>
+							<ChevronLeft size={20} strokeWidth={1.85} aria-hidden />
+						</button>
+						<span className="truncate text-center text-[15px] font-semibold text-m-text">
+							{headerTitle}
+						</span>
+						{moreActions.length > 0 ? (
+							<button
+								ref={moreBtnRef}
+								type="button"
+								aria-label="更多操作"
+								aria-expanded={moreOpen}
+								aria-haspopup="menu"
+								onClick={() => setMoreOpen((v) => !v)}
+								className="m-liquid-orb inline-flex h-9 w-9 items-center justify-center rounded-full text-m-text"
+							>
+								<MoreHorizontal size={18} strokeWidth={1.85} aria-hidden />
+							</button>
+						) : (
+							<span aria-hidden className="h-9 w-9" />
+						)}
+					</div>
+
 					<nav
 						role="tablist"
 						aria-label="工作区面板"
-						className="m-noscrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-1"
+						className="m-liquid-track m-noscrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto rounded-full p-1"
 					>
 						{tabs.map((tab) => {
 							const selected = activeTab === tab.id;
+							const showChevron = tab.id === "sidechat" && selected;
 							return (
 								<button
 									key={tab.id}
 									type="button"
 									role="tab"
 									aria-selected={selected}
+									aria-expanded={showChevron && sidechatSwitcher ? sidechatSwitcher.open : undefined}
 									disabled={!effectiveId}
-									onClick={() => effectiveId && setTab(effectiveId, tab.id)}
-									className={`m-press inline-flex min-h-9 shrink-0 items-center justify-center rounded-m-pill px-3 text-m-xs font-medium whitespace-nowrap ${
+									onClick={() => {
+										if (!effectiveId) return;
+										if (showChevron && sidechatSwitcher) {
+											sidechatSwitcher.toggle();
+										} else if (!selected) {
+											setTab(effectiveId, tab.id);
+										}
+									}}
+									className={`m-press inline-flex min-h-8 flex-1 shrink-0 items-center justify-center gap-0.5 rounded-full px-2.5 text-m-xs whitespace-nowrap transition-colors ${
 										selected
-											? "bg-m-accent-soft text-m-accent-soft-text"
-											: "text-m-text-2 active:bg-m-surface-hover"
+											? "m-liquid-lens font-semibold text-m-text"
+											: "font-medium text-m-text-2 active:text-m-text"
 									}`}
 								>
-									{tab.label}
+									<span>{tab.label}</span>
+									{showChevron && (
+										<ChevronDown
+											size={11}
+											strokeWidth={2.2}
+											aria-hidden
+											className={`shrink-0 transition-transform duration-(--m-dur-fast) ${
+												sidechatSwitcher?.open ? "rotate-180" : ""
+											}`}
+										/>
+									)}
 								</button>
 							);
 						})}
 					</nav>
+
+					<AnchoredPopover
+						open={moreOpen && moreActions.length > 0}
+						onClose={() => setMoreOpen(false)}
+						anchorEl={moreBtnRef.current}
+						placement="bottom-end"
+						minWidth={196}
+						maxWidth={260}
+						className="m-liquid-surface rounded-2xl! border-(--m-liquid-border)! bg-[color-mix(in_srgb,var(--m-bg-elev)_88%,transparent)]!"
+					>
+						<div className="py-1">
+							{moreActions.map((action) => (
+								<MenuRow
+									key={action.id}
+									icon={action.icon}
+									label={action.label}
+									danger={action.danger}
+									onClick={() => {
+										setMoreOpen(false);
+										action.onSelect();
+									}}
+								/>
+							))}
+						</div>
+					</AnchoredPopover>
 				</header>
 
 				{!effectiveId ? (

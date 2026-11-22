@@ -13,17 +13,17 @@
 	line-height: 1.66;
 	overflow-wrap: anywhere;
 }
-/* Collapsible tool timeline rail (Direction A) */
+/* Collapsible step list inside ProcessFold */
 .m-timeline {
 	position: relative;
-	padding-left: 16px;
+	padding-left: 12px;
 }
 .m-timeline::before {
 	content: "";
 	position: absolute;
-	left: 5px;
-	top: 10px;
-	bottom: 12px;
+	left: 3px;
+	top: 8px;
+	bottom: 10px;
 	width: 1px;
-	background: var(--m-border-strong);
+	background: var(--m-border);
 }

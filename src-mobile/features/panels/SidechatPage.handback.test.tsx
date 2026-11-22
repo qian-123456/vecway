@@ -51,7 +51,8 @@ const button = (name: string) => screen.getByRole("button", { name }) as HTMLBut
 async function openSummary() {
 	render(<SidechatPage route={{ name: "sidechat", path: "/s/parent/sidechat", params: { id: "parent" }, query: {} }} />);
 	await flush();
-	fireEvent.click(button("发回主对话"));
+	fireEvent.click(button("更多操作"));
+	fireEvent.click(button("把结论发回主对话"));
 	await flush();
 	// Opening handback separates manual editing from AI summarize and must NOT auto-trigger a model turn.
 	expect(requests).toBe(0);

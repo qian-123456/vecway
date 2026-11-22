@@ -279,14 +279,14 @@ export function HomePage(_props: PageProps) {
 							return (
 								<div
 									key={a.id}
-									className={`relative h-13 w-13 shrink-0 overflow-hidden rounded-m-md bg-m-surface-2 ${a.status === "err" ? "ring-1 ring-m-danger" : ""}`}
+									className={`relative h-13 w-13 shrink-0 overflow-hidden rounded-m-md bg-m-surface-2 ring-1 shadow-m-card ${a.status === "err" ? "ring-m-danger" : "ring-m-border/75"}`}
 								>
 									{a.url && (
 										<button
 											type="button"
 											aria-label={`预览图片 ${idx + 1}`}
 											onClick={() => openImage({ src: a.url, alt: a.name }, imageGallery, galleryIndex >= 0 ? galleryIndex : 0)}
-											className="block h-full w-full"
+											className="m-press block h-full w-full"
 										>
 											<img src={a.url} alt={a.name} className="h-full w-full object-cover" />
 										</button>
@@ -303,7 +303,7 @@ export function HomePage(_props: PageProps) {
 										type="button"
 										aria-label="移除附件"
 										onClick={() => removeAtt(a.id)}
-										className="absolute top-0.5 right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-m-scrim/75 text-white active:opacity-80"
+										className="m-press absolute top-0.5 right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-m-scrim/75 text-white active:opacity-80"
 									>
 										<X size={12} strokeWidth={2} />
 									</button>
@@ -315,16 +315,16 @@ export function HomePage(_props: PageProps) {
 				{fileAtts.length > 0 && (
 					<div className="m-noscrollbar flex gap-2 overflow-x-auto">
 						{fileAtts.map((a) => (
-							<div key={a.id} className={`relative flex shrink-0 items-center gap-2 rounded-m-md bg-m-surface-2 py-1.5 pr-8 pl-2 ${a.status === "err" ? "ring-1 ring-m-danger" : ""}`}>
+							<div key={a.id} className={`relative flex shrink-0 items-center gap-2 rounded-m-md bg-m-surface-2/90 py-1.5 pr-8 pl-2 ring-1 shadow-m-card ${a.status === "err" ? "ring-m-danger" : "ring-m-border/75"}`}>
 								<span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-m-sm bg-m-surface text-m-text-2">
-									<FileText size={16} />
+									<FileText size={16} strokeWidth={1.75} />
 								</span>
 								<span className="max-w-36 truncate text-m-xs text-m-text">{a.name}</span>
 								<button
 									type="button"
 									aria-label="移除附件"
 									onClick={() => removeAtt(a.id)}
-									className="absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-m-text-3 active:bg-m-surface-hover"
+									className="m-press absolute top-1/2 right-1.5 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-m-text-3 active:bg-m-surface-hover"
 								>
 									<X size={14} />
 								</button>
@@ -337,6 +337,7 @@ export function HomePage(_props: PageProps) {
 
 	return (
 		<div className="relative flex min-h-0 flex-1 flex-col bg-m-bg">
+			<div className="pointer-events-none absolute inset-0 opacity-60" style={{ backgroundImage: "var(--m-glow)" }} aria-hidden="true" />
 			<ChatHeader
 				title="Vecway"
 				onMenu={() => setMenuOpen(true)}
@@ -351,9 +352,24 @@ export function HomePage(_props: PageProps) {
 				recentSessions={recentSessions}
 			/>
 			<div
-				className="m-kb-dock relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3 pt-2"
-				style={{ paddingBottom: kbOpen ? "8px" : "calc(var(--m-safe-bottom) + 8px)" }}
+				className="m-kb-dock relative shrink-0 bg-gradient-to-t from-m-bg via-m-bg/95 to-transparent px-3.5 pt-3"
+				style={{ paddingBottom: kbOpen ? "10px" : "calc(var(--m-safe-bottom) + 12px)" }}
 			>
+				{planOn && (
+					<div className="mb-2 flex justify-start">
+						<button
+							type="button"
+							aria-label="关闭规划模式"
+							disabled={sending}
+							onClick={() => setPlanOn(false)}
+							className="m-press m-liquid-surface inline-flex min-h-8 items-center gap-1.5 rounded-m-pill px-3 py-1 text-m-xs font-medium whitespace-nowrap text-m-accent disabled:opacity-50"
+						>
+							<Lightbulb size={13} strokeWidth={1.75} className="shrink-0" aria-hidden="true" />
+							<span>规划模式已开启</span>
+							<X size={12} strokeWidth={1.85} className="shrink-0 text-m-text-3" aria-hidden="true" />
+						</button>
+					</div>
+				)}
 				<ComposerCapsule
 					apiRef={apiRef}
 					placeholder="今天想做点什么？"
@@ -373,16 +389,16 @@ export function HomePage(_props: PageProps) {
 			<input ref={galleryRef} type="file" accept="image/*" multiple hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) { setPlusOpen(false); addFiles(files, true); } }} />
 			<BottomSheet open={plusOpen} onClose={() => setPlusOpen(false)}>
 				<div className="grid grid-cols-3 gap-3 px-4 pt-1">
-					<ActionTile icon={<Paperclip size={24} />} label="文件" onClick={() => fileRef.current?.click()} />
-					<ActionTile icon={<Camera size={24} />} label="拍照" onClick={() => cameraRef.current?.click()} />
-					<ActionTile icon={<ImagePlus size={24} />} label="相册" onClick={() => galleryRef.current?.click()} />
-					<ActionTile icon={<Monitor size={24} />} label="电脑端选中项" onClick={() => void openAction("finder")} />
-					<ActionTile icon={<PenLine size={24} />} label="草图" onClick={() => { setPlusOpen(false); setSketchOpen(true); }} />
+					<ActionTile icon={<Paperclip size={24} strokeWidth={1.75} />} label="文件" onClick={() => fileRef.current?.click()} />
+					<ActionTile icon={<Camera size={24} strokeWidth={1.75} />} label="拍照" onClick={() => cameraRef.current?.click()} />
+					<ActionTile icon={<ImagePlus size={24} strokeWidth={1.75} />} label="相册" onClick={() => galleryRef.current?.click()} />
+					<ActionTile icon={<Monitor size={24} strokeWidth={1.75} />} label="电脑端选中项" onClick={() => void openAction("finder")} />
+					<ActionTile icon={<PenLine size={24} strokeWidth={1.75} />} label="草图" onClick={() => { setPlusOpen(false); setSketchOpen(true); }} />
 				</div>
 				<div className="pt-3 pb-3">
-					<MenuRow icon={<FolderOpen size={22} />} label="在项目中工作" hint="选择项目目录" onClick={() => { setPlusOpen(false); setDirectoryOpen(true); }} />
-					<MenuRow icon={<Target size={22} />} label="目标" hint="设定后会持续朝它推进" onClick={() => void openAction("goal")} />
-					<div className="flex min-h-13 items-center gap-4 py-1 pr-4 pl-5"><Lightbulb size={22} className="shrink-0 text-m-text-2" /><span className="flex-1 whitespace-nowrap text-m-md">规划模式</span><Switch label="规划模式" checked={planOn} disabled={sending} onChange={setPlanOn} /></div>
+					<MenuRow icon={<FolderOpen size={22} strokeWidth={1.75} />} label="在项目中工作" hint="选择项目目录" onClick={() => { setPlusOpen(false); setDirectoryOpen(true); }} />
+					<MenuRow icon={<Target size={22} strokeWidth={1.75} />} label="目标" hint="设定后会持续朝它推进" onClick={() => void openAction("goal")} />
+					<div className="flex min-h-13 items-center gap-4 py-1 pr-4 pl-5"><Lightbulb size={22} strokeWidth={1.75} className="shrink-0 text-m-text-2" /><span className="flex-1 whitespace-nowrap text-m-md">规划模式</span><Switch label="规划模式" checked={planOn} disabled={sending} onChange={setPlanOn} /></div>
 				</div>
 			</BottomSheet>
 			<MenuSheet open={menuOpen} onClose={() => setMenuOpen(false)} onNewSession={() => setNewOpen(true)} />

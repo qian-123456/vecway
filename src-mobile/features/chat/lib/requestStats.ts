@@ -18,6 +18,7 @@ export interface RequestStat {
 	durationMs: number | null;
 	ttftMs: number | null;
 	usage: RequestUsage | null;
+	error?: string | null;
 }
 
 /** Field metadata: the Chinese label and explanation shown in the tap card. */
@@ -32,8 +33,30 @@ export const FIELDS: Record<StatField, { label: string; description: string }> =
 	cost: { label: "费用", description: "这次请求的费用（美元）" },
 };
 
+/** TUI glyphs matching desktop RequestStatsLine. */
+export const FIELD_GLYPHS: Record<StatField, string> = {
+	time: "",
+	input: "↘",
+	output: "↗",
+	cache: "💾",
+	ttft: "⏱",
+	tps: "⚡",
+	duration: "⌛",
+	cost: "$",
+};
+
 /** Display order of every field. */
 export const FIELD_IDS: readonly StatField[] = ["time", "input", "output", "cache", "ttft", "tps", "duration", "cost"];
+
+/** Desktop TUI stat line field order. */
+export const DESKTOP_STAT_FIELDS: readonly ("time" | "input" | "output" | "cache" | "ttft" | "tps")[] = [
+	"time",
+	"input",
+	"output",
+	"cache",
+	"ttft",
+	"tps",
+];
 
 export const MISSING = "—";
 
@@ -44,13 +67,15 @@ export function buildStat(
 	durationMs: number | null,
 	ttftMs: number | null,
 	usage: RequestUsage | null,
+	error: string | null = null,
 ): RequestStat {
 	return {
 		startedAt: completedAt != null && durationMs != null ? completedAt - durationMs : completedAt,
 		completedAt,
 		durationMs,
-		ttftMs,
+		ttftMs: error ? null : ttftMs,
 		usage,
+		...(error ? { error } : {}),
 	};
 }
 
@@ -76,36 +101,46 @@ export interface StatItemLike {
 	duration?: number | null;
 	ttft?: number | null;
 	usage?: unknown;
+	stopReason?: string | null;
+	errorMessage?: string | null;
+	text?: string | null;
 }
 
 /** Stats for an assistant transcript item; null for every other kind. */
 export function requestStatFromItem(item: StatItemLike | null | undefined): RequestStat | null {
 	if (!item || item.kind !== "assistant") return null;
 	const parsedTs = item.ts ? Date.parse(item.ts) : Number.NaN;
+	const err =
+		item.stopReason === "error"
+			? item.errorMessage?.trim() || item.text?.trim() || "请求失败"
+			: null;
 	return buildStat(
 		finiteOrNull(item.completedAt) ?? (Number.isNaN(parsedTs) ? null : parsedTs),
 		finiteOrNull(item.duration),
 		finiteOrNull(item.ttft),
 		usageOf(item.usage),
+		err,
 	);
 }
 
 /** Stats from a raw omp assistant message object (rpc `message_end.message`). */
 export function requestStatFromMessage(msg: Record<string, unknown>, fallbackTs?: number | null): RequestStat {
+	const errText = typeof msg.errorMessage === "string" ? msg.errorMessage.trim() : "";
+	const err = msg.stopReason === "error" ? errText || "请求失败" : null;
 	return buildStat(
 		finiteOrNull(msg.completedAt) ?? finiteOrNull(msg.timestamp) ?? fallbackTs ?? null,
 		finiteOrNull(msg.duration),
 		finiteOrNull(msg.ttft),
 		usageOf(msg.usage),
+		err,
 	);
 }
 
 /** Output tokens per second over the whole request (TUI ⚡); null without duration. */
 export function tokensPerSecond(stat: RequestStat | null | undefined): number | null {
-	if (!stat || stat.usage?.output == null || !stat.durationMs || stat.durationMs <= 0) return null;
+	if (!stat || stat.error || stat.usage?.output == null || !stat.durationMs || stat.durationMs <= 0) return null;
 	return stat.usage.output / (stat.durationMs / 1000);
 }
-
 /** TUI-style compact token count: 235, 1.3K, 16K, 1.2M. */
 export function formatStatTokens(n: number | null | undefined): string {
 	if (typeof n !== "number" || !Number.isFinite(n)) return MISSING;
@@ -193,4 +228,103 @@ export function ttftSplit(
 		generationMs: Math.max(0, dur - ttft),
 		waitPercent: Math.min(98, Math.max(2, (ttft / dur) * 100)),
 	};
+}
+
+export interface DesktopStatPart {
+	field: StatField;
+	glyph: string;
+	text: string;
+}
+
+/**
+ * Desktop-parity TUI stat part formatter (`12:47:23 ↘1.3K ↗774 💾51K ⏱2.2s ⚡71.4/s`).
+ * Only includes fields that have recorded values.
+ */
+export function formatDesktopStatParts(
+	stat: RequestStat,
+	options?: { omitTime?: boolean; includeDuration?: boolean; includeCost?: boolean },
+): DesktopStatPart[] {
+	const fields: StatField[] = [...DESKTOP_STAT_FIELDS];
+	if (options?.includeDuration) fields.push("duration");
+	if (options?.includeCost) fields.push("cost");
+	const parts: DesktopStatPart[] = [];
+	for (const field of fields) {
+		if (field === "time" && options?.omitTime) continue;
+		const text = fieldText(stat, field);
+		if (text == null) continue;
+		parts.push({ field, glyph: FIELD_GLYPHS[field], text });
+	}
+	return parts;
+}
+
+export interface FailedRequestText {
+	time: string | null;
+	label: string;
+	wait: string | null;
+	reason: string;
+}
+
+export function formatFailedRequest(stat: RequestStat): FailedRequestText | null {
+	if (!stat.error) return null;
+	return {
+		time: stat.startedAt == null ? null : formatStatClock(stat.startedAt),
+		label: "请求失败",
+		wait: stat.durationMs == null ? null : `等待 ${formatStatSeconds(stat.durationMs)}`,
+		reason: stat.error,
+	};
+}
+
+export interface TurnStatTotals {
+	count: number;
+	failed: number;
+	input: number | null;
+	output: number | null;
+	cacheRead: number | null;
+	cost: number | null;
+	avgTps: number | null;
+}
+
+/** Whole-turn aggregate stats for TurnSummaryRows in the expanded process fold. */
+export function aggregateTurnStats(stats: readonly RequestStat[]): TurnStatTotals {
+	let input: number | null = 0;
+	let output: number | null = 0;
+	let cacheRead: number | null = 0;
+	let cost: number | null = 0;
+	let timedOutput: number | null = 0;
+	let timedMs = 0;
+	let failed = 0;
+	for (const s of stats) {
+		if (s.error) failed++;
+		const u = s.usage;
+		input = input != null && u?.input != null && u.cacheWrite != null ? input + u.input + u.cacheWrite : null;
+		output = output != null && u?.output != null ? output + u.output : null;
+		cacheRead = cacheRead != null && u?.cacheRead != null ? cacheRead + u.cacheRead : null;
+		cost = cost != null && u?.cost != null ? cost + u.cost : null;
+		if (!s.error && s.durationMs && s.durationMs > 0) {
+			timedOutput = timedOutput != null && u?.output != null ? timedOutput + u.output : null;
+			timedMs += s.durationMs;
+		}
+	}
+	return {
+		count: stats.length,
+		failed,
+		input,
+		output,
+		cacheRead,
+		cost,
+		avgTps: timedMs > 0 && timedOutput != null ? timedOutput / (timedMs / 1000) : null,
+	};
+}
+
+/** Compact Chinese duration matching desktop `formatDurationCompact`: "5秒" / "2分3秒" / "1小时4分". */
+export function formatDurationCompact(ms: number): string {
+	if (!(ms > 0)) return "0秒";
+	const totalSec = Math.round(ms / 1000);
+	if (totalSec < 60) return `${Math.max(1, totalSec)}秒`;
+	const minutes = Math.floor(totalSec / 60);
+	const secs = totalSec % 60;
+	if (minutes < 60) return secs > 0 ? `${minutes}分${secs}秒` : `${minutes}分`;
+	const hours = Math.floor(minutes / 60);
+	const remMin = minutes % 60;
+	return remMin > 0 ? `${hours}小时${remMin}分` : `${hours}小时`;
 }

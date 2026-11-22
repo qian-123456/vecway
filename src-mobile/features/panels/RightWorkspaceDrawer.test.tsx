@@ -10,7 +10,6 @@ import { GitPanel } from "./GitPage";
 import { PlanPanel } from "./PlanPage";
 import { RightWorkspaceDrawer, useRightEdgeSwipe } from "./RightWorkspaceDrawer";
 import { ServicesPanel } from "./ServicesPage";
-import { SidechatPanel } from "./SidechatPage";
 import { TerminalPanel } from "./TerminalPage";
 import { useRightDrawer } from "./rightDrawerStore";
 
@@ -55,6 +54,7 @@ function resetDrawerStore() {
 		visitedBySession: {},
 		pendingSidechat: null,
 		pendingMain: null,
+		tabHeaders: {},
 	});
 }
 
@@ -169,7 +169,7 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(onOpen).toHaveBeenCalledTimes(1);
 	});
 
-	it("renders Chrome-style count switcher and consumes sidechat annotation", async () => {
+	it("toggles sidechat switcher from active 辅助对话 tab, moves handback to ⋯ menu, and consumes sidechat annotation", async () => {
 		vi.spyOn(apiModule, "api").mockImplementation(async (method, path) => {
 			if (method === "GET" && path.endsWith("/sidechats")) {
 				return [
@@ -177,18 +177,44 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 					{ id: "sc-2", label: "#2", title: "第二旁聊", status: "review", updatedAt: "2026-11-22T09:00:00Z", cwd: "/proj", live: true },
 				];
 			}
-			if (method === "GET" && path.includes("/transcript?")) return { items: [], reset: true };
+			if (method === "GET" && path.endsWith("/composer-state")) return { planMode: false, planStatus: PLAN_OFF };
+			if (method === "GET" && path.includes("/transcript?")) {
+				return {
+					items: [
+						{ id: "q1", kind: "user", text: "Side chat forked from main session\n\n## User question\n首个问题" },
+						{ id: "a1", kind: "assistant", text: "这里是结论内容", ts: "2026-11-22T10:00:00Z" },
+					],
+					reset: true,
+				};
+			}
 			return {};
 		});
 
-		render(<SidechatPanel sessionId="s1" embedded />);
-		const switcherBtn = await screen.findByRole("button", { name: "切换辅助对话" });
-		expect(switcherBtn.textContent).toBe("2");
+		render(<RightWorkspaceDrawer sessionId="s1" />);
+		act(() => useRightDrawer.getState().openDrawer("s1", "sidechat"));
 
-		fireEvent.click(switcherBtn);
+		await screen.findByText("第一旁聊");
+		expect(screen.queryByRole("button", { name: "完成" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "发回主对话" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "切换辅助对话" })).toBeNull();
+
+		// Re-tapping active 辅助对话 tab opens the sidechat switcher list (without open-in-main action)
+		const sidechatTab = screen.getByRole("tab", { name: "辅助对话" });
+		expect(sidechatTab.getAttribute("aria-selected")).toBe("true");
+		fireEvent.click(sidechatTab);
 		expect(screen.getByRole("dialog", { name: "辅助对话列表" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /打开完整会话|在主对话中打开/ })).toBeNull();
+
 		fireEvent.click(screen.getByRole("button", { name: /^第二旁聊/ }));
 		expect(screen.queryByRole("dialog", { name: "辅助对话列表" })).toBeNull();
+		await screen.findByText("第二旁聊");
+
+		// Top-right ⋯ holds 把结论发回主对话
+		const moreBtn = await screen.findByRole("button", { name: "更多操作" });
+		fireEvent.click(moreBtn);
+		fireEvent.click(screen.getByRole("button", { name: "把结论发回主对话" }));
+		expect(await screen.findByRole("textbox", { name: "结论" })).toBeTruthy();
+		fireEvent.keyDown(document, { key: "Escape" });
 
 		act(() => {
 			useRightDrawer.getState().openSidechatWithAnnotation("s1", {
@@ -227,7 +253,7 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(screen.queryByRole("textbox", { name: "提交说明" })).toBeNull();
 
 		// Open diff and send to AI
-		fireEvent.click(screen.getByRole("button", { name: /app\.ts/ }));
+		fireEvent.click(screen.getByRole("button", { name: /修改\s*app\.ts/ }));
 		await screen.findByText("改动差异");
 		fireEvent.click(screen.getByRole("button", { name: /让 AI 修改/ }));
 		expect(useRightDrawer.getState().pendingMain?.payload.sourceLabel).toBe("Git 改动 · src/app.ts");

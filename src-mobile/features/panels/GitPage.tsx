@@ -7,6 +7,7 @@ import {
 	FileDiff,
 	GitBranch,
 	GitCommitHorizontal,
+	MoreHorizontal,
 	RefreshCw,
 	Sparkles,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import { copyText, relTime } from "../../core/lib/format";
 import { nav, paths, type PageProps } from "../../core/nav";
 import { isDraftId } from "../../core/types";
 import {
+	BottomSheet,
 	Button,
 	Chip,
 	Dialog,
@@ -23,6 +25,7 @@ import {
 	EmptyState,
 	ListGroup,
 	ListRow,
+	MenuRow,
 	PageHeader,
 	PullToRefresh,
 	Segmented,
@@ -117,12 +120,14 @@ export function GitPanel({
 
 	const body = (
 		<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-			<div className="shrink-0 border-b border-m-border px-4 pt-2 pb-2.5">
+			<div className="shrink-0 border-b border-m-border px-4 pt-2.5 pb-2.5">
 				<Segmented label="Git 视图" value={tab} options={TABS} onChange={setTab} />
 			</div>
 			<div className={tab === "status" ? "flex min-h-0 flex-1 flex-col" : "hidden"} aria-hidden={tab !== "status"}>
 				<StatusTab
+					sessionId={sessionId}
 					base={base}
+					embedded={embedded}
 					visible={visible && tab === "status" && diff === null}
 					refreshNonce={refreshNonce}
 					onCommitted={() => setRefreshNonce((n) => n + 1)}
@@ -204,6 +209,18 @@ function DiffOverlay({
 		if (!embedded) nav.push(paths.chat(sessionId));
 	};
 
+	const copyTarget = () => {
+		const text = target.kind === "file" ? target.filePath : target.commit.sha;
+		void copyText(text).then((ok) => {
+			if (!ok) return;
+			if (target.kind === "commit") {
+				setCopiedSha(true);
+				window.setTimeout(() => setCopiedSha(false), 1500);
+			}
+			toast(target.kind === "file" ? "已复制文件路径" : "已复制完整 SHA", { kind: "success" });
+		});
+	};
+
 	return (
 		<div className="absolute inset-0 z-(--z-base) flex flex-col bg-m-bg">
 			<div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-m-border px-3">
@@ -236,14 +253,7 @@ function DiffOverlay({
 						<span className="break-all">{target.commit.author}</span>
 						<button
 							type="button"
-							onClick={() =>
-								void copyText(target.commit.sha).then((ok) => {
-									if (!ok) return;
-									setCopiedSha(true);
-									toast("已复制完整 SHA", { kind: "success" });
-									window.setTimeout(() => setCopiedSha(false), 1500);
-								})
-							}
+							onClick={copyTarget}
 							className="inline-flex items-center gap-1 rounded-m-pill bg-m-surface px-2 py-0.5 font-m-mono text-m-text-2 active:bg-m-surface-2"
 						>
 							{copiedSha ? <Check size={12} /> : <Copy size={12} />}
@@ -259,6 +269,17 @@ function DiffOverlay({
 					) : (
 						<EmptyState icon={<FileDiff size={22} strokeWidth={1.75} />} title="没有差异" />
 					))}
+			</div>
+			<div
+				className="flex shrink-0 items-center justify-between gap-2 border-t border-m-border bg-m-bg-elev/90 px-4 pt-2.5 backdrop-blur-md"
+				style={{ paddingBottom: "calc(var(--m-safe-bottom) + 10px)" }}
+			>
+				<Button variant="tonal" size="sm" icon={<Copy size={14} strokeWidth={1.75} />} onClick={copyTarget}>
+					{target.kind === "file" ? "复制路径" : "复制 SHA"}
+				</Button>
+				<Button variant="primary" size="sm" icon={<Sparkles size={14} strokeWidth={1.85} />} onClick={sendAiPrompt}>
+					发给主对话
+				</Button>
 			</div>
 		</div>
 	);
@@ -285,14 +306,18 @@ function usePreservedScroll(visible: boolean) {
 }
 
 function StatusTab({
+	sessionId,
 	base,
 	visible,
+	embedded,
 	refreshNonce,
 	onCommitted,
 	onDiff,
 }: {
+	sessionId: string;
 	base: string;
 	visible: boolean;
+	embedded: boolean;
 	refreshNonce: number;
 	onCommitted: () => void;
 	onDiff: (t: DiffTarget) => void;
@@ -301,12 +326,30 @@ function StatusTab({
 	const scrollerRef = usePreservedScroll(visible);
 
 	const [commitOpen, setCommitOpen] = useState(false);
+	const [manualOpen, setManualOpen] = useState(false);
 	const [message, setMessage] = useState("");
 	const [suggesting, setSuggesting] = useState(false);
+	const [aiSaving, setAiSaving] = useState(false);
 	const [committing, setCommitting] = useState(false);
 	const [commitError, setCommitError] = useState<string | null>(null);
+	const [actionFile, setActionFile] = useState<GitFile | null>(null);
 	const suggestSeq = useRef(0);
 	const files = Array.isArray(state.data?.files) ? state.data.files : [];
+	const busy = suggesting || aiSaving || committing;
+
+	const stageAndCommit = async (msg: string) => {
+		const pendingPaths = files.filter((f) => f.unstaged || f.status === "??").map((f) => f.path);
+		if (pendingPaths.length > 0) {
+			await api("POST", `${base}/stage`, { paths: pendingPaths });
+		}
+		await api("POST", `${base}/commit`, { message: msg });
+		setCommitOpen(false);
+		setManualOpen(false);
+		setMessage("");
+		toast("已提交全部改动", { kind: "success" });
+		await state.reload(true);
+		onCommitted();
+	};
 
 	const generateSuggestion = async () => {
 		const mine = ++suggestSeq.current;
@@ -324,7 +367,32 @@ function StatusTab({
 		}
 	};
 
+	const saveWithAi = async () => {
+		if (busy) return;
+		const mine = ++suggestSeq.current;
+		setAiSaving(true);
+		setCommitError(null);
+		try {
+			const suggested = (await gitCommitSuggest(base)).trim();
+			if (mine !== suggestSeq.current) return;
+			if (!suggested) {
+				setManualOpen(true);
+				toast("没能生成提交说明，可手动填写", { kind: "info" });
+				return;
+			}
+			await stageAndCommit(suggested);
+		} catch (e) {
+			if (mine === suggestSeq.current) {
+				setCommitError(errorMessage(e));
+				setManualOpen(true);
+			}
+		} finally {
+			if (mine === suggestSeq.current) setAiSaving(false);
+		}
+	};
+
 	const openCommitModal = () => {
+		setManualOpen(false);
 		setCommitOpen(true);
 		setCommitError(null);
 		setMessage("");
@@ -333,26 +401,39 @@ function StatusTab({
 
 	const commitAll = async () => {
 		const msg = message.trim();
-		if (!msg || committing) return;
+		if (!msg || committing || aiSaving) return;
 		setCommitting(true);
 		setCommitError(null);
 		try {
-			const pendingPaths = files.filter((f) => f.unstaged || f.status === "??").map((f) => f.path);
-			if (pendingPaths.length > 0) {
-				await api("POST", `${base}/stage`, { paths: pendingPaths });
-			}
-			await api("POST", `${base}/commit`, { message: msg });
-			setCommitOpen(false);
-			setMessage("");
-			toast("已提交全部改动", { kind: "success" });
-			await state.reload(true);
-			onCommitted();
+			await stageAndCommit(msg);
 		} catch (e) {
 			setCommitError(errorMessage(e));
 		} finally {
 			setCommitting(false);
 		}
 	};
+
+	const openFileDiff = (f: GitFile) => {
+		const { name } = splitPath(f.path);
+		onDiff({
+			kind: "file",
+			title: name,
+			filePath: f.path,
+			query: `path=${q(f.path)}&staged=${f.staged && !f.unstaged}`,
+		});
+	};
+
+	const sendFileToMain = (f: GitFile) => {
+		useRightDrawer.getState().sendToMainChat(sessionId, {
+			quote: `文件：\`${f.path}\``,
+			comment: `请帮我审查或修改 \`${f.path}\`：`,
+			sourceLabel: `Git 改动 · ${f.path}`,
+		});
+		setActionFile(null);
+		if (!embedded) nav.push(paths.chat(sessionId));
+	};
+
+	const actionInfo = actionFile ? splitPath(actionFile.path) : null;
 
 	return (
 		<>
@@ -365,7 +446,7 @@ function StatusTab({
 						const stFiles = Array.isArray(st.files) ? st.files : [];
 						return (
 							<div className="pb-6">
-								<div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-2">
+								<div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-2.5">
 									<div className="flex min-w-0 flex-wrap items-center gap-2">
 										<Chip tone="accent">
 											<GitBranch size={13} strokeWidth={1.85} />
@@ -376,11 +457,83 @@ function StatusTab({
 										</span>
 									</div>
 									{stFiles.length > 0 && (
-										<Button variant="primary" size="sm" onClick={openCommitModal}>
+										<Button variant="tonal" size="sm" onClick={openCommitModal}>
 											提交全部改动
 										</Button>
 									)}
 								</div>
+
+								{stFiles.length > 0 && (
+									<div className="mx-4 mb-3 space-y-2.5 rounded-m-lg border border-m-border bg-m-card p-3.5">
+										<Button
+											variant="primary"
+											icon={<Sparkles size={15} strokeWidth={1.85} />}
+											busy={aiSaving}
+											disabled={committing || suggesting}
+											onClick={() => void saveWithAi()}
+											className="w-full"
+										>
+											AI 生成说明并保存
+										</Button>
+										<div className="flex items-center justify-between gap-2">
+											<button
+												type="button"
+												aria-expanded={manualOpen}
+												onClick={() => {
+													setCommitError(null);
+													setManualOpen((v) => !v);
+												}}
+												className="inline-flex min-h-8 items-center gap-1 rounded-m-pill px-1.5 text-m-xs font-medium whitespace-nowrap text-m-text-2 active:bg-m-surface"
+											>
+												{manualOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+												<span>自填提交说明</span>
+											</button>
+											<span className="text-m-xs whitespace-nowrap text-m-text-3">
+												共 {stFiles.length} 个文件
+											</span>
+										</div>
+										{manualOpen && !commitOpen && (
+											<div className="space-y-2.5 pt-0.5">
+												<textarea
+													value={message}
+													onChange={(e) => setMessage(e.target.value)}
+													rows={3}
+													aria-label="提交说明"
+													placeholder="输入或编辑提交说明"
+													autoCapitalize="off"
+													className={`${inputCls} block resize-none rounded-m-lg`}
+												/>
+												<div className="flex items-center justify-between gap-2">
+													<Button
+														variant="tonal"
+														size="sm"
+														icon={<Sparkles size={14} strokeWidth={1.85} />}
+														busy={suggesting}
+														disabled={committing || aiSaving}
+														onClick={() => void generateSuggestion()}
+													>
+														生成说明
+													</Button>
+													<Button
+														variant="primary"
+														size="sm"
+														busy={committing}
+														disabled={suggesting || aiSaving || !message.trim()}
+														onClick={() => void commitAll()}
+													>
+														提交改动
+													</Button>
+												</div>
+											</div>
+										)}
+										{commitError && !commitOpen && (
+											<p role="alert" className="m-selectable text-m-xs break-words text-m-danger">
+												{commitError}
+											</p>
+										)}
+									</div>
+								)}
+
 								{stFiles.length === 0 ? (
 									<EmptyState icon={<GitCommitHorizontal size={22} strokeWidth={1.75} />} title="没有改动" hint="工作区是干净的" />
 								) : (
@@ -388,24 +541,31 @@ function StatusTab({
 										{stFiles.map((f) => {
 											const { name, dir } = splitPath(f.path);
 											return (
-												<ListRow
-													key={f.path}
-													icon={
-														<Chip tone={statusTone(f.status)} className="min-w-11 justify-center">
-															{STATUS_LABEL[f.status] ?? f.status}
-														</Chip>
-													}
-													title={<span className="break-all">{name}</span>}
-													subtitle={dir ? <span className="break-all">{dir}</span> : undefined}
-													onClick={() =>
-														onDiff({
-															kind: "file",
-															title: name,
-															filePath: f.path,
-															query: `path=${q(f.path)}&staged=${f.staged && !f.unstaged}`,
-														})
-													}
-												/>
+												<div key={f.path} className="m-list-row flex w-full items-center pl-4">
+													<div className="m-list-sep flex min-w-0 flex-1 items-center gap-2 pr-1.5">
+														<button
+															type="button"
+															onClick={() => openFileDiff(f)}
+															className="flex min-h-14 min-w-0 flex-1 items-center gap-3 py-3 text-left transition-colors duration-(--m-dur-fast) ease-m active:bg-m-surface-hover"
+														>
+															<Chip tone={statusTone(f.status)} className="min-w-11 shrink-0 justify-center">
+																{STATUS_LABEL[f.status] ?? f.status}
+															</Chip>
+															<span className="min-w-0 flex-1">
+																<span className="block text-m-md font-medium break-all text-m-text">{name}</span>
+																{dir && <span className="mt-0.5 block text-m-xs break-all text-m-text-3">{dir}</span>}
+															</span>
+														</button>
+														<button
+															type="button"
+															aria-label={`操作 ${name}`}
+															onClick={() => setActionFile(f)}
+															className="flex h-11 w-11 shrink-0 items-center justify-center rounded-m-pill text-m-text-3 active:bg-m-surface-hover"
+														>
+															<MoreHorizontal size={18} strokeWidth={1.75} />
+														</button>
+													</div>
+												</div>
 											);
 										})}
 									</ListGroup>
@@ -415,6 +575,45 @@ function StatusTab({
 					}}
 				</LoadGate>
 			</PullToRefresh>
+
+			<BottomSheet
+				open={actionFile !== null}
+				onClose={() => setActionFile(null)}
+				title={actionInfo?.name}
+				subtitle={actionInfo ? actionInfo.dir || actionFile?.path : undefined}
+			>
+				{actionFile && (
+					<div className="py-1">
+						<MenuRow
+							icon={<Sparkles size={19} strokeWidth={1.75} />}
+							label="让 Agent 审查或修改此文件"
+							hint="带入文件上下文并返回主对话"
+							onClick={() => sendFileToMain(actionFile)}
+						/>
+						<MenuRow
+							icon={<FileDiff size={19} strokeWidth={1.75} />}
+							label="查看改动差异"
+							onClick={() => {
+								const targetFile = actionFile;
+								setActionFile(null);
+								openFileDiff(targetFile);
+							}}
+						/>
+						<MenuRow
+							icon={<Copy size={19} strokeWidth={1.75} />}
+							label="复制文件路径"
+							hint={actionFile.path}
+							onClick={() => {
+								const pathToCopy = actionFile.path;
+								setActionFile(null);
+								void copyText(pathToCopy).then((ok) => {
+									if (ok) toast("已复制文件路径", { kind: "success" });
+								});
+							}}
+						/>
+					</div>
+				)}
+			</BottomSheet>
 
 			<Dialog
 				open={commitOpen}

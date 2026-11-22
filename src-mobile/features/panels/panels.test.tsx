@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as apiModule from "../../core/api";
 import { loadUnsent, saveUnsent } from "../chat/lib/unsent";
 import { FilesPage } from "./FilesPage";
-import { gitCommitSuggest } from "./GitPage";
+import { GitPanel, gitCommitSuggest } from "./GitPage";
+import { PlanPanel } from "./PlanPage";
 import { HANDBACK_MARKER, HANDBACK_PROMPT, SIDECHAT_DRAFT_PREFIX, SidechatPage } from "./SidechatPage";
-
+import { useRightDrawer } from "./rightDrawerStore";
 describe("gitCommitSuggest", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -66,6 +67,14 @@ describe("panel presentation contracts", () => {
 	afterEach(() => {
 		cleanup();
 		sessionStorage.clear();
+		useRightDrawer.setState({
+			open: false,
+			sessionId: null,
+			tabBySession: {},
+			visitedBySession: {},
+			pendingSidechat: null,
+			pendingMain: null,
+		});
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
 	});
@@ -93,5 +102,93 @@ describe("panel presentation contracts", () => {
 		const heading = await screen.findByRole("heading", { name });
 		expect(heading.closest("header")).toBeNull();
 		expect(screen.getByText("文件预览")).toBeTruthy();
+	});
+
+	it("supports Git one-tap AI save, inline manual commit, and per-file action sheet", async () => {
+		useRightDrawer.setState({
+			open: true,
+			sessionId: "s-git-1",
+			tabBySession: { "s-git-1": "git" },
+			visitedBySession: { "s-git-1": ["git"] },
+			pendingSidechat: null,
+			pendingMain: null,
+		});
+
+		const apiSpy = vi.spyOn(apiModule, "api").mockImplementation(async (method, path) => {
+			if (method === "GET" && path.endsWith("/git/status")) {
+				return { isRepo: true, branch: "main", files: [{ path: "src/app.ts", status: "M", staged: false, unstaged: true }] };
+			}
+			if (method === "POST" && path.endsWith("/git/suggest")) return { suggestion: "feat: one tap ai save" };
+			if (method === "POST" && path.endsWith("/git/stage")) return { ok: true };
+			if (method === "POST" && path.endsWith("/git/commit")) return { ok: true };
+			if (method === "GET" && path.includes("/git/diff?")) return { diff: "+export const ok = true;" };
+			return {};
+		});
+
+		render(<GitPanel sessionId="s-git-1" embedded />);
+		await screen.findByText("app.ts");
+
+		// One-tap AI save stages & commits automatically
+		fireEvent.click(screen.getByRole("button", { name: /AI 生成说明并保存/ }));
+		await waitFor(() => expect(apiSpy).toHaveBeenCalledWith("POST", "/sessions/s-git-1/git/commit", { message: "feat: one tap ai save" }));
+		expect(apiSpy).toHaveBeenCalledWith("POST", "/sessions/s-git-1/git/stage", { paths: ["src/app.ts"] });
+
+		// Inline manual commit flow
+		fireEvent.click(screen.getByRole("button", { name: /自填提交说明/ }));
+		const box = screen.getByRole("textbox", { name: "提交说明" }) as HTMLTextAreaElement;
+		fireEvent.click(screen.getByRole("button", { name: "生成说明" }));
+		await waitFor(() => expect(box.value).toBe("feat: one tap ai save"));
+		fireEvent.change(box, { target: { value: "fix: manual override" } });
+		fireEvent.click(screen.getByRole("button", { name: "提交改动" }));
+		await waitFor(() => expect(apiSpy).toHaveBeenCalledWith("POST", "/sessions/s-git-1/git/commit", { message: "fix: manual override" }));
+
+		// Per-file BottomSheet action menu -> DiffOverlay with 发给主对话
+		fireEvent.click(screen.getByRole("button", { name: "操作 app.ts" }));
+		await screen.findByText("让 Agent 审查或修改此文件");
+		fireEvent.click(screen.getByRole("button", { name: /查看改动差异/ }));
+		await screen.findByText("改动差异");
+		expect(screen.getByRole("button", { name: /发给主对话/ })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
+
+		// Per-file BottomSheet -> send file directly to main chat and close drawer
+		fireEvent.click(screen.getByRole("button", { name: "操作 app.ts" }));
+		fireEvent.click(await screen.findByRole("button", { name: /让 Agent 审查或修改此文件/ }));
+		expect(useRightDrawer.getState().open).toBe(false);
+		expect(useRightDrawer.getState().pendingMain?.payload.sourceLabel).toBe("Git 改动 · src/app.ts");
+	});
+
+	it("renders compact 2-row sticky PlanPanel header with TOC popover and progress pill", async () => {
+		const scrollMock = vi.fn();
+		Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollMock });
+
+		vi.spyOn(apiModule, "api").mockImplementation(async (_m, path) => {
+			if (path.endsWith("/plan")) {
+				return {
+					streaming: false,
+					planStatus: {
+						enabled: true,
+						phase: "review",
+						title: "重构计划",
+						version: 2,
+						content: "# 总体目标\n\n- [x] 步骤一\n- [ ] 步骤二\n\n## 实现细节\n\n正文\n\n### 验证清单\n\n完成",
+						approved: null,
+					},
+				};
+			}
+			return null;
+		});
+
+		render(<PlanPanel sessionId="s-plan-1" embedded />);
+		await screen.findByText("重构计划");
+		expect(screen.getByText("v2")).toBeTruthy();
+		expect(screen.getByText("1/2")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "复制计划" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "刷新计划" })).toBeTruthy();
+
+		const tocBtn = screen.getByRole("button", { name: /目录 · 3 章节/ });
+		fireEvent.click(tocBtn);
+		await screen.findByText("计划目录");
+		fireEvent.click(screen.getByRole("button", { name: "实现细节" }));
+		expect(scrollMock).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
 	});
 });

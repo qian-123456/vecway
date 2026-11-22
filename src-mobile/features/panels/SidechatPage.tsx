@@ -2,21 +2,24 @@ import {
 	ArrowDown,
 	Camera,
 	Check,
+	ChevronDown,
+	ChevronRight,
+	Copy,
 	CornerDownLeft,
-	ExternalLink,
 	FileText,
 	ImagePlus,
 	MessagesSquare,
+	MoreHorizontal,
 	Paperclip,
 	Plus,
 	RefreshCw,
 	Sparkles,
 	X,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { isSideChatPrompt, trimSideChatItems } from "../../../src/features/chat/sideChatView";
 import { api, errorMessage, upload } from "../../core/api";
-import { relTime, sessionName } from "../../core/lib/format";
+import { copyText, relTime, sessionName } from "../../core/lib/format";
 import { imageFromBlob } from "../../core/lib/images";
 import { nav, paths, type PageProps } from "../../core/nav";
 import { transcriptImages } from "../../core/normalize";
@@ -29,6 +32,7 @@ import {
 	Button,
 	EmptyState,
 	IconButton,
+	MenuRow,
 	PageHeader,
 	PullToRefresh,
 	inputCls,
@@ -42,6 +46,7 @@ import { Thinking } from "../chat/components/Thinking";
 import { ToolCard, toolState } from "../chat/components/ToolCard";
 import { Images } from "../chat/components/TurnView";
 import { attachmentBlocker, buildPrompt } from "../chat/lib/prompt";
+import { formatDesktopStatParts, formatStatClock, requestStatFromItem, type RequestStat } from "../chat/lib/requestStats";
 import { EMPTY_TRANSCRIPT, mergePage } from "../chat/lib/transcript";
 import { loadUnsent, saveUnsent } from "../chat/lib/unsent";
 import { LoadGate, Loading } from "./PanelState";
@@ -227,9 +232,68 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 		() => rows.find((r) => r.id === activeThreadId) ?? (activeThreadId ? sessionsById[activeThreadId] : undefined),
 		[rows, activeThreadId, sessionsById],
 	);
-	const headerTitle = mode === "thread" && activeRow ? sessionName(activeRow) : mode === "thread" && activeThreadId ? "辅助对话" : "新辅助对话";
-	const activeWorking = activeRow?.status === "working" || activeRow?.status === "awaiting_answer" || activeRow?.status === "awaiting_approval";
-	const countBadge = rows.length > 1 ? String(rows.length) : null;
+	const headerTitle = draftSession
+		? "辅助对话"
+		: mode === "thread" && activeRow
+			? sessionName(activeRow)
+			: mode === "thread" && activeThreadId
+				? "辅助对话"
+				: state.loading && state.data === null
+					? "辅助对话"
+					: "新辅助对话";
+	const hasHandback = !draftSession && mode === "thread" && !!activeThreadId && canHandback;
+
+	const [moreOpen, setMoreOpen] = useState(false);
+	const [moreAnchor, setMoreAnchor] = useState<HTMLElement | null>(null);
+	useEffect(() => {
+		if (!hasHandback) setMoreOpen(false);
+	}, [hasHandback]);
+
+	const drawerTab = useRightDrawer((s) => s.tabBySession[sessionId]);
+	const drawerOpen = useRightDrawer((s) => s.open);
+	const wasDrawerOpen = useRef(drawerOpen);
+	useEffect(() => {
+		const closedNow = wasDrawerOpen.current && !drawerOpen;
+		wasDrawerOpen.current = drawerOpen;
+		if (!embedded) return;
+		if (closedNow || (drawerTab && drawerTab !== "sidechat")) {
+			setSwitcherOpen(false);
+		}
+	}, [embedded, drawerTab, drawerOpen]);
+
+	const toggleSwitcher = useCallback(() => setSwitcherOpen((v) => !v), []);
+	const openHandback = useCallback(() => setHandbackOpen(true), []);
+
+	useEffect(() => {
+		if (!embedded) return;
+		useRightDrawer.getState().setTabHeader(sessionId, "sidechat", {
+			title: headerTitle,
+			moreActions: hasHandback
+				? [
+						{
+							id: "handback",
+							label: "把结论发回主对话",
+							icon: <CornerDownLeft size={18} strokeWidth={1.75} />,
+							onSelect: openHandback,
+						},
+					]
+				: [],
+			sidechatSwitcher: draftSession
+				? undefined
+				: {
+						count: rows.length,
+						open: switcherOpen,
+						toggle: toggleSwitcher,
+					},
+		});
+	}, [embedded, sessionId, headerTitle, hasHandback, openHandback, draftSession, rows.length, switcherOpen, toggleSwitcher]);
+
+	useEffect(() => {
+		if (!embedded) return;
+		return () => {
+			useRightDrawer.getState().clearTabHeader(sessionId, "sidechat");
+		};
+	}, [embedded, sessionId]);
 
 	if (draftSession) {
 		const empty = <EmptyState icon={<MessagesSquare {...ICON} />} title="发送首条消息后可用" hint="辅助对话会基于当前主对话上下文分支展开" />;
@@ -243,157 +307,108 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 		);
 	}
 
-	const panelHeader = (
-		<div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-m-border px-4">
-			<div className="flex min-w-0 flex-1 items-center gap-2">
-				{activeWorking && mode === "thread" && <span aria-hidden className="m-pulse h-2 w-2 shrink-0 rounded-full bg-m-accent" />}
-				<span className="truncate text-m-sm font-semibold text-m-text">{headerTitle}</span>
-			</div>
-			<div className="flex shrink-0 items-center gap-2">
-				{mode === "thread" && activeThreadId && canHandback && (
-					<button
-						type="button"
-						onClick={() => setHandbackOpen(true)}
-						className="inline-flex min-h-8 items-center gap-1 rounded-m-pill bg-m-accent-soft px-3 text-m-xs font-medium whitespace-nowrap text-m-accent-soft-text active:opacity-80"
-					>
-						<CornerDownLeft size={13} strokeWidth={2} />
-						发回主对话
-					</button>
-				)}
-				<button
-					type="button"
-					aria-label="切换辅助对话"
-					aria-expanded={switcherOpen}
-					onClick={() => setSwitcherOpen((v) => !v)}
-					className={`inline-flex h-7 min-w-7 items-center justify-center rounded-[7px] border-[1.5px] px-1.5 text-[12px] font-semibold tabular-nums whitespace-nowrap transition-colors ${
-						switcherOpen
-							? "border-m-accent bg-m-accent-soft text-m-accent-soft-text"
-							: "border-m-text-2 text-m-text active:bg-m-surface"
-					}`}
-				>
-					{countBadge ?? <Plus size={14} strokeWidth={2.2} />}
-				</button>
-			</div>
-		</div>
-	);
-
 	const body = (
 		<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-			{panelHeader}
-			<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-				{mode === "thread" && activeThreadId ? (
-					<ThreadView
-						key={`${sessionId}:${activeThreadId}`}
-						parentId={sessionId}
-						threadId={activeThreadId}
-						embedded={embedded}
-						initial={createdMeta?.parentId === sessionId && createdMeta.id === activeThreadId ? createdMeta.initial : undefined}
-						initialDraft={createdMeta?.parentId === sessionId && createdMeta.id === activeThreadId ? createdMeta.draft : undefined}
-						draftInject={draftInject}
-						handbackOpen={handbackOpen}
-						onCloseHandback={() => setHandbackOpen(false)}
-						onCanHandbackChange={setCanHandback}
-					/>
-				) : (
-					<NewSidechatView
-						key={sessionId}
-						sessionId={sessionId}
-						state={state}
-						draftInject={draftInject}
-						onCreate={createSidechat}
-						onCreated={(nextDraft) => {
-							if (!pendingCreate.current || pendingCreate.current.parentId !== parentRef.current) return;
-							const c = pendingCreate.current;
-							pendingCreate.current = null;
-							setCreatedMeta({ parentId: sessionId, id: c.id, initial: c.message, draft: nextDraft });
-							setActiveThreadId(c.id);
-							setMode("thread");
-							void state.reload(true);
-						}}
-					/>
-				)}
+			{mode === "thread" && activeThreadId ? (
+				<ThreadView
+					key={`${sessionId}:${activeThreadId}`}
+					parentId={sessionId}
+					threadId={activeThreadId}
+					embedded={embedded}
+					initial={createdMeta?.parentId === sessionId && createdMeta.id === activeThreadId ? createdMeta.initial : undefined}
+					initialDraft={createdMeta?.parentId === sessionId && createdMeta.id === activeThreadId ? createdMeta.draft : undefined}
+					draftInject={draftInject}
+					handbackOpen={handbackOpen}
+					onCloseHandback={() => setHandbackOpen(false)}
+					onCanHandbackChange={setCanHandback}
+				/>
+			) : (
+				<NewSidechatView
+					key={sessionId}
+					sessionId={sessionId}
+					state={state}
+					draftInject={draftInject}
+					onCreate={createSidechat}
+					onCreated={(nextDraft) => {
+						if (!pendingCreate.current || pendingCreate.current.parentId !== parentRef.current) return;
+						const c = pendingCreate.current;
+						pendingCreate.current = null;
+						setCreatedMeta({ parentId: sessionId, id: c.id, initial: c.message, draft: nextDraft });
+						setActiveThreadId(c.id);
+						setMode("thread");
+						void state.reload(true);
+					}}
+				/>
+			)}
 
-				{switcherOpen && (
+			{switcherOpen && (
+				<div className="absolute inset-0 z-(--z-base) flex flex-col justify-start">
+					<div
+						aria-hidden="true"
+						onClick={() => setSwitcherOpen(false)}
+						className="absolute inset-0 bg-m-scrim/35"
+					/>
 					<div
 						role="dialog"
 						aria-label="辅助对话列表"
-						className="absolute inset-0 z-(--z-base) flex flex-col bg-m-bg"
+						className="m-liquid-surface relative mx-3 mt-2 flex max-h-[75%] flex-col overflow-hidden rounded-2xl"
 					>
-						<div className="flex shrink-0 items-center justify-between border-b border-m-border px-4 py-2.5">
+						<div className="flex shrink-0 items-center justify-between border-b border-m-border/60 px-4 py-2.5">
 							<span className="text-m-xs font-medium text-m-text-3">全部辅助对话（{rows.length}）</span>
 							<button
 								type="button"
 								aria-label="关闭切换"
 								onClick={() => setSwitcherOpen(false)}
-								className="inline-flex h-8 w-8 items-center justify-center rounded-m-pill text-m-text-2 active:bg-m-surface"
+								className="inline-flex h-7 w-7 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface"
 							>
-								<X size={16} />
+								<X size={15} />
 							</button>
 						</div>
-						<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+						<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
 							{rows.length === 0 ? (
-								<EmptyState
-									icon={<MessagesSquare {...ICON} />}
-									title="还没有辅助对话"
-									hint="在下方点击新建，或在对话框直接发送第一个问题"
-								/>
+								<div className="px-3 py-6 text-center text-m-xs text-m-text-3">
+									还没有辅助对话，点击下方新建或在对话框提问
+								</div>
 							) : (
-								<div className="space-y-2">
+								<div className="space-y-1">
 									{rows.map((s) => {
 										const selected = mode === "thread" && s.id === activeThreadId;
 										return (
-											<div
+											<button
 												key={s.id}
-												className={`rounded-m-lg border transition-colors ${
-													selected ? "border-m-accent bg-m-accent-soft/25" : "border-m-border bg-m-card"
+												type="button"
+												aria-current={selected ? "true" : undefined}
+												onClick={() => {
+													setActiveThreadId(s.id);
+													setMode("thread");
+													setSwitcherOpen(false);
+												}}
+												className={`w-full rounded-xl px-3 py-2.5 text-left transition-colors ${
+													selected ? "bg-m-accent-soft/45" : "active:bg-m-surface-hover"
 												}`}
 											>
-												<div className="flex items-start gap-2 p-3">
-													<button
-														type="button"
-														aria-current={selected ? "true" : undefined}
-														onClick={() => {
-															setActiveThreadId(s.id);
-															setMode("thread");
-															setSwitcherOpen(false);
-														}}
-														className="min-w-0 flex-1 text-left"
-													>
-														<div className="flex items-center gap-2">
-															{selected && <Check size={14} className="shrink-0 text-m-accent" />}
-															<span className="min-w-0 flex-1 truncate text-m-sm font-medium text-m-text">
-																{sessionName(s)}
-															</span>
-														</div>
-														<div className="mt-1 flex items-center gap-1.5 text-m-xs text-m-text-3">
-															{s.status === "working" && <span aria-hidden className="m-pulse h-2 w-2 rounded-full bg-m-accent" />}
-															<span className="whitespace-nowrap">{STATUS_LABEL[s.status] ?? s.status}</span>
-															<span aria-hidden>·</span>
-															<span className="whitespace-nowrap">{relTime(s.updatedAt)}</span>
-														</div>
-														{s.lastAssistant && (
-															<p className="mt-1.5 line-clamp-2 text-m-xs text-m-text-2">{s.lastAssistant}</p>
-														)}
-													</button>
-													<IconButton
-														variant="plain"
-														size="sm"
-														icon={<ExternalLink size={16} />}
-														label={`打开完整会话 ${sessionName(s)}`}
-														onClick={() => {
-															setSwitcherOpen(false);
-															useRightDrawer.getState().closeDrawer();
-															nav.push(paths.chat(s.id));
-														}}
-													/>
+												<div className="flex items-center gap-2">
+													{selected && <Check size={14} className="shrink-0 text-m-accent" />}
+													<span className="min-w-0 flex-1 truncate text-m-sm font-medium text-m-text">
+														{sessionName(s)}
+													</span>
 												</div>
-											</div>
+												<div className="mt-1 flex items-center gap-1.5 text-m-xs text-m-text-3">
+													{s.status === "working" && <span aria-hidden className="m-pulse h-2 w-2 rounded-full bg-m-accent" />}
+													<span className="whitespace-nowrap">{STATUS_LABEL[s.status] ?? s.status}</span>
+													<span aria-hidden>·</span>
+													<span className="whitespace-nowrap">{relTime(s.updatedAt)}</span>
+												</div>
+												{s.lastAssistant && (
+													<p className="mt-1 line-clamp-2 text-m-xs text-m-text-2">{s.lastAssistant}</p>
+												)}
+											</button>
 										);
 									})}
 								</div>
 							)}
 						</div>
-						<div className="shrink-0 border-t border-m-border px-4 pt-3" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 12px)" }}>
+						<div className="shrink-0 border-t border-m-border/60 p-2.5">
 							<Button
 								variant="primary"
 								className="w-full"
@@ -409,8 +424,8 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 							</Button>
 						</div>
 					</div>
-				)}
-			</div>
+				</div>
+			)}
 		</div>
 	);
 
@@ -418,8 +433,68 @@ function SidechatPanelInner({ sessionId, embedded = false }: { sessionId: string
 
 	return (
 		<div className="flex h-full flex-col bg-m-bg">
-			<PageHeader title="辅助对话" onBack={() => nav.back()} />
+			<PageHeader
+				title={headerTitle}
+				onBack={() => nav.back()}
+				right={
+					<div className="flex items-center gap-1">
+						<button
+							type="button"
+							aria-label="切换辅助对话"
+							aria-expanded={switcherOpen}
+							onClick={() => setSwitcherOpen((v) => !v)}
+							className={`inline-flex h-9 items-center gap-1 rounded-full px-2.5 text-m-xs font-medium whitespace-nowrap transition-colors ${
+								switcherOpen ? "bg-m-accent-soft text-m-accent-soft-text" : "text-m-text-2 active:bg-m-surface-hover"
+							}`}
+						>
+							<MessagesSquare size={15} strokeWidth={1.85} aria-hidden />
+							{rows.length > 0 && <span className="tabular-nums">{rows.length}</span>}
+							<ChevronDown
+								size={12}
+								strokeWidth={2}
+								aria-hidden
+								className={`transition-transform duration-(--m-dur-fast) ${switcherOpen ? "rotate-180" : ""}`}
+							/>
+						</button>
+						{hasHandback && (
+							<button
+								type="button"
+								aria-label="更多操作"
+								aria-haspopup="menu"
+								aria-expanded={moreOpen}
+								onClick={(e) => {
+									setMoreAnchor(e.currentTarget);
+									setMoreOpen((v) => !v);
+								}}
+								className="m-press inline-flex h-10 w-10 items-center justify-center rounded-m-pill text-m-text-2 active:bg-m-surface-hover active:text-m-text"
+							>
+								<MoreHorizontal size={20} strokeWidth={1.85} />
+							</button>
+						)}
+					</div>
+				}
+			/>
 			{body}
+			<AnchoredPopover
+				open={moreOpen && hasHandback}
+				onClose={() => setMoreOpen(false)}
+				anchorEl={moreAnchor}
+				placement="bottom-end"
+				minWidth={196}
+				maxWidth={260}
+				className="m-liquid-surface rounded-2xl! border-(--m-liquid-border)! bg-[color-mix(in_srgb,var(--m-bg-elev)_88%,transparent)]!"
+			>
+				<div className="py-1">
+					<MenuRow
+						icon={<CornerDownLeft size={18} strokeWidth={1.75} />}
+						label="把结论发回主对话"
+						onClick={() => {
+							setMoreOpen(false);
+							setHandbackOpen(true);
+						}}
+					/>
+				</div>
+			</AnchoredPopover>
 		</div>
 	);
 }
@@ -492,6 +567,7 @@ function ThreadView({
 }) {
 	const session = useSessions((s) => s.byId[threadId]);
 	const [items, setItems] = useState<Item[]>([]);
+	const [stats, setStats] = useState<Record<string, RequestStat>>({});
 	const [pending, setPending] = useState<PendingMessage[]>(() =>
 		initial ? [{ id: 0, text: initial.text, images: transcriptImages(initial.imagePaths.map((path) => ({ path }))) }] : [],
 	);
@@ -562,6 +638,7 @@ function ThreadView({
 			const next = mergePage(transcript.current, { ...page, reset: page.reset || start >= 0, items: raw }).state;
 			transcript.current = next;
 			setItems(next.items);
+			setStats(next.stats);
 			const pool = next.items.filter((it) => it.role === "user" && !seenUsers.current.has(it.id));
 			for (const it of pool) seenUsers.current.add(it.id);
 			updatePending(
@@ -754,10 +831,17 @@ function ThreadView({
 								</div>
 							)}
 							{items.length > MAX_ROWS && (
-								<div className="text-center text-m-xs text-m-text-3">只显示最近 {MAX_ROWS} 条，完整记录请打开完整会话</div>
+								<div className="text-center text-m-xs text-m-text-3">只显示最近 {MAX_ROWS} 条</div>
 							)}
-							{visible.map((it) => (
-								<ThreadRow key={it.id} item={it} sessionId={threadId} working={working} />
+							{visible.map((it, idx) => (
+								<ThreadRow
+									key={it.id}
+									item={it}
+									sessionId={threadId}
+									working={working}
+									isLast={idx === visible.length - 1}
+									stat={stats[it.id]}
+								/>
 							))}
 							{pending.map((p) => (
 								<UserBubble key={`p${p.id}`} text={p.text} images={p.images} sessionId={threadId} dim />
@@ -871,7 +955,7 @@ function UserBubble({ text, images = [], sessionId, dim = false }: { text: strin
 	if (!text && !images.length) return null;
 	return (
 		<div className="flex justify-end">
-			<div className={`m-selectable max-w-[85%] rounded-m-lg bg-m-bubble-user-bg px-[18px] py-3 text-m-md break-words whitespace-pre-wrap text-m-bubble-user-text [overflow-wrap:anywhere] ${dim ? "opacity-60" : ""}`}>
+			<div className={`m-selectable max-w-[var(--m-user-bubble-max)] rounded-(--m-bubble-radius) bg-m-bubble-user-bg px-4 py-2.5 text-m-body leading-[1.54] break-words whitespace-pre-wrap text-m-bubble-user-text [overflow-wrap:anywhere] ${dim ? "opacity-60" : ""}`}>
 				{text}
 				<Images sessionId={sessionId} images={images} />
 			</div>
@@ -879,15 +963,111 @@ function UserBubble({ text, images = [], sessionId, dim = false }: { text: strin
 	);
 }
 
-const ThreadRow = memo(function ThreadRow({ item, sessionId, working }: { item: Item; sessionId: string; working: boolean }) {
+function Disclosure({
+	label,
+	defaultOpen = false,
+	children,
+}: {
+	label: string;
+	defaultOpen?: boolean;
+	children: ReactNode;
+}) {
+	const [open, setOpen] = useState(defaultOpen);
+	useEffect(() => {
+		if (defaultOpen) setOpen(true);
+	}, [defaultOpen]);
+	return (
+		<div className="min-w-0">
+			<button
+				type="button"
+				aria-expanded={open}
+				onClick={() => setOpen((v) => !v)}
+				className="-mx-1.5 inline-flex min-h-8 items-center gap-1 rounded-m-pill px-1.5 text-m-xs font-medium whitespace-nowrap text-m-text-faint transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover active:text-m-text"
+			>
+				<span>{label}</span>
+				<ChevronRight
+					size={13}
+					strokeWidth={1.85}
+					aria-hidden
+					className={`shrink-0 transition-transform duration-(--m-dur-fast) ${open ? "rotate-90" : ""}`}
+				/>
+			</button>
+			{open && <div className="mt-1 space-y-2 border-l border-m-border pl-3">{children}</div>}
+		</div>
+	);
+}
+
+const ThreadRow = memo(function ThreadRow({
+	item,
+	sessionId,
+	working,
+	isLast,
+	stat,
+}: {
+	item: Item;
+	sessionId: string;
+	working: boolean;
+	isLast: boolean;
+	stat?: RequestStat;
+}) {
 	if (item.role === "user") return <UserBubble text={item.text} images={item.images} sessionId={sessionId} />;
 	if (item.role !== "assistant" && !item.tools.length) return null;
+
+	const rowStreaming = isLast && working;
+	const hasTools = item.tools.length > 0;
+	const hasToolAttention = item.tools.some((t) => {
+		const st = toolState(t, working);
+		return st === "run" || st === "bad";
+	});
+	const resolvedStat = stat ?? requestStatFromItem(item);
+	const statParts = resolvedStat ? formatDesktopStatParts(resolvedStat, { omitTime: true }) : [];
+	const parsedTs = item.ts ? Date.parse(item.ts) : Number.NaN;
+	const clockText = Number.isFinite(parsedTs) ? formatStatClock(parsedTs).slice(0, 5) : "";
+
 	return (
 		<div className="min-w-0 space-y-2">
-			{item.thinking && <Thinking id={`side-${sessionId}-${item.id}`} text={item.thinking} live={false} />}
-			{item.tools.map((t) => <ToolCard key={t.id} id={`side-${sessionId}-${t.id}`} tool={t} state={toolState(t, working)} />)}
-			{item.text && <div className="m-selectable text-m-body"><Markdown text={item.text} /></div>}
+			{hasTools ? (
+				<Disclosure
+					label={hasToolAttention && rowStreaming ? "处理中" : "已处理"}
+					defaultOpen={hasToolAttention || !item.text}
+				>
+					{item.thinking && <Thinking id={`side-${sessionId}-${item.id}`} text={item.thinking} live={false} />}
+					{item.tools.map((t) => (
+						<ToolCard key={t.id} id={`side-${sessionId}-${t.id}`} tool={t} state={toolState(t, working)} />
+					))}
+				</Disclosure>
+			) : (
+				item.thinking && <Thinking id={`side-${sessionId}-${item.id}`} text={item.thinking} live={false} />
+			)}
+			{item.text && (
+				<div className="m-selectable">
+					<Markdown text={item.text} className="m-msg" streaming={rowStreaming} />
+				</div>
+			)}
 			<Images sessionId={sessionId} images={item.images} />
+			{!rowStreaming && statParts.length > 0 && (
+				<div className="flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] leading-5 text-m-text-quiet tabular-nums">
+					{statParts.map((p) => (
+						<span key={p.field}>{p.glyph}{p.text}</span>
+					))}
+				</div>
+			)}
+			{!rowStreaming && item.text && (
+				<div className="-ml-1.5 flex items-center gap-1.5 pt-0.5">
+					{clockText && (
+						<span className="pl-1.5 text-[11px] leading-4 text-m-text-faint tabular-nums">{clockText}</span>
+					)}
+					<button
+						type="button"
+						aria-label="复制"
+						title="复制"
+						onClick={() => void copyText(item.text).then((ok) => toast(ok ? "已复制" : "复制失败", { kind: ok ? "success" : "error" }))}
+						className="m-press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-m-text-faint active:bg-m-surface-hover active:text-m-text"
+					>
+						<Copy size={14} strokeWidth={1.75} aria-hidden />
+					</button>
+				</div>
+			)}
 		</div>
 	);
 });

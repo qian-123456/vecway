@@ -2,33 +2,102 @@ import { ChevronRight, ClipboardList, Copy, Download, Ellipsis, ImageOff } from 
 import { memo, useEffect, useMemo, useState } from "react";
 import { apiUrl } from "../../../core/api";
 import { copyText } from "../../../core/lib/format";
-import { nav, paths } from "../../../core/nav";
 import { usePrefs } from "../../../core/stores/prefs";
+import { useSession } from "../../../core/stores/sessions";
 import type { ImageRef, Item, ToolItem } from "../../../core/types";
 import { Button, IconButton, openImage, toast, type ViewerImage } from "../../../ui";
 import { Markdown } from "../../../ui/Markdown";
 import { useChat, useChatUi, type ChatUi } from "../ChatContext";
 import { stripImageMarkers } from "../lib/prompt";
-import { statSummary } from "../lib/requestStats";
-import { foldLabel, type Step, type Turn } from "../lib/turns";
-import { StatLine } from "./StatLine";
+import { formatDurationCompact, type RequestStat } from "../lib/requestStats";
+import { type Step, type Turn } from "../lib/turns";
+import { PlanSheet } from "./PlanSheet";
+import { StatLine, TurnSummaryRows } from "./StatLine";
 import { Thinking } from "./Thinking";
 import { toolState, ToolCard } from "./ToolCard";
+import { TurnDiffCard } from "./TurnDiffCard";
 import { useLongPress } from "./useLongPress";
+
 /** Per-turn expand override; survives window paging remounts. */
 const foldOverride = new Map<string, boolean>();
 
 /** 1 s ticker, mounted only while a turn is running. */
-function RunningLabel({ turn }: { turn: Turn }) {
+function RunningLabel({ start }: { start: number }) {
 	const [first] = useState(() => Date.now());
 	const [now, setNow] = useState(first);
 	useEffect(() => {
 		const t = setInterval(() => setNow(Date.now()), 1000);
 		return () => clearInterval(t);
 	}, []);
-	return <>{foldLabel({ ...turn, start: turn.start || first }, true, now)}</>;
+	const elapsed = Math.max(0, now - (start || first));
+	return <>正在处理 {formatDurationCompact(elapsed)}…</>;
 }
 
+function finishedFoldLabel(turn: Pick<Turn, "steps" | "start" | "end">, steps: readonly Step[]): string {
+	const span = turn.end > turn.start && turn.start ? turn.end - turn.start : 0;
+	if (span > 0) return `已处理 ${formatDurationCompact(span)}`;
+	const hasTools = steps.some((s) => s.kind === "tool");
+	if (!hasTools && steps.some((s) => s.kind === "thinking")) {
+		let ms = 0;
+		for (const s of steps) if (s.kind === "thinking" && s.ms) ms += s.ms;
+		return ms > 0 ? `已思考 ${formatDurationCompact(ms)}` : "已思考";
+	}
+	const count = steps.filter((s) => s.kind !== "stat").length;
+	return `已处理 ${count} 步`;
+}
+
+function formatHourMinute(epochMs: number | null | undefined): string {
+	if (!epochMs || !Number.isFinite(epochMs)) return "";
+	const d = new Date(epochMs);
+	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+interface ParallelMark {
+	first: boolean;
+	last: boolean;
+}
+
+function computeParallelMarks(
+	steps: readonly Step[],
+	turnSrc: readonly Item[],
+	live: Item | null,
+): Map<string, ParallelMark> {
+	const toolToReq = new Map<string, string>();
+	for (const it of turnSrc) {
+		if (it.role !== "assistant" || it.tools.length < 2) continue;
+		for (const t of it.tools) toolToReq.set(t.id, it.id);
+	}
+	if (live && live.tools.length >= 2) {
+		for (const t of live.tools) toolToReq.set(t.id, live.id);
+	}
+	const marks = new Map<string, ParallelMark>();
+	let i = 0;
+	while (i < steps.length) {
+		const cur = steps[i];
+		if (cur.kind !== "tool") {
+			i++;
+			continue;
+		}
+		const reqId = toolToReq.get(cur.tool.id);
+		if (!reqId) {
+			i++;
+			continue;
+		}
+		let j = i + 1;
+		while (j < steps.length) {
+			const next = steps[j];
+			if (next.kind === "tool" && toolToReq.get(next.tool.id) === reqId) j++;
+			else break;
+		}
+		if (j - i >= 2) {
+			for (let k = i; k < j; k++) {
+				marks.set(steps[k].key, { first: k === i, last: k === j - 1 });
+			}
+		}
+		i = j;
+	}
+	return marks;
+}
 export function imageSrc(sessionId: string, img: ImageRef): string {
 	return img.path ? apiUrl(`/sessions/${sessionId}/image?path=${encodeURIComponent(img.path)}`) : "";
 }
@@ -151,7 +220,17 @@ export const PendingBubble = memo(function PendingBubble({ text, imageUrls }: { 
 		</div>
 	);
 });
-function StepView({ step, running, onStat }: { step: Step; running: boolean; onStat: ChatUi["openStat"] }) {
+function StepView({
+	step,
+	running,
+	onStat,
+	parallel,
+}: {
+	step: Step;
+	running: boolean;
+	onStat: ChatUi["openStat"];
+	parallel?: ParallelMark;
+}) {
 	switch (step.kind) {
 		case "thinking":
 			return <Thinking id={step.key} text={step.text} live={false} ms={step.ms} />;
@@ -161,16 +240,26 @@ function StepView({ step, running, onStat }: { step: Step; running: boolean; onS
 					<Markdown text={step.text} className="m-md-quiet" />
 				</div>
 			);
-		case "tool":
-			return <ToolCard id={step.key} tool={step.tool} state={toolState(step.tool, running)} />;
+		case "tool": {
+			const hairline = parallel
+				? `relative pr-2 after:pointer-events-none after:absolute after:right-0 after:w-px after:bg-m-border after:content-[''] ${
+						parallel.first ? "after:top-1.5" : "after:-top-0.5"
+					} ${parallel.last ? "after:bottom-1.5" : "after:-bottom-0.5"}`
+				: "";
+			return (
+				<div className={hairline}>
+					<ToolCard id={step.key} tool={step.tool} state={toolState(step.tool, running)} />
+				</div>
+			);
+		}
 		case "stat":
 			return (
-				<div className="-mx-2">
+				<div className="ms-5">
 					<StatLine stat={step.stat} onOpen={onStat} />
 				</div>
 			);
 		case "notice":
-			return <div className="py-2 text-m-xs text-m-text-3">{step.text}</div>;
+			return <div className="py-1.5 text-[12px] text-m-text-quiet">{step.text}</div>;
 	}
 }
 
@@ -197,8 +286,9 @@ export function mergeLive(turn: Turn, live: Item | null): LiveParts {
 }
 
 /**
- * The machine work of a turn as one quiet line (「已运行 6 个步骤 · 57 秒 ›」). Collapsed while running it still
- * shows the current activity (latest tool row or live thinking) under the line.
+ * Desktop-parity execution disclosure: quiet ghost header 「已处理 X秒 ›」 /
+ * shimmering 「正在处理 X秒… ›」, expanded TurnSummaryRows + steps + right-edge
+ * parallel hairline + step-level StatLine.
  */
 function ProcessFold({
 	turn,
@@ -206,18 +296,28 @@ function ProcessFold({
 	liveThinking,
 	liveThinkingActive,
 	running,
+	parallelMarks,
 }: {
 	turn: Turn;
 	steps: Step[];
 	liveThinking: string;
 	liveThinkingActive: boolean;
 	running: boolean;
+	parallelMarks: Map<string, ParallelMark>;
 }) {
 	const { openStat } = useChatUi();
 	const foldPref = usePrefs((s) => s.extra.foldOpen === true);
 	const [override, setOverride] = useState<boolean | undefined>(foldOverride.get(turn.id));
 	const open = override ?? foldPref;
 	const live = liveThinking ? <Thinking id={`th-live-${turn.id}`} text={liveThinking} live={liveThinkingActive} /> : null;
+
+	const turnStats = useMemo(() => {
+		const list: RequestStat[] = [];
+		for (const s of steps) if (s.kind === "stat") list.push(s.stat);
+		if (turn.answerStat) list.push(turn.answerStat.stat);
+		return list;
+	}, [steps, turn.answerStat]);
+	const turnSpanMs = turn.end > turn.start && turn.start ? turn.end - turn.start : undefined;
 
 	// Only reasoning happened (no tools, no in-between text): thinking lines stand on their own.
 	if (steps.every((s) => s.kind === "thinking" || s.kind === "stat")) {
@@ -231,7 +331,7 @@ function ProcessFold({
 
 	const current = running && !open ? (liveThinking ? null : [...steps].reverse().find((s) => s.kind === "tool")) : null;
 	return (
-		<div className="mb-3">
+		<div className="mb-2">
 			<button
 				type="button"
 				onClick={() => {
@@ -239,27 +339,31 @@ function ProcessFold({
 					setOverride(!open);
 				}}
 				aria-expanded={open}
-				className="flex min-h-9 w-full items-center gap-2 py-1 text-left text-m-xs font-medium text-m-text-3 transition-colors duration-(--m-dur-fast) active:text-m-text"
+				className="-mx-1 inline-flex min-h-8 w-fit max-w-full items-center gap-1 rounded-md px-1 py-0.5 text-left text-[13.5px] leading-6 text-m-text-faint transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover active:text-m-text-2"
 			>
-				<span className={running ? "m-shimmer shrink-0 whitespace-nowrap" : "shrink-0 whitespace-nowrap"}>
-					{running ? <RunningLabel turn={turn} /> : foldLabel({ ...turn, steps }, false, 0)}
+				<span className={running ? "m-shimmer truncate whitespace-nowrap" : "truncate whitespace-nowrap"}>
+					{running ? <RunningLabel start={turn.start} /> : finishedFoldLabel(turn, steps)}
 				</span>
 				<ChevronRight
-					size={13}
-					strokeWidth={1.85}
+					size={12}
+					strokeWidth={1.75}
 					aria-hidden
-					className={`shrink-0 text-m-text-3 transition-transform duration-(--m-dur-fast) ${open ? "rotate-90" : ""}`}
+					className={`shrink-0 text-m-text-faint transition-transform duration-(--m-dur-fast) ${open ? "rotate-90" : ""}`}
 				/>
-				<span aria-hidden className="h-px flex-1 bg-m-border" />
 			</button>
 			{open && (
-				<div className="pt-1 pb-1">
-					<div className="m-timeline space-y-0.5">
-						{steps.map((s) => (
-							<StepView key={s.key} step={s} running={running} onStat={openStat} />
-						))}
-						{live}
-					</div>
+				<div className="flex flex-col gap-0.5 pt-1.5 pb-1">
+					<TurnSummaryRows stats={turnStats} durationMs={running ? undefined : turnSpanMs} />
+					{steps.map((s) => (
+						<StepView
+							key={s.key}
+							step={s}
+							running={running}
+							onStat={openStat}
+							parallel={parallelMarks.get(s.key)}
+						/>
+					))}
+					{live}
 				</div>
 			)}
 			{!open && running && (live || current) && (
@@ -271,15 +375,46 @@ function ProcessFold({
 	);
 }
 
-function PlanCard({ text, sessionId, turnId, running, status }: { text: string; sessionId: string; turnId: string; running: boolean; status: "review" | "pending" | "executing" | "completed" | "failed" | "handoff" }) {
+const PLAN_CARD_TITLE: Record<"review" | "pending" | "executing" | "completed" | "failed" | "handoff", string> = {
+	review: "计划已生成",
+	pending: "等待执行确认",
+	executing: "计划执行中",
+	completed: "计划已完成",
+	failed: "计划执行失败",
+	handoff: "计划已移交",
+};
+
+function PlanCard({
+	text,
+	sessionId,
+	turnId,
+	running,
+	status,
+	title,
+	version,
+	prevContent,
+}: {
+	text: string;
+	sessionId: string;
+	turnId: string;
+	running: boolean;
+	status: "review" | "pending" | "executing" | "completed" | "failed" | "handoff";
+	title?: string | null;
+	version?: number;
+	prevContent?: string | null;
+}) {
 	const { controller } = useChatUi();
 	const [busy, setBusy] = useState(false);
+	const [sheetOpen, setSheetOpen] = useState(false);
 
 	const execute = async () => {
 		setBusy(true);
 		try {
 			const ok = await controller.approvePlan(turnId, text);
-			if (ok) toast("计划已批准，等待执行确认", { kind: "success" });
+			if (ok) {
+				toast("计划已批准，等待执行确认", { kind: "success" });
+				setSheetOpen(false);
+			}
 		} finally {
 			setBusy(false);
 		}
@@ -299,39 +434,90 @@ function PlanCard({ text, sessionId, turnId, running, status }: { text: string; 
 		setTimeout(() => URL.revokeObjectURL(url), 1000);
 	};
 
+	const annotate = () => {
+		controller.stageAnnotation(text, "请按以下要求修改计划：\n");
+	};
+
 	return (
-		<div className="mt-4 rounded-m-lg border border-m-border bg-m-card p-4 shadow-m-card" data-no-longpress>
-			<div className="flex items-center gap-3">
-				<ClipboardList size={22} strokeWidth={1.75} aria-hidden className="shrink-0 text-m-text-2" />
-				<div className="min-w-0 flex-1">
-					<div className="text-m-md font-medium">{({ review: "计划已生成", pending: "等待执行确认", executing: "计划执行中", completed: "计划已完成", failed: "计划执行失败", handoff: "计划已移交" })[status]}</div>
-					<div className="text-m-xs text-m-text-3">{status === "review" ? "执行，或补充要求后再生成" : status === "pending" ? "批准请求已接受，正在确认执行状态" : "查看已批准的计划与执行状态"}</div>
+		<>
+			<div className="mt-3 rounded-2xl border border-m-border bg-m-card p-3.5 shadow-m-card" data-no-longpress>
+				<div className="flex items-center gap-2.5">
+					<button
+						type="button"
+						onClick={() => setSheetOpen(true)}
+						className="flex min-w-0 flex-1 items-center gap-2.5 text-left active:opacity-75"
+					>
+						<span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-m-surface text-m-accent">
+							<ClipboardList size={18} strokeWidth={1.75} aria-hidden />
+						</span>
+						<div className="min-w-0 flex-1">
+							<div className="flex items-center gap-1.5">
+								<span className="truncate text-[14.5px] font-semibold text-m-text">{PLAN_CARD_TITLE[status]}</span>
+								{version != null && version > 0 && (
+									<span className="shrink-0 rounded-full bg-m-surface px-1.5 py-0.5 font-m-mono text-[10px] text-m-text-3">
+										v{version}
+									</span>
+								)}
+							</div>
+							<div className="truncate text-[12px] text-m-text-quiet">
+								{status === "review"
+									? "点击查看完整方案，或确认执行"
+									: status === "pending"
+										? "批准请求已接受，正在确认执行状态"
+										: "点击查看已批准的计划与执行状态"}
+							</div>
+						</div>
+					</button>
+					<IconButton size="sm" icon={<Copy size={17} strokeWidth={1.75} />} label="复制计划" onClick={() => void copy()} />
+					<IconButton size="sm" icon={<Download size={17} strokeWidth={1.75} />} label="下载 .md 文件" onClick={download} />
 				</div>
-				<IconButton size="sm" icon={<Copy size={20} strokeWidth={1.75} />} label="复制计划" onClick={() => void copy()} />
-				<IconButton size="sm" icon={<Download size={20} strokeWidth={1.75} />} label="下载 .md 文件" onClick={download} />
+				<div className="mt-3 flex flex-wrap gap-2">
+					<Button variant="tonal" size="sm" className="whitespace-nowrap" onClick={() => setSheetOpen(true)}>
+						查看计划
+					</Button>
+					{status === "review" && (
+						<>
+							<Button variant="tonal" size="sm" className="flex-1 whitespace-nowrap" disabled={running || busy} onClick={annotate}>
+								修改计划
+							</Button>
+							<Button variant="primary" size="sm" className="flex-1 whitespace-nowrap" busy={busy} disabled={running} onClick={() => void execute()}>
+								执行计划
+							</Button>
+						</>
+					)}
+				</div>
 			</div>
-			<div className="mt-4 flex flex-wrap gap-2">
-				{status === "review" ? (
-					<>
-						<Button variant="tonal" className="flex-1 whitespace-nowrap" disabled={running || busy} onClick={() => controller.stageAnnotation(text, "请按以下要求修改计划：\n")}>修改计划</Button>
-						<Button variant="primary" className="flex-1 whitespace-nowrap" busy={busy} disabled={running} onClick={() => void execute()}>执行计划</Button>
-					</>
-				) : <Button variant="tonal" className="flex-1 whitespace-nowrap" onClick={() => nav.push(paths.plan(sessionId))}>查看计划</Button>}
-			</div>
-		</div>
+			<PlanSheet
+				open={sheetOpen}
+				onClose={() => setSheetOpen(false)}
+				text={text}
+				sessionId={sessionId}
+				status={status}
+				title={title}
+				version={version}
+				prevContent={prevContent}
+				running={running}
+				approving={busy}
+				onApprove={execute}
+				onAnnotate={annotate}
+			/>
+		</>
 	);
 }
-
 export const TurnView = memo(function TurnView({ turn, isLast, sessionId }: { turn: Turn; isLast: boolean; sessionId: string }) {
 	const { openActions, openStat } = useChatUi();
+	const sessionCwd = useSession(sessionId)?.cwd ?? "";
 	const live = useChat((s) => (isLast ? s.live : null));
 	const working = useChat((s) => (isLast ? s.working : false));
 	const planMode = useChat((s) => (isLast ? s.cstate?.planMode === true : false));
-	const planStatus = useChat((s) => isLast ? s.cstate?.planStatus : null);
-	const acceptedPlan = useChat((s) => s.acceptedPlan?.turnId === turn.id ? s.acceptedPlan : null);
+	const planStatus = useChat((s) => (isLast ? s.cstate?.planStatus : null));
+	const acceptedPlan = useChat((s) => (s.acceptedPlan?.turnId === turn.id ? s.acceptedPlan : null));
 	const approved = planStatus?.approved;
 	const cardStatus = approved?.status ?? (acceptedPlan ? "pending" : "review");
-	const planText = approved?.content ?? acceptedPlan?.content ?? (planStatus?.enabled && planStatus.phase === "review" ? planStatus.content : null);
+	const planText =
+		approved?.content ??
+		acceptedPlan?.content ??
+		(planStatus?.enabled && planStatus.phase === "review" ? planStatus.content : null);
 	const running = isLast && working;
 	const parts = useMemo(() => mergeLive(turn, live), [turn, live]);
 	// The previous answer row becomes a step once a newer message streams text.
@@ -341,8 +527,15 @@ export const TurnView = memo(function TurnView({ turn, isLast, sessionId }: { tu
 		}
 		return parts.steps;
 	}, [parts, turn.answer]);
+	const parallelMarks = useMemo(
+		() => computeParallelMarks(steps, turn.src, live),
+		[steps, turn.src, live],
+	);
 	const answerText = parts.liveText || turn.answer?.text || "";
 	const answerStat = parts.liveText ? null : turn.answerStat;
+	const answerClock = formatHourMinute(
+		answerStat?.stat.completedAt ?? answerStat?.stat.startedAt ?? (turn.end > 0 ? turn.end : null),
+	);
 	const target = { role: "assistant" as const, text: answerText, entryId: turn.lastAssistantId, canRetry: isLast && !running };
 	const lp = useLongPress(() => {
 		if (answerText) openActions(target);
@@ -367,6 +560,7 @@ export const TurnView = memo(function TurnView({ turn, isLast, sessionId }: { tu
 							liveThinking={parts.liveThinking}
 							liveThinkingActive={running && !parts.liveText}
 							running={running}
+							parallelMarks={parallelMarks}
 						/>
 					)}
 					{answerText && (
@@ -380,42 +574,53 @@ export const TurnView = memo(function TurnView({ turn, isLast, sessionId }: { tu
 							<span className="m-shimmer">思考中</span>
 						</div>
 					)}
-					{(planText || (planMode && answerText && !parts.liveText && !planStatus)) && <PlanCard text={planText || answerText} sessionId={sessionId} turnId={turn.id} running={running} status={cardStatus} />}
-					{answerText && !running && (() => {
-						const statText = answerStat ? statSummary(answerStat.stat) : "";
-						return (
-							<div className="-ml-1.5 mt-1 flex items-center gap-0.5">
+					{(planText || (planMode && answerText && !parts.liveText && !planStatus)) && (
+						<PlanCard
+							text={planText || answerText}
+							sessionId={sessionId}
+							turnId={turn.id}
+							running={running}
+							status={cardStatus}
+							title={approved?.title ?? planStatus?.title}
+							version={approved?.version ?? planStatus?.version}
+							prevContent={planStatus?.prevContent}
+						/>
+					)}
+					{!running && <TurnDiffCard steps={steps} cwd={sessionCwd} />}
+					{answerText && !running && (
+						<>
+							{answerStat && (
+								<div className="mt-1.5">
+									<StatLine stat={answerStat.stat} omitTime onOpen={openStat} />
+								</div>
+							)}
+							<div className="mt-1.5 flex items-center gap-1 text-[11px] text-m-text-faint">
+								{answerClock && (
+									<span className="mr-1 shrink-0 tabular-nums leading-5" title="回复时间">
+										{answerClock}
+									</span>
+								)}
 								<button
 									type="button"
 									aria-label="复制"
 									title="复制"
 									onClick={() => void copyAnswer()}
-									className="m-press flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-m-text-3 active:bg-m-surface-hover active:text-m-text"
+									className="m-press flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-m-text-faint active:bg-m-surface-hover active:text-m-text"
 								>
-									<Copy size={16} strokeWidth={1.75} />
+									<Copy size={14} strokeWidth={1.75} />
 								</button>
 								<button
 									type="button"
 									aria-label="更多操作"
 									title="更多操作"
 									onClick={(e) => openActions(target, e.currentTarget)}
-									className="m-press flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-m-text-3 active:bg-m-surface-hover active:text-m-text"
+									className="m-press flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-m-text-faint active:bg-m-surface-hover active:text-m-text"
 								>
-									<Ellipsis size={16} strokeWidth={1.75} />
+									<Ellipsis size={14} strokeWidth={1.75} />
 								</button>
-								{answerStat && statText && (
-									<button
-										type="button"
-										aria-label={`请求详情：${statText}`}
-										onClick={(e) => openStat(answerStat.stat, e.currentTarget)}
-										className="m-press ml-auto inline-flex h-8 min-w-0 items-center truncate rounded-md px-2 text-[11px] tabular-nums text-m-text-3 active:bg-m-surface-hover"
-									>
-										{statText}
-									</button>
-								)}
 							</div>
-						);
-					})()}
+						</>
+					)}
 				</div>
 			)}
 		</div>

@@ -1,10 +1,10 @@
-import { Check, FolderCog, Globe2, X } from "lucide-react";
+import { Check, ChevronLeft, FolderCog, Globe2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../core/api";
 import { resolveThemeId, themeById } from "../../app/themes";
 import { nav, paths } from "../../core/nav";
 import { usePrefs } from "../../core/stores/prefs";
-import { AnchoredPopover, Button, EmptyState, IconButton, ListGroup, ListRow, MenuRow, PullToRefresh, Spinner, TopBar } from "../../ui";
+import { AnchoredPopover, Button, EmptyState, IconButton, ListGroup, ListRow, MenuRow, PullToRefresh, Spinner } from "../../ui";
 import { OmpError, OmpSettingsGroup } from "./OmpSettings";
 import { QUOTA_ITEM, SETTINGS_GROUPS, type SettingsItemDef, type SheetId } from "./settingsGroups";
 import {
@@ -63,6 +63,8 @@ export function SettingsPage() {
 	const [sheetOpen, setSheetOpen] = useState(false);
 	const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 	const lastClickedRowRef = useRef<HTMLElement | null>(null);
+	const scrollerRef = useRef<HTMLDivElement>(null);
+	const [collapsed, setCollapsed] = useState(false);
 	const scheme = usePrefs((s) => s.scheme);
 	const lightTheme = usePrefs((s) => s.lightTheme);
 	const darkTheme = usePrefs((s) => s.darkTheme);
@@ -84,6 +86,18 @@ export function SettingsPage() {
 	useEffect(() => {
 		void load();
 	}, [load]);
+	useEffect(() => {
+		const el = scrollerRef.current;
+		if (!el) return;
+		const update = () => {
+			const next = el.scrollTop > 36;
+			setCollapsed((prev) => (prev === next ? prev : next));
+		};
+		update();
+		el.addEventListener("scroll", update, { passive: true });
+		return () => el.removeEventListener("scroll", update);
+	}, []);
+
 
 	const mode: ApprovalMode | null = isApprovalMode(data?.defaultApprovalMode) ? data.defaultApprovalMode : null;
 	const automationOverlapPolicy = isAutomationOverlapPolicy(data?.automationOverlapPolicy) ? data.automationOverlapPolicy : null;
@@ -177,17 +191,39 @@ export function SettingsPage() {
 
 	return (
 		<div className="flex h-full min-h-0 flex-col bg-m-bg-elev text-m-text">
-			<TopBar right={<IconButton variant="filled" icon={<X size={20} />} label="关闭" onClick={() => nav.back()} />} />
+			<header
+				className={`m-topbar-glass sticky top-0 z-(--z-header) shrink-0 text-m-text transition-[border-color] duration-(--m-dur-fast) ease-m ${
+					collapsed ? "" : "border-b-transparent!"
+				}`}
+				style={{ paddingTop: "var(--m-safe-top)" }}
+			>
+				<div className="flex h-13 items-center justify-between gap-2 px-2.5">
+					<div className="flex min-w-11 shrink-0 items-center">
+						<IconButton variant="plain" icon={<ChevronLeft size={22} strokeWidth={1.75} />} label="返回" onClick={() => nav.back()} />
+					</div>
+					<div className="pointer-events-none flex min-w-0 flex-1 items-center justify-center">
+						<span
+							aria-hidden="true"
+							className={`truncate text-m-md font-semibold tracking-[-0.01em] text-m-text transition-[opacity,transform] duration-(--m-dur-fast) ease-m motion-reduce:translate-y-0 motion-reduce:transition-opacity ${
+								collapsed ? "translate-y-0 opacity-100" : "translate-y-1.5 opacity-0"
+							}`}
+						>
+							设置
+						</span>
+					</div>
+					<div className="min-w-11 shrink-0" aria-hidden="true" />
+				</div>
+			</header>
 
-			<PullToRefresh onRefresh={load} className="m-noscrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
+			<PullToRefresh ref={scrollerRef} onRefresh={load} className="m-noscrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
 				<div
-					className="flex flex-col gap-2 pb-[calc(var(--m-safe-bottom)+32px)]"
+					className="flex flex-col gap-1.5 pb-[calc(var(--m-safe-bottom)+32px)]"
 					onClickCapture={(e) => {
 						const btn = (e.target as HTMLElement | null)?.closest("button");
 						if (btn instanceof HTMLElement) lastClickedRowRef.current = btn;
 					}}
 				>
-					<h1 className="px-6 pt-1 pb-3 text-m-title font-medium">设置</h1>
+					<h1 className="px-5 pt-1 pb-2.5 text-[30px] leading-tight font-bold tracking-[-0.025em] text-m-text">设置</h1>
 
 					<ListGroup>{row(QUOTA_ITEM)}</ListGroup>
 
@@ -210,7 +246,10 @@ export function SettingsPage() {
 
 					{SETTINGS_GROUPS.map((group) => (
 						<Fragment key={group.id}>
-							<ListGroup title={group.title}>
+							<ListGroup
+								title={group.title}
+								className="[&_h3]:pt-4 [&_h3]:pb-1.5 [&_h3]:text-[12px] [&_h3]:font-semibold [&_h3]:uppercase [&_h3]:tracking-[0.04em] [&_h3]:text-m-text-3"
+							>
 								{group.id === "models" && dirs.length > 0 && (
 									<ListRow
 										icon={<FolderCog {...ICON} />}

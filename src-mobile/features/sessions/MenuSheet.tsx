@@ -258,68 +258,75 @@ export function MenuSheet({
 				onTouchMove={onTouchMove}
 				onTouchEnd={onTouchEnd}
 				onTouchCancel={resetSwipe}
-				className={`absolute inset-y-0 left-0 flex w-[85vw] max-w-[340px] touch-pan-y flex-col border-r border-m-border bg-m-drawer-bg text-m-text shadow-m-pop outline-none transition-transform duration-300 ease-m-sheet ${
+				className={`absolute inset-y-0 left-0 flex w-[85vw] max-w-[340px] touch-pan-y flex-col border-r border-m-border/80 bg-m-drawer-bg/92 text-m-text shadow-m-pop backdrop-blur-2xl backdrop-saturate-150 outline-none transition-transform duration-300 ease-m-sheet ${
 					visible ? "translate-x-0" : "-translate-x-full"
 				}`}
 				style={{ paddingTop: "var(--m-safe-top)", paddingBottom: "calc(var(--m-safe-bottom) + 6px)" }}
 			>
-				<header className="flex h-12 shrink-0 items-center justify-between gap-2 px-2.5">
+				<header className="flex h-13 shrink-0 items-center justify-between gap-2 border-b border-m-border/60 px-3">
 					<ModeSwitch />
 					<div className="flex shrink-0 items-center gap-0.5">
-						<IconButton variant="plain" size="sm" icon={<Search size={19} strokeWidth={1.8} />} label="搜索会话" onClick={() => go(paths.search())} />
-						<div className="relative">
-							<IconButton variant="plain" size="sm" icon={<Bell size={19} strokeWidth={1.8} />} label={badge > 0 ? `收件箱，${badge} 项待处理` : "收件箱"} onClick={() => go(paths.inbox())} />
-							{badge > 0 && <span aria-hidden="true" className="pointer-events-none absolute right-1 top-1 rounded-m-pill bg-m-danger px-1 text-[10px] leading-4 tabular-nums text-m-bg">{badge > 99 ? "99+" : badge}</span>}
-						</div>
+						<IconButton variant="plain" size="sm" className="m-press" icon={<Search size={18} strokeWidth={1.75} />} label="搜索会话" onClick={() => go(paths.search())} />
+						<IconButton
+							variant="plain"
+							size="sm"
+							className="m-press"
+							badge={badge > 0 ? badge : undefined}
+							icon={<Bell size={18} strokeWidth={1.75} />}
+							label={badge > 0 ? `收件箱，${badge} 项待处理` : "收件箱"}
+							onClick={() => go(paths.inbox())}
+						/>
 					</div>
 				</header>
 
-				<nav aria-label="主导航" className="shrink-0 space-y-0.5 border-b border-m-border px-2.5 pb-2">
+				<nav aria-label="主导航" className="shrink-0 space-y-1 border-b border-m-border/70 px-2.5 py-2">
 					<button
 						type="button"
 						onClick={() => {
 							onClose();
 							onNewSession?.();
 						}}
-						className="flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-m-sm font-medium text-m-text transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+						className="m-press flex min-h-10 w-full items-center gap-2.5 rounded-m-md bg-m-surface/75 px-3 text-left text-m-sm font-medium text-m-text ring-1 ring-m-border/60 transition-colors duration-(--m-dur-fast) ease-m active:bg-m-surface-hover"
 					>
-						<SquarePen size={17} strokeWidth={1.8} className="shrink-0 text-m-text-2" />
+						<SquarePen size={17} strokeWidth={1.75} className="shrink-0 text-m-accent" />
 						<span className="whitespace-nowrap">发起新对话</span>
 					</button>
 					<button
 						type="button"
 						onClick={() => go(paths.schedules())}
-						className="flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-m-sm font-medium text-m-text transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+						className="m-press flex min-h-10 w-full items-center gap-2.5 rounded-m-md px-3 text-left text-m-sm font-medium text-m-text transition-colors duration-(--m-dur-fast) ease-m active:bg-m-surface-hover"
 					>
-						<Clock size={17} strokeWidth={1.8} className="shrink-0 text-m-text-2" />
+						<Clock size={17} strokeWidth={1.75} className="shrink-0 text-m-text-2" />
 						<span className="whitespace-nowrap">自动化</span>
 					</button>
 					<button
 						type="button"
 						onClick={() => go(paths.ideas())}
-						className="flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-m-sm font-medium text-m-text transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
+						className="m-press flex min-h-10 w-full items-center gap-2.5 rounded-m-md px-3 text-left text-m-sm font-medium text-m-text transition-colors duration-(--m-dur-fast) ease-m active:bg-m-surface-hover"
 					>
-						<Lightbulb size={17} strokeWidth={1.8} className="shrink-0 text-m-text-2" />
+						<Lightbulb size={17} strokeWidth={1.75} className="shrink-0 text-m-text-2" />
 						<span className="whitespace-nowrap">灵感收件箱</span>
 					</button>
 				</nav>
 
-				<div ref={filterRef} className="relative flex shrink-0 items-center justify-between px-3.5 pt-2.5 pb-1">
-					<span className="text-[12px] font-medium text-m-text-3">
+				<div ref={filterRef} className="relative flex shrink-0 items-center justify-between px-3.5 pt-2.5 pb-1.5">
+					<span className="text-[11.5px] font-semibold tracking-[0.03em] text-m-text-3">
 						{viewMode === "project" ? "项目" : "全部对话"}
 					</span>
-					<div className="flex shrink-0 items-center gap-0.5">
+					<div className="flex shrink-0 items-center gap-1">
 						<button
 							type="button"
 							aria-label="切换视图"
 							aria-haspopup="menu"
 							aria-expanded={filterOpen}
 							onClick={() => setFilterOpen((v) => !v)}
-							className={`m-press inline-flex h-8 w-8 items-center justify-center rounded-md ${
-								filterOpen ? "bg-m-surface text-m-text" : "text-m-text-3 active:bg-m-surface-hover active:text-m-text"
+							className={`m-press inline-flex h-8 min-w-8 items-center justify-center rounded-m-pill px-2 transition-colors duration-(--m-dur-fast) ease-m ${
+								filterOpen
+									? "bg-m-drawer-active text-m-accent"
+									: "bg-m-surface/65 text-m-text-2 active:bg-m-surface-hover active:text-m-text"
 							}`}
 						>
-							<ListFilter size={15} strokeWidth={1.85} />
+							<ListFilter size={14} strokeWidth={1.75} />
 						</button>
 						{onNewSession && (
 							<button
@@ -330,9 +337,9 @@ export function MenuSheet({
 									onClose();
 									onNewSession();
 								}}
-								className="m-press inline-flex h-8 w-8 items-center justify-center rounded-md text-m-text-3 active:bg-m-surface-hover active:text-m-text"
+								className="m-press inline-flex h-8 w-8 items-center justify-center rounded-m-pill text-m-text-3 transition-colors duration-(--m-dur-fast) ease-m active:bg-m-surface-hover active:text-m-text"
 							>
-								<FolderPlus size={15} strokeWidth={1.85} />
+								<FolderPlus size={15} strokeWidth={1.75} />
 							</button>
 						)}
 					</div>
@@ -340,9 +347,9 @@ export function MenuSheet({
 						<div
 							role="menu"
 							aria-label="视图方式"
-							className="m-popover-surface absolute right-3 top-full z-(--z-banner) mt-1 w-40 rounded-[10px] border border-m-border bg-m-bg-elev p-1"
+							className="m-popover-surface m-liquid-surface absolute right-3 top-full z-(--z-banner) mt-1.5 w-40 rounded-m-lg p-1.5"
 						>
-							<div className="px-2 py-1 text-[11px] text-m-text-3">分组方式</div>
+							<div className="px-2 py-1 text-[11px] font-semibold tracking-[0.03em] text-m-text-3">分组方式</div>
 							<button
 								type="button"
 								role="menuitemradio"
@@ -351,12 +358,12 @@ export function MenuSheet({
 									setViewMode("project");
 									setFilterOpen(false);
 								}}
-								className={`flex min-h-9 w-full items-center justify-between rounded-md px-2 text-left text-m-xs active:bg-m-surface-hover ${
-									viewMode === "project" ? "bg-m-surface font-medium text-m-text" : "text-m-text-2"
+								className={`m-press flex min-h-9 w-full items-center justify-between rounded-m-md px-2.5 text-left text-m-xs whitespace-nowrap transition-colors duration-(--m-dur-fast) ease-m ${
+									viewMode === "project" ? "bg-m-drawer-active font-medium text-m-accent" : "text-m-text-2 active:bg-m-surface-hover"
 								}`}
 							>
 								<span>按项目</span>
-								{viewMode === "project" && <Check size={14} className="text-m-accent" />}
+								{viewMode === "project" && <Check size={14} strokeWidth={1.85} className="shrink-0 text-m-accent" />}
 							</button>
 							<button
 								type="button"
@@ -366,12 +373,12 @@ export function MenuSheet({
 									setViewMode("time");
 									setFilterOpen(false);
 								}}
-								className={`flex min-h-9 w-full items-center justify-between rounded-md px-2 text-left text-m-xs active:bg-m-surface-hover ${
-									viewMode === "time" ? "bg-m-surface font-medium text-m-text" : "text-m-text-2"
+								className={`m-press flex min-h-9 w-full items-center justify-between rounded-m-md px-2.5 text-left text-m-xs whitespace-nowrap transition-colors duration-(--m-dur-fast) ease-m ${
+									viewMode === "time" ? "bg-m-drawer-active font-medium text-m-accent" : "text-m-text-2 active:bg-m-surface-hover"
 								}`}
 							>
 								<span>按时间</span>
-								{viewMode === "time" && <Check size={14} className="text-m-accent" />}
+								{viewMode === "time" && <Check size={14} strokeWidth={1.85} className="shrink-0 text-m-accent" />}
 							</button>
 						</div>
 					)}
@@ -385,7 +392,7 @@ export function MenuSheet({
 					)}
 				</div>
 
-				<footer aria-label="更多入口" className="flex shrink-0 items-center justify-between gap-2 border-t border-m-border px-2.5 pt-1.5">
+				<footer aria-label="更多入口" className="flex shrink-0 items-center justify-between gap-2 border-t border-m-border/80 px-3 pt-2">
 					<div className="flex min-w-0 flex-1 items-center gap-1.5">
 						{native && nativeStatus?.paired ? (
 							<>
@@ -393,7 +400,7 @@ export function MenuSheet({
 									type="button"
 									aria-label="切换连接方式"
 									onClick={() => setConnOpen(true)}
-									className="flex min-h-10 min-w-0 items-center gap-2 rounded-lg px-2 text-left text-m-xs text-m-text-2 active:bg-m-surface-hover"
+									className="m-press flex min-h-10 min-w-0 items-center gap-2 rounded-m-pill px-2.5 text-left text-m-xs text-m-text-2 transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover"
 								>
 									<span
 										aria-hidden="true"
@@ -408,19 +415,19 @@ export function MenuSheet({
 										type="button"
 										disabled={switchingLan}
 										onClick={() => void quickSwitchToLan()}
-										className="min-h-8 shrink-0 rounded-md px-2 text-m-xs font-medium whitespace-nowrap text-m-accent active:bg-m-surface-hover disabled:opacity-40"
+										className="m-press min-h-8 shrink-0 rounded-m-pill bg-m-accent-soft px-2.5 text-m-xs font-medium whitespace-nowrap text-m-accent-soft-text active:opacity-80 disabled:opacity-40"
 									>
 										{switchingLan ? "切换中" : "切回局域网"}
 									</button>
 								)}
 							</>
 						) : (
-							<span className="px-2 text-m-xs text-m-text-3">Vecway</span>
+							<span className="px-2 text-m-xs font-medium text-m-text-3">Vecway</span>
 						)}
 					</div>
 					<div className="flex shrink-0 items-center gap-0.5">
-						<IconButton variant="plain" size="sm" icon={<Gauge size={18} strokeWidth={1.75} />} label="订阅与配额" onClick={() => go(paths.quota())} />
-						<IconButton variant="plain" size="sm" icon={<Settings size={18} strokeWidth={1.75} />} label="设置" onClick={() => go(paths.settings())} />
+						<IconButton variant="plain" size="sm" className="m-press" icon={<Gauge size={18} strokeWidth={1.75} />} label="订阅与配额" onClick={() => go(paths.quota())} />
+						<IconButton variant="plain" size="sm" className="m-press" icon={<Settings size={18} strokeWidth={1.75} />} label="设置" onClick={() => go(paths.settings())} />
 					</div>
 				</footer>
 			</div>

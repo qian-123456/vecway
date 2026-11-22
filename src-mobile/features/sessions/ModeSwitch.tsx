@@ -26,19 +26,19 @@ export function ModeSwitch({ onChange }: { onChange?: () => void }) {
 		<div ref={ref} className="relative shrink-0">
 			<button type="button" aria-haspopup="menu" aria-expanded={open}
 				aria-label={`${modeLabel(mode)}空间${sessions ? `，${sessions.length} 个会话${busyCount ? `，${busyCount} 个运行中或待回复` : ""}` : ""}，点击切换`}
-				onClick={() => setOpen((v) => !v)} className="m-press flex min-h-10 items-center rounded-lg px-2 text-m-md font-semibold text-m-text active:bg-m-surface-hover">
+				onClick={() => setOpen((v) => !v)} className="m-press flex min-h-9 items-center rounded-m-pill bg-m-surface/80 px-3 py-1.5 text-m-sm font-semibold text-m-text ring-1 ring-m-border/70 transition-colors duration-(--m-dur-fast) ease-m active:bg-m-surface-hover">
 				<span className="relative inline-flex items-center gap-1.5 whitespace-nowrap">
-					<Icon size={16} strokeWidth={1.85} className="shrink-0 text-m-accent" />
+					<Icon size={15} strokeWidth={1.75} className="shrink-0 text-m-accent" />
 					<span>{modeLabel(mode)}</span>
-					<ChevronDown size={14} className="shrink-0 text-m-text-3" />
+					<ChevronDown size={14} strokeWidth={1.75} className="shrink-0 text-m-text-3" />
 					{busyCount > 0 && <span aria-label="当前空间有运行中或待回复的会话" className="size-2 shrink-0 rounded-full bg-m-accent m-pulse" />}
 				</span>
 			</button>
-			{open && <div role="menu" aria-label="切换空间" className="m-popover-surface absolute left-1 top-full z-(--z-banner) mt-1 w-52 max-w-[calc(100vw-24px)] rounded-m-lg border border-m-border bg-m-bg/95 backdrop-blur-xl p-1.5">
-				<div className="px-2 py-1 text-m-xs text-m-text-3">切换空间</div>
+			{open && <div role="menu" aria-label="切换空间" className="m-popover-surface m-liquid-surface absolute left-0 top-full z-(--z-banner) mt-1.5 w-52 max-w-[calc(100vw-24px)] rounded-m-lg p-1.5">
+				<div className="px-2.5 py-1 text-[11px] font-semibold tracking-[0.03em] text-m-text-3">切换空间</div>
 				{MODES.map(([m, label]) => {
 					const ItemIcon = SPACE_MODE_META[m].icon;
-					return <button key={m} type="button" role="menuitemradio" aria-checked={m === mode} onClick={() => { useTree.getState().setMode(m); setOpen(false); onChange?.(); }} className={`flex min-h-11 w-full items-center gap-2 rounded-m-md px-2 text-left text-m-sm active:bg-m-surface-hover ${m === mode ? "bg-m-surface font-medium text-m-accent" : "text-m-text-2"}`}><ItemIcon size={17} strokeWidth={1.75} /><span className="flex-1">{label}</span>{m === mode && <Check size={17} />}</button>;
+					return <button key={m} type="button" role="menuitemradio" aria-checked={m === mode} onClick={() => { useTree.getState().setMode(m); setOpen(false); onChange?.(); }} className={`m-press flex min-h-10 w-full items-center gap-2.5 rounded-m-md px-2.5 text-left text-m-sm whitespace-nowrap transition-colors duration-(--m-dur-fast) ease-m ${m === mode ? "bg-m-drawer-active font-medium text-m-accent" : "text-m-text-2 active:bg-m-surface-hover"}`}><ItemIcon size={17} strokeWidth={1.75} className="shrink-0" /><span className="flex-1">{label}</span>{m === mode && <Check size={16} strokeWidth={1.85} className="shrink-0 text-m-accent" />}</button>;
 				})}
 			</div>}
 		</div>

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { create } from "zustand";
 
 export type WorkspaceTab = "sidechat" | "git" | "files" | "terminal" | "services" | "plan";
@@ -14,6 +15,26 @@ export interface MainAnnotationPayload {
 	sourceLabel?: string;
 }
 
+export interface DrawerMoreAction {
+	id: string;
+	label: string;
+	icon?: ReactNode;
+	danger?: boolean;
+	onSelect: () => void;
+}
+
+export interface DrawerSidechatSwitcher {
+	count: number;
+	open: boolean;
+	toggle: () => void;
+}
+
+export interface DrawerTabHeader {
+	title?: string;
+	moreActions?: readonly DrawerMoreAction[];
+	sidechatSwitcher?: DrawerSidechatSwitcher;
+}
+
 interface RightDrawerState {
 	open: boolean;
 	sessionId: string | null;
@@ -25,6 +46,8 @@ interface RightDrawerState {
 	pendingSidechat: { sessionId: string; payload: SidechatAnnotationPayload; nonce: number } | null;
 	/** One-shot annotation/prompt payload sent from a workspace panel back to the main chat composer. */
 	pendingMain: { sessionId: string; payload: MainAnnotationPayload; nonce: number } | null;
+	/** Per-session, per-tab header slot metadata registered by embedded panels. */
+	tabHeaders: Record<string, DrawerTabHeader>;
 
 	openDrawer: (sessionId: string, tab?: WorkspaceTab) => void;
 	closeDrawer: () => void;
@@ -35,6 +58,8 @@ interface RightDrawerState {
 	sendToMainChat: (sessionId: string, payload: MainAnnotationPayload) => void;
 	consumeMainAnnotation: (sessionId: string) => MainAnnotationPayload | null;
 	resetSession: (sessionId: string) => void;
+	setTabHeader: (sessionId: string, tab: WorkspaceTab, header: DrawerTabHeader) => void;
+	clearTabHeader: (sessionId: string, tab: WorkspaceTab) => void;
 }
 
 let nonceSeq = 1;
@@ -44,6 +69,10 @@ function addVisited(current: readonly WorkspaceTab[] | undefined, tab: Workspace
 	return list.includes(tab) ? [...list] : [...list, tab];
 }
 
+export function tabHeaderKey(sessionId: string, tab: WorkspaceTab): string {
+	return `${sessionId}:${tab}`;
+}
+
 export const useRightDrawer = create<RightDrawerState>((set, get) => ({
 	open: false,
 	sessionId: null,
@@ -51,6 +80,7 @@ export const useRightDrawer = create<RightDrawerState>((set, get) => ({
 	visitedBySession: {},
 	pendingSidechat: null,
 	pendingMain: null,
+	tabHeaders: {},
 
 	openDrawer: (sessionId, tab) => {
 		set((s) => {
@@ -124,17 +154,41 @@ export const useRightDrawer = create<RightDrawerState>((set, get) => ({
 		return cur.payload;
 	},
 
+	setTabHeader: (sessionId, tab, header) => {
+		const key = tabHeaderKey(sessionId, tab);
+		set((s) => ({
+			tabHeaders: { ...(s.tabHeaders ?? {}), [key]: header },
+		}));
+	},
+
+	clearTabHeader: (sessionId, tab) => {
+		const key = tabHeaderKey(sessionId, tab);
+		set((s) => {
+			const prev = s.tabHeaders ?? {};
+			if (!(key in prev)) return s;
+			const next = { ...prev };
+			delete next[key];
+			return { tabHeaders: next };
+		});
+	},
+
 	resetSession: (sessionId) => {
 		set((s) => {
 			const nextTabs = { ...s.tabBySession };
 			const nextVisited = { ...s.visitedBySession };
+			const nextHeaders = { ...(s.tabHeaders ?? {}) };
+			const prefix = `${sessionId}:`;
 			delete nextTabs[sessionId];
 			delete nextVisited[sessionId];
+			for (const key of Object.keys(nextHeaders)) {
+				if (key.startsWith(prefix)) delete nextHeaders[key];
+			}
 			return {
 				open: s.sessionId === sessionId ? false : s.open,
 				sessionId: s.sessionId === sessionId ? null : s.sessionId,
 				tabBySession: nextTabs,
 				visitedBySession: nextVisited,
+				tabHeaders: nextHeaders,
 			};
 		});
 	},

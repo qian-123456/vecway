@@ -127,6 +127,12 @@ html[data-scheme="dark"] {
 	--m-rim-light-subtle: rgb(255 255 255 / 0.07);
 	--m-shadow-pop: inset 0 0.5px 0 var(--m-rim-light), 0 14px 36px rgb(0 0 0 / 0.54), 0 2px 6px rgb(0 0 0 / 0.28);
 	--m-shadow-card: inset 0 0.5px 0 var(--m-rim-light-subtle), 0 1px 2px rgb(0 0 0 / 0.28);
+	--m-text-quiet: color-mix(in srgb, var(--m-text) 40%, transparent);
+	--m-text-faint: color-mix(in srgb, var(--m-text) 30%, transparent);
+	--m-liquid-bg: color-mix(in srgb, var(--m-bg-elev) 72%, transparent);
+	--m-liquid-border: rgb(255 255 255 / 0.14);
+	--m-liquid-pill: color-mix(in srgb, var(--m-text) 14%, var(--m-surface));
+	--m-liquid-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16), 0 6px 20px rgb(0 0 0 / 0.34);
 	--m-glow: radial-gradient(120% 56% at 50% 108%, color-mix(in srgb, var(--m-accent) 24%, transparent), color-mix(in srgb, var(--m-accent) 8%, transparent) 46%, transparent 74%);
 }
 
@@ -181,6 +187,12 @@ html[data-scheme="light"] {
 	--m-rim-light-subtle: rgb(255 255 255 / 0.62);
 	--m-shadow-pop: inset 0 0.5px 0 var(--m-rim-light), 0 12px 32px rgb(18 22 33 / 0.14), 0 2px 6px rgb(18 22 33 / 0.07);
 	--m-shadow-card: inset 0 0.5px 0 var(--m-rim-light-subtle), 0 1px 3px rgb(18 22 33 / 0.06);
+	--m-text-quiet: color-mix(in srgb, var(--m-text) 42%, transparent);
+	--m-text-faint: color-mix(in srgb, var(--m-text) 32%, transparent);
+	--m-liquid-bg: color-mix(in srgb, var(--m-card) 76%, transparent);
+	--m-liquid-border: rgb(20 20 26 / 0.10);
+	--m-liquid-pill: var(--m-card);
+	--m-liquid-shadow: inset 0 1px 0 rgb(255 255 255 / 0.85), 0 4px 16px rgb(18 22 33 / 0.08);
 	--m-glow: radial-gradient(120% 56% at 50% 108%, color-mix(in srgb, var(--m-accent) 16%, transparent), color-mix(in srgb, var(--m-accent) 6%, transparent) 46%, transparent 74%);
 }
 
