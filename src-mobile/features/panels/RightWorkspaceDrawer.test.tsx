@@ -169,7 +169,7 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(onOpen).toHaveBeenCalledTimes(1);
 	});
 
-	it("toggles sidechat switcher from active 辅助对话 tab, moves handback to ⋯ menu, and consumes sidechat annotation", async () => {
+	it("toggles sidechat switcher from top header title (not Row 2 tab), supports model/context/rename parity, and consumes sidechat annotation", async () => {
 		vi.spyOn(apiModule, "api").mockImplementation(async (method, path) => {
 			if (method === "GET" && path.endsWith("/sidechats")) {
 				return [
@@ -177,7 +177,9 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 					{ id: "sc-2", label: "#2", title: "第二旁聊", status: "review", updatedAt: "2026-11-22T09:00:00Z", cwd: "/proj", live: true },
 				];
 			}
-			if (method === "GET" && path.endsWith("/composer-state")) return { planMode: false, planStatus: PLAN_OFF };
+			if (method === "GET" && path.endsWith("/composer-state")) {
+				return { planMode: false, planStatus: PLAN_OFF, model: "anthropic/claude-opus-4-6", thinkingLevel: "high", contextPercent: 42 };
+			}
 			if (method === "GET" && path.includes("/transcript?")) {
 				return {
 					items: [
@@ -196,12 +198,17 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		await screen.findByText("第一旁聊");
 		expect(screen.queryByRole("button", { name: "完成" })).toBeNull();
 		expect(screen.queryByRole("button", { name: "发回主对话" })).toBeNull();
-		expect(screen.queryByRole("button", { name: "切换辅助对话" })).toBeNull();
+		expect(screen.getByRole("button", { name: /上下文用量：42%/ })).toBeTruthy();
+		expect(screen.getByText("claude-opus-4-6")).toBeTruthy();
 
-		// Re-tapping active 辅助对话 tab opens the sidechat switcher list (without open-in-main action)
+		// Tapping Row 2 辅助对话 tab while active does NOT open the switcher
 		const sidechatTab = screen.getByRole("tab", { name: "辅助对话" });
 		expect(sidechatTab.getAttribute("aria-selected")).toBe("true");
 		fireEvent.click(sidechatTab);
+		expect(screen.queryByRole("dialog", { name: "辅助对话列表" })).toBeNull();
+
+		// Tapping Row 1 top title button opens the sidechat switcher list (without open-in-main action)
+		fireEvent.click(screen.getByRole("button", { name: /切换辅助对话/ }));
 		expect(screen.getByRole("dialog", { name: "辅助对话列表" })).toBeTruthy();
 		expect(screen.queryByRole("button", { name: /打开完整会话|在主对话中打开/ })).toBeNull();
 
@@ -209,9 +216,10 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(screen.queryByRole("dialog", { name: "辅助对话列表" })).toBeNull();
 		await screen.findByText("第二旁聊");
 
-		// Top-right ⋯ holds 把结论发回主对话
+		// Top-right ⋯ holds 把结论发回主对话 and 重命名此辅助对话
 		const moreBtn = await screen.findByRole("button", { name: "更多操作" });
 		fireEvent.click(moreBtn);
+		expect(screen.getByRole("button", { name: "重命名此辅助对话" })).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "把结论发回主对话" }));
 		expect(await screen.findByRole("textbox", { name: "结论" })).toBeTruthy();
 		fireEvent.keyDown(document, { key: "Escape" });

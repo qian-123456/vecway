@@ -1,35 +1,11 @@
 import { ChevronDown, Menu, PanelRight, SquarePen } from "lucide-react";
-import type { ReactNode, Ref } from "react";
-import { TopBar } from "../../../ui";
+import type { Ref } from "react";
+import { IconButton, TopBar } from "../../../ui";
 import { shortModel, thinkLabel } from "../lib/models";
-
-function OrbButton({
-	icon,
-	label,
-	onClick,
-}: {
-	icon: ReactNode;
-	label: string;
-	onClick: () => void;
-}) {
-	return (
-		<button
-			type="button"
-			aria-label={label}
-			title={label}
-			onClick={onClick}
-			className="flex h-11 min-w-11 shrink-0 items-center justify-center rounded-full"
-		>
-			<span className="m-liquid-orb flex h-9 w-9 items-center justify-center rounded-full text-m-text">
-				{icon}
-			</span>
-		</button>
-	);
-}
 
 /**
  * Shared home/chat top chrome:
- * - Left & right: iOS 26 Liquid Glass circular 44px touch-target orb buttons
+ * - Left & right: clean borderless 44px touch-target icon buttons
  * - Center: tappable 44px-tall title + optional subtitle with subtle disclosure affordance
  */
 export function ChatHeader({
@@ -64,7 +40,7 @@ export function ChatHeader({
 	return (
 		<TopBar
 			className="border-b border-m-topbar-border/60 ps-(--m-safe-left) pe-(--m-safe-right) backdrop-blur-xl"
-			left={<OrbButton icon={<Menu size={19} strokeWidth={1.85} />} label="菜单" onClick={onMenu} />}
+			left={<IconButton variant="plain" size="md" icon={<Menu size={21} strokeWidth={1.85} />} label="菜单" onClick={onMenu} />}
 			center={
 				<button
 					ref={titleButtonRef}
@@ -89,8 +65,8 @@ export function ChatHeader({
 			}
 			right={
 				<>
-					{onNew && <OrbButton icon={<SquarePen size={17} strokeWidth={1.85} />} label="新建对话" onClick={onNew} />}
-					{onTools && <OrbButton icon={<PanelRight size={18} strokeWidth={1.85} />} label="工作区" onClick={onTools} />}
+					{onNew && <IconButton variant="plain" size="md" icon={<SquarePen size={19} strokeWidth={1.85} />} label="新建对话" onClick={onNew} />}
+					{onTools && <IconButton variant="plain" size="md" icon={<PanelRight size={20} strokeWidth={1.85} />} label="工作区" onClick={onTools} />}
 				</>
 			}
 		/>

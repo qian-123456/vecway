@@ -13,17 +13,26 @@ export function ContextSheet({
 	cstate,
 	compacting,
 	controller,
+	sessionId,
+	onCompact,
 }: {
 	open: boolean;
 	onClose: () => void;
 	anchorEl?: HTMLElement | null;
 	cstate: ComposerState | null;
 	compacting: boolean;
-	controller: ChatController;
+	controller?: ChatController;
+	sessionId?: string;
+	onCompact?: () => Promise<void> | void;
 }) {
 	const pct = cstate ? resolveContextPercent(cstate) : null;
 	const detail = cstate ? formatContextDetail(cstate) : null;
-	const draft = isDraftId(controller.id);
+	const targetId = controller?.id ?? sessionId ?? "";
+	const draft = isDraftId(targetId);
+	const handleCompact = () => {
+		if (controller) return controller.compact();
+		return onCompact?.();
+	};
 	return (
 		<AnchoredPopover
 			open={open}
@@ -54,7 +63,7 @@ export function ContextSheet({
 				<p className="text-m-xs leading-relaxed text-m-text-2">
 					上下文越满，模型越容易忘记早先的内容。压缩会把较早的对话总结成摘要，腾出空间。
 				</p>
-				<Button variant="accent" size="sm" block busy={compacting} disabled={draft} onClick={() => void controller.compact()}>
+				<Button variant="accent" size="sm" block busy={compacting} disabled={draft} onClick={() => void handleCompact()}>
 					{compacting ? "正在压缩上下文" : "压缩上下文"}
 				</Button>
 				{compacting && <p className="text-m-xs text-m-text-3">压缩可能需要几分钟，可以先关闭这里，完成后会提示。</p>}

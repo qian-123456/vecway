@@ -403,8 +403,8 @@ html[data-scheme="light"] .m-glass-btn:active {
 			inset 0 1px 0 var(--m-rim-light),
 			0 1px 4px rgb(0 0 0 / 0.14);
 		transition:
-			transform var(--m-dur) var(--m-ease),
-			width var(--m-dur) var(--m-ease),
+			transform var(--m-dur-fast) var(--m-ease),
+			width var(--m-dur-fast) var(--m-ease),
 			background-color var(--m-dur-fast) var(--m-ease);
 	}
 	.m-liquid-surface {
@@ -416,7 +416,7 @@ html[data-scheme="light"] .m-glass-btn:active {
 	}
 	@supports (color: color-mix(in srgb, red, blue)) {
 		.m-liquid-surface {
-			background-color: color-mix(in srgb, var(--m-bg-elev) 88%, transparent);
+			background-color: color-mix(in srgb, var(--m-bg-elev) 94%, transparent);
 		}
 	}
 }

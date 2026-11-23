@@ -280,7 +280,7 @@ export function ComposerCapsule({
 						onClick={onPlus}
 						className="-m-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
 					>
-						<span className="flex h-8 w-8 items-center justify-center rounded-full bg-m-surface/55 text-m-text-2 transition-[background-color,color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2">
+						<span className="flex h-8 w-8 items-center justify-center rounded-full text-m-text-2 transition-[background-color,color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2">
 							<Plus size={18} strokeWidth={2} />
 						</span>
 					</button>

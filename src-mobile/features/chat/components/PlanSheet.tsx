@@ -679,7 +679,7 @@ export function PlanSheet({
 								aria-label="关闭计划"
 								title="关闭计划"
 								onClick={onClose}
-								className="m-press flex h-9 w-9 items-center justify-center rounded-full bg-m-surface text-m-text-2 active:bg-m-surface-2"
+								className="m-press flex h-9 w-9 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
 							>
 								<X size={15} strokeWidth={1.85} />
 							</button>

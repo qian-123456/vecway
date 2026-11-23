@@ -448,19 +448,39 @@ export function RightWorkspaceDrawer({
 					paddingRight: "var(--m-safe-right, 0px)",
 				}}
 			>
-				<header className="shrink-0 px-3 pt-2 pb-2.5">
-					<div className="grid grid-cols-[36px_minmax(0,1fr)_36px] items-center gap-2 pb-2">
+				<header className="shrink-0 px-3 pt-1.5 pb-2.5">
+					<div className="grid grid-cols-[44px_minmax(0,1fr)_44px] items-center gap-1 pb-1.5">
 						<button
 							type="button"
 							aria-label="返回对话"
 							onClick={closeDrawer}
-							className="m-liquid-orb inline-flex h-9 w-9 items-center justify-center rounded-full text-m-text"
+							className="m-press inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-m-text active:bg-m-surface-hover"
 						>
-							<ChevronLeft size={20} strokeWidth={1.85} aria-hidden />
+							<ChevronLeft size={21} strokeWidth={1.85} aria-hidden />
 						</button>
-						<span className="truncate text-center text-[15px] font-semibold text-m-text">
-							{headerTitle}
-						</span>
+						{sidechatSwitcher ? (
+							<button
+								type="button"
+								aria-label={`切换辅助对话，当前：${headerTitle}`}
+								aria-expanded={sidechatSwitcher.open}
+								onClick={sidechatSwitcher.toggle}
+								className="m-press mx-auto inline-flex min-h-11 max-w-full items-center justify-center gap-1 rounded-[10px] px-2 text-center text-[15px] font-semibold text-m-text active:bg-m-surface-hover"
+							>
+								<span className="min-w-0 truncate">{headerTitle}</span>
+								<ChevronDown
+									size={14}
+									strokeWidth={2}
+									aria-hidden
+									className={`shrink-0 text-m-text-3 transition-transform duration-(--m-dur-fast) ${
+										sidechatSwitcher.open ? "rotate-180" : ""
+									}`}
+								/>
+							</button>
+						) : (
+							<span className="truncate text-center text-[15px] font-semibold text-m-text">
+								{headerTitle}
+							</span>
+						)}
 						{moreActions.length > 0 ? (
 							<button
 								ref={moreBtnRef}
@@ -469,12 +489,12 @@ export function RightWorkspaceDrawer({
 								aria-expanded={moreOpen}
 								aria-haspopup="menu"
 								onClick={() => setMoreOpen((v) => !v)}
-								className="m-liquid-orb inline-flex h-9 w-9 items-center justify-center rounded-full text-m-text"
+								className="m-press inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-m-text active:bg-m-surface-hover"
 							>
-								<MoreHorizontal size={18} strokeWidth={1.85} aria-hidden />
+								<MoreHorizontal size={20} strokeWidth={1.85} aria-hidden />
 							</button>
 						) : (
-							<span aria-hidden className="h-9 w-9" />
+							<span aria-hidden className="h-11 w-11" />
 						)}
 					</div>
 
@@ -496,7 +516,6 @@ export function RightWorkspaceDrawer({
 						/>
 						{tabs.map((tab) => {
 							const selected = activeTab === tab.id;
-							const showChevron = tab.id === "sidechat" && selected;
 							return (
 								<button
 									key={tab.id}
@@ -506,31 +525,16 @@ export function RightWorkspaceDrawer({
 									type="button"
 									role="tab"
 									aria-selected={selected}
-									aria-expanded={showChevron && sidechatSwitcher ? sidechatSwitcher.open : undefined}
 									disabled={!effectiveId}
 									onClick={() => {
-										if (!effectiveId) return;
-										if (showChevron && sidechatSwitcher) {
-											sidechatSwitcher.toggle();
-										} else if (!selected) {
-											setTab(effectiveId, tab.id);
-										}
+										if (!effectiveId || selected) return;
+										setTab(effectiveId, tab.id);
 									}}
-									className={`m-press relative z-1 inline-flex min-h-8 flex-1 shrink-0 items-center justify-center gap-0.5 rounded-full px-2.5 text-m-xs whitespace-nowrap transition-colors ${
+									className={`m-press relative z-1 inline-flex min-h-8 flex-1 shrink-0 items-center justify-center rounded-full px-2.5 text-m-xs whitespace-nowrap transition-colors ${
 										selected ? "font-semibold text-m-text" : "font-medium text-m-text-2 active:text-m-text"
 									}`}
 								>
 									<span>{tab.label}</span>
-									{showChevron && (
-										<ChevronDown
-											size={11}
-											strokeWidth={2.2}
-											aria-hidden
-											className={`shrink-0 transition-transform duration-(--m-dur-fast) ${
-												sidechatSwitcher?.open ? "rotate-180" : ""
-											}`}
-										/>
-									)}
 								</button>
 							);
 						})}

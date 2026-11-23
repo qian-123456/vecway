@@ -11,13 +11,14 @@ import {
 	MessagesSquare,
 	MoreHorizontal,
 	Paperclip,
+	Pencil,
 	Plus,
 	RefreshCw,
 	Sparkles,
 	Trash2,
 	X,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { isSideChatPrompt, trimSideChatItems } from "../../../src/features/chat/sideChatView";
 import { api, errorMessage, upload } from "../../core/api";
 import { copyText, relTime, sessionName } from "../../core/lib/format";
@@ -25,6 +26,7 @@ import { imageFromBlob } from "../../core/lib/images";
 import { nav, paths, type PageProps } from "../../core/nav";
 import { transcriptImages } from "../../core/normalize";
 import { events } from "../../core/sse";
+import { usePref } from "../../core/stores/prefs";
 import { useSessions } from "../../core/stores/sessions";
 import { STATUS_LABEL, isDraftId, type ImageRef, type Item, type MobileSession, type TranscriptPage } from "../../core/types";
 import {
@@ -36,18 +38,25 @@ import {
 	MenuRow,
 	PageHeader,
 	PullToRefresh,
+	TextField,
 	confirm,
 	inputCls,
 	toast,
 } from "../../ui";
 import { ActionTile } from "../../ui/ActionTile";
 import { Markdown } from "../../ui/Markdown";
-import type { Attachment } from "../chat/chatStore";
+import { ChatCtx } from "../chat/ChatContext";
+import type { Attachment, ComposerState } from "../chat/chatStore";
 import { ComposerCapsule, type ComposerApi } from "../chat/components/ComposerCapsule";
+import { ContextSheet } from "../chat/components/ContextSheet";
+import { ModelThinkingSheet } from "../chat/components/ModelThinkingSheet";
 import { Thinking } from "../chat/components/Thinking";
 import { ToolCard, toolState } from "../chat/components/ToolCard";
 import { Images } from "../chat/components/TurnView";
-import { attachmentBlocker, buildPrompt } from "../chat/lib/prompt";
+import { sessionModelSource, type ModelSource } from "../chat/components/useModelFacts";
+import { contextTone, formatContextPercent, resolveContextPercent } from "../chat/lib/context";
+import { parseModelRef, resolveThinkingLevels, type ModelOpt } from "../chat/lib/models";
+import { BEHAVIOR_HINT, BEHAVIOR_LABEL, attachmentBlocker, buildPrompt, type StreamBehavior } from "../chat/lib/prompt";
 import { formatDesktopStatParts, formatStatClock, requestStatFromItem, type RequestStat } from "../chat/lib/requestStats";
 import { EMPTY_TRANSCRIPT, mergePage } from "../chat/lib/transcript";
 import { loadUnsent, saveUnsent } from "../chat/lib/unsent";
@@ -77,7 +86,9 @@ export const SIDECHAT_DRAFT_PREFIX = "omp:sidechat-draft:";
 const q = encodeURIComponent;
 const FETCH_INTERVAL_MS = 400;
 const MAX_ROWS = 80;
+const LONG_TIMEOUT_MS = 600_000;
 const ICON = { size: 22, strokeWidth: 1.75 } as const;
+const TONE_TEXT = { neutral: "text-m-text-3", warn: "text-m-warn", danger: "text-m-danger" } as const;
 
 function formatAnnotationPayload(payload: SidechatAnnotationPayload): string {
 	const quoted = payload.quote
@@ -423,13 +434,22 @@ function SidechatPanelInner({
 	}, [sessionId, state.loading, state.data, state.error, rows, mode, activeThreadId]);
 
 	const createSidechat = useCallback(
-		async (message: SidechatMessage, sentText = "", sentAtts: readonly SidechatAttachment[] = []): Promise<boolean> => {
+		async (
+			message: SidechatMessage,
+			sentText = "",
+			sentAtts: readonly SidechatAttachment[] = [],
+			opts?: { model?: string | null; thinkingLevel?: string | null },
+		): Promise<boolean> => {
 			const targetParent = sessionId;
 			try {
 				const info = await api<{ sessionId: string }>("POST", `/sessions/${q(targetParent)}/sidechats`, {
 					question: message.text,
 					imagePaths: message.imagePaths,
+					...(opts?.model ? { model: opts.model } : {}),
 				});
+				if (opts?.thinkingLevel) {
+					void api("POST", `/sessions/${q(info.sessionId)}/thinking`, { level: opts.thinkingLevel }).catch(() => {});
+				}
 				void useSessions.getState().refresh();
 				if (!alive.current || parentRef.current !== targetParent) return true;
 				drafts.consumeSent(NEW_DRAFT_KEY, sentText, sentAtts);
@@ -521,6 +541,30 @@ function SidechatPanelInner({
 
 	const toggleSwitcher = useCallback(() => setSwitcherOpen((v) => !v), []);
 	const openHandback = useCallback(() => setHandbackOpen(true), []);
+	const [renameTarget, setRenameTarget] = useState<MobileSession | null>(null);
+	const [renameDraft, setRenameDraft] = useState("");
+	const [renaming, setRenaming] = useState(false);
+
+	const openRename = useCallback((target: MobileSession) => {
+		setRenameTarget(target);
+		setRenameDraft(target.customName?.trim() || "");
+	}, []);
+
+	const saveRename = async () => {
+		if (!renameTarget || renaming) return;
+		setRenaming(true);
+		try {
+			await api("PATCH", `/left/sessions/${q(renameTarget.id)}`, { customName: renameDraft.trim() });
+			toast("已重命名", { kind: "success" });
+			setRenameTarget(null);
+			void useSessions.getState().refresh();
+			await state.reload(true);
+		} catch (e) {
+			toast(`重命名失败：${errorMessage(e)}`, { kind: "error" });
+		} finally {
+			setRenaming(false);
+		}
+	};
 
 	const deleteThread = useCallback(
 		async (target: MobileSession) => {
@@ -567,6 +611,12 @@ function SidechatPanelInner({
 		if (mode === "thread" && activeRow) {
 			const target = activeRow;
 			list.push({
+				id: "rename",
+				label: "重命名此辅助对话",
+				icon: <Pencil size={18} strokeWidth={1.75} />,
+				onSelect: () => openRename(target),
+			});
+			list.push({
 				id: "delete",
 				label: "删除此辅助对话",
 				icon: <Trash2 size={18} strokeWidth={1.75} />,
@@ -575,7 +625,7 @@ function SidechatPanelInner({
 			});
 		}
 		return list;
-	}, [hasHandback, openHandback, mode, activeRow, deleteThread]);
+	}, [hasHandback, openHandback, mode, activeRow, openRename, deleteThread]);
 
 	useEffect(() => {
 		if (!embedded) return;
@@ -747,6 +797,34 @@ function SidechatPanelInner({
 					</div>
 				</div>
 			)}
+
+			<BottomSheet
+				open={active && renameTarget !== null}
+				onClose={() => {
+					if (!renaming) setRenameTarget(null);
+				}}
+				title="重命名辅助对话"
+				footer={
+					<div className="flex gap-2 px-4 pt-2 pb-3">
+						<Button variant="tonal" className="flex-1" disabled={renaming} onClick={() => setRenameTarget(null)}>
+							取消
+						</Button>
+						<Button variant="primary" className="flex-1" busy={renaming} onClick={() => void saveRename()}>
+							保存
+						</Button>
+					</div>
+				}
+			>
+				<div className="px-4 py-2">
+					<TextField
+						aria-label="会话名称"
+						value={renameDraft}
+						onChange={(e) => setRenameDraft(e.target.value)}
+						placeholder={renameTarget ? sessionName(renameTarget) : "输入名称（留空则恢复默认）"}
+						autoFocus
+					/>
+				</div>
+			</BottomSheet>
 		</div>
 	);
 
@@ -831,7 +909,7 @@ export function SidechatPage({ route }: PageProps) {
 /* ---------------------------------------------------------------- new */
 
 function NewSidechatView({
-	sessionId: _sessionId,
+	sessionId,
 	active,
 	drafts,
 	state,
@@ -843,8 +921,80 @@ function NewSidechatView({
 	drafts: SidechatDraftController;
 	state: LoadState<MobileSession[]>;
 	draftInject: DraftInject | null;
-	onCreate: (message: SidechatMessage, sentText: string, sentAtts: readonly SidechatAttachment[]) => Promise<boolean>;
+	onCreate: (
+		message: SidechatMessage,
+		sentText: string,
+		sentAtts: readonly SidechatAttachment[],
+		opts?: { model?: string | null; thinkingLevel?: string | null },
+	) => Promise<boolean>;
 }) {
+	const chatCtx = useContext(ChatCtx);
+	const parentCstate = chatCtx?.controller.id === sessionId ? chatCtx.controller.state.cstate : null;
+	const [draftModel, setDraftModel] = useState<string | null>(null);
+	const [draftThinking, setDraftThinking] = useState<string | null>(null);
+	const [pickerOpen, setPickerOpen] = useState(false);
+	const draftModelRef = useRef(draftModel);
+	const draftThinkingRef = useRef(draftThinking);
+	draftModelRef.current = draftModel;
+	draftThinkingRef.current = draftThinking;
+	const cachedModelsRef = useRef<ModelOpt[]>([]);
+
+	const draftModelSource = useMemo<ModelSource>(() => {
+		const base = sessionModelSource(sessionId);
+		return {
+			load: async () => {
+				const res = await base.load();
+				cachedModelsRef.current = res.models;
+				const picked = parseModelRef(draftModelRef.current);
+				const current = picked ? { provider: picked.provider, id: picked.id } : res.current;
+				const curOpt = current
+					? (res.models.find((m) => m.id === current.id && (!current.provider || m.provider === current.provider)) ?? null)
+					: null;
+				const thinkingLevel = draftThinkingRef.current ?? res.thinkingLevel;
+				return {
+					...res,
+					current,
+					thinkingLevel,
+					liveThinking: curOpt ? resolveThinkingLevels(curOpt, res.liveThinking, thinkingLevel) : res.liveThinking,
+				};
+			},
+			setModel: async (m) => {
+				const ref = `${m.provider}/${m.id}`;
+				draftModelRef.current = ref;
+				setDraftModel(ref);
+				const levels = resolveThinkingLevels(m, null, draftThinkingRef.current);
+				const nextLevel =
+					draftThinkingRef.current && levels.includes(draftThinkingRef.current)
+						? draftThinkingRef.current
+						: (levels[0] ?? null);
+				draftThinkingRef.current = nextLevel;
+				setDraftThinking(nextLevel);
+				return {
+					current: { provider: m.provider, id: m.id },
+					thinkingLevel: nextLevel,
+					liveThinking: levels,
+				};
+			},
+			setThinking: async (level) => {
+				draftThinkingRef.current = level;
+				setDraftThinking(level);
+				const picked = parseModelRef(draftModelRef.current);
+				const current = picked ? { provider: picked.provider, id: picked.id } : null;
+				const curOpt = current
+					? (cachedModelsRef.current.find((m) => m.id === current.id && (!current.provider || m.provider === current.provider)) ?? null)
+					: null;
+				return {
+					current,
+					thinkingLevel: level,
+					liveThinking: curOpt ? resolveThinkingLevels(curOpt, null, level) : [],
+				};
+			},
+		};
+	}, [sessionId]);
+
+	const activeModel = draftModel ?? parentCstate?.model ?? null;
+	const activeThinking = draftThinking ?? parentCstate?.thinkingLevel ?? null;
+
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
 			<PullToRefresh onRefresh={() => state.reload(true)}>
@@ -865,7 +1015,26 @@ function NewSidechatView({
 				drafts={drafts}
 				placeholder="问一个问题，开始辅助对话"
 				draftInject={draftInject}
-				onSend={onCreate}
+				model={activeModel}
+				thinking={activeThinking}
+				onModel={() => setPickerOpen(true)}
+				onThinking={() => setPickerOpen(true)}
+				onSend={(msg, sentText, sentAtts) =>
+					onCreate(msg, sentText, sentAtts, {
+						model: draftModel,
+						thinkingLevel: draftThinking,
+					})
+				}
+			/>
+			<ModelThinkingSheet
+				open={active && pickerOpen}
+				onClose={() => setPickerOpen(false)}
+				source={draftModelSource}
+				currentLevel={activeThinking}
+				onFacts={(f) => {
+					if (f.model !== undefined) setDraftModel(f.model ?? null);
+					if (f.thinkingLevel !== undefined) setDraftThinking(f.thinkingLevel ?? null);
+				}}
 			/>
 		</div>
 	);
@@ -912,6 +1081,13 @@ function ThreadView({
 	const [runActive, setRunActive] = useState<boolean | null>(initial ? true : null);
 	const [restoredTexts, setRestoredTexts] = useState<string[]>([]);
 	const [showJump, setShowJump] = useState(false);
+	const [cstate, setCstate] = useState<ComposerState | null>(null);
+	const [pickerOpen, setPickerOpen] = useState(false);
+	const [contextOpen, setContextOpen] = useState(false);
+	const [contextAnchor, setContextAnchor] = useState<HTMLElement | null>(null);
+	const [compacting, setCompacting] = useState(false);
+	const [behavior, setBehavior] = usePref<StreamBehavior>("chat.streamBehavior", "followUp");
+	const threadModelSource = useMemo(() => sessionModelSource(threadId), [threadId]);
 	const inflight = useRef(false);
 	const again = useRef(false);
 	const alive = useRef(true);
@@ -1110,16 +1286,44 @@ function ThreadView({
 		}
 	};
 
+	const fetchThreadState = useCallback(() => {
+		void api<ComposerState>("GET", `/sessions/${q(threadId)}/composer-state`)
+			.then((next) => {
+				if (alive.current && next && typeof next === "object") setCstate(next);
+			})
+			.catch(() => {});
+	}, [threadId]);
+
+	const handleCompact = useCallback(async () => {
+		if (compacting) return;
+		setCompacting(true);
+		try {
+			await api("POST", `/sessions/${q(threadId)}/slash`, { name: "compact" }, { timeoutMs: LONG_TIMEOUT_MS });
+			if (!alive.current) return;
+			toast("上下文压缩完成", { kind: "success" });
+			scheduleFetch();
+			fetchThreadState();
+		} catch (e) {
+			if (alive.current) toast(`压缩失败：${errorMessage(e)}`, { kind: "error" });
+		} finally {
+			if (alive.current) setCompacting(false);
+		}
+	}, [compacting, threadId, scheduleFetch, fetchThreadState]);
+
 	useEffect(() => {
 		alive.current = true;
 		void fetchThread();
+		fetchThreadState();
 		const off = events.on("rpc", (d) => {
 			if (d.sessionId !== threadId) return;
 			if (d.frame.type === "agent_start" || d.frame.type === "turn_start") {
 				setRunActive(true);
 				if (activeSummaryRef.current) activeSummaryRef.current.awaitingContinuation = false;
 			}
-			if ((d.frame.type === "agent_end" && (d.frame.isTerminal !== false || d.frame.awaitingAsyncWork === true)) || (d.frame.type === "turn_end" && d.frame.isTerminal === true)) setRunActive(false);
+			if ((d.frame.type === "agent_end" && (d.frame.isTerminal !== false || d.frame.awaitingAsyncWork === true)) || (d.frame.type === "turn_end" && d.frame.isTerminal === true)) {
+				setRunActive(false);
+				fetchThreadState();
+			}
 			if (activeSummaryRef.current && d.frame.type === "agent_end") {
 				if (d.frame.isTerminal === false) {
 					activeSummaryRef.current.awaitingContinuation = true;
@@ -1134,7 +1338,10 @@ function ThreadView({
 		const onVisibility = () => {
 			window.clearTimeout(fetchTimer.current);
 			fetchTimer.current = 0;
-			if (document.visibilityState === "visible") void fetchThread();
+			if (document.visibilityState === "visible") {
+				void fetchThread();
+				fetchThreadState();
+			}
 		};
 		document.addEventListener("visibilitychange", onVisibility);
 		return () => {
@@ -1144,13 +1351,14 @@ function ThreadView({
 			fetchTimer.current = 0;
 			document.removeEventListener("visibilitychange", onVisibility);
 		};
-	}, [threadId, fetchThread, scheduleFetch]);
+	}, [threadId, fetchThread, fetchThreadState, scheduleFetch]);
 	useResync(() => {
 		if (activeSummaryRef.current) {
 			activeSummaryRef.current.resynced = true;
 			activeSummaryRef.current.awaitingContinuation = false;
 		}
 		void fetchThread();
+		fetchThreadState();
 	});
 
 	// Keep pinned to the bottom unless the user scrolled up.
@@ -1182,7 +1390,7 @@ function ThreadView({
 			await api("POST", `/sessions/${q(threadId)}/prompt-ex`, {
 				text: msg.text,
 				images: msg.images,
-				...(working ? { streamingBehavior: "followUp" } : {}),
+				...(working ? { streamingBehavior: behavior } : {}),
 			});
 			drafts.consumeSent(threadId, sentText, sentAtts);
 			if (!alive.current) return true;
@@ -1197,6 +1405,8 @@ function ThreadView({
 		}
 	};
 
+	const pct = cstate ? resolveContextPercent(cstate) : null;
+	const ctxTone = contextTone(pct);
 	const visible = items.length > MAX_ROWS ? items.slice(-MAX_ROWS) : items;
 	return (
 		<>
@@ -1269,6 +1479,19 @@ function ThreadView({
 					onSend={send}
 					disabled={!loaded}
 					working={working}
+					behavior={behavior}
+					onToggleBehavior={() => setBehavior(behavior === "followUp" ? "steer" : "followUp")}
+					model={cstate?.model ?? null}
+					thinking={cstate?.thinkingLevel ?? null}
+					onModel={() => setPickerOpen(true)}
+					onThinking={() => setPickerOpen(true)}
+					contextText={formatContextPercent(pct) ?? "未知"}
+					contextPercent={pct}
+					contextToneClass={TONE_TEXT[ctxTone]}
+					onContext={(el) => {
+						setContextAnchor(el);
+						setContextOpen(true);
+					}}
 					restoredTexts={restoredTexts}
 					onStop={async () => {
 						try {
@@ -1293,6 +1516,23 @@ function ThreadView({
 					}}
 				/>
 			</div>
+			<ModelThinkingSheet
+				open={active && pickerOpen}
+				onClose={() => setPickerOpen(false)}
+				source={threadModelSource}
+				currentLevel={cstate?.thinkingLevel ?? null}
+				contextTokens={cstate?.contextTokens}
+				onFacts={(f) => setCstate((prev) => ({ ...(prev ?? {}), ...(f.model ? { model: f.model } : {}), thinkingLevel: f.thinkingLevel }))}
+			/>
+			<ContextSheet
+				open={active && contextOpen}
+				onClose={() => setContextOpen(false)}
+				anchorEl={contextAnchor}
+				sessionId={threadId}
+				cstate={cstate}
+				compacting={compacting}
+				onCompact={handleCompact}
+			/>
 			<BottomSheet
 				open={active && handbackOpen}
 				onClose={onCloseHandback}
@@ -1493,6 +1733,16 @@ function Composer({
 	draftInject = null,
 	working = false,
 	disabled = false,
+	behavior = "followUp",
+	onToggleBehavior,
+	model,
+	thinking,
+	onModel,
+	onThinking,
+	contextText,
+	contextPercent,
+	contextToneClass,
+	onContext,
 	restoredTexts,
 	onStop,
 }: {
@@ -1504,6 +1754,16 @@ function Composer({
 	draftInject?: DraftInject | null;
 	working?: boolean;
 	disabled?: boolean;
+	behavior?: StreamBehavior;
+	onToggleBehavior?: () => void;
+	model?: string | null;
+	thinking?: string | null;
+	onModel?: () => void;
+	onThinking?: () => void;
+	contextText?: string | null;
+	contextPercent?: number | null;
+	contextToneClass?: string;
+	onContext?: (anchor: HTMLElement | null) => void;
 	restoredTexts?: string[];
 	onStop?: () => Promise<void>;
 }) {
@@ -1625,6 +1885,20 @@ function Composer({
 
 	return (
 		<div ref={wrapRef} className="shrink-0 px-4 pt-1" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 8px)" }}>
+			{working && onToggleBehavior && (
+				<div className="mb-1.5 flex items-center justify-between gap-2 px-2.5 text-m-xs">
+					<button
+						type="button"
+						aria-label={`发送方式：${BEHAVIOR_LABEL[behavior]}，点击切换`}
+						title={BEHAVIOR_HINT[behavior]}
+						onClick={onToggleBehavior}
+						className="inline-flex items-center gap-1.5 font-medium whitespace-nowrap text-m-text active:opacity-70"
+					>
+						<span aria-hidden className="size-1.5 shrink-0 rounded-full bg-m-accent m-pulse" />
+						<span>{BEHAVIOR_LABEL[behavior]} ⇄</span>
+					</button>
+				</div>
+			)}
 			<ComposerCapsule
 				apiRef={apiRef}
 				placeholder={placeholder}
@@ -1633,6 +1907,21 @@ function Composer({
 				working={working}
 				hasExtra={atts.length > 0}
 				top={attachments}
+				model={model}
+				thinking={thinking}
+				onModel={onModel}
+				onThinking={onThinking}
+				contextText={contextText}
+				contextPercent={contextPercent}
+				contextToneClass={contextToneClass}
+				onContext={
+					onContext
+						? () =>
+								onContext(
+									wrapRef.current?.querySelector<HTMLElement>('button[aria-label^="上下文用量"]') ?? null,
+								)
+						: undefined
+				}
 				onInput={() => {
 					editVersion.current++;
 				}}
