@@ -1,7 +1,6 @@
 import { nav, paths } from "../../core/nav";
-import { usePlanExecution } from "./usePlanExecution";
 
-type Panel = "chat" | "files" | "git" | "terminal" | "sidechat" | "services" | "plan";
+type Panel = "chat" | "files" | "git" | "terminal" | "sidechat" | "services";
 
 const PANELS: ReadonlyArray<{ current: Panel; label: string; to: (id: string) => string }> = [
 	{ current: "chat", label: "对话", to: paths.chat },
@@ -13,14 +12,10 @@ const PANELS: ReadonlyArray<{ current: Panel; label: string; to: (id: string) =>
 ];
 
 export function WorkspacePanelBar({ sessionId, current }: { sessionId: string; current: Panel }) {
-	const execution = usePlanExecution(sessionId);
-	const panels = execution.hasPlan || current === "plan"
-		? [...PANELS, { current: "plan" as const, label: "计划", to: paths.plan }]
-		: PANELS;
 	return (
 		<div className="shrink-0">
 			<nav aria-label="会话工作区" className="flex min-w-0 gap-1 overflow-x-auto overscroll-x-contain px-4 pb-2">
-				{panels.map((panel) => (
+				{PANELS.map((panel) => (
 					<a
 						key={panel.current}
 						href={`#${panel.to(sessionId)}`}
@@ -35,12 +30,6 @@ export function WorkspacePanelBar({ sessionId, current }: { sessionId: string; c
 					</a>
 				))}
 			</nav>
-			{execution.error && (
-				<div role="status" className="mx-4 mb-2 flex items-center gap-2 text-m-xs text-m-warn">
-					<span className="min-w-0 flex-1 break-words">计划状态未更新：{execution.error}</span>
-					<button type="button" className="min-h-11 min-w-11 shrink-0 whitespace-nowrap px-2" onClick={() => void execution.reload()}>重试</button>
-				</div>
-			)}
 		</div>
 	);
 }

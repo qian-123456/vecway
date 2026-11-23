@@ -117,7 +117,7 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(0);
 	});
 
-	it("shows Plan tab in drawer header whenever any real plan exists (including review)", async () => {
+	it("keeps Plan out of RightWorkspaceDrawer tabs even when an active plan exists", async () => {
 		vi.spyOn(apiModule, "api").mockImplementation(async (_m, path) => {
 			if (path.endsWith("/composer-state")) {
 				return {
@@ -137,7 +137,8 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 
 		render(<RightWorkspaceDrawer sessionId="s1" />);
 		act(() => useRightDrawer.getState().openDrawer("s1", "git"));
-		expect(await screen.findByRole("tab", { name: "计划" })).toBeTruthy();
+		await waitFor(() => expect(screen.getByText("工作区是干净的")).toBeTruthy());
+		expect(screen.queryByRole("tab", { name: "计划" })).toBeNull();
 	});
 
 	it("lazily resolves Home draft sessionId once on open", async () => {

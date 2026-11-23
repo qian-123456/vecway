@@ -155,6 +155,12 @@ const MAX_BYTES = 20 * 1024 * 1024;
 const DEAD = ["interrupted", "suspended", "error"];
 export const isDeadStatus = (status: string | undefined, working: boolean): boolean => !working && !!status && DEAD.includes(status);
 
+const autoOpenedPlanVersion = new Map<string, number>();
+
+export function resetPlanAutoOpenForTest(): void {
+	autoOpenedPlanVersion.clear();
+}
+
 /** Markdown quote of a selected passage: every line prefixed with 「> 」 (blank lines kept as 「>」). */
 export function quoteMarkdown(text: string): string {
 	return text
@@ -252,6 +258,7 @@ export class ChatController {
 	private askProgress = new Map<string, AskReplayProgress>();
 	private pendingSequence = 0;
 	private answered = new Set<string>();
+	private planOpenSuppressed = false;
 
 	constructor(readonly id: string) {
 		const snapEntry = loadLiveEntry(id);
@@ -766,6 +773,8 @@ export class ChatController {
 					...(clearInterrupted ? { interrupted: null } : {}),
 				});
 				if (clearInterrupted) clearLiveStale(this.id);
+				if (working) this.planOpenSuppressed = false;
+				this.syncPlanSheetLifecycle();
 			}
 			if (live) this.maybeSaveSnapshot(live, hidden);
 		};
@@ -803,7 +812,9 @@ export class ChatController {
 	private setWorking(working: boolean): void {
 		this.stream = { ...this.stream, working };
 		if (this.state.working !== working) this.set({ working });
+		if (working) this.planOpenSuppressed = false;
 		this.syncStatePolling();
+		this.syncPlanSheetLifecycle();
 	}
 
 	private onSessionChanged(): void {
@@ -838,6 +849,7 @@ export class ChatController {
 				const authoritative = Object.prototype.hasOwnProperty.call(st, "planStatus");
 				if (authoritative) clearTimeout(this.approvalTimer);
 				this.set({ cstate: st, ...(authoritative ? { acceptedPlan: null } : {}) });
+				this.syncPlanSheetLifecycle();
 				if (st.streaming && !this.stream.working) this.setWorking(true);
 				else if (!st.streaming && this.stream.working && !this.stream.live && Date.now() - this.lastSend > 4000) {
 					const s = useSessions.getState().byId[this.id];
@@ -872,6 +884,25 @@ export class ChatController {
 	patchState(p: Partial<ComposerState>): void {
 		++this.stateSequence;
 		this.set({ cstate: { ...(this.state.cstate ?? {}), ...p } });
+		this.syncPlanSheetLifecycle();
+	}
+
+	private syncPlanSheetLifecycle(): void {
+		const plan = this.state.cstate?.planStatus;
+		if (plan && (!plan.enabled || plan.version === 0)) {
+			autoOpenedPlanVersion.delete(this.id);
+			return;
+		}
+		if (this.state.working) return;
+		if (!plan?.enabled || plan.phase !== "review" || !plan.content?.trim()) return;
+		const ver = plan.version;
+		if (typeof ver !== "number" || ver <= 0) return;
+		if (autoOpenedPlanVersion.get(this.id) === ver) return;
+		autoOpenedPlanVersion.set(this.id, ver);
+		if (this.planOpenSuppressed) return;
+		if (!this.state.planSheetOpen) {
+			this.set({ planSheetOpen: true, planSheetMode: "half" });
+		}
 	}
 
 	private syncPendings(): Promise<void> {
@@ -1076,6 +1107,7 @@ export class ChatController {
 
 	async stop(): Promise<void> {
 		++this.activitySequence;
+		this.planOpenSuppressed = true;
 		try {
 			// Stop like Esc in omp's TUI: queued steer/follow-up inputs are
 			// withdrawn and handed back instead of running after the abort.

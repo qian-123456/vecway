@@ -929,7 +929,20 @@ function NewSidechatView({
 	) => Promise<boolean>;
 }) {
 	const chatCtx = useContext(ChatCtx);
-	const parentCstate = chatCtx?.controller.id === sessionId ? chatCtx.controller.state.cstate : null;
+	const controller = chatCtx?.controller.id === sessionId ? chatCtx.controller : null;
+	const [parentCstate, setParentCstate] = useState(() => controller?.state.cstate ?? null);
+	useEffect(() => {
+		if (!controller) {
+			setParentCstate(null);
+			return;
+		}
+		setParentCstate(controller.state.cstate ?? null);
+		return controller.store.subscribe((s) => {
+			setParentCstate(s.cstate ?? null);
+		});
+	}, [controller]);
+	const parentCstateRef = useRef(parentCstate);
+	parentCstateRef.current = parentCstate;
 	const [draftModel, setDraftModel] = useState<string | null>(null);
 	const [draftThinking, setDraftThinking] = useState<string | null>(null);
 	const [pickerOpen, setPickerOpen] = useState(false);
@@ -943,19 +956,38 @@ function NewSidechatView({
 		const base = sessionModelSource(sessionId);
 		return {
 			load: async () => {
-				const res = await base.load();
-				cachedModelsRef.current = res.models;
-				const picked = parseModelRef(draftModelRef.current);
-				const current = picked ? { provider: picked.provider, id: picked.id } : res.current;
+				// Load catalog from non-blocking /left/roles first so Sidechat model picker stays responsive
+				// even when the parent session is actively streaming a turn.
+				let models: ModelOpt[] = [];
+				let fallbackCurrent: { provider?: string; id: string } | null = null;
+				let fallbackThinking: string | null = null;
+				let fallbackLive: string[] = [];
+				try {
+					const roles = await api<{ models?: ModelOpt[] }>("GET", "/left/roles");
+					models = roles.models ?? [];
+				} catch {
+					// Fallback to session-scoped endpoint when /left/roles is unavailable.
+				}
+				if (models.length === 0) {
+					const res = await base.load();
+					models = res.models;
+					fallbackCurrent = res.current;
+					fallbackThinking = res.thinkingLevel;
+					fallbackLive = res.liveThinking;
+				}
+				cachedModelsRef.current = models;
+				const parent = parentCstateRef.current;
+				const picked = parseModelRef(draftModelRef.current ?? parent?.model ?? null);
+				const current = picked ? { provider: picked.provider, id: picked.id } : fallbackCurrent;
 				const curOpt = current
-					? (res.models.find((m) => m.id === current.id && (!current.provider || m.provider === current.provider)) ?? null)
+					? (models.find((m) => m.id === current.id && (!current.provider || m.provider === current.provider)) ?? null)
 					: null;
-				const thinkingLevel = draftThinkingRef.current ?? res.thinkingLevel;
+				const thinkingLevel = draftThinkingRef.current ?? parent?.thinkingLevel ?? fallbackThinking;
 				return {
-					...res,
+					models,
 					current,
 					thinkingLevel,
-					liveThinking: curOpt ? resolveThinkingLevels(curOpt, res.liveThinking, thinkingLevel) : res.liveThinking,
+					liveThinking: curOpt ? resolveThinkingLevels(curOpt, fallbackLive, thinkingLevel) : fallbackLive,
 				};
 			},
 			setModel: async (m) => {

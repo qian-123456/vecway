@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { create } from "zustand";
 
-export type WorkspaceTab = "sidechat" | "git" | "files" | "terminal" | "services" | "plan";
+export type WorkspaceTab = "sidechat" | "git" | "files" | "terminal" | "services";
 
 export interface SidechatAnnotationPayload {
 	quote: string;

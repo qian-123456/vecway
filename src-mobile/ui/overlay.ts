@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { nav } from "../core/nav";
 
 /**
@@ -46,6 +46,11 @@ function lockScroll(): () => void {
 }
 
 const escapeStack: Array<() => void> = [];
+const stackListeners = new Set<() => void>();
+
+function notifyStack(): void {
+	for (const fn of stackListeners) fn();
+}
 
 function onDocumentKeyDown(e: KeyboardEvent): void {
 	if (e.key !== "Escape" || e.defaultPrevented) return;
@@ -60,26 +65,42 @@ export function hasBlockingOverlay(): boolean {
 
 /**
  * Shared overlay behaviour while `open`: back-gesture layer, topmost-only Escape to close,
- * body scroll lock, and safe focus restore once all overlays close.
+ * body scroll lock, safe focus restore once all overlays close, and whether this layer is
+ * currently the topmost modal (so WebKit VoiceOver/XCUITest never traps focus in a lower modal).
  */
-export function useOverlay(open: boolean, onClose: () => void): void {
+export function useOverlay(open: boolean, onClose: () => void): boolean {
 	const closeRef = useRef(onClose);
 	closeRef.current = onClose;
-	useEffect(() => {
-		if (!open) return;
+	const entryRef = useRef<(() => void) | null>(null);
+	if (!entryRef.current) entryRef.current = () => closeRef.current();
+	const [isTop, setIsTop] = useState(open);
+
+	useLayoutEffect(() => {
+		if (!open) {
+			setIsTop(false);
+			return;
+		}
 		const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		const disposeLayer = nav.pushLayer(() => closeRef.current());
 		const unlock = lockScroll();
-		const entry = () => closeRef.current();
+		const entry = entryRef.current!;
 		if (escapeStack.length === 0) document.addEventListener("keydown", onDocumentKeyDown);
 		escapeStack.push(entry);
+		const syncTop = () => setIsTop(escapeStack[escapeStack.length - 1] === entry);
+		stackListeners.add(syncTop);
+		syncTop();
+		notifyStack();
 		return () => {
+			stackListeners.delete(syncTop);
 			const idx = escapeStack.lastIndexOf(entry);
 			if (idx >= 0) escapeStack.splice(idx, 1);
 			if (escapeStack.length === 0) document.removeEventListener("keydown", onDocumentKeyDown);
+			notifyStack();
 			unlock();
 			disposeLayer();
 			if (lockCount === 0 && previous?.isConnected) previous.focus({ preventScroll: true });
 		};
 	}, [open]);
+
+	return open && isTop;
 }

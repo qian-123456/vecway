@@ -988,4 +988,59 @@ describe("tail pagination & slim hot path", () => {
 		expect(treeCalls).toBe(1);
 		c.dispose();
 	});
+
+	it("auto-opens PlanSheet once per review version without re-opening after user close", async () => {
+		const { PLAN_OFF } = await import("../../../src/features/chat/plan/planStatus");
+		const { resetPlanAutoOpenForTest } = await import("./chatStore");
+		resetPlanAutoOpenForTest();
+
+		const c = makeController();
+		await rafTick();
+		expect(c.state.planSheetOpen).toBe(false);
+
+		c.patchState({
+			planMode: true,
+			planStatus: {
+				...PLAN_OFF,
+				enabled: true,
+				phase: "review",
+				version: 1,
+				title: "测试计划",
+				content: "# 测试计划\n## 目标\n完成验收",
+			},
+		});
+		expect(c.state.planSheetOpen).toBe(true);
+		expect(c.state.planSheetMode).toBe("half");
+
+		// Closing or collapsing keeps version 1 suppressed from auto-reopening.
+		c.closePlanSheet();
+		expect(c.state.planSheetOpen).toBe(false);
+		c.patchState({
+			planMode: true,
+			planStatus: {
+				...PLAN_OFF,
+				enabled: true,
+				phase: "review",
+				version: 1,
+				title: "测试计划",
+				content: "# 测试计划\n## 目标\n完成验收",
+			},
+		});
+		expect(c.state.planSheetOpen).toBe(false);
+
+		// A newer plan version (v2) opens again automatically.
+		c.patchState({
+			planMode: true,
+			planStatus: {
+				...PLAN_OFF,
+				enabled: true,
+				phase: "review",
+				version: 2,
+				title: "测试计划 v2",
+				content: "# 测试计划 v2\n## 目标\n更新验收",
+			},
+		});
+		expect(c.state.planSheetOpen).toBe(true);
+		c.dispose();
+	});
 });

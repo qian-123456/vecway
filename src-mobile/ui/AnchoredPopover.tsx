@@ -33,6 +33,7 @@ export interface AnchoredPopoverProps {
 	placement?: PopoverPlacement;
 	title?: ReactNode;
 	subtitle?: ReactNode;
+	ariaLabel?: string;
 	children: ReactNode;
 	className?: string;
 	maxWidth?: number;
@@ -86,6 +87,7 @@ export function AnchoredPopover({
 	placement = "bottom-start",
 	title,
 	subtitle,
+	ariaLabel,
 	children,
 	className = "",
 	maxWidth = 340,
@@ -93,7 +95,7 @@ export function AnchoredPopover({
 	offset = 6,
 }: AnchoredPopoverProps) {
 	const { mounted, visible } = usePresence(open, EXIT_MS);
-	useOverlay(open, onClose);
+	const isTopModal = useOverlay(open, onClose);
 	const panelRef = useRef<HTMLDivElement>(null);
 	const snapshotRef = useRef<{ children: ReactNode; title: ReactNode; subtitle: ReactNode }>({
 		children,
@@ -238,9 +240,9 @@ export function AnchoredPopover({
 			<div
 				ref={panelRef}
 				role="dialog"
-				aria-modal="true"
+				aria-modal={isTopModal ? "true" : undefined}
 				data-visible={visible ? "true" : "false"}
-				aria-label={typeof activeTitle === "string" ? activeTitle : undefined}
+				aria-label={ariaLabel ?? (typeof activeTitle === "string" ? activeTitle : undefined)}
 				style={{
 					left: `${pos.left}px`,
 					top: `${pos.top}px`,

@@ -367,7 +367,7 @@ export function ModelThinkingSheet({
 							ref={railContainerRef}
 							role="tablist"
 							aria-label="模型供应商"
-							className="m-noscrollbar flex w-[112px] shrink-0 flex-col overflow-y-auto overscroll-contain border-r border-m-border bg-m-surface/40 py-1 pb-8"
+							className="m-noscrollbar flex w-[124px] shrink-0 flex-col overflow-y-auto overscroll-contain border-r border-m-border bg-m-surface/40 py-1 pb-8"
 						>
 							{recentModels.length > 0 &&
 								renderRailButton({

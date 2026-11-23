@@ -17,7 +17,7 @@ export function Dialog({
 	actions?: ReactNode;
 }) {
 	const { mounted, visible } = usePresence(open, 180);
-	useOverlay(open, onClose);
+	const isTopModal = useOverlay(open, onClose);
 	if (!mounted) return null;
 	return createPortal(
 		<div
@@ -39,7 +39,7 @@ export function Dialog({
 			/>
 			<div
 				role="dialog"
-				aria-modal="true"
+				aria-modal={isTopModal ? "true" : undefined}
 				className={`relative flex max-h-full w-full max-w-sm flex-col overflow-hidden rounded-m-xl border border-m-border bg-m-bg-elev text-m-text shadow-m-pop transition-[opacity,transform] duration-180 ease-m motion-reduce:transform-none ${visible ? "scale-100 opacity-100" : "scale-[0.96] opacity-0"}`}
 			>
 				<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pt-6 pb-2">

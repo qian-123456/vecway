@@ -143,7 +143,81 @@ pub(crate) async fn id_cwds(state: &AppState) -> Vec<(String, String)> {
 
 pub async fn get(state: &AppState, session_id: &str) -> Option<SessionMeta> {
     ensure_ready(state).await;
-    cat().lock().metas.get(session_id).cloned()
+    if let Some(meta) = cat().lock().metas.get(session_id).cloned() {
+        return Some(meta);
+    }
+    live_handle_meta(state, session_id).await
+}
+
+/// Resolve metadata for a live RPC session that has not yet been written/indexed
+/// on disk (for example, right after `rpc::start` or draft materialization via `/plan`).
+async fn live_handle_meta(state: &AppState, session_id: &str) -> Option<SessionMeta> {
+    if cat().lock().deleted.iter().any(|id| id == session_id) {
+        return None;
+    }
+    let handle = crate::rpc::get_handle(session_id)?;
+    if !handle.is_usable() {
+        return None;
+    }
+    let info = handle.info();
+    if !info.session_file.is_empty() && std::path::Path::new(&info.session_file).is_file() {
+        recompute_async(state, Some(vec![session_id.to_string()])).await;
+        if let Some(meta) = cat().lock().metas.get(session_id).cloned() {
+            return Some(meta);
+        }
+    }
+    let st = state.clone();
+    let sid = session_id.to_string();
+    let row = tokio::task::spawn_blocking(move || {
+        let db = st.db.lock();
+        store::load_meta_row(&db, &sid)
+    })
+    .await
+    .ok()?;
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let title = row
+        .custom_name
+        .clone()
+        .unwrap_or_else(|| "新会话".to_string());
+    let label = row
+        .seq
+        .map(|n| format!("#{n}"))
+        .unwrap_or_else(|| row.label.clone().unwrap_or_default());
+    let status = if handle.streaming.load(std::sync::atomic::Ordering::SeqCst) {
+        SessionStatus::Working
+    } else {
+        SessionStatus::Idle
+    };
+    Some(SessionMeta {
+        id: info.session_id,
+        tool: "omp".into(),
+        file: info.session_file,
+        cwd: row.cwd_override.unwrap_or(info.cwd),
+        title,
+        label,
+        created_at: now.clone(),
+        updated_at: now,
+        parent_id: row.parent_session_id,
+        fork_depth: row.fork_depth,
+        kind: row.kind,
+        status,
+        unread: row.unread,
+        pending: row.pending,
+        live: true,
+        external_pid: None,
+        pinned: row.pinned,
+        archived: row.archived,
+        workspace_id: row.workspace_id,
+        repo_root: None,
+        git: None,
+        result: None,
+        last_assistant: None,
+        model: None,
+        attention: None,
+        mode: row.mode,
+        group_id: row.group_id,
+        created_by_app: row.created_by_app,
+    })
 }
 
 /// Internal to A; listed in §9 only so nobody else writes `pending_kind`.

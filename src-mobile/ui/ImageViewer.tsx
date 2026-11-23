@@ -90,7 +90,7 @@ export function ImageViewerHost() {
 		setCurrent(null);
 	};
 	const { mounted, visible } = usePresence(open, 200);
-	useOverlay(open, close);
+	const isTopModal = useOverlay(open, close);
 	// Keep the last gallery mounted while the exit transition plays.
 	const lastRef = useRef<ViewerState | null>(null);
 	if (state) lastRef.current = state;
@@ -272,7 +272,7 @@ export function ImageViewerHost() {
 	return createPortal(
 		<div
 			role="dialog"
-			aria-modal="true"
+			aria-modal={isTopModal ? "true" : undefined}
 			aria-label={shown.alt ?? "图片预览"}
 			className={`fixed inset-0 z-(--z-modal) flex touch-none select-none items-center justify-center bg-m-scrim transition-opacity duration-200 ease-(--m-ease) ${visible ? "opacity-100" : "opacity-0"}`}
 			onPointerDown={onDown}

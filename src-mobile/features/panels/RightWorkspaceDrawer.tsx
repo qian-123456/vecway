@@ -11,18 +11,15 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { errorMessage } from "../../core/api";
-import { DRAFT_PREFIX } from "../../core/types";
 import { AnchoredPopover, MenuRow, toast } from "../../ui";
 import { hasBlockingOverlay, useOverlay } from "../../ui/overlay";
 import { FilesPanel } from "./FilesPage";
 import { GitPanel } from "./GitPage";
 import { ErrorState, Loading } from "./PanelState";
-import { PlanPanel } from "./PlanPage";
 import { ServicesPanel } from "./ServicesPage";
 import { SidechatPanel } from "./SidechatPage";
 import { TerminalPanel } from "./TerminalPage";
 import { tabHeaderKey, useRightDrawer, type WorkspaceTab } from "./rightDrawerStore";
-import { usePlanExecution } from "./usePlanExecution";
 
 const BASE_TABS: ReadonlyArray<{ id: WorkspaceTab; label: string }> = [
 	{ id: "sidechat", label: "辅助对话" },
@@ -206,7 +203,7 @@ export function RightWorkspaceDrawer({
 		void triggerResolve();
 	}, [open, effectiveId, resolveSessionId, triggerResolve]);
 
-	useOverlay(open, closeDrawer);
+	const isTopModal = useOverlay(open, closeDrawer);
 
 	// Sync `inert` attribute when drawer is collapsed so hidden kept-alive panels are non-interactive.
 	// Sync `inert` attribute and clear any swipe-dismiss inline transform when drawer opens/closes.
@@ -225,7 +222,6 @@ export function RightWorkspaceDrawer({
 		}
 	}, [open]);
 
-	const plan = usePlanExecution(effectiveId || `${DRAFT_PREFIX}drawer`);
 	const activeTab: WorkspaceTab = (effectiveId ? tabBySession[effectiveId] : undefined) ?? (drawerSessionId ? tabBySession[drawerSessionId] : undefined) ?? "git";
 	const visitedTabs = useMemo(() => {
 		if (!effectiveId) return [] as WorkspaceTab[];
@@ -234,10 +230,7 @@ export function RightWorkspaceDrawer({
 		return list;
 	}, [effectiveId, visitedBySession, open, activeTab]);
 
-	const tabs = useMemo(
-		() => (plan.hasPlan || activeTab === "plan" ? [...BASE_TABS, { id: "plan" as const, label: "计划" }] : BASE_TABS),
-		[plan.hasPlan, activeTab],
-	);
+	const tabs = BASE_TABS;
 
 	const tabHeader = useRightDrawer((s) => (effectiveId ? s.tabHeaders?.[tabHeaderKey(effectiveId, activeTab)] : undefined));
 	const moreActions = tabHeader?.moreActions ?? [];
@@ -402,8 +395,6 @@ export function RightWorkspaceDrawer({
 				return <TerminalPanel sessionId={effectiveId} embedded active={isTabActive} visible={isTabActive} />;
 			case "services":
 				return <ServicesPanel sessionId={effectiveId} embedded active={isTabActive} />;
-			case "plan":
-				return <PlanPanel sessionId={effectiveId} embedded active={isTabActive} />;
 		}
 	};
 
@@ -427,7 +418,7 @@ export function RightWorkspaceDrawer({
 			<div
 				ref={panelRef}
 				role="dialog"
-				aria-modal={open ? "true" : undefined}
+				aria-modal={open && isTopModal ? "true" : undefined}
 				aria-label="工作区抽屉"
 				tabIndex={-1}
 				onTouchStart={onTouchStart}
@@ -545,6 +536,7 @@ export function RightWorkspaceDrawer({
 						onClose={() => setMoreOpen(false)}
 						anchorEl={moreBtnRef.current}
 						placement="bottom-end"
+						ariaLabel="更多操作"
 						minWidth={196}
 						maxWidth={260}
 						className="m-liquid-surface rounded-2xl!"

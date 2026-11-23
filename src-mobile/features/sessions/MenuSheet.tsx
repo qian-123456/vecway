@@ -48,7 +48,7 @@ export function MenuSheet({
 	onNewSession?: () => void;
 }) {
 	const { mounted, visible } = usePresence(open, ANIM_MS);
-	useOverlay(open, onClose);
+	const isTopModal = useOverlay(open, onClose);
 	const native = isNativeApp();
 	const [viewMode, setViewMode] = useState<LeftNavViewMode>("project");
 	const [filterOpen, setFilterOpen] = useState(false);
@@ -268,7 +268,7 @@ export function MenuSheet({
 			<div
 				ref={panelRef}
 				role="dialog"
-				aria-modal="true"
+				aria-modal={isTopModal ? "true" : undefined}
 				aria-label="导航"
 				tabIndex={-1}
 				onKeyDown={onKeyDown}

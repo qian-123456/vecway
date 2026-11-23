@@ -405,7 +405,7 @@ export function PlanSheet({
 	}, [text, version]);
 
 	// Separate overlay layers so Back closes TOC first without swallowing PlanSheet's history entry.
-	useOverlay(open && mode !== "float", onClose);
+	const isTopModal = useOverlay(open && mode !== "float", onClose);
 	useOverlay(open && mode !== "float" && tocOpen, useCallback(() => setTocOpen(false), []));
 
 	const resolvedTitle = title?.trim() || extractPlanTitle(text) || "执行方案";
@@ -533,7 +533,7 @@ export function PlanSheet({
 				style={{
 					left: "calc(var(--m-safe-left) + 16px)",
 					right: "calc(var(--m-safe-right) + 16px)",
-					bottom: "calc(var(--m-kb, 0px) + var(--m-safe-bottom) + 84px)",
+					bottom: "calc(var(--m-kb, 0px) + var(--m-safe-bottom) + 116px)",
 				}}
 			>
 				<div
@@ -589,7 +589,7 @@ export function PlanSheet({
 			/>
 			<section
 				role="dialog"
-				aria-modal="true"
+				aria-modal={isTopModal ? "true" : undefined}
 				aria-label={resolvedTitle}
 				style={{
 					height: sheetHeight,

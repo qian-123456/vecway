@@ -38,7 +38,7 @@ export function BottomSheet({
 	className?: string;
 }) {
 	const { mounted, visible } = usePresence(open, EXIT_MS);
-	useOverlay(open, onClose);
+	const isTopModal = useOverlay(open, onClose);
 	const snapshotRef = useRef<{
 		children: ReactNode;
 		title?: ReactNode;
@@ -193,7 +193,7 @@ export function BottomSheet({
 			<div
 				ref={sheetRef}
 				role="dialog"
-				aria-modal="true"
+				aria-modal={isTopModal ? "true" : undefined}
 				aria-label={typeof activeTitle === "string" ? activeTitle : undefined}
 				tabIndex={-1}
 				data-visible={visible ? "true" : "false"}

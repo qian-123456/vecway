@@ -248,9 +248,10 @@ viewport and buttons remain on the bottom row.
   (供应商)**; right pane lists clean readable model names (with capability-derived thinking-level
   selection and an explicit context-overflow warning when a smaller-context model is selected or
   previewed). Replaces the old flat list and provider-back stack.
-- **Plan visibility**: `计划` appears in `RightWorkspaceDrawer` whenever a plan exists for the
-  session (active/saved plan snapshot or executing plan), independent of whether planning mode is
-  currently toggled on. Opening/viewing the plan is a read-only action, not approval or execution.
+- **Plan visibility**: Plan lives in its dedicated bottom-up `PlanSheet` (auto-opening when a review
+  plan is generated, expandable to full screen, and collapsible into a floating bottom capsule
+  pill so users can reopen it anytime) rather than inside `RightWorkspaceDrawer`. Opening/viewing
+  the plan is a read-only action, not approval or execution.
 - Action sheets use `MenuRow`s, with destructive actions in danger colour at the end.
 
 ### 4.7 Settings (`/settings`)
@@ -290,7 +291,7 @@ desktop's right sidebar with **1-tap** (top-right drawer icon) or **1-swipe** (`
 from the right edge) access.
 - **Session-scoped alive state** (`useRightDrawer` in `src-mobile/features/panels/rightDrawerStore.ts`):
   tracks `tabBySession` and `visitedBySession` so reopening returns to the last active tab in
-  1 tap and visited workspace tabs (`sidechat`, `git`, `files`, `terminal`, `services`, `plan`)
+  1 tap and visited workspace tabs (`sidechat`, `git`, `files`, `terminal`, `services`)
   remain mounted and alive while the drawer is collapsed. Direct tool routes remain compatible
   for deep links, while primary workspace navigation lives inside `RightWorkspaceDrawer`.
 - Loaded content remains visible during refresh or refresh errors; changing resources clears
@@ -320,8 +321,6 @@ from the right edge) access.
   Clear, font size 11–22 with fit/resize, Hide Keyboard, all ≥44px targets; Clear never sends a
   shell command).
 - **服务 (`services`)**: local Dev Server port/PID monitor, service preview, and confirmed stop.
-- **计划 (`plan`)**: shown whenever a plan exists for the session; read-only view with copy and
-  `.md` download.
 
 ### 4.9 Inbox, search and new-session picker
 - Inbox read actions use right swipe or compact overflow rather than a wide inline button.
