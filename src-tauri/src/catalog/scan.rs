@@ -204,7 +204,9 @@ pub(crate) fn path_within(path: &str, root: &str) -> bool {
     {
         let p = path.replace('/', "\\").to_ascii_lowercase();
         let r = root.replace('/', "\\").to_ascii_lowercase();
-        return p == r || p.strip_prefix(&r).is_some_and(|rest| rest.starts_with('\\'));
+        return p == r
+            || p.strip_prefix(&r)
+                .is_some_and(|rest| rest.starts_with('\\'));
     }
     #[cfg(not(windows))]
     {
@@ -311,9 +313,9 @@ pub fn resolve_workspace_with_aliases(
             .iter()
             .filter(|a| {
                 a.mode == mode
-                    && workspaces
-                        .iter()
-                        .any(|w| w.id == a.workspace_id && w.kind == WorkspaceKind::Project && w.mode == mode)
+                    && workspaces.iter().any(|w| {
+                        w.id == a.workspace_id && w.kind == WorkspaceKind::Project && w.mode == mode
+                    })
             })
             .filter(|a| path_within(&canon, &canon_str(&a.old_path)))
             .max_by_key(|a| a.old_path.len());
