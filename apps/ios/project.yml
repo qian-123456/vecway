@@ -62,3 +62,41 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Vecway.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Vecway"
         BUNDLE_LOADER: "$(TEST_HOST)"
+
+  VecwayUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: VecwayUITests
+    dependencies:
+      - target: Vecway
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.vecway.mobile.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Vecway
+
+schemes:
+  Vecway:
+    build:
+      targets:
+        Vecway: all
+        VecwayTests: [test]
+        VecwayUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - VecwayTests
+        - VecwayUITests
+  VecwayUITests:
+    build:
+      targets:
+        Vecway: [run, test]
+        VecwayUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - VecwayUITests
