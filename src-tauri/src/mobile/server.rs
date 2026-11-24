@@ -958,6 +958,37 @@ fn relink_hidden_parents(items: &mut [crate::contracts::TranscriptItem]) {
 
 /// Normalized transcript page (same shape as the desktop `get_transcript`),
 /// with hidden items dropped and bulky tool payloads truncated.
+fn trim_mobile_tool_result(r: &mut crate::contracts::ToolResultInfo) {
+    cap_chars(&mut r.text, MOBILE_TOOL_TEXT_CAP);
+    let mut next_details = serde_json::Map::new();
+    if let Some(details) = r.details.as_ref() {
+        if let Some(diff) = details
+            .get("diff")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let mut owned = diff.to_string();
+            cap_chars(&mut owned, MOBILE_TOOL_DIFF_CAP);
+            next_details.insert("diff".into(), Value::String(owned));
+        }
+        let has_draft_id = details
+            .get("draftId")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty());
+        if r.tool_name == "vecway_automation" || has_draft_id {
+            let mut auto = serde_json::Map::new();
+            crate::catalog::transcript::extract_automation_details(details, &mut auto);
+            for (key, val) in auto {
+                if let Some(s) = val.as_str() {
+                    let mut owned = s.to_string();
+                    cap_chars(&mut owned, 256);
+                    next_details.insert(key, Value::String(owned));
+                }
+            }
+        }
+    }
+    r.details = (!next_details.is_empty()).then_some(Value::Object(next_details));
+}
 async fn transcript<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Path(id): Path<String>,
@@ -998,21 +1029,10 @@ async fn transcript<B: Backend>(
         }
         _ => (None, None, None),
     };
+
     for item in &mut page.items {
         if let Some(r) = item.tool_result.as_mut() {
-            cap_chars(&mut r.text, MOBILE_TOOL_TEXT_CAP);
-            let diff = r
-                .details
-                .as_ref()
-                .and_then(|d| d.get("diff"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| {
-                    let mut owned = s.to_string();
-                    cap_chars(&mut owned, MOBILE_TOOL_DIFF_CAP);
-                    owned
-                });
-            r.details = diff.map(|d| serde_json::json!({ "diff": d }));
+            trim_mobile_tool_result(r);
         }
         for c in &mut item.tool_calls {
             let mut s = c.args.to_string();
@@ -1059,10 +1079,28 @@ pub fn rpc_frame_allowed(ty: &str) -> bool {
     )
 }
 
+/// Full SSE RPC frame filter: allows `rpc_frame_allowed(ty)` plus read-only
+/// `extension_ui_request` status updates for `ompws-plan` and `ompws-automation`.
+pub fn rpc_frame_is_forwarded(frame: &Value) -> bool {
+    let Some(ty) = frame.get("type").and_then(Value::as_str) else {
+        return false;
+    };
+    if rpc_frame_allowed(ty) {
+        return true;
+    }
+    ty == "extension_ui_request"
+        && frame.get("method").and_then(Value::as_str) == Some("setStatus")
+        && matches!(
+            frame.get("statusKey").and_then(Value::as_str),
+            Some("ompws-plan" | "ompws-automation")
+        )
+}
+
 /// Map bus events to SSE events the mobile page cares about.
 pub fn sse_event(ev: &AppEvent) -> Option<Event> {
     match ev {
         AppEvent::TodosChanged => Some(Event::default().event("todos").data("{}")),
+        AppEvent::SchedulesChanged => Some(Event::default().event("schedules").data("{}")),
         AppEvent::SessionStatusChanged {
             session_id,
             old,
@@ -1073,8 +1111,7 @@ pub fn sse_event(ev: &AppEvent) -> Option<Event> {
                 .data(json!({ "sessionId": session_id, "old": old, "new": new }).to_string()),
         ),
         AppEvent::RpcFrame { session_id, frame } => {
-            let ty = frame.get("type").and_then(Value::as_str)?;
-            if !rpc_frame_allowed(ty) {
+            if !rpc_frame_is_forwarded(frame) {
                 return None;
             }
             #[derive(serde::Serialize)]
@@ -1408,5 +1445,28 @@ mod sse_limit_tests {
         let _a3 = limiter.try_acquire("dev-a".into()).unwrap();
         drop(b1);
         drop(b2);
+    }
+    #[test]
+    fn trim_mobile_tool_result_preserves_automation_proposal_metadata() {
+        let mut info = crate::contracts::ToolResultInfo {
+            tool_call_id: "c1".into(),
+            tool_name: "vecway_automation".into(),
+            text: "ok".into(),
+            is_error: false,
+            details: Some(json!({
+                "draftId": "d-mobile-1",
+                "draft": { "id": "sched-nested-1", "name": "Test" },
+                "noise": "drop-me"
+            })),
+        };
+        trim_mobile_tool_result(&mut info);
+        assert_eq!(
+            info.details,
+            Some(json!({
+                "draftId": "d-mobile-1",
+                "action": "propose",
+                "scheduleId": "sched-nested-1"
+            }))
+        );
     }
 }

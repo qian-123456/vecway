@@ -52,6 +52,7 @@ export function EffortSlider({
 	onCancel: () => void;
 }) {
 	const rootRef = useRef<HTMLDivElement>(null);
+	const rectRef = useRef<DOMRect | null>(null);
 	const press = useRef<{ x: number; y: number; index: number } | null>(null);
 	const wheel = useRef({ delta: 0, at: 0 });
 	const [pressed, setPressed] = useState(false);
@@ -77,17 +78,32 @@ export function EffortSlider({
 		onCommit(next);
 	};
 	const indexAt = (clientX: number) => {
-		const r = rootRef.current?.getBoundingClientRect();
+		const r = rectRef.current ?? rootRef.current?.getBoundingClientRect();
 		if (!r || r.width <= THUMB_INSET * 2 || last <= 0) return 0;
 		const f = (clientX - r.left - THUMB_INSET) / (r.width - THUMB_INSET * 2);
 		return Math.round(Math.min(1, Math.max(0, f)) * last);
 	};
 	const release = () => {
 		press.current = null;
+		rectRef.current = null;
 		setPressed(false);
 		setDragging(false);
 		setHovered(false);
 	};
+
+	useEffect(() => {
+		const invalidate = () => {
+			rectRef.current = null;
+		};
+		window.addEventListener("resize", invalidate);
+		const el = rootRef.current;
+		const ro = el && typeof ResizeObserver !== "undefined" ? new ResizeObserver(invalidate) : null;
+		if (el && ro) ro.observe(el);
+		return () => {
+			window.removeEventListener("resize", invalidate);
+			ro?.disconnect();
+		};
+	}, []);
 
 	const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
 		if (e.button !== 0 || last <= 0) return;
@@ -95,6 +111,7 @@ export function EffortSlider({
 		e.currentTarget.focus({ preventScroll: true });
 		setKeyboardFocused(false);
 		e.currentTarget.setPointerCapture?.(e.pointerId);
+		rectRef.current = rootRef.current?.getBoundingClientRect() ?? null;
 		const index = indexAt(e.clientX);
 		press.current = { x: e.clientX, y: e.clientY, index };
 		setPressed(true);
@@ -112,6 +129,7 @@ export function EffortSlider({
 		const start = press.current;
 		if (!start) return;
 		release();
+		if (start.index === last) setBurstKey((k) => k + 1);
 		onCommit(start.index);
 	};
 	const onPointerAbort = () => {
@@ -317,10 +335,10 @@ function TrackParticle({ index }: { index: number }) {
 		<span
 			className="es-particle"
 			style={{
-				left: `calc(${base}% + ${spot.dx}px)`,
-				top: spot.y,
+				left: `${base}%`,
+				top: 0,
 				opacity: 0.4 + noise(index, 11) * 0.6,
-				transform: `translate(-50%, -50%) scale(${0.5 + noise(index, 12) * 0.45})`,
+				transform: `translate3d(${spot.dx}px, ${spot.y}px, 0) translate(-50%, -50%) scale(${0.5 + noise(index, 12) * 0.45})`,
 				transitionDuration: `${PARTICLE_CYCLE_S * spot.durationScale}s`,
 			}}
 		/>

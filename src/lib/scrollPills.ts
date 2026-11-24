@@ -487,11 +487,16 @@ export function startScrollPills(): () => void {
 		)
 			show(el);
 	};
+	let resizeRaf = 0;
 	const onResize = () => {
-		for (const [el, entry] of entries) {
-			if (entry.visible) layout(el, entry);
-		}
-		prune();
+		if (resizeRaf !== 0) return;
+		resizeRaf = window.requestAnimationFrame(() => {
+			resizeRaf = 0;
+			for (const [el, entry] of entries) {
+				if (entry.visible) layout(el, entry);
+			}
+			prune();
+		});
 	};
 
 	window.addEventListener("scroll", onScroll, { capture: true, passive: true });

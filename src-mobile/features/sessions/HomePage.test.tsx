@@ -216,4 +216,36 @@ describe("HomePage", () => {
 		fireEvent.click(btn);
 		expect(useRightDrawer.getState().open).toBe(true);
 	});
+
+	it("does not clear /automate composer text on error and hands off ready attachments when starting automation chat", async () => {
+		const pushMock = vi.mocked(await import("../../core/nav")).nav.push;
+		createSessionMock.mockRejectedValueOnce(new Error("服务不可用"));
+
+		const { container } = render(<HomePage route={{ name: "home", path: "/", params: {}, query: {} }} />);
+		const galleryInput = container.querySelector('input[type="file"][accept="image/*"][multiple]') as HTMLInputElement;
+		await act(async () => {
+			fireEvent.change(galleryInput, { target: { files: [new File(["png"], "ref.png", { type: "image/png" })] } });
+		});
+		await waitFor(() => expect(screen.getByRole("button", { name: "预览图片 1" })).toBeTruthy());
+
+		const input = await typeMessage("/automate 每天巡检");
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "发送" }));
+		});
+
+		// Failure must NOT clear composer text or drop attachments
+		expect(input.value).toBe("/automate 每天巡检");
+		expect(screen.getByRole("button", { name: "预览图片 1" })).toBeTruthy();
+
+		// Retry succeeds: creates automation session, transfers attachments, clears Home composer
+		createSessionMock.mockResolvedValueOnce({ id: "auto-sess-1", mode: "code", cwd: "/project/workspace" });
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "发送" }));
+		});
+		await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/s/auto-sess-1"));
+		expect(input.value).toBe("");
+		expect(takeFirstSend("auto-sess-1")).toBe("每天巡检");
+		expect(draftBook.restore("auto-sess-1")?.atts).toHaveLength(1);
+		draftBook.forget("auto-sess-1");
+	});
 });

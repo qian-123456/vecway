@@ -13,6 +13,7 @@ import {
 import { createPortal } from "react-dom";
 import { claimEscape } from "../lib/escapeClaim";
 import { isComposing } from "../lib/hooks";
+import { prefersReducedMotion, usePresence } from "../lib/motion";
 
 /**
  * Page-local stacking inside one component (sticky headers, a badge above a
@@ -261,7 +262,12 @@ export function useAnchoredPosition(
 	return pos;
 }
 
+const POPOVER_EXIT_MS = 135;
+const TOOLTIP_EXIT_MS = 125;
+
 export interface FloatingLayerProps {
+	/** Optional managed open state for reverse-path exit transition; defaults to true when omitted. */
+	open?: boolean;
 	/** Render nothing when null. */
 	anchor: Anchor | null;
 	placement?: Placement;
@@ -332,6 +338,7 @@ function layerAbove(self: HTMLElement | null): boolean {
  * override skin, never to override position/z.
  */
 export function FloatingLayer({
+	open,
 	anchor,
 	placement = "bottom-start",
 	offset = 4,
@@ -348,31 +355,50 @@ export function FloatingLayer({
 	...rest
 }: FloatingLayerProps) {
 	const ref = useRef<HTMLDivElement>(null);
-	const pos = useAnchoredPosition(anchor, ref, placement, offset, flip);
 	const isHovercard = layer === "hovercard";
 	const [modalOpen, setModalOpen] = useState(false);
+	const suppressedByModal = isHovercard && modalOpen;
+	const effectiveInstant = instant || suppressedByModal;
+	const isOpen = (open ?? true) && Boolean(anchor) && !suppressedByModal;
+	const exitMs = surfaceMotion === "tooltip" ? TOOLTIP_EXIT_MS : POPOVER_EXIT_MS;
+	const { present, exiting } = usePresence(isOpen, exitMs, effectiveInstant);
+
+	const lastAnchorRef = useRef<Anchor | null>(anchor);
+	if (isOpen && anchor) lastAnchorRef.current = anchor;
+	const activeAnchor = isOpen ? anchor : present ? lastAnchorRef.current : null;
+
+	const pos = useAnchoredPosition(activeAnchor, ref, placement, offset, flip);
+	const lastPosRef = useRef<FloatingPosition | null>(pos);
+	if (pos) lastPosRef.current = pos;
+	const activePos = pos ?? (exiting ? lastPosRef.current : null);
+
 	// Nested floating UI (a picker opened from a dialog, a menu from a popover) must stay above its parent.
 	const z = useMemo(
-		() => (anchor instanceof Element ? nestedZ(Z_LAYER[layer], ancestorFloatingZ(anchor)) : Z_LAYER[layer]),
-		[anchor, layer],
+		() =>
+			activeAnchor instanceof Element
+				? nestedZ(Z_LAYER[layer], ancestorFloatingZ(activeAnchor))
+				: Z_LAYER[layer],
+		[activeAnchor, layer],
 	);
 
 	// Hover cards sit above popovers, but must never cover an open modal dialog:
 	// hide them while any modal surface is mounted.
 	useEffect(() => {
-		if (!anchor || !isHovercard) return;
+		if (!isHovercard || (!anchor && !present)) {
+			setModalOpen((prev) => (prev ? false : prev));
+			return;
+		}
 		const check = () => setModalOpen(document.querySelector(MODAL_SELECTOR) !== null);
 		check();
 		const mo = new MutationObserver(check);
 		mo.observe(document.body, { childList: true, subtree: true });
 		return () => mo.disconnect();
-	}, [anchor, isHovercard]);
+	}, [anchor, isHovercard, present]);
 
 	useEffect(() => {
-		if (!anchor || !onDismiss) return;
+		if (!isOpen || !onDismiss) return;
 		const onDown = (e: MouseEvent) => {
 			const t = e.target as Node;
-			// Clicks inside an open lightbox (portaled outside this layer) must not dismiss the layer that spawned it.
 			if (t instanceof Element && t.closest(LIGHTBOX_SELECTOR)) return;
 			// Interacting with a modal stacked above (e.g. a confirm spawned from this popover) must not dismiss it.
 			if (modalAbove(ref.current)) return;
@@ -419,20 +445,25 @@ export function FloatingLayer({
 			document.removeEventListener("mousedown", onDown, true);
 			document.removeEventListener("keydown", onKey, true);
 		};
-	}, [anchor, onDismiss, ignoreRefs, deferEscapeToEditors]);
+	}, [isOpen, onDismiss, ignoreRefs, deferEscapeToEditors]);
 
-	if (!anchor || (isHovercard && modalOpen)) return null;
+	if (!present || !activeAnchor || (!isOpen && (effectiveInstant || prefersReducedMotion()))) return null;
 	return createPortal(
 		<div
 			ref={ref}
 			{...rest}
-			data-positioned={pos ? "true" : "false"}
-			data-instant={instant ? "true" : undefined}
-			data-layer={layer}
+			role={exiting ? undefined : rest.role}
+			data-positioned={activePos ? "true" : "false"}
+			data-instant={effectiveInstant ? "true" : undefined}
+			data-exiting={exiting ? "true" : undefined}
+			data-layer={exiting ? undefined : layer}
+			aria-hidden={exiting || undefined}
+			inert={exiting}
 			className={clsx(
 				"fixed overflow-y-auto rounded-xl border border-[var(--border-divider)] vibrancy-popover shadow-apple-modal backdrop-blur-2xl",
 				surfaceMotion === "popover" && "apple-popover-surface",
 				surfaceMotion === "tooltip" && "apple-tooltip-surface",
+				exiting && "pointer-events-none",
 				className,
 			)}
 			style={{
@@ -444,14 +475,14 @@ export function FloatingLayer({
 				position: "fixed",
 				// Position must never animate: a `duration-*` class would otherwise
 				// transition left/top from the -9999 pre-measure spot (flies in from the far left).
-				transitionProperty: pos ? "opacity, transform" : "none",
+				transitionProperty: activePos ? "opacity, transform" : "none",
 				zIndex: z,
-				left: pos?.left ?? -9999,
-				top: pos?.bottomY === undefined ? (pos?.top ?? -9999) : "auto",
-				bottom: pos?.bottomY === undefined ? undefined : window.innerHeight - pos.bottomY,
-				maxHeight: pos?.maxHeight,
-				visibility: pos ? "visible" : "hidden",
-				"--popover-origin": originForPlacement(pos?.placement ?? placement),
+				left: activePos?.left ?? -9999,
+				top: activePos?.bottomY === undefined ? (activePos?.top ?? -9999) : "auto",
+				bottom: activePos?.bottomY === undefined ? undefined : window.innerHeight - activePos.bottomY,
+				maxHeight: activePos?.maxHeight,
+				visibility: activePos ? "visible" : "hidden",
+				"--popover-origin": originForPlacement(activePos?.placement ?? placement),
 			} as CSSProperties}
 		>
 			{children}

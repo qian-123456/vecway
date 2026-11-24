@@ -1,4 +1,4 @@
-import { Camera, FileText, FolderOpen, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, RotateCcw, Target, X } from "lucide-react";
+import { CalendarClock, Camera, FileText, FolderOpen, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, RotateCcw, Target, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage, upload } from "../../core/api";
 import { baseName } from "../../core/lib/format";
@@ -17,9 +17,10 @@ import { ThinkingSourcePopover } from "../chat/components/ThinkingLevelPopover";
 import { SketchPad } from "../chat/components/SketchPad";
 import type { ModelSource } from "../chat/components/useModelFacts";
 import { draftBook, queueComposerAction, queueFirstSend, type ComposerAction } from "../chat/lib/drafts";
-import { parseModelRef, type ModelFacts, type ModelOpt } from "../chat/lib/models";
+import { parseModelRef, resolveThinkingSupported, type ModelFacts, type ModelOpt } from "../chat/lib/models";
 import { attachmentBlocker } from "../chat/lib/prompt";
 import { hasBlockingOverlay } from "../../ui/overlay";
+import { startAutomationChat } from "../chat/automation/automationStatus";
 import { useRightDrawer } from "../panels/rightDrawerStore";
 import { RightWorkspaceDrawer, useRightEdgeSwipe } from "../panels/RightWorkspaceDrawer";
 import { MenuSheet } from "./MenuSheet";
@@ -53,6 +54,7 @@ export function HomePage(_props: PageProps) {
 	const cachedDraftCwd = useRef<string | null>(null);
 	const submitting = useRef(false);
 	const [facts, setFacts] = useState<ModelFacts>({ current: null, thinkingLevel: null, liveThinking: [] });
+	const [catalogModels, setCatalogModels] = useState<ModelOpt[] | null>(null);
 	const selection = useRef<ModelOpt | null>(null);
 	const factsRef = useRef(facts);
 	factsRef.current = facts;
@@ -117,6 +119,9 @@ export function HomePage(_props: PageProps) {
 		void api<{ defaultModel?: string | null }>("GET", "/left/settings").then((r) => {
 			const ref = parseModelRef(r.defaultModel);
 			if (alive && ref && !selection.current) setFacts({ current: { provider: ref.provider, id: ref.id }, thinkingLevel: ref.thinking, liveThinking: [] });
+		}).catch(() => {});
+		void api<{ models?: ModelOpt[] }>("GET", "/left/roles").then((r) => {
+			if (alive && Array.isArray(r.models)) setCatalogModels(r.models);
 		}).catch(() => {});
 		return () => { alive = false; };
 	}, []);
@@ -353,6 +358,32 @@ export function HomePage(_props: PageProps) {
 		submitting.current = true;
 		setSending(true);
 		try {
+			if (/^\/automate(?:\s|$)/i.test(text)) {
+				const goal = text.replace(/^\/automate\s*/i, "").trim();
+				const res = await api<{ dirs: DirEntry[] }>("GET", "/left/dirs");
+				const activeMode = useTree.getState().mode;
+				const dir = resolveActiveDirectory(res.dirs ?? [], directory, activeMode);
+				const createdId = await startAutomationChat({
+					cwd: dir.path,
+					mode: dir.kind === "global" ? "chat" : dir.mode ?? activeMode,
+					prefill: goal || "帮我定制一个自动化任务：",
+					autoSend: Boolean(goal),
+					prepareAttachments:
+						currentAtts.length > 0
+							? async (sid) => {
+									const finalAtts = await uploadPendingFiles(sid, currentAtts);
+									if (!finalAtts) return null;
+									for (const a of finalAtts) if (a.url) transferredUrls.current.add(a.url);
+									return finalAtts;
+								}
+							: undefined,
+				});
+				if (!createdId) return;
+				const cur = apiRef.current?.get();
+				if (cur === value) apiRef.current?.clear();
+				setAtts([]);
+				return;
+			}
 			const id = await prepareDraft(true);
 			const finalAtts = await uploadPendingFiles(id, currentAtts);
 			if (!finalAtts) return;
@@ -554,6 +585,17 @@ export function HomePage(_props: PageProps) {
 					onSend={(text) => void handleSend(text)}
 					model={facts.current?.id}
 					thinking={facts.thinkingLevel}
+					thinkingSupported={resolveThinkingSupported(
+						catalogModels || selection.current
+							? {
+									models: catalogModels ?? (selection.current ? [selection.current] : []),
+									current: facts.current,
+									liveThinking: facts.liveThinking,
+								}
+							: null,
+						facts.current ? `${facts.current.provider ? `${facts.current.provider}/` : ""}${facts.current.id}` : null,
+						facts.thinkingLevel,
+					)}
 					onModel={() => setModelOpen(true)}
 					onThinking={(el) => {
 						setThinkingAnchor(el ?? null);
@@ -574,6 +616,28 @@ export function HomePage(_props: PageProps) {
 				<div className="pt-3 pb-3">
 					<MenuRow icon={<Monitor size={21} strokeWidth={1.75} />} label="电脑端文件" hint="插入电脑工作区中的文件" onClick={() => void openAction("finder")} />
 					<MenuRow icon={<FolderOpen size={21} strokeWidth={1.75} />} label="在项目中工作" hint="选择项目目录" onClick={() => { setPlusOpen(false); setDirectoryOpen(true); }} />
+					<MenuRow
+						icon={<CalendarClock size={21} strokeWidth={1.75} />}
+						label="定制自动化"
+						hint="用对话让 AI 编写检测脚本并生成确认卡"
+						onClick={() => {
+							setPlusOpen(false);
+							void (async () => {
+								try {
+									const res = await api<{ dirs: DirEntry[] }>("GET", "/left/dirs");
+									const activeMode = useTree.getState().mode;
+									const dir = resolveActiveDirectory(res.dirs ?? [], directory, activeMode);
+									await startAutomationChat({
+										cwd: dir.path,
+										mode: dir.kind === "global" ? "chat" : dir.mode ?? activeMode,
+										prefill: "帮我定制一个自动化任务：",
+									});
+								} catch (e) {
+									toast(`启动自动化定制失败：${errorMessage(e)}`, { kind: "error" });
+								}
+							})();
+						}}
+					/>
 					<MenuRow icon={<Target size={21} strokeWidth={1.75} />} label="目标" hint="设定持续推进的任务目标" onClick={() => void openAction("goal")} />
 					<div className="flex min-h-13 items-center gap-3.5 py-1.5 pr-4 pl-5"><Lightbulb size={21} strokeWidth={1.75} className="shrink-0 text-m-text-2" /><span className="flex-1 whitespace-nowrap text-m-md">规划模式</span><Switch label="规划模式" checked={planOn} disabled={sending} onChange={setPlanOn} /></div>
 				</div>

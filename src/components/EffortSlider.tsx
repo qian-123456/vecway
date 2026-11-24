@@ -77,7 +77,8 @@ export function EffortSlider({
 	fastMode?: boolean;
 }) {
 	const rootRef = useRef<HTMLDivElement>(null);
-	const press = useRef<{ x: number; y: number; index: number } | null>(null);
+	const trackRectRef = useRef<DOMRect | null>(null);
+	const press = useRef<{ x: number; y: number; index: number; initialValue: number; leftMax: boolean } | null>(null);
 	const wheel = useRef({ delta: 0, at: 0 });
 	const [pressed, setPressed] = useState(false);
 	const [dragging, setDragging] = useState(false);
@@ -96,24 +97,44 @@ export function EffortSlider({
 	const fastEffects = useDelayedUnmount(fastMode && !atMax && p !== null, reduced ? 0 : EFFECTS_FADE_MS);
 	const fastDotTransition = useFastModeDotTransition(fastMode, reduced);
 
-	const move = (index: number) => {
+	useEffect(() => {
+		const el = rootRef.current;
+		if (!el) return;
+		const refresh = () => {
+			if (press.current) trackRectRef.current = el.getBoundingClientRect();
+		};
+		window.addEventListener("resize", refresh, { passive: true });
+		const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(refresh) : null;
+		ro?.observe(el);
+		return () => {
+			window.removeEventListener("resize", refresh);
+			ro?.disconnect();
+		};
+	}, []);
+
+	const move = (index: number, fromPointer = false) => {
 		if (index === value) return;
-		setBurstKey((k) => (index === last ? k + 1 : 0));
+		if (fromPointer && press.current) {
+			if (index !== last) press.current.leftMax = true;
+		} else {
+			setBurstKey((k) => (index === last ? k + 1 : 0));
+		}
 		onPreview(index);
 	};
 	const step = (index: number) => {
 		const next = Math.max(0, Math.min(last, index));
-		move(next);
+		move(next, false);
 		onCommit(next);
 	};
-	const indexAt = (clientX: number) => {
-		const r = rootRef.current?.getBoundingClientRect();
+	const indexAt = (clientX: number, useCached = false) => {
+		const r = (useCached ? trackRectRef.current : null) ?? rootRef.current?.getBoundingClientRect();
 		if (!r || r.width <= THUMB_INSET * 2 || last <= 0) return 0;
 		const f = (clientX - r.left - THUMB_INSET) / (r.width - THUMB_INSET * 2);
 		return Math.round(Math.min(1, Math.max(0, f)) * last);
 	};
 	const release = () => {
 		press.current = null;
+		trackRectRef.current = null;
 		setPressed(false);
 		setDragging(false);
 		setHovered(false);
@@ -125,28 +146,36 @@ export function EffortSlider({
 		e.currentTarget.focus({ preventScroll: true });
 		setKeyboardFocused(false);
 		e.currentTarget.setPointerCapture(e.pointerId);
-		const index = indexAt(e.clientX);
-		press.current = { x: e.clientX, y: e.clientY, index };
+		trackRectRef.current = rootRef.current?.getBoundingClientRect() ?? null;
+		const index = indexAt(e.clientX, true);
+		press.current = { x: e.clientX, y: e.clientY, index, initialValue: value, leftMax: value !== last };
 		setPressed(true);
-		move(index);
+		move(index, true);
 	};
 	const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
 		const start = press.current;
 		if (!start) return;
 		if (!dragging && (e.clientX - start.x) ** 2 + (e.clientY - start.y) ** 2 >= DRAG_SLOP ** 2) setDragging(true);
-		const index = indexAt(e.clientX);
+		const index = indexAt(e.clientX, true);
 		start.index = index;
-		move(index);
+		move(index, true);
 	};
 	const onPointerUp = () => {
 		const start = press.current;
 		if (!start) return;
 		release();
+		if (start.index === last && (start.initialValue !== last || start.leftMax)) {
+			setBurstKey((k) => k + 1);
+		} else if (start.index !== last) {
+			setBurstKey(0);
+		}
 		onCommit(start.index);
 	};
 	const onPointerAbort = () => {
-		if (!press.current) return;
+		const start = press.current;
+		if (!start) return;
 		release();
+		if (start.initialValue !== last) setBurstKey(0);
 		onCancel();
 	};
 	const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -356,14 +385,14 @@ function TrackParticle({ index }: { index: number }) {
 		};
 	}, []);
 	const base = Math.round(4 + noise(index, 14) * 92);
+	const scale = 0.5 + noise(index, 12) * 0.45;
 	return (
 		<span
 			className="es-particle"
 			style={{
-				left: `calc(${base}% + ${spot.dx}px)`,
-				top: spot.y,
+				left: `${base}%`,
 				opacity: 0.4 + noise(index, 11) * 0.6,
-				transform: `translate(-50%, -50%) scale(${0.5 + noise(index, 12) * 0.45})`,
+				transform: `translate3d(calc(${spot.dx}px - 50%), calc(${spot.y}px - 50%), 0) scale(${scale})`,
 				transitionDuration: `${PARTICLE_CYCLE_S * spot.durationScale}s`,
 			}}
 		/>

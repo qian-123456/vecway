@@ -84,11 +84,7 @@ pub async fn git_badge(
 }
 
 /// Main repo root for a directory (resolves linked worktrees).
-#[tauri::command]
-pub async fn git_repo_root(
-    _state: tauri::State<'_, AppState>,
-    cwd: String,
-) -> Result<Option<String>, String> {
+pub(crate) async fn repo_root_for_cwd(cwd: String) -> Result<Option<String>, String> {
     blocking(move || {
         let path = crate::services::files::resolve(&cwd)?;
         if !path.is_dir() {
@@ -101,12 +97,28 @@ pub async fn git_repo_root(
 }
 
 #[tauri::command]
+pub async fn git_repo_root(
+    _state: tauri::State<'_, AppState>,
+    cwd: String,
+) -> Result<Option<String>, String> {
+    repo_root_for_cwd(cwd).await
+}
+
+#[tauri::command]
 pub async fn git_log(
     _state: tauri::State<'_, AppState>,
     cwd: String,
     limit: u32,
 ) -> Result<GitHistory, String> {
     blocking(move || Ok(history::history(&PathBuf::from(cwd), limit))).await
+}
+
+pub(crate) async fn diff_for_cwd(
+    cwd: String,
+    path: Option<String>,
+    sha: Option<String>,
+) -> Result<String, String> {
+    blocking(move || history::diff(&PathBuf::from(cwd), path.as_deref(), sha.as_deref())).await
 }
 
 #[tauri::command]
@@ -116,7 +128,7 @@ pub async fn git_diff(
     path: Option<String>,
     sha: Option<String>,
 ) -> Result<String, String> {
-    blocking(move || history::diff(&PathBuf::from(cwd), path.as_deref(), sha.as_deref())).await
+    diff_for_cwd(cwd, path, sha).await
 }
 
 #[tauri::command]
@@ -138,9 +150,8 @@ pub async fn git_create_worktree(
     .await
 }
 
-#[tauri::command]
-pub async fn git_list_worktrees(
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn list_worktrees_for_app(
+    state: &AppState,
     repo: String,
 ) -> Result<Vec<WorktreeInfo>, String> {
     let root = blocking(move || {
@@ -150,8 +161,39 @@ pub async fn git_list_worktrees(
     let Some(root) = root else {
         return Ok(Vec::new());
     };
-    let sessions = session_cwds(&state).await;
+    let sessions = session_cwds(state).await;
     blocking(move || worktree::list(&root, &sessions)).await
+}
+
+#[tauri::command]
+pub async fn git_list_worktrees(
+    state: tauri::State<'_, AppState>,
+    repo: String,
+) -> Result<Vec<WorktreeInfo>, String> {
+    list_worktrees_for_app(&state, repo).await
+}
+
+pub(crate) async fn remove_worktree_for_app(
+    state: &AppState,
+    repo: String,
+    path: String,
+    delete_branch: bool,
+    force: bool,
+    orphan_only: Option<bool>,
+) -> Result<(), String> {
+    let _mutation = crate::catalog::session_mutation_lock().lock().await;
+    // An orphan listing is only a preview: re-read ownership at mutation time.
+    let sessions = removal_session_cwds(state, orphan_only.unwrap_or(false)).await;
+    blocking(move || {
+        worktree::remove_checked(
+            &PathBuf::from(repo),
+            &PathBuf::from(path),
+            delete_branch,
+            force,
+            &sessions,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -163,19 +205,7 @@ pub async fn git_remove_worktree(
     force: bool,
     orphan_only: Option<bool>,
 ) -> Result<(), String> {
-    let _mutation = crate::catalog::session_mutation_lock().lock().await;
-    // An orphan listing is only a preview: re-read ownership at mutation time.
-    let sessions = removal_session_cwds(&state, orphan_only.unwrap_or(false)).await;
-    blocking(move || {
-        worktree::remove_checked(
-            &PathBuf::from(repo),
-            &PathBuf::from(path),
-            delete_branch,
-            force,
-            &sessions,
-        )
-    })
-    .await
+    remove_worktree_for_app(&state, repo, path, delete_branch, force, orphan_only).await
 }
 
 #[tauri::command]
@@ -603,9 +633,7 @@ pub async fn git_merge_preview(
     blocking(move || merge_preview(&PathBuf::from(repo), &target_branch, &source_branch)).await
 }
 
-#[tauri::command]
-pub async fn git_merge_branch(
-    _state: tauri::State<'_, AppState>,
+pub(crate) async fn merge_branch_for_repo(
     repo: String,
     source_branch: String,
 ) -> Result<String, String> {
@@ -613,11 +641,24 @@ pub async fn git_merge_branch(
 }
 
 #[tauri::command]
+pub async fn git_merge_branch(
+    _state: tauri::State<'_, AppState>,
+    repo: String,
+    source_branch: String,
+) -> Result<String, String> {
+    merge_branch_for_repo(repo, source_branch).await
+}
+
+pub(crate) async fn diff_base_for_cwd(cwd: String) -> Result<String, String> {
+    blocking(move || base_sync::diff_base(&PathBuf::from(cwd))).await
+}
+
+#[tauri::command]
 pub async fn git_diff_base(
     _state: tauri::State<'_, AppState>,
     cwd: String,
 ) -> Result<String, String> {
-    blocking(move || base_sync::diff_base(&PathBuf::from(cwd))).await
+    diff_base_for_cwd(cwd).await
 }
 
 #[tauri::command]
@@ -929,12 +970,7 @@ pub fn parse_commit_draft(reply: &str) -> Result<String, String> {
 }
 
 /// Save every uncommitted change (new files included) as one commit.
-#[tauri::command]
-pub async fn git_commit(
-    _state: tauri::State<'_, AppState>,
-    cwd: String,
-    message: String,
-) -> Result<String, String> {
+pub(crate) async fn commit_all_for_cwd(cwd: String, message: String) -> Result<String, String> {
     blocking(move || {
         let dir = PathBuf::from(&cwd);
         let msg = message.trim();
@@ -946,6 +982,15 @@ pub async fn git_commit(
             .map_err(|e| format!("git commit 失败: {e}"))
     })
     .await
+}
+
+#[tauri::command]
+pub async fn git_commit(
+    _state: tauri::State<'_, AppState>,
+    cwd: String,
+    message: String,
+) -> Result<String, String> {
+    commit_all_for_cwd(cwd, message).await
 }
 
 /// Turn checkpoints of one session file (oldest first), enriched with

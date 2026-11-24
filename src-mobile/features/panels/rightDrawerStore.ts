@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { create } from "zustand";
 import type { TitleSwitcherCreate, TitleSwitcherItem } from "../../ui/TitleSwitcher";
 
-export type WorkspaceTab = "sidechat" | "git" | "files" | "terminal" | "services";
+export type WorkspaceTab = "sidechat" | "git" | "files" | "terminal" | "services" | "automation";
 
 export interface SidechatAnnotationPayload {
 	quote: string;
@@ -68,8 +68,11 @@ interface RightDrawerState {
 	pendingMain: { sessionId: string; payload: MainAnnotationPayload; nonce: number } | null;
 	/** Per-session, per-tab header slot metadata registered by embedded panels. */
 	tabHeaders: Record<string, DrawerTabHeader>;
+	/** Target automation draft to scroll/highlight when opened from a turn card. */
+	focusedAutomationDraft: { sessionId: string; draftId: string; nonce: number } | null;
 
 	openDrawer: (sessionId: string, tab?: WorkspaceTab) => void;
+	openAutomationDraft: (sessionId: string, draftId: string) => void;
 	closeDrawer: () => void;
 	toggleDrawer: (sessionId: string) => void;
 	setTab: (sessionId: string, tab: WorkspaceTab) => void;
@@ -104,6 +107,7 @@ export const useRightDrawer = create<RightDrawerState>((set, get) => ({
 	pendingSidechat: null,
 	pendingMain: null,
 	tabHeaders: {},
+	focusedAutomationDraft: null,
 
 	openDrawer: (sessionId, tab) => {
 		set((s) => {
@@ -125,6 +129,20 @@ export const useRightDrawer = create<RightDrawerState>((set, get) => ({
 		});
 	},
 
+	openAutomationDraft: (sessionId, draftId) => {
+		const nonce = ++nonceSeq;
+		set((s) => ({
+			open: true,
+			openSeq: (s.openSeq ?? 0) + 1,
+			sessionId,
+			tabBySession: { ...s.tabBySession, [sessionId]: "automation" },
+			visitedBySession: {
+				...s.visitedBySession,
+				[sessionId]: addVisited(s.visitedBySession[sessionId], "automation"),
+			},
+			focusedAutomationDraft: { sessionId, draftId, nonce },
+		}));
+	},
 	closeDrawer: () => set((s) => ({ open: false, openSeq: (s.openSeq ?? 0) + 1 })),
 
 	toggleDrawer: (sessionId) => {

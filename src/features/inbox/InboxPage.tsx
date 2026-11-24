@@ -113,8 +113,13 @@ export function InboxPage() {
 		.filter((k) => tab === "all" || tab === k)
 		.flatMap((k) => groups.byKind[k]);
 	const markAllRead = async () => {
-		await Promise.all(readable.map((s) => markSessionSeen(s.id)));
-		toast.info(t("inbox.markAllReadToast", { count: readable.length }));
+		if (readable.length === 0) return;
+		try {
+			await Promise.all(readable.map((s) => markSessionSeen(s.id)));
+			toast.info(t("inbox.markAllReadToast", { count: readable.length }));
+		} catch (e) {
+			toast.error(String(e));
+		}
 	};
 	const headerBtn =
 		"inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2 py-1 text-xs text-[var(--text-dim)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]";
@@ -150,16 +155,17 @@ export function InboxPage() {
 						</span>
 					</div>
 					<div className="flex max-w-full flex-wrap items-center gap-2">
-						<button
-							type="button"
-							onClick={markAllRead}
-							disabled={readable.length === 0}
-							className={`${headerBtn} disabled:cursor-not-allowed disabled:opacity-40`}
-							title={t("inbox.markAllReadTitle")}
-						>
-							<CheckCheck className="h-3.5 w-3.5" />
-							{t("inbox.markAllRead")}
-						</button>
+						{readable.length > 0 && (
+							<button
+								type="button"
+								onClick={markAllRead}
+								className={headerBtn}
+								title={t("inbox.markAllReadTitle")}
+							>
+								<CheckCheck className="h-3.5 w-3.5" />
+								{t("inbox.markAllRead")}
+							</button>
+						)}
 						<button
 							type="button"
 							onClick={async () => {
@@ -183,7 +189,7 @@ export function InboxPage() {
 					</div>
 				</div>
 				<div className="mt-2 flex gap-1 overflow-x-auto" role="tablist">
-					{TABS.map((tabItem) => (
+					{TABS.filter((tabItem) => tabItem.id === "all" || tab === tabItem.id || count(tabItem.id) > 0).map((tabItem) => (
 						<button
 							key={tabItem.id}
 							type="button"
@@ -212,6 +218,7 @@ export function InboxPage() {
 						<div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--border-divider)] py-16 text-center">
 							<CheckCircle2 className="mb-3 h-8 w-8 text-[var(--text-dim)]" />
 							<h3 className="text-sm font-semibold">{t(EMPTY_TEXT[tab])}</h3>
+							<p className="mt-1.5 max-w-md px-4 text-xs text-[var(--text-dim)]">{t("inbox.emptyHint")}</p>
 						</div>
 					) : tab === "all" ? (
 						<div className="space-y-5">

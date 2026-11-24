@@ -108,5 +108,6 @@ export const toast = {
 	info: (text: string, ttlMs?: number, action?: ToastAction) => useToasts.getState().push("info", text, ttlMs, action),
 	success: (text: string, ttlMs?: number, action?: ToastAction) =>
 		useToasts.getState().push("success", text, ttlMs, action),
-	error: (text: string, ttlMs?: number) => useToasts.getState().push("error", text, ttlMs),
+	error: (text: string, ttlMs?: number, action?: ToastAction) =>
+		useToasts.getState().push("error", text, ttlMs, action),
 };

@@ -39,6 +39,7 @@ export function thinkingLabel(level: string): { label: string; desc: string } {
 export function ThinkingLevelPicker({
 	levels,
 	reasoning,
+	loading = false,
 	value,
 	open,
 	onOpenChange,
@@ -53,6 +54,8 @@ export function ThinkingLevelPicker({
 	levels: string[];
 	/** Catalog `reasoning` flag of the selected model; decides the chip when `levels` is empty. */
 	reasoning?: boolean | null;
+	/** True while model metadata / capabilities are still resolving. */
+	loading?: boolean;
 	value: string;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -73,6 +76,23 @@ export function ThinkingLevelPicker({
 	const { t } = useT();
 	const ref = useRef<HTMLDivElement>(null);
 	const cur = thinkingLabel(value);
+	if (levels.length === 0 && (loading || reasoning === undefined)) {
+		return (
+			<span
+				title={t("chat.loadingShort")}
+				aria-busy="true"
+				data-thinking-state="loading"
+				className={clsx(
+					"shrink-0 select-none whitespace-nowrap",
+					variant === "pill"
+						? "flex h-8 items-center gap-1 rounded-lg hairline bg-[var(--bg-active-fill)] px-2.5 text-xs text-neutral-500 opacity-70"
+						: "rounded-full bg-[var(--well-bg,var(--bg-hover))] px-2 py-0.5 text-[12px] text-[var(--text-30,var(--text-dim))]",
+				)}
+			>
+				{t("chat.loadingShort")}
+			</span>
+		);
+	}
 	const chip = thinkingChipState(levels, reasoning);
 	if (chip.kind === "unsupported") {
 		return (

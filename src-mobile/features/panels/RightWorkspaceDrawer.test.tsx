@@ -104,14 +104,16 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(panels[0].className).toContain("hidden");
 		expect(panels[1].className).not.toContain("hidden");
 
-		// Close drawer: both visited tabs stay mounted & hidden so state is never destroyed
+		// Close drawer: visited tabs stay mounted and selected tab stays non-hidden during exit slide while outer wrapper is inert
 		fireEvent.click(screen.getByRole("button", { name: "返回对话" }));
 		expect(useRightDrawer.getState().open).toBe(false);
 		const closedPanels = document.querySelectorAll('[role="tabpanel"]');
 		expect(closedPanels).toHaveLength(2);
 		expect(closedPanels[0].className).toContain("hidden");
-		expect(closedPanels[1].className).toContain("hidden");
-
+		expect(closedPanels[1].className).not.toContain("hidden");
+		const outer = screen.getByRole("dialog", { name: "工作区抽屉", hidden: true }).parentElement;
+		expect(outer?.getAttribute("aria-hidden")).toBe("true");
+		expect(outer?.hasAttribute("inert")).toBe(true);
 		// Switch session: previous session's visited tabs unmount cleanly
 		view.rerender(<RightWorkspaceDrawer sessionId="s2" />);
 		expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(0);
@@ -384,5 +386,37 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(useRightDrawer.getState().pendingSidechat?.payload.comment).toBe("请修复这个测试");
 		expect(useRightDrawer.getState().pendingSidechat?.payload.quote).toContain("FAIL test.ts");
 		expect(useRightDrawer.getState().tabBySession.s1).toBe("sidechat");
+	});
+
+	it("keeps RightWorkspaceDrawer onscreen during reduced-motion opacity fade-out and moves offscreen after fade completes", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("matchMedia", (q: string) => ({
+			matches: q.includes("prefers-reduced-motion"),
+			media: q,
+			onchange: null,
+			addListener() {},
+			removeListener() {},
+			addEventListener() {},
+			removeEventListener() {},
+			dispatchEvent() { return false; },
+		}));
+		vi.spyOn(apiModule, "api").mockImplementation(async (method, path) => {
+			if (method === "GET" && path.endsWith("/git/status")) return { isRepo: true, branch: "main", files: [] };
+			return {};
+		});
+
+		render(<RightWorkspaceDrawer sessionId="s1" />);
+		act(() => useRightDrawer.getState().openDrawer("s1", "git"));
+		const dialog = screen.getByRole("dialog", { name: "工作区抽屉" });
+		expect(dialog.style.transform).toBe("translate3d(0,0,0)");
+
+		// Close via button under reduced motion: must stay at translate3d(0,0,0) while fading out
+		fireEvent.click(screen.getByRole("button", { name: "返回对话" }));
+		expect(dialog.dataset.visible).toBe("false");
+		expect(dialog.style.transform).toBe("translate3d(0,0,0)");
+
+		act(() => vi.advanceTimersByTime(160));
+		expect(dialog.style.transform).toBe("translate3d(100%,0,0)");
+		vi.useRealTimers();
 	});
 });

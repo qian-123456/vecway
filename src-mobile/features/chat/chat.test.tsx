@@ -466,18 +466,27 @@ describe("controller stop", () => {
 		await act(async () => { await c.stop(); });
 		expect(apiMock).toHaveBeenCalledWith("POST", "/sessions/s1/abort");
 		expect(set).toHaveBeenLastCalledWith("已有草稿\n\n排队的追问\n\n排队的后续");
-		expect(screen.getByText("已停止，撤回 2 条排队消息")).toBeTruthy();
+		expect(screen.getByText("正在停止当前回复，已撤回 2 条排队消息")).toBeTruthy();
 	});
 
-	it("keeps the plain stop toast and touches no composer when nothing was queued", async () => {
+	it("keeps single-flight stopping guard until turn ends or errors", async () => {
 		const c = new ChatController("s1");
-		const set = vi.fn();
-		c.composer = { get: () => "", set };
-		apiMock.mockResolvedValueOnce({ aborted: true, restoredTexts: [] });
+		c.store.setState({ working: true });
+		let resolveAbort!: (v: unknown) => void;
+		apiMock.mockImplementationOnce(() => new Promise((r) => { resolveAbort = r; }));
 		render(<ToastHost />);
+
+		const first = c.stop();
+		expect(c.state.stopping).toBe(true);
+		// Duplicate click while stopping is in flight does not fire a second abort
 		await act(async () => { await c.stop(); });
-		expect(screen.getByText("已发送停止请求")).toBeTruthy();
-		expect(set).not.toHaveBeenCalled();
+		expect(apiMock.mock.calls.filter(([, p]) => String(p).endsWith("/abort"))).toHaveLength(1);
+
+		await act(async () => {
+			resolveAbort({ aborted: true, restoredTexts: [] });
+			await first;
+		});
+		expect(screen.getByText("正在停止当前回复")).toBeTruthy();
 	});
 });
 

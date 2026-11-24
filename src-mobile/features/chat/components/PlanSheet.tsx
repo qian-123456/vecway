@@ -32,6 +32,8 @@ import { desktopThinkingLabel, resolveThinkingLevels, shortModel, type ModelOpt 
 import { CompactModelPane } from "./ModelThinkingSheet";
 import { ThinkingLevelPopover } from "./ThinkingLevelPopover";
 import { sessionModelSource, useModelFacts } from "./useModelFacts";
+import { readTranslateXY, rubberBand, VelocityTracker } from "../../../ui/gesturePhysics";
+import { scrollBehavior } from "../../../ui/motion";
 
 export type PlanSheetMode = "half" | "full" | "float";
 export type PlanSheetStatus = "review" | "pending" | "executing" | "completed" | "failed" | "handoff";
@@ -527,23 +529,30 @@ export function PlanSheet({
 	const [showDiff, setShowDiff] = useState(false);
 	const [headings, setHeadings] = useState<PlanHeading[]>([]);
 	const [curSection, setCurSection] = useState(0);
-	const [dragOffset, setDragOffset] = useState(0);
-	const [dragging, setDragging] = useState(false);
-
+	const sheetRef = useRef<HTMLElement>(null);
+	const scrimRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const bodyRef = useRef<HTMLDivElement>(null);
 	const moreBtnRef = useRef<HTMLButtonElement>(null);
 	const tocBtnRef = useRef<HTMLButtonElement>(null);
-	const dragRef = useRef<{ pointerId: number; startY: number; startTime: number; lastY: number } | null>(null);
+	const trackerRef = useRef(new VelocityTracker());
+	const dragRef = useRef<{ pointerId: number; startY: number; baseY: number; lastTy: number } | null>(null);
 
 	useEffect(() => {
 		if (open) {
 			if (modeProp === undefined) setUncontrolledMode("half");
 			setTocOpen(false);
 			setMoreOpen(false);
-			setDragOffset(0);
-			setDragging(false);
 			dragRef.current = null;
+			trackerRef.current.reset();
+			if (sheetRef.current) {
+				delete sheetRef.current.dataset.dragging;
+				sheetRef.current.style.transform = "";
+			}
+			if (scrimRef.current) {
+				scrimRef.current.style.transition = "";
+				scrimRef.current.style.opacity = "";
+			}
 		} else {
 			setTocOpen(false);
 			setMoreOpen(false);
@@ -615,7 +624,7 @@ export function PlanSheet({
 		if (!target) return;
 		const top = el.scrollTop + target.getBoundingClientRect().top - el.getBoundingClientRect().top - 10;
 		if (typeof el.scrollTo === "function") {
-			el.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+			el.scrollTo({ top: Math.max(0, top), behavior: scrollBehavior() });
 		} else {
 			el.scrollTop = Math.max(0, top);
 		}
@@ -629,24 +638,51 @@ export function PlanSheet({
 	const onDragStart = (e: ReactPointerEvent<HTMLDivElement>) => {
 		if (dragRef.current) return;
 		if ((e.target as HTMLElement).closest("button,a,input,textarea")) return;
-		dragRef.current = { pointerId: e.pointerId, startY: e.clientY, startTime: performance.now(), lastY: e.clientY };
-		setDragging(true);
+		const sheet = sheetRef.current;
+		const baseY = sheet ? readTranslateXY(sheet).y : 0;
+		dragRef.current = { pointerId: e.pointerId, startY: e.clientY, baseY, lastTy: baseY };
+		trackerRef.current.reset();
+		trackerRef.current.add(e.clientX, e.clientY, e.timeStamp);
+		if (sheet) {
+			if (baseY !== 0) sheet.style.transform = `translate3d(0, ${baseY}px, 0)`;
+			sheet.dataset.dragging = "true";
+		}
+		if (scrimRef.current) scrimRef.current.style.transition = "none";
 		e.currentTarget.setPointerCapture?.(e.pointerId);
 	};
 
 	const onDragMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-		if (!dragRef.current || dragRef.current.pointerId !== e.pointerId) return;
-		dragRef.current.lastY = e.clientY;
-		const dy = e.clientY - dragRef.current.startY;
-		setDragOffset(Math.max(-96, dy));
+		const drag = dragRef.current;
+		if (!drag || drag.pointerId !== e.pointerId) return;
+		const sheet = sheetRef.current;
+		const rawDy = drag.baseY + (e.clientY - drag.startY);
+		const dim = Math.max(200, sheet?.clientHeight || 420);
+		const ty = rawDy < 0 ? rubberBand(rawDy, 200, 0.25) : rawDy;
+		drag.lastTy = ty;
+		trackerRef.current.add(e.clientX, e.clientY, e.timeStamp);
+		if (sheet) sheet.style.transform = `translate3d(0, ${ty}px, 0)`;
+		if (scrimRef.current) {
+			scrimRef.current.style.opacity = String(Math.max(0.1, Math.min(1, 1 - Math.max(0, ty) / dim)));
+		}
+	};
+
+	const endDragStyles = () => {
+		if (sheetRef.current) {
+			delete sheetRef.current.dataset.dragging;
+			sheetRef.current.style.transform = "";
+		}
+		if (scrimRef.current) {
+			scrimRef.current.style.transition = "";
+			scrimRef.current.style.opacity = "";
+		}
 	};
 
 	const onDragCancel = (e: ReactPointerEvent<HTMLDivElement>) => {
 		const drag = dragRef.current;
 		if (!drag || drag.pointerId !== e.pointerId) return;
 		dragRef.current = null;
-		setDragging(false);
-		setDragOffset(0);
+		trackerRef.current.reset();
+		endDragStyles();
 		if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
 			e.currentTarget.releasePointerCapture?.(e.pointerId);
 		}
@@ -656,21 +692,20 @@ export function PlanSheet({
 		const drag = dragRef.current;
 		if (!drag || drag.pointerId !== e.pointerId) return;
 		dragRef.current = null;
-		setDragging(false);
-		setDragOffset(0);
+		const { vy } = trackerRef.current.velocity(e.timeStamp);
+		trackerRef.current.reset();
+		endDragStyles();
 		if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
 			e.currentTarget.releasePointerCapture?.(e.pointerId);
 		}
-		const dy = e.clientY - drag.startY;
-		const dt = Math.max(16, performance.now() - drag.startTime);
-		const velocity = dy / dt;
+		const dy = drag.baseY + (e.clientY - drag.startY);
 
 		if (mode === "half") {
-			if (dy < -54 || velocity < -0.45) setMode("full");
-			else if (dy > 54 || velocity > 0.45) setMode("float");
+			if (dy < -54 || vy < -0.45) setMode("full");
+			else if (dy > 54 || vy > 0.45) setMode("float");
 		} else if (mode === "full") {
-			if (dy > 190 || velocity > 0.85) setMode("float");
-			else if (dy > 54 || velocity > 0.45) setMode("half");
+			if (dy > 190 || vy > 0.85) setMode("float");
+			else if (dy > 54 || vy > 0.45) setMode("half");
 		}
 	};
 
@@ -716,14 +751,6 @@ export function PlanSheet({
 	}
 
 	const sheetHeight = mode === "full" ? "calc(var(--m-vh, 100dvh) * 0.94)" : "calc(var(--m-vh, 100dvh) * 0.78)";
-	const translateY = dragOffset > 0 ? dragOffset : dragOffset * 0.25;
-	const reducedMotion = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-	const sheetTransition = dragging
-		? "none"
-		: reducedMotion
-			? "opacity 150ms var(--m-ease)"
-			: "height 300ms var(--m-ease-sheet), transform 300ms var(--m-ease-sheet), opacity var(--m-dur-fast) var(--m-ease)";
-
 	return createPortal(
 		<div
 			className="fixed inset-x-0 z-(--z-sheet) flex flex-col justify-end"
@@ -733,21 +760,21 @@ export function PlanSheet({
 			}}
 		>
 			<div
+				ref={scrimRef}
 				aria-hidden="true"
 				onClick={onClose}
 				className="absolute inset-0 bg-m-scrim/45 backdrop-blur-[2px] transition-opacity duration-200"
 			/>
 			<section
+				ref={sheetRef}
 				role="dialog"
 				aria-modal={isTopModal ? "true" : undefined}
 				aria-label={resolvedTitle}
 				style={{
 					height: sheetHeight,
 					maxHeight: "calc(var(--m-vh, 100dvh) * 0.94)",
-					transform: translateY !== 0 ? `translate3d(0, ${translateY}px, 0)` : undefined,
-					transition: sheetTransition,
 				}}
-				className="relative flex w-full flex-col overflow-hidden rounded-t-[28px] border-t border-m-border bg-m-bg-elev text-m-text shadow-m-pop"
+				className="m-plan-sheet-surface relative flex w-full flex-col overflow-hidden rounded-t-[28px] border-t border-m-border bg-m-bg-elev text-m-text shadow-m-pop"
 			>
 				{/* Draggable Compact 2-Row Header */}
 				<div

@@ -7,6 +7,7 @@ import {
 	useCopyFeedback,
 } from "../lib/copyFeedback";
 import { useT } from "../stores/language";
+import { prefersReducedMotion, usePresence } from "../lib/motion";
 import { usableViewport, Z_LAYER } from "./FloatingLayer";
 
 /** Collect bounding boxes of currently visible floating menus/selection bubbles to avoid overlapping them. */
@@ -35,20 +36,34 @@ function collectVisibleMenuObstacles(): CopyPillRect[] {
  * selection or clicked button, avoiding overlap with the annotation bubble.
  * Mount once at the app root.
  */
+const COPY_PILL_EXIT_MS = 150;
+
+/**
+ * Compact copy-feedback pill shown briefly right beside the copied text
+ * selection or clicked button, avoiding overlap with the annotation bubble.
+ * Mount once at the app root.
+ */
 export function CopyFeedbackPill() {
 	const { t } = useT();
 	const current = useCopyFeedback((s) => s.current);
+	const isOpen = Boolean(current);
+	const { present, exiting } = usePresence(isOpen, COPY_PILL_EXIT_MS);
+	const lastItemRef = useRef(current);
+	if (current) lastItemRef.current = current;
+	const item = current ?? (present ? lastItemRef.current : null);
+
 	const pillRef = useRef<HTMLDivElement>(null);
 	const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
 	useEffect(() => installGlobalCopyFeedbackListener(), []);
 
 	useLayoutEffect(() => {
-		const el = pillRef.current;
-		if (!current || !el) {
+		if (!present) {
 			setPos(null);
 			return;
 		}
+		const el = pillRef.current;
+		if (!current || !el) return;
 		const width = el.offsetWidth;
 		const height = el.offsetHeight;
 		const next = computeCopyPillPosition(
@@ -58,9 +73,9 @@ export function CopyFeedbackPill() {
 			collectVisibleMenuObstacles(),
 		);
 		setPos(next);
-	}, [current]);
+	}, [current, present]);
 
-	if (!current) return null;
+	if (!present || !item || (!isOpen && prefersReducedMotion())) return null;
 
 	return (
 		<div
@@ -76,12 +91,12 @@ export function CopyFeedbackPill() {
 			aria-live="polite"
 		>
 			<div
-				key={current.id}
-				className="flex items-center gap-1.5 rounded-full hairline vibrancy-popover shadow-apple-modal px-2.5 py-1 text-[11px] leading-none text-[var(--text)] animate-[copy-pill-in_140ms_cubic-bezier(0.22,1,0.36,1)]"
+				data-exiting={exiting ? "true" : undefined}
+				className="copy-feedback-pill flex items-center gap-1.5 rounded-full hairline vibrancy-popover shadow-apple-modal px-2.5 py-1 text-[11px] leading-none text-[var(--text)]"
 			>
 				<Check size={12} strokeWidth={2.5} className="shrink-0 text-[var(--status-success)]" />
 				<span className="whitespace-nowrap font-medium">
-					{current.label ?? t("common.copied")}
+					{item.label ?? t("common.copied")}
 				</span>
 			</div>
 		</div>

@@ -11,7 +11,7 @@ const h = vi.hoisted(() => ({
 	models: [{ provider: "provider-a", id: "model-a", name: "Model A" }, { provider: "provider-b", id: "model-b", name: "Model B" }],
 }));
 vi.mock("../../lib/ipc", () => ({ rpcEnsureLive: vi.fn() }));
-vi.mock("../../stores/sessions", () => ({ useSessions: { getState: () => ({ sessions: {}, workspaces: [] }) } }));
+vi.mock("../../stores/sessions", () => ({ useSessions: Object.assign((sel: (s: { sessions: Record<string, unknown> }) => unknown) => sel({ sessions: {} }), { getState: () => ({ sessions: {}, workspaces: [] }) }) }));
 vi.mock("../../stores/language", () => ({ useT: () => ({ t: (key: string) => key }) }));
 vi.mock("../../stores/modelCatalog", () => ({
 	useModelOptions: () => h.models,
@@ -19,7 +19,8 @@ vi.mock("../../stores/modelCatalog", () => ({
 		getState: () => ({ refresh: h.refresh }),
 	}),
 }));
-// Exercise the shared grouped picker contract without duplicating its own menu tests.
+const openSettingsTarget = vi.hoisted(() => vi.fn());
+vi.mock("../settings/settingsTargets", () => ({ openSettingsTarget }));
 vi.mock("../../components/ModelSelect", () => ({
 	ModelSelect: ({ models, currentValue, onSelect, disabled }: {
 		models: typeof h.models; currentValue: string; onSelect: (key: string) => void; disabled: boolean;
@@ -29,8 +30,10 @@ vi.mock("../../components/ModelSelect", () => ({
 }));
 
 beforeEach(() => {
+	h.models = [{ provider: "provider-a", id: "model-a", name: "Model A" }, { provider: "provider-b", id: "model-b", name: "Model B" }];
 	vi.mocked(rpcEnsureLive).mockReset();
 	h.refresh.mockClear();
+	openSettingsTarget.mockClear();
 	useUi.getState().closeModal();
 });
 afterEach(() => {
@@ -49,18 +52,33 @@ async function openRecovery() {
 }
 
 describe("ResumeMissingModelDialog", () => {
-	it("leaves selection empty and resumes the original session only after an explicit available choice", async () => {
+	it("auto-preselects the best recommended replacement and resumes only after explicit confirmation", async () => {
+		h.models = [
+			{ provider: "other", id: "plain", name: "Plain" },
+			{ provider: "old", id: "capable", name: "Capable", reasoning: true, contextWindow: 200000 } as never,
+		];
 		const { promise } = await openRecovery();
 		expect(screen.getByText("Could not restore model old/unavailable")).toBeTruthy();
+		expect(screen.getByText("sessions.viewDetails")).toBeTruthy();
 		expect(h.refresh).toHaveBeenCalledTimes(1);
-		expect(screen.getByTestId("grouped-model-select").getAttribute("data-current")).toBe("");
-		expect((screen.getByText("sessions.continueAction") as HTMLButtonElement).disabled).toBe(true);
+		expect(screen.getByTestId("grouped-model-select").getAttribute("data-current")).toBe("old/capable");
+		expect((screen.getByText("sessions.continueAction") as HTMLButtonElement).disabled).toBe(false);
 		expect(rpcEnsureLive).toHaveBeenCalledTimes(1);
-		fireEvent.click(screen.getByText("provider-b/model-b"));
+		fireEvent.click(screen.getByText("other/plain"));
 		vi.mocked(rpcEnsureLive).mockResolvedValueOnce({ sessionId: "model-dialog", sessionFile: "/original.jsonl", cwd: "/repo", pid: 2 });
 		await act(async () => fireEvent.click(screen.getByText("sessions.continueAction")));
 		await expect(promise).resolves.toMatchObject({ sessionId: "model-dialog", sessionFile: "/original.jsonl" });
-		expect(rpcEnsureLive).toHaveBeenLastCalledWith("model-dialog", undefined, "provider-b/model-b");
+		expect(rpcEnsureLive).toHaveBeenLastCalledWith("model-dialog", undefined, "other/plain");
+	});
+
+	it("shows provider settings CTA alongside refresh when catalog is empty", async () => {
+		h.models = [];
+		const { result } = await openRecovery();
+		expect((screen.getByText("sessions.continueAction") as HTMLButtonElement).disabled).toBe(true);
+		expect(screen.getByRole("button", { name: "sessions.refreshResumeModels" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "sessions.openProviderSettings" }));
+		expect(openSettingsTarget).toHaveBeenCalledWith("providers");
+		expect(isResumeCancelled(await result)).toBe(true);
 	});
 
 	it("shows retry errors inline and re-enables the explicit choice", async () => {

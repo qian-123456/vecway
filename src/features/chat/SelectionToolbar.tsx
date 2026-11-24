@@ -59,7 +59,7 @@ function BubbleAction({
 			type="button"
 			onClick={onClick}
 			className={clsx(
-				"flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-[12px] font-medium transition-colors cursor-pointer select-none",
+				"press-scale flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-[12px] font-medium transition-colors cursor-pointer select-none",
 				primary
 					? "bg-[var(--text)] text-[var(--bg-panel)] hover:opacity-85"
 					: "text-[var(--text-60)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]",
@@ -477,7 +477,7 @@ export function SelectionToolbar({
 							aria-label={t("chatView.selection.confirmAnnotationAria")}
 							title={t("chatView.selection.confirmAnnotationTitle")}
 							onClick={submitQuote}
-							className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--text)] text-[var(--bg-panel)] transition-opacity hover:opacity-80"
+							className="press-scale flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--text)] text-[var(--bg-panel)] transition-opacity hover:opacity-80"
 						>
 							<ArrowUp size={13} strokeWidth={2.5} />
 						</button>

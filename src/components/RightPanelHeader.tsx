@@ -23,11 +23,12 @@ import {
 	NotebookPen,
 	PanelRightClose,
 	Plus,
+	RotateCcw,
 	SquareTerminal,
 	X,
 } from "lucide-react";
 import type React from "react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useT } from "../stores/language";
 import { useDrawerStore } from "../features/terminal/drawerStore";
 import { useTerminalScope } from "../features/terminal/terminalTarget";
@@ -43,13 +44,14 @@ import { FloatingLayer } from "./FloatingLayer";
 import { sessionDisplayName } from "../lib/sessionName";
 import { basename } from "../lib/paths";
 import { useTrafficLightsVisible } from "../lib/trafficLights";
+import { toast } from "../lib/toast";
 import { openNewSideChat, isBlankTab, resolveActiveTab, useSideChatView } from "../features/sidechat/viewStore";
 import { sideChatTitle } from "../features/sidechat/sideChatTitle";
 import { SIDE_CHAT_TAB_ACTIONS } from "../features/sidechat/sideChatActions";
 import { visibleSideChatActions } from "../features/sidechat/handbackLogic";
 import { useDisplayPrefs } from "../stores/displayPrefs";
 import { useFilePreview } from "../stores/filePreview";
-import { useComposer } from "../stores/composer";
+import { type ComposerFile, type ComposerImage, useComposer } from "../stores/composer";
 import { useSessions } from "../stores/sessions";
 import { useLive } from "../stores/live";
 import { hasMeaningfulPlan } from "../features/chat/plan/usePlanPanelLifecycle";
@@ -98,6 +100,166 @@ interface HeaderTab {
 	menu?: { key: string; label: string; run: () => void | Promise<void> }[];
 }
 
+export interface ClosedBlankSideChatDraft {
+	tabId: string;
+	parentId: string;
+	closedAt: number;
+	text: string;
+	images: ComposerImage[];
+	files: ComposerFile[];
+}
+
+const CLOSED_DRAFTS_STORAGE_KEY = "omp_closed_blank_sidechat_drafts";
+const MAX_CLOSED_DRAFTS_PER_PARENT = 5;
+
+const closedBlankDrafts = new Map<string, ClosedBlankSideChatDraft[]>();
+const closedDraftListeners = new Set<() => void>();
+let closedDraftsVersion = 0;
+let closedDraftsHydrated = false;
+
+function notifyClosedDrafts(): void {
+	closedDraftsVersion += 1;
+	for (const fn of closedDraftListeners) fn();
+}
+
+function subscribeClosedDrafts(listener: () => void): () => void {
+	closedDraftListeners.add(listener);
+	return () => {
+		closedDraftListeners.delete(listener);
+	};
+}
+
+function sanitizeDraftEntry(raw: unknown): ClosedBlankSideChatDraft | null {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+	const r = raw as Record<string, unknown>;
+	if (typeof r.tabId !== "string" || !r.tabId || typeof r.parentId !== "string" || !r.parentId) return null;
+	const text = typeof r.text === "string" ? r.text : "";
+	const closedAt = typeof r.closedAt === "number" && Number.isFinite(r.closedAt) ? r.closedAt : Date.now();
+	const images: ComposerImage[] = Array.isArray(r.images)
+		? r.images
+				.filter((img): img is ComposerImage => Boolean(img && typeof img === "object" && typeof (img as ComposerImage).id === "string" && typeof (img as ComposerImage).path === "string"))
+				.map(({ id, path, name, width, height }) => ({
+					id,
+					path,
+					...(typeof name === "string" ? { name } : {}),
+					...(typeof width === "number" ? { width } : {}),
+					...(typeof height === "number" ? { height } : {}),
+				}))
+		: [];
+	const files: ComposerFile[] = Array.isArray(r.files)
+		? r.files
+				.filter((f): f is ComposerFile => Boolean(f && typeof f === "object" && typeof (f as ComposerFile).id === "string" && typeof (f as ComposerFile).path === "string"))
+				.map(({ id, path, name }) => ({
+					id,
+					path,
+					...(typeof name === "string" ? { name } : {}),
+				}))
+		: [];
+	if (text.trim().length === 0 && images.length === 0 && files.length === 0) return null;
+	return { tabId: r.tabId, parentId: r.parentId, closedAt, text, images, files };
+}
+
+function ensureClosedDraftsHydrated(): void {
+	if (closedDraftsHydrated) return;
+	closedDraftsHydrated = true;
+	try {
+		if (typeof sessionStorage === "undefined") return;
+		const raw = sessionStorage.getItem(CLOSED_DRAFTS_STORAGE_KEY);
+		if (!raw) return;
+		const parsed: unknown = JSON.parse(raw);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+		for (const [parentId, list] of Object.entries(parsed)) {
+			if (!Array.isArray(list)) continue;
+			const valid = list
+				.map(sanitizeDraftEntry)
+				.filter((d): d is ClosedBlankSideChatDraft => d !== null && d.parentId === parentId)
+				.slice(0, MAX_CLOSED_DRAFTS_PER_PARENT);
+			if (valid.length > 0) closedBlankDrafts.set(parentId, valid);
+		}
+	} catch {
+		/* sessionStorage unavailable */
+	}
+}
+
+function persistClosedDrafts(): void {
+	try {
+		if (typeof sessionStorage === "undefined") return;
+		if (closedBlankDrafts.size === 0) {
+			sessionStorage.removeItem(CLOSED_DRAFTS_STORAGE_KEY);
+			return;
+		}
+		const obj: Record<string, ClosedBlankSideChatDraft[]> = {};
+		for (const [parentId, list] of closedBlankDrafts.entries()) {
+			if (list.length > 0) obj[parentId] = list.slice(0, MAX_CLOSED_DRAFTS_PER_PARENT);
+		}
+		sessionStorage.setItem(CLOSED_DRAFTS_STORAGE_KEY, JSON.stringify(obj));
+	} catch {
+		/* sessionStorage unavailable */
+	}
+}
+
+function saveClosedBlankDraft(draft: ClosedBlankSideChatDraft): void {
+	ensureClosedDraftsHydrated();
+	const existing = closedBlankDrafts.get(draft.parentId) ?? [];
+	const next = [draft, ...existing.filter((d) => d.tabId !== draft.tabId)].slice(
+		0,
+		MAX_CLOSED_DRAFTS_PER_PARENT,
+	);
+	closedBlankDrafts.set(draft.parentId, next);
+	persistClosedDrafts();
+	notifyClosedDrafts();
+}
+
+export function getClosedBlankSideChatDrafts(parentId: string): readonly ClosedBlankSideChatDraft[] {
+	ensureClosedDraftsHydrated();
+	return closedBlankDrafts.get(parentId) ?? [];
+}
+
+export function getClosedBlankSideChatDraft(
+	parentId: string,
+	tabId?: string,
+): ClosedBlankSideChatDraft | undefined {
+	const list = getClosedBlankSideChatDrafts(parentId);
+	return tabId ? list.find((d) => d.tabId === tabId) : list[0];
+}
+
+export function restoreClosedBlankSideChatDraft(parentId: string, tabId?: string): string | null {
+	ensureClosedDraftsHydrated();
+	const list = closedBlankDrafts.get(parentId);
+	if (!list || list.length === 0) return null;
+	const idx = tabId ? list.findIndex((d) => d.tabId === tabId) : 0;
+	if (idx < 0) return null;
+	const snap = list[idx];
+	const remaining = list.filter((_, i) => i !== idx);
+	if (remaining.length > 0) closedBlankDrafts.set(parentId, remaining);
+	else closedBlankDrafts.delete(parentId);
+	persistClosedDrafts();
+	notifyClosedDrafts();
+
+	const restoredId = useSideChatView.getState().openBlankTab(parentId);
+	if (useUi.getState().selectedSessionId === parentId) {
+		useUi.getState().setRightTab("sidechat");
+	}
+	const c = useComposer.getState();
+	if (snap.text) c.setSideChatDraft(restoredId, snap.text);
+	if (snap.images.length > 0) c.setImages(restoredId, snap.images);
+	if (snap.files.length > 0) c.setFiles(restoredId, snap.files);
+	return restoredId;
+}
+
+export function _clearClosedBlankSideChatDrafts(): void {
+	closedBlankDrafts.clear();
+	closedDraftsHydrated = false;
+	try {
+		if (typeof sessionStorage !== "undefined") {
+			sessionStorage.removeItem(CLOSED_DRAFTS_STORAGE_KEY);
+		}
+	} catch {
+		/* sessionStorage unavailable */
+	}
+	notifyClosedDrafts();
+}
+
 export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps) {
 	const { t } = useT();
 	const tabLabel = (id: RightTab): string => t(`rightPanel.${id}`);
@@ -115,8 +277,11 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 
 	const [menuOpen, setMenuOpen] = useState(false);
 	const [overflowOpen, setOverflowOpen] = useState(false);
+	const [draftMenuOpen, setDraftMenuOpen] = useState(false);
 	const plusBtnRef = useRef<HTMLButtonElement>(null);
+	const restoreDraftBtnRef = useRef<HTMLButtonElement>(null);
 	const moreBtnRef = useRef<HTMLButtonElement>(null);
+	useSyncExternalStore(subscribeClosedDrafts, () => closedDraftsVersion, () => closedDraftsVersion);
 	const stripRef = useRef<HTMLDivElement>(null);
 	const [stripWidth, setStripWidth] = useState(0);
 	const [moreWidth, setMoreWidth] = useState(MORE_BTN_FALLBACK_WIDTH);
@@ -130,6 +295,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 		const el = stripRef.current;
 		if (!el) return;
 		setStripWidth(el.clientWidth);
+		if (typeof ResizeObserver === "undefined") return;
 		const ro = new ResizeObserver(() => setStripWidth(el.clientWidth));
 		ro.observe(el);
 		return () => ro.disconnect();
@@ -237,7 +403,37 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 							setRightTab("sidechat");
 						},
 						close: () => {
-							if (blank) useComposer.getState().clearSideChatDraft(tid);
+							if (blank) {
+								const composer = useComposer.getState();
+								const draftText = composer.sideChatDrafts[tid] ?? "";
+								const draftImages = composer.images[tid] ?? [];
+								const draftFiles = composer.files[tid] ?? [];
+								const hasDraft =
+									draftText.trim().length > 0 ||
+									draftImages.length > 0 ||
+									draftFiles.length > 0;
+								composer.clearSideChatDraft(tid);
+								if (draftImages.length > 0) composer.clearImages(tid);
+								if (draftFiles.length > 0) composer.clearFiles(tid);
+								if (hasDraft) {
+									const parentForRestore = selectedId;
+									const closedTabId = tid;
+									saveClosedBlankDraft({
+										tabId: closedTabId,
+										parentId: parentForRestore,
+										closedAt: Date.now(),
+										text: draftText,
+										images: [...draftImages],
+										files: [...draftFiles],
+									});
+									toast.info(t("rightPanel.sideChatDraftClosed"), 6000, {
+										label: t("common.undo"),
+										onClick: () => {
+											restoreClosedBlankSideChatDraft(parentForRestore, closedTabId);
+										},
+									});
+								}
+							}
 							useSideChatView.getState().closeTab(selectedId, tid);
 						},
 						menu: blank
@@ -448,6 +644,42 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 					<Plus size={14} />
 				</button>
 			</div>
+			{(() => {
+				const closedDrafts = selectedId ? getClosedBlankSideChatDrafts(selectedId) : [];
+				if (closedDrafts.length === 0) return null;
+				const label =
+					closedDrafts.length > 1
+						? t("rightPanel.restoreSideChatDraftCount", { count: closedDrafts.length })
+						: t("rightPanel.restoreSideChatDraft");
+				return (
+					<button
+						ref={restoreDraftBtnRef}
+						type="button"
+						onClick={() => {
+							if (closedDrafts.length === 1) {
+								restoreClosedBlankSideChatDraft(selectedId!, closedDrafts[0].tabId);
+								setDraftMenuOpen(false);
+							} else {
+								setDraftMenuOpen((v) => !v);
+							}
+						}}
+						title={label}
+						aria-label={label}
+						className={clsx(
+							"flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]",
+							draftMenuOpen
+								? "bg-neutral-800 text-neutral-100"
+								: "text-neutral-400 hover:bg-neutral-800/80 hover:text-neutral-200",
+						)}
+					>
+						<RotateCcw size={13} />
+						{closedDrafts.length > 1 && (
+							<span className="tabular-nums">{closedDrafts.length}</span>
+						)}
+					</button>
+				);
+			})()}
+
 
 			<button
 				type="button"
@@ -602,6 +834,43 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 					})}
 				</div>
 			</FloatingLayer>
+			{(() => {
+				const closedDrafts = selectedId ? getClosedBlankSideChatDrafts(selectedId) : [];
+				return (
+					<FloatingLayer
+						anchor={draftMenuOpen && closedDrafts.length > 0 ? restoreDraftBtnRef.current : null}
+						placement="bottom-end"
+						offset={4}
+						layer="popover"
+						ignoreRefs={[restoreDraftBtnRef]}
+						onDismiss={() => setDraftMenuOpen(false)}
+						className="w-max min-w-[180px] max-w-[280px] p-1 text-xs text-neutral-200"
+					>
+						<div className="px-2 py-1 text-[10px] font-medium text-neutral-400">
+							{t("rightPanel.restoreSideChatDraft")}
+						</div>
+						{closedDrafts.map((d) => {
+							const preview =
+								d.text.trim().replace(/\s+/g, " ") ||
+								t("rightPanel.attachmentOnlyDraft", { count: d.images.length + d.files.length });
+							return (
+								<button
+									key={d.tabId}
+									type="button"
+									onClick={() => {
+										restoreClosedBlankSideChatDraft(selectedId!, d.tabId);
+										setDraftMenuOpen(false);
+									}}
+									className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-neutral-300 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-neutral-800/60 hover:text-neutral-100 active:scale-[0.985]"
+								>
+									<RotateCcw size={12} className="shrink-0 text-sky-400" />
+									<span className="min-w-0 flex-1 truncate">{preview}</span>
+								</button>
+							);
+						})}
+					</FloatingLayer>
+				);
+			})()}
 		</div>
 	);
 }

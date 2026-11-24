@@ -52,9 +52,9 @@ vi.mock("./features/sessions/ForkDraftView", () => ({ ForkDraftView: () => <div 
 vi.mock("./features/home/StartPage", () => ({ StartPage: () => <div data-testid="home">home</div> }));
 vi.mock("./features/inbox/InboxPage", () => ({ InboxPage: () => <div data-testid="inbox">inbox</div> }));
 vi.mock("./features/settings/SettingsOverlay", () => ({
-	SettingsOverlay: () => {
+	SettingsOverlay: ({ open = true }: { open?: boolean }) => {
 		overlayMounts.settings += 1;
-		return <div data-testid="settings-overlay" />;
+		return <div data-testid="settings-overlay" data-open={String(open)} />;
 	},
 }));
 vi.mock("./components/CenterHeader", () => ({ CenterHeader: () => null, CENTER_WITHOUT_RIGHT_PANEL: { has: (view: string) => ["inbox", "schedules", "skills"].includes(view) } }));
@@ -224,5 +224,9 @@ describe("shell navigation ownership", () => {
 		act(() => useUi.getState().openSettings());
 		await waitFor(() => expect(view.getByTestId("settings-overlay")).toBeTruthy());
 		expect(overlayMounts.settings).toBeGreaterThan(0);
+		expect(view.getByTestId("settings-overlay").getAttribute("data-open")).toBe("true");
+
+		act(() => useUi.getState().closeSettings());
+		expect(view.getByTestId("settings-overlay").getAttribute("data-open")).toBe("false");
 	});
 });

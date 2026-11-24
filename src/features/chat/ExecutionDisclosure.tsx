@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ImageAttachment, ToolResultInfo, TranscriptItem } from "../../lib/contracts";
+import { prefersReducedMotion } from "../../lib/motion";
 import { ImagePreviewModal } from "../../components/ImagePreviewModal";
 import { AttachmentThumb } from "./ImageChips";
 import { collectUserImages } from "../../stores/live";
@@ -890,6 +891,12 @@ function CollapsingRegion({ open, children }: { open: boolean; children: ReactNo
 			wasOpen.current = true;
 			return;
 		}
+		if (prefersReducedMotion()) {
+			wasOpen.current = false;
+			setMounted(false);
+			setClip(false);
+			return;
+		}
 		if (wasOpen.current) setClip(true);
 		wasOpen.current = false;
 		const timer = window.setTimeout(() => {
@@ -898,9 +905,11 @@ function CollapsingRegion({ open, children }: { open: boolean; children: ReactNo
 		}, FOLD_MS);
 		return () => window.clearTimeout(timer);
 	}, [open]);
-	if (!open && !mounted) return null;
+	if (!open && (!mounted || prefersReducedMotion())) return null;
 	return (
 		<div
+			aria-hidden={!open || undefined}
+			inert={!open}
 			className={clsx(
 				"grid grid-cols-[minmax(0,1fr)] transition-[grid-template-rows,opacity] ease-out motion-reduce:transition-none",
 				open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",

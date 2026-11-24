@@ -54,7 +54,7 @@ function UsageDonut({
 					strokeWidth={stroke}
 					strokeDasharray={`${fraction * c} ${c}`}
 					strokeLinecap="round"
-					className={`transition-[stroke-dasharray] duration-300 ease-m ${TONE_STROKE[tone]}`}
+					className={`transition-[stroke-dasharray] duration-300 ease-m motion-reduce:transition-none ${TONE_STROKE[tone]}`}
 				/>
 			</svg>
 			<div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">

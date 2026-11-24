@@ -35,14 +35,13 @@ import {
 	metadataMatches,
 	searchableSessions,
 	type RecentBucket,
-	type SearchFilters,
 	type SearchRow,
 } from "./searchModel";
 import { SessionSearchFiltersPopover } from "./SessionSearchFiltersPopover";
 import { useSearchDialog } from "./searchStore";
 import { useContentSearch, useSearchIndexStatus } from "./useContentSearch";
 
-/** Mounts the dialog only while open so its state (query, highlight) resets on every open. */
+/** Mounts the dialog only while open; query and filters persist in searchStore across reopens. */
 export function SessionSearchDialog() {
 	const open = useSearchDialog((s) => s.open);
 	return open ? <SearchDialogBody /> : null;
@@ -52,12 +51,14 @@ function SearchDialogBody() {
 	const { t } = useT();
 	const closeDialog = useSearchDialog((s) => s.closeDialog);
 	const focusSeq = useSearchDialog((s) => s.focusSeq);
+	const query = useSearchDialog((s) => s.query);
+	const setQuery = useSearchDialog((s) => s.setQuery);
+	const filters = useSearchDialog((s) => s.filters);
+	const setFilters = useSearchDialog((s) => s.setFilters);
 	const sessions = useSessions((s) => s.sessions);
 	const workspaces = useSessions((s) => s.workspaces);
 	const activeMode = useSidebarStore((s) => s.activeMode);
 
-	const [query, setQuery] = useState("");
-	const [filters, setFilters] = useState<SearchFilters>(DEFAULT_SEARCH_FILTERS);
 	const [filterOpen, setFilterOpen] = useState(false);
 	const [active, setActive] = useState(0);
 	const filterBtnRef = useRef<HTMLButtonElement>(null);
@@ -239,9 +240,23 @@ function SearchDialogBody() {
 			{content.error && (
 				<div
 					role="alert"
-					className="shrink-0 select-text whitespace-pre-wrap break-all border-b border-[var(--border-divider)] px-3 py-2 text-[11px] text-rose-300"
+					className="flex shrink-0 select-text flex-wrap items-start justify-between gap-2 border-b border-[var(--border-divider)] px-3 py-2 text-[11px] text-rose-300"
 				>
-					{t("sessions.contentSearchFailed", { error: content.error })}
+					<div className="min-w-0 flex-1 whitespace-pre-wrap break-all">
+						<div>{t("sessions.contentSearchFailed", { error: content.error })}</div>
+						{rows.length > 0 && (
+							<div className="mt-0.5 text-amber-300/90">
+								{t("sessions.contentSearchFallbackNotice")}
+							</div>
+						)}
+					</div>
+					<button
+						type="button"
+						onClick={content.retry}
+						className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2 py-0.5 text-[11px] font-medium text-[var(--text)] transition-colors hover:bg-[var(--bg-hover)]"
+					>
+						{t("sessions.retryContentSearch")}
+					</button>
 				</div>
 			)}
 
@@ -280,8 +295,19 @@ function SearchDialogBody() {
 						</OptionButton>
 					))}
 				{showEmpty && (
-					<div className="px-3 py-10 text-center text-[13px] text-neutral-500">
-						{activeFilterCount > 0 ? t("sessions.noMatchingFilteredSessions") : t("sessions.noMatchingSessions")}
+					<div className="flex flex-col items-center gap-2.5 px-3 py-10 text-center text-[13px] text-neutral-500">
+						<span>
+							{activeFilterCount > 0 ? t("sessions.noMatchingFilteredSessions") : t("sessions.noMatchingSessions")}
+						</span>
+						{activeFilterCount > 0 && (
+							<button
+								type="button"
+								onClick={() => setFilters(DEFAULT_SEARCH_FILTERS)}
+								className="whitespace-nowrap rounded-lg border border-[var(--border-divider)] bg-[var(--bg-panel)] px-3 py-1 text-xs font-medium text-[var(--text)] transition-colors hover:bg-[var(--bg-hover)]"
+							>
+								{t("sessions.filterClear")}
+							</button>
+						)}
 					</div>
 				)}
 			</div>

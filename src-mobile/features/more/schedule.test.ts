@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { deriveScheduleAttention } from "../../core/stores/schedules";
 import {
 	buildPayload,
 	cadenceText,
+	draftFromSchedule,
 	emptyForm,
 	formFromSchedule,
 	parseModel,
+	renamePayload,
 	runDurationText,
+	runPhaseBadge,
 	scheduleMeta,
 	validateForm,
 } from "./schedule";
-import type { Schedule } from "./schedule";
+import { collapseHistoryRuns } from "./AutomationOverviewView";
+import type { Schedule, ScheduleRun } from "./schedule";
 
 const base: Schedule = {
 	id: "s1",
@@ -111,8 +116,112 @@ describe("schedule form", () => {
 		const f = { ...emptyForm("/w"), name: "a", prompt: "b", weekdays: [3, 1, 3] };
 		expect((buildPayload(f).cadence as { weekdays: number[] }).weekdays).toEqual([1, 3]);
 	});
-});
 
+	it("preserves desktop probe script, trigger mode, resultMode, and external model flag losslessly", () => {
+		const scriptSchedule: Schedule = {
+			...base,
+			probeCommand: "python3 check.py",
+			probeDescription: "check queue depth",
+			agentTrigger: "on_signal",
+			resultMode: "llm_summary",
+			invokesExternalModel: true,
+		};
+		const payload = buildPayload(formFromSchedule(scriptSchedule), scriptSchedule);
+		expect(payload).toMatchObject({
+			id: "s1",
+			probeCommand: "python3 check.py",
+			probeDescription: "check queue depth",
+			agentTrigger: "on_signal",
+			resultMode: "llm_summary",
+			invokesExternalModel: true,
+		});
+
+		const cloned = draftFromSchedule(scriptSchedule);
+		expect(cloned).not.toHaveProperty("id");
+		expect(cloned.probeCommand).toBe("python3 check.py");
+
+		const renamed = renamePayload(scriptSchedule, "新名字");
+		expect(renamed.name).toBe("新名字");
+		expect(renamed.probeCommand).toBe("python3 check.py");
+	});
+
+	it("validates by agentTrigger mode and forces runMode=local for probe-only schedules", () => {
+		const onSignalMissingProbe = { ...emptyForm("/w"), name: "a", prompt: "b", agentTrigger: "on_signal" as const };
+		expect(validateForm(onSignalMissingProbe).probeCommand).toBeTruthy();
+
+		const scriptOnly = {
+			...emptyForm("/w"),
+			name: "a",
+			prompt: "",
+			agentTrigger: "never" as const,
+			probeCommand: "echo ok",
+			runMode: "worktree" as const,
+		};
+		expect(validateForm(scriptOnly)).toEqual({});
+		expect(buildPayload(scriptOnly)).toMatchObject({ runMode: "local", prompt: "", probeCommand: "echo ok" });
+	});
+
+	it("collapses consecutive quiet probe runs and skipped runs", () => {
+		const mk = (id: string, status: ScheduleRun["status"], phase?: ScheduleRun["phase"]): ScheduleRun => ({
+			id,
+			scheduleId: "s1",
+			sessionId: null,
+			status,
+			phase,
+			startedAt: "2026-01-01T00:00:00Z",
+			finishedAt: "2026-01-01T00:00:01Z",
+			summary: null,
+		});
+		const entries = collapseHistoryRuns([
+			mk("1", "error", "probe_only"),
+			mk("2", "ok", "probe_quiet"),
+			mk("3", "ok", "probe_quiet"),
+			mk("4", "skipped"),
+			mk("5", "skipped"),
+		]);
+		expect(entries).toHaveLength(3);
+		expect(entries[0].kind).toBe("run");
+		expect(entries[1]).toMatchObject({ kind: "collapsed", groupKind: "quiet" });
+		expect(entries[2]).toMatchObject({ kind: "collapsed", groupKind: "skipped" });
+	});
+
+	it("explicitly serializes cleared approvalMode, probeCommand, and probeDescription as null", () => {
+		const existing: Schedule = {
+			...base,
+			approvalMode: "yolo",
+			probeCommand: "python3 check.py",
+			probeDescription: "check queue",
+			agentTrigger: "on_signal",
+		};
+		const f = formFromSchedule(existing);
+		f.approvalMode = null;
+		f.probeDescription = "";
+		f.agentTrigger = "always";
+		f.probeCommand = "";
+		const payload = buildPayload(f, existing);
+		expect(payload.approvalMode).toBeNull();
+		expect(payload.probeDescription).toBeNull();
+		expect(payload.probeCommand).toBeNull();
+
+		const f2 = formFromSchedule(existing);
+		f2.probeDescription = "   ";
+		expect(buildPayload(f2, existing).probeDescription).toBeNull();
+	});
+
+	it("distinguishes probe_only error vs ok and maps Rust canonical run phases", () => {
+		expect(runPhaseBadge("probe_only", "error")).toEqual({ label: "脚本报错", tone: "danger" });
+		expect(runPhaseBadge("probe_only", "ok")).toEqual({ label: "脚本完成", tone: "neutral" });
+		expect(runPhaseBadge("probe_quiet", "ok")).toEqual({ label: "静默无信号", tone: "neutral" });
+		expect(runPhaseBadge("agent", "ok")).toEqual({ label: "智能体执行", tone: "neutral" });
+		expect(runPhaseBadge("awaiting", "running")).toEqual({ label: "等待确认", tone: "warn" });
+		expect(
+			deriveScheduleAttention(
+				{ ...base, lastRunStatus: "error", lastRunPhase: "probe_only" },
+				{},
+			),
+		).toEqual({ tone: "error", label: "脚本出错" });
+	});
+});
 describe("schedule text", () => {
 	it("describes cadences", () => {
 		expect(cadenceText({ kind: "interval", minutes: 120 })).toBe("每 2 小时");

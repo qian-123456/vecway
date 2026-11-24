@@ -43,7 +43,7 @@ export function Chip({
 				aria-pressed={active}
 				className={`group/chip inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-[8px] ${className}`}
 			>
-				<span className={`${cls} transition-[opacity,transform] duration-(--m-dur-press) ease-m group-active/chip:scale-[0.96] group-active/chip:opacity-75 motion-reduce:group-active/chip:scale-100`}>{inner}</span>
+				<span className={`${cls} transition-[opacity,transform,scale] duration-(--m-dur-press) ease-m group-active/chip:scale-[0.96] group-active/chip:opacity-75 motion-reduce:group-active/chip:scale-100`}>{inner}</span>
 			</button>
 		);
 	}

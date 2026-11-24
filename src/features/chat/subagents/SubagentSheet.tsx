@@ -7,35 +7,29 @@
 import clsx from "clsx";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
-	Brain,
 	Check,
 	ChevronDown,
 	ChevronRight,
 	ChevronUp,
-	CircleDollarSign,
 	Clock,
 	Coins,
 	Copy,
 	Cpu,
 	ExternalLink,
-	Gauge,
-	Layers,
 	Loader2,
-	Send,
 	Square,
-	Tag,
 	Timer,
-	Wrench,
 	X,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Z_LAYER } from "../../../components/FloatingLayer";
-import type { SubagentTranscript, TranscriptItem } from "../../../lib/contracts";
+import type { SubagentRunSegment, SubagentTranscript, TranscriptItem } from "../../../lib/contracts";
 import { copyText, errMsg } from "../../../lib/dialogs";
 import { useEscapeKey } from "../../../lib/hooks";
 import { subagentTranscript } from "../../../lib/ipc";
 import { toast } from "../../../lib/toast";
+import { prefersReducedMotion, usePresence } from "../../../lib/motion";
 import { tNow, useT } from "../../../stores/language";
 import { Markdown } from "../../../components/Markdown";
 import { formatTokens } from "../sessionStats";
@@ -43,7 +37,7 @@ import { RequestStatsLine } from "../RequestStatsLine";
 import { requestStatFromItem } from "../requestStats";
 import { formatDurationCompact, formatShortModel } from "../turnGrouping";
 import { type AgentRow, isTerminalStatus, normStatus, runningElapsedMs, segmentsDurationMs } from "./merge";
-import { formatClockTime, formatRunSegmentLines } from "./subagentTree";
+import { formatClockTime } from "./subagentTree";
 import type { SubagentStatus } from "./types";
 const ICON: Record<
 	SubagentStatus,
@@ -64,16 +58,9 @@ const STATUS_TEXT_KEYS: Record<SubagentStatus, string> = {
 	aborted: "subagents.statusAborted",
 };
 
-const SOURCE_TEXT_KEYS: Record<string, string> = {
-	bundled: "subagents.sourceBundled",
-	user: "subagents.sourceUser",
-	project: "subagents.sourceProject",
-};
-
-type Tab = "overview" | "prompt" | "process" | "output";
+type Tab = "overview" | "process" | "output";
 const TAB_KEYS: { id: Tab; labelKey: string }[] = [
 	{ id: "overview", labelKey: "subagents.tabOverview" },
-	{ id: "prompt", labelKey: "subagents.tabPrompt" },
 	{ id: "process", labelKey: "subagents.tabProcess" },
 	{ id: "output", labelKey: "subagents.tabOutput" },
 ];
@@ -91,7 +78,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 					toast.error(tNow("subagents.copyFailed", { error: errMsg(e) }));
 				}
 			}}
-			className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-[var(--text-40)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
+			className="press-scale flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-[var(--text-40)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
 			title={label}
 		>
 			<Copy size={11} />
@@ -158,36 +145,29 @@ function argPreview(args: unknown): string {
 	return j && j !== "{}" ? (j.length > 80 ? `${j.slice(0, 80)}…` : j) : "";
 }
 
-function StatCard({
-	icon: StatIcon,
-	label,
-	value,
-	wide,
-}: {
-	icon: typeof Check;
-	label: string;
-	value?: ReactNode;
-	wide?: boolean;
-}) {
-	if (value === undefined || value === null || value === "") return null;
-	return (
-		<div
-			className={clsx(
-				"rounded-[14px] border border-[var(--line)] bg-[var(--ghost-hover)] px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]",
-				wide && "col-span-2",
-			)}
-		>
-			<div className="flex items-center gap-1.5 text-[11px] text-[var(--text-40)]">
-				<StatIcon size={12} />
-				{label}
-			</div>
-			<div className="mt-0.5 break-words text-[12.5px] font-medium text-[var(--text)]">{value}</div>
-		</div>
-	);
+const CARD_CLASS =
+	"rounded-[14px] border border-[var(--line)] bg-[var(--ghost-hover)] px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]";
+
+const MAX_COLLAPSED_SEGMENTS = 4;
+
+/** Format one run segment for the timing card, handling open-ended active runs. */
+function formatSegmentEntry(seg: SubagentRunSegment, ongoingLabel: string): string | undefined {
+	const startClock = formatClockTime(seg.startedAt);
+	const endClock = formatClockTime(seg.endedAt);
+	if (!startClock && !endClock) return undefined;
+	if (startClock && !endClock) {
+		return `${startClock} - ${ongoingLabel}`;
+	}
+	const startMs = Date.parse(seg.startedAt);
+	const endMs = seg.endedAt ? Date.parse(seg.endedAt) : NaN;
+	const durMs = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs ? endMs - startMs : undefined;
+	const durText = durMs !== undefined && Math.round(durMs / 1000) >= 1 ? formatDurationCompact(durMs) : undefined;
+	const range = startClock && endClock ? `${startClock} - ${endClock}` : (startClock ?? endClock)!;
+	return durText ? `${range} · ${durText}` : range;
 }
 
 const GLASS_BTN =
-	"grid h-6 w-6 shrink-0 place-items-center rounded-full border border-[var(--line)] bg-[var(--ghost-hover)] text-[var(--text-60)] shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] transition-colors hover:text-[var(--text)] disabled:opacity-30";
+	"press-scale grid h-6 w-6 shrink-0 place-items-center rounded-full border border-[var(--line)] bg-[var(--ghost-hover)] text-[var(--text-60)] shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] hover:text-[var(--text)] disabled:opacity-30";
 const CHIP =
 	"rounded-full border border-[var(--line)] bg-[var(--ghost-hover)] px-2 py-0.5 text-[var(--text-60)]";
 
@@ -202,7 +182,10 @@ function deriveParentFile(agentFile: string): string | undefined {
 	return stem ? `${parentDir}/${stem}.jsonl` : undefined;
 }
 
+const SHEET_EXIT_MS = 200;
+
 export function SubagentSheet({
+	open = true,
 	parentFile,
 	row,
 	context,
@@ -210,6 +193,7 @@ export function SubagentSheet({
 	onPrev,
 	onNext,
 }: {
+	open?: boolean;
 	parentFile?: string;
 	row: AgentRow;
 	context?: string;
@@ -219,17 +203,21 @@ export function SubagentSheet({
 	onNext?: () => void;
 }) {
 	const { t } = useT();
+	const { present, exiting } = usePresence(open, SHEET_EXIT_MS);
 	const [tab, setTab] = useState<Tab>("overview");
 	const [data, setData] = useState<SubagentTranscript | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [systemOpen, setSystemOpen] = useState(false);
 	const [taskOpen, setTaskOpen] = useState(false);
+	const [taskClamped, setTaskClamped] = useState(false);
 	const [contextOpen, setContextOpen] = useState(false);
+	const [segmentsExpanded, setSegmentsExpanded] = useState(false);
+	const taskRef = useRef<HTMLParagraphElement>(null);
 	const nextByteRef = useRef(0);
 	const itemsRef = useRef<TranscriptItem[]>([]);
 	const [items, setItems] = useState<TranscriptItem[]>([]);
 
-	useEscapeKey(onClose, true);
+	useEscapeKey(onClose, open);
 
 	const summary = data?.summary;
 	const summaryStatus = summary?.status ? normStatus(summary.status) : undefined;
@@ -244,11 +232,11 @@ export function SubagentSheet({
 
 	const [now, setNow] = useState(() => Date.now());
 	useEffect(() => {
-		if (!isLive) return;
+		if (!open || !isLive) return;
 		setNow(Date.now());
 		const timer = window.setInterval(() => setNow(Date.now()), 1000);
 		return () => window.clearInterval(timer);
-	}, [isLive]);
+	}, [open, isLive]);
 
 	const { Icon, color, spin } = ICON[effectiveStatus];
 
@@ -288,10 +276,16 @@ export function SubagentSheet({
 		return undefined;
 	}, [effectiveStatus, effectiveSegments, startedAt, endedAt, now, row.durationMs]);
 
-	const segmentLines =
-		effectiveStatus !== "running" && effectiveSegments && effectiveSegments.length > 1
-			? formatRunSegmentLines(effectiveSegments, formatDurationCompact)
-			: [];
+	const segmentEntries = useMemo(() => {
+		if (!effectiveSegments || effectiveSegments.length <= 1) return [];
+		const ongoingLabel = t("subagents.segmentOngoing");
+		return effectiveSegments
+			.map((seg, idx) => ({
+				index: idx + 1,
+				text: formatSegmentEntry(seg, ongoingLabel),
+			}))
+			.filter((entry): entry is { index: number; text: string } => Boolean(entry.text));
+	}, [effectiveSegments, t]);
 
 	const duration = durationMs && Math.round(durationMs / 1000) >= 1 ? formatDurationCompact(durationMs) : undefined;
 	const effectiveContext = context ?? row.sharedContext;
@@ -318,6 +312,14 @@ export function SubagentSheet({
 	// open sheet; while the agent is live, keep tailing via nextByte so the
 	// 过程 tab streams. Stops at a terminal status or when the file is gone.
 	useEffect(() => {
+		setSystemOpen(false);
+		setTaskOpen(false);
+		setContextOpen(false);
+		setSegmentsExpanded(false);
+	}, [row.id]);
+
+	useEffect(() => {
+		if (!open) return;
 		// Stepping to another subagent must not show the previous one's data.
 		setData(null);
 		setError(null);
@@ -352,7 +354,7 @@ export function SubagentSheet({
 			cancelled = true;
 			clearTimeout(timer);
 		};
-	}, [file, row.id]);
+	}, [open, file, row.id]);
 
 	// Map toolCallId -> toolResult item for compact process rows.
 	const callIds = useMemo(() => {
@@ -372,12 +374,30 @@ export function SubagentSheet({
 		return m;
 	}, [items]);
 
-	// Verbatim prompt: live/details task, else the first user message in the transcript.
-	const taskPrompt = row.task ?? data?.prompt ?? undefined;
+	// Prefer full verbatim prompt from transcript (`data.prompt`); fall back to row summary while loading.
+	const taskPrompt = data?.prompt ?? row.task ?? row.assignment ?? undefined;
 	// omp prefixes every subagent prompt with this; hide it in the "负责什么" summary.
-	const assignmentText =
-		row.assignment ?? taskPrompt?.replace(/^Complete assignment thoroughly:\s*/, "");
-	const longTask = (assignmentText?.length ?? 0) > 360 || (assignmentText?.split("\n").length ?? 0) > 6;
+	const assignmentText = taskPrompt?.replace(/^Complete assignment thoroughly:\s*/, "");
+	const longTaskHeuristic = (assignmentText?.length ?? 0) > 360 || (assignmentText?.split("\n").length ?? 0) > 6;
+
+	useEffect(() => {
+		const el = taskRef.current;
+		if (!el) {
+			setTaskClamped(false);
+			return;
+		}
+		const measure = () => {
+			if (taskOpen) return;
+			setTaskClamped(el.scrollHeight > el.clientHeight + 1);
+		};
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		return () => ro.disconnect();
+	}, [assignmentText, taskOpen]);
+
+	const showTaskToggle = taskOpen || taskClamped || longTaskHeuristic;
 
 	const outputText =
 		data?.output ?? row.output ?? undefined;
@@ -392,18 +412,27 @@ export function SubagentSheet({
 		}
 	};
 
+	if (!present || (!open && prefersReducedMotion())) return null;
+
 	return createPortal(
 		<div
-			className="fixed inset-0"
+			className={clsx("fixed inset-0", exiting && "pointer-events-none")}
 			style={{ zIndex: Z_LAYER.modal }}
 			role="dialog"
-			aria-modal="true"
+			aria-modal={exiting ? undefined : "true"}
+			aria-hidden={exiting || undefined}
+			inert={exiting}
 			aria-label={t("subagents.subagentAria", { id: row.id })}
 		>
 			{/* Very light dim; click closes */}
-			<div className="absolute inset-0 bg-black/10" onMouseDown={onClose} />
+			<div
+				data-exiting={exiting ? "true" : undefined}
+				className="apple-sheet-backdrop absolute inset-0 bg-black/10"
+				onMouseDown={exiting ? undefined : onClose}
+			/>
 			<aside
-				className="liquid-glass sa-sheet-in absolute bottom-10 right-3 top-[52px] flex w-[min(560px,46vw)] flex-col text-[var(--text)]"
+				data-exiting={exiting ? "true" : undefined}
+				className="liquid-glass sa-sheet-in absolute right-3 top-[52px] flex max-h-[calc(100%-92px)] w-[min(500px,44vw)] flex-col text-[var(--text)]"
 				onMouseDown={(e) => e.stopPropagation()}
 			>
 				{/* Header */}
@@ -447,8 +476,13 @@ export function SubagentSheet({
 					</div>
 					<div className="flex flex-wrap items-center gap-1.5 text-[11px]">
 						{row.agent && <span className={CHIP}>{row.agent}</span>}
-						{effectiveModel && <span className={CHIP} title={effectiveModel}>{formatShortModel(effectiveModel)}</span>}
-						{effectiveThinking && <span className={CHIP}>{effectiveThinking}</span>}
+						{(effectiveModel || effectiveThinking) && (
+							<span className={CHIP} title={effectiveModel}>
+								{effectiveModel
+									? `${formatShortModel(effectiveModel)}${effectiveThinking ? ` (${effectiveThinking})` : ""}`
+									: effectiveThinking}
+							</span>
+						)}
 						<span className={CHIP} style={{ color }}>
 							{[
 								statusText,
@@ -464,10 +498,10 @@ export function SubagentSheet({
 				</div>
 				{/* Tabs: segmented pill with sliding highlight */}
 				<div className="px-4 pb-2.5">
-					<div className="relative grid grid-cols-4 rounded-full border border-[var(--line)] bg-[var(--ghost-hover)] p-0.5">
+					<div className="relative grid grid-cols-3 rounded-full border border-[var(--line)] bg-[var(--ghost-hover)] p-0.5">
 						<span
 							aria-hidden
-							className="sa-seg-thumb absolute inset-y-0.5 left-0.5 w-[calc((100%-4px)/4)] rounded-full bg-[var(--bg-active-fill)] shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_1px_2px_rgba(0,0,0,0.15)]"
+							className="sa-seg-thumb absolute inset-y-0.5 left-0.5 w-[calc((100%-4px)/3)] rounded-full bg-[var(--bg-active-fill)] shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_1px_2px_rgba(0,0,0,0.15)]"
 							style={{ transform: `translateX(${TAB_KEYS.findIndex((tItem) => tItem.id === tab) * 100}%)` }}
 						/>
 						{TAB_KEYS.map((tItem) => (
@@ -513,18 +547,19 @@ export function SubagentSheet({
 										<CopyButton text={assignmentText} label={t("common.copy")} />
 									</div>
 									<p
+										ref={taskRef}
 										className={clsx(
 											"whitespace-pre-wrap break-words text-[12.5px] leading-5 text-[var(--text-60)]",
-											!taskOpen && longTask && "line-clamp-6",
+											!taskOpen && "line-clamp-6",
 										)}
 									>
 										{assignmentText}
 									</p>
-									{longTask && (
+									{showTaskToggle && (
 										<button
 											type="button"
 											onClick={() => setTaskOpen(!taskOpen)}
-											className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--ghost-hover)] px-2.5 py-0.5 text-[11px] text-[var(--text-60)] transition-colors hover:text-[var(--text)]"
+											className="press-scale mt-1.5 inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--ghost-hover)] px-2.5 py-0.5 text-[11px] text-[var(--text-60)] hover:text-[var(--text)]"
 										>
 											{taskOpen ? t("common.collapse") : t("subagents.expandAll")}
 											<ChevronRight size={11} className={clsx("transition-transform", taskOpen ? "-rotate-90" : "rotate-90")} />
@@ -563,68 +598,166 @@ export function SubagentSheet({
 									)}
 								</section>
 							)}
-							<section className="grid grid-cols-2 gap-2">
-								<StatCard icon={Cpu} label={t("subagents.statModel")} value={effectiveModel} wide />
-								<StatCard icon={Brain} label={t("subagents.statThinking")} value={effectiveThinking} />
-								<StatCard icon={Tag} label={t("subagents.statRole")} value={row.modelRole} />
-								<StatCard
-									icon={Layers}
-									label={t("subagents.statSource")}
-									value={row.agentSource ? (SOURCE_TEXT_KEYS[row.agentSource] ? t(SOURCE_TEXT_KEYS[row.agentSource]) : row.agentSource) : undefined}
-								/>
-								<StatCard
-									icon={Wrench}
-									label={t("subagents.statToolCalls")}
-									value={effectiveToolCount ? String(effectiveToolCount) : undefined}
-								/>
-								<StatCard
-									icon={Send}
-									label={t("subagents.statRequests")}
-									value={effectiveRequests ? String(effectiveRequests) : undefined}
-								/>
-								<StatCard
-									icon={Coins}
-									label={t("subagents.statTokens")}
-									value={effectiveTokens != null ? formatTokens(effectiveTokens) : undefined}
-								/>
-								<StatCard
-									icon={Gauge}
-									label={t("subagents.statContext")}
-									value={
-										row.contextTokens && row.contextWindow
-											? `${Math.round((row.contextTokens / row.contextWindow) * 100)}%`
-											: row.contextTokens
-												? formatTokens(row.contextTokens)
-												: undefined
-									}
-								/>
-								<StatCard
-									icon={CircleDollarSign}
-									label={t("subagents.statCost")}
-									value={effectiveCost !== undefined ? `$${effectiveCost.toFixed(3)}` : undefined}
-								/>
-								<StatCard icon={Timer} label={t("subagents.statElapsed")} value={duration} />
-								<StatCard icon={Clock} label={t("subagents.statStartedAt")} value={startClock} />
-								{isTerminalStatus(effectiveStatus) && (
-									<StatCard icon={Check} label={t("subagents.statCompletedAt")} value={endClock} />
-								)}
-								{segmentLines.length > 0 && (
-									<StatCard
-										icon={Clock}
-										label={t("subagents.statSegments")}
-										wide
-										value={
-											<div className="flex flex-col gap-0.5 tabular-nums">
-												{segmentLines.map((line, i) => (
-													<div key={`${i}-${line}`} className="whitespace-nowrap">
-														{line}
+							{(() => {
+								const modelDisplay = [effectiveModel, effectiveThinking].filter(Boolean).join(" · ");
+								const contextStr =
+									row.contextTokens && row.contextWindow
+										? `${Math.round((row.contextTokens / row.contextWindow) * 100)}%`
+										: row.contextTokens
+											? formatTokens(row.contextTokens)
+											: undefined;
+								const executionStats = [
+									effectiveToolCount ? { label: t("subagents.statToolCalls"), value: String(effectiveToolCount) } : null,
+									effectiveRequests ? { label: t("subagents.statRequests"), value: String(effectiveRequests) } : null,
+									contextStr ? { label: t("subagents.statContext"), value: contextStr } : null,
+									effectiveTokens != null ? { label: t("subagents.statTokens"), value: formatTokens(effectiveTokens) } : null,
+									effectiveCost !== undefined ? { label: t("subagents.statCost"), value: `$${effectiveCost.toFixed(3)}` } : null,
+								].filter((item): item is { label: string; value: string } => item !== null);
+								const hasTiming =
+									Boolean(duration) ||
+									Boolean(startClock) ||
+									(isTerminalStatus(effectiveStatus) && Boolean(endClock)) ||
+									segmentEntries.length > 0;
+								const singleTimeRange =
+									isTerminalStatus(effectiveStatus) && startClock && endClock
+										? `${startClock} - ${endClock}`
+										: isTerminalStatus(effectiveStatus) && endClock
+											? t("subagents.completedAtShort", { time: endClock })
+											: startClock
+												? t("subagents.startedAtShort", { time: startClock })
+												: undefined;
+								const visibleSegments =
+									segmentsExpanded || segmentEntries.length <= MAX_COLLAPSED_SEGMENTS
+										? segmentEntries
+										: segmentEntries.slice(0, MAX_COLLAPSED_SEGMENTS);
+								const hasMoreSegments = segmentEntries.length > MAX_COLLAPSED_SEGMENTS;
+
+								if (!modelDisplay && !row.modelRole && executionStats.length === 0 && !hasTiming) {
+									return null;
+								}
+								return (
+									<section className="flex flex-col gap-2">
+										{(modelDisplay || row.modelRole) && (
+											<div className={CARD_CLASS}>
+												<div className="flex items-center justify-between gap-2">
+													<div className="flex items-center gap-1.5 text-[11px] text-[var(--text-40)]">
+														<Cpu size={12} />
+														{t("subagents.statModel")}
 													</div>
-												))}
+													{row.modelRole && (
+														<span className="whitespace-nowrap rounded-full border border-[var(--line)] bg-[var(--ghost-hover)] px-2 py-0.5 text-[10.5px] text-[var(--text-60)]">
+															{t("subagents.roleBadge", { role: row.modelRole })}
+														</span>
+													)}
+												</div>
+												{modelDisplay && (
+													<div className="mt-1 break-words text-[12.5px] font-medium text-[var(--text)]">
+														{modelDisplay}
+													</div>
+												)}
 											</div>
-										}
-									/>
-								)}
-							</section>
+										)}
+										{executionStats.length > 0 && (
+											<div className={CARD_CLASS}>
+												<div className="flex items-center gap-1.5 text-[11px] text-[var(--text-40)]">
+													<Coins size={12} />
+													{t("subagents.cardExecutionStats")}
+												</div>
+												<div
+													className={clsx(
+														"mt-2 grid gap-x-2 gap-y-2",
+														executionStats.length === 1 && "grid-cols-1",
+														executionStats.length === 2 && "grid-cols-2",
+														executionStats.length === 3 && "grid-cols-3",
+														executionStats.length === 4 && "grid-cols-4",
+														executionStats.length >= 5 && "grid-cols-[repeat(auto-fit,minmax(76px,1fr))]",
+													)}
+												>
+													{executionStats.map((stat) => (
+														<div key={stat.label} className="min-w-0">
+															<div className="whitespace-nowrap text-[10.5px] text-[var(--text-40)]">
+																{stat.label}
+															</div>
+															<div className="mt-0.5 whitespace-nowrap tabular-nums text-[12.5px] font-medium text-[var(--text)]">
+																{stat.value}
+															</div>
+														</div>
+													))}
+												</div>
+											</div>
+										)}
+										{hasTiming && (
+											<div className={CARD_CLASS}>
+												<div className="flex items-center justify-between gap-2">
+													<div className="flex items-center gap-1.5 text-[11px] text-[var(--text-40)]">
+														<Timer size={12} />
+														{t("subagents.cardTiming")}
+													</div>
+													{segmentEntries.length > 1 && (
+														<span className="whitespace-nowrap rounded-full border border-[var(--line)] bg-[var(--ghost-hover)] px-2 py-0.5 text-[10.5px] text-[var(--text-60)]">
+															{t("subagents.segmentCount", { count: segmentEntries.length })}
+														</span>
+													)}
+												</div>
+												{segmentEntries.length > 1 ? (
+													<div className="mt-1 space-y-1.5">
+														{(singleTimeRange || duration) && (
+															<div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+																{singleTimeRange && (
+																	<span className="tabular-nums text-[12px] text-[var(--text-60)]">
+																		{singleTimeRange}
+																	</span>
+																)}
+																{duration && (
+																	<span className="tabular-nums text-[12.5px] font-medium text-[var(--text)]">
+																		{duration}
+																	</span>
+																)}
+															</div>
+														)}
+														<div className="space-y-1 border-t border-[var(--line)] pt-1.5 tabular-nums text-[11.5px]">
+															{visibleSegments.map((seg) => (
+																<div key={seg.index} className="flex items-center gap-2">
+																	<span className="shrink-0 whitespace-nowrap text-[11px] text-[var(--text-40)]">
+																		{t("subagents.segmentIndex", { index: seg.index })}
+																	</span>
+																	<span className="min-w-0 whitespace-nowrap text-[var(--text-60)]">
+																		{seg.text}
+																	</span>
+																</div>
+															))}
+															{hasMoreSegments && (
+																<button
+																	type="button"
+																	onClick={() => setSegmentsExpanded((v) => !v)}
+																	className="mt-0.5 inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--ghost-hover)] px-2 py-0.5 text-[10.5px] text-[var(--text-60)] transition-colors hover:text-[var(--text)]"
+																>
+																	{segmentsExpanded
+																		? t("subagents.collapseSegments")
+																		: t("subagents.showAllSegments", { count: segmentEntries.length })}
+																</button>
+															)}
+														</div>
+													</div>
+												) : (
+													<div className="mt-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+														{singleTimeRange && (
+															<span className="tabular-nums text-[12px] text-[var(--text-60)]">
+																{singleTimeRange}
+															</span>
+														)}
+														{duration && (
+															<span className="tabular-nums text-[12.5px] font-medium text-[var(--text)]">
+																{duration}
+															</span>
+														)}
+													</div>
+												)}
+											</div>
+										)}
+									</section>
+								);
+							})()}
 							{effectiveStatus === "running" && row.currentTool && (
 								<section>
 									<div className="mb-1 text-[11px] text-[var(--text-30)]">
@@ -662,69 +795,29 @@ export function SubagentSheet({
 									</div>
 								</section>
 							)}
-						</div>
-					)}
-
-					{tab === "prompt" && (
-						<div className="space-y-4">
-							<section>
-								<div className="mb-1 flex items-center justify-between">
-									<span className="text-[11px] text-[var(--text-30)]">
-										{t("subagents.taskPrompt")}
-									</span>
-									{taskPrompt && (
-										<CopyButton text={taskPrompt} label={t("common.copy")} />
-									)}
-								</div>
-								{taskPrompt ? (
-									<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-[var(--line)] bg-[var(--well-bg)] px-2.5 py-2 font-mono text-[11px] leading-5 text-[var(--text-60)]">
-										{taskPrompt}
-									</pre>
-								) : (
-									<p className="text-[12px] text-[var(--text-30)]">{t("subagents.noPrompt")}</p>
-								)}
-							</section>
-							{effectiveContext && (
-								<section>
-									<div className="mb-1 flex items-center justify-between">
-										<span className="text-[11px] text-[var(--text-30)]">
-											{t("subagents.sharedContext")}
-										</span>
-										<CopyButton text={effectiveContext} label={t("common.copy")} />
-									</div>
-									<pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-[var(--line)] bg-[var(--well-bg)] px-2.5 py-2 font-mono text-[11px] leading-5 text-[var(--text-40)]">
-										{effectiveContext}
-									</pre>
-								</section>
-							)}
 							{data?.systemPrompt && (
-								<section>
-									<button
-										type="button"
-										onClick={() => setSystemOpen(!systemOpen)}
-										className="flex items-center gap-1 text-[11px] text-[var(--text-30)] transition-colors hover:text-[var(--text-60)]"
-									>
-										<ChevronRight
-											size={11}
-											className={clsx(
-												"transition-transform duration-150",
-												systemOpen && "rotate-90",
-											)}
-										/>
-										{t("subagents.systemPrompt")}
-									</button>
+								<section className={CARD_CLASS}>
+									<div className="flex items-center justify-between">
+										<button
+											type="button"
+											onClick={() => setSystemOpen(!systemOpen)}
+											className="flex items-center gap-1 text-[11px] text-[var(--text-40)] transition-colors hover:text-[var(--text-60)]"
+										>
+											<ChevronRight
+												size={11}
+												className={clsx(
+													"transition-transform duration-150",
+													systemOpen && "rotate-90",
+												)}
+											/>
+											{t("subagents.systemPrompt")}
+										</button>
+										<CopyButton text={data.systemPrompt} label={t("common.copy")} />
+									</div>
 									{systemOpen && (
-										<div className="mt-1">
-											<div className="flex justify-end">
-												<CopyButton
-													text={data.systemPrompt}
-													label={t("common.copy")}
-												/>
-											</div>
-											<pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-[var(--line)] bg-[var(--well-bg)] px-2.5 py-2 font-mono text-[11px] leading-5 text-[var(--text-30)]">
-												{data.systemPrompt}
-											</pre>
-										</div>
+										<pre className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--text-40)]">
+											{data.systemPrompt}
+										</pre>
 									)}
 								</section>
 							)}

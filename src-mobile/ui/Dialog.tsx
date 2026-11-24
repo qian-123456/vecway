@@ -40,7 +40,7 @@ export function Dialog({
 			<div
 				role="dialog"
 				aria-modal={isTopModal ? "true" : undefined}
-				className={`relative flex max-h-full w-full max-w-sm flex-col overflow-hidden rounded-m-xl border border-m-border bg-m-bg-elev text-m-text shadow-m-pop transition-[opacity,transform] duration-180 ease-m motion-reduce:transform-none ${visible ? "scale-100 opacity-100" : "scale-[0.96] opacity-0"}`}
+				className={`relative flex max-h-full w-full max-w-sm flex-col overflow-hidden rounded-m-xl border border-m-border bg-m-bg-elev text-m-text shadow-m-pop transition-[opacity,transform,translate,scale] duration-(--m-dur-modal) ease-m motion-reduce:transform-none motion-reduce:scale-100 motion-reduce:transition-opacity ${visible ? "scale-100 opacity-100" : "scale-[0.96] opacity-0"}`}
 			>
 				<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pt-6 pb-2">
 					{title != null && <div className="mb-2 text-m-lg font-medium break-words">{title}</div>}

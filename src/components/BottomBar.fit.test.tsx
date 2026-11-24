@@ -58,7 +58,7 @@ function expectVisible(text: string, visible = true) {
 
 beforeEach(() => {
 	barWidth = 630;
-	widths = { context: 40, rounds: 50, tps: 60, tokens: 70, cache: 80, memory: 80, branch: 90 };
+	widths = { rounds: 50, tps: 60, tokens: 70, cache: 80, memory: 80, branch: 90 };
 	H.stats.totalTokens = 3500;
 	H.stats.cacheHitRate = 66.7;
 	H.stats.tps = 50;
@@ -156,8 +156,8 @@ describe("BottomBar content fitting", () => {
 	it("collapses one part at the exact boundary and restores it without resize hysteresis", () => {
 		const { container } = render(<BottomBar />);
 		const bar = container.querySelector("footer")!;
-		// All content occupies 593.5px; the footer has 28px horizontal padding.
-		barWidth = 621.5;
+		// All content occupies 547.5px; the footer has 28px horizontal padding.
+		barWidth = 575.5;
 		resize();
 		expectVisible("缓存 66.7%");
 		barWidth -= 0.25;
@@ -165,13 +165,13 @@ describe("BottomBar content fitting", () => {
 		expectVisible("缓存 66.7%", false);
 		expectVisible("50.0 tok/s");
 		expect(occupiedWidth(bar)).toBeLessThanOrEqual(barWidth - 28);
-		barWidth = 621.5;
+		barWidth = 575.5;
 		resize();
 		expectVisible("缓存 66.7%");
 	});
 
 	it("uses actual content width even above every old breakpoint, with details still reachable", () => {
-		barWidth = 1200;
+		barWidth = 1100;
 		for (const id of Object.keys(widths)) widths[id] *= 3;
 		const { container } = render(<BottomBar />);
 		expectVisible("缓存 66.7%", false);
@@ -186,6 +186,7 @@ describe("BottomBar content fitting", () => {
 	});
 
 	it("recomputes for changed data, branch width and font metrics without resizing the window", () => {
+		barWidth = 584;
 		const { rerender } = render(<BottomBar />);
 		widths.tokens += 50;
 		H.stats.totalTokens = 3_500_000;
@@ -244,7 +245,7 @@ describe("BottomBar content fitting", () => {
 	it("keeps icon-only controls reachable when every optional label must collapse", () => {
 		barWidth = 150;
 		const { container } = render(<BottomBar />);
-		for (const label of ["上下文 18%", "1 轮 2 步", "3.5k tok", "50.0 tok/s", "缓存 66.7%", "main"]) {
+		for (const label of ["1 轮 2 步", "3.5k tok", "50.0 tok/s", "缓存 66.7%", "main"]) {
 			expectVisible(label, false);
 		}
 		expect(occupiedWidth(container.querySelector("footer")!)).toBeLessThanOrEqual(barWidth - 28);
@@ -254,6 +255,7 @@ describe("BottomBar content fitting", () => {
 	});
 
 	it("observes intrinsic width changes even for currently collapsed fields", () => {
+		barWidth = 584;
 		widths.cache += 50;
 		render(<BottomBar />);
 		expectVisible("缓存 66.7%", false);

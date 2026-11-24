@@ -146,7 +146,7 @@ function DirStep({
  * New-session wizard: 1) directory, 2) model + thinking. 「上一步」 keeps every choice; the model step is optional
  * (「直接创建」 / 「使用默认模型」 use the workspace default).
  */
-export function NewSessionSheet({ open, onClose, defaultCwd, onSelectDirectory }: { open: boolean; onClose: () => void; defaultCwd?: string; onSelectDirectory?: (dir: DirEntry) => void }) {
+export function NewSessionSheet({ open, onClose, defaultCwd, onSelectDirectory, title }: { open: boolean; onClose: () => void; defaultCwd?: string; onSelectDirectory?: (dir: DirEntry) => void; title?: string }) {
 	const [state, dispatch] = useReducer(newSessionReducer, defaultCwd, initialNewSession);
 	const [dirs, setDirs] = useState<Load<DirEntry[]>>({ data: null, error: null, loading: false });
 	const [homeDir, setHomeDir] = useState<string | null>(null);
@@ -287,7 +287,7 @@ export function NewSessionSheet({ open, onClose, defaultCwd, onSelectDirectory }
 			open={open}
 			onClose={onClose}
 			fullHeight
-			title={onSelectDirectory ? "选择当前目录" : onModel ? "选择模型" : "在哪个目录新建会话"}
+			title={onSelectDirectory ? "选择当前目录" : onModel ? "选择模型" : (title ?? "在哪个目录新建会话")}
 			subtitle={onSelectDirectory ? "选择后用于首页新会话" : onModel ? abbreviateHomePath(state.cwd ?? "", homeDir) : "直接创建，或先选择模型与思考档"}
 			footer={footer}
 		>

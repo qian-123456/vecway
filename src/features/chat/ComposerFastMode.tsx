@@ -135,7 +135,7 @@ export function ComposerFastMode({ sessionId, modelKey }: { sessionId: string; m
 			disabled={ctrl.pending}
 			onClick={() => void ctrl.toggle()}
 			className={clsx(
-				"inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md transition-[color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.95] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] disabled:cursor-not-allowed disabled:opacity-50",
+				"press-scale inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md transition-[color,opacity] duration-150 ease-[var(--ease-out)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] disabled:cursor-not-allowed disabled:opacity-50",
 				ctrl.active
 					? "text-amber-500 dark:text-amber-400 hover:opacity-80"
 					: "text-[var(--text-muted)] hover:text-[var(--text)]",
@@ -149,7 +149,10 @@ export function ComposerFastMode({ sessionId, modelKey }: { sessionId: string; m
 /** Compact colored lightning indicator placed between the model and thinking pickers when fast mode is active. */
 export function ComposerFastModeIndicator({ sessionId, modelKey }: { sessionId: string; modelKey: string }) {
 	const ctrl = useFastModeControl(sessionId, modelKey);
-	if (!ctrl || !ctrl.active) return null;
+	if (!ctrl) return null;
+	if (!ctrl.active) {
+		return <span aria-hidden="true" className="-mx-1 inline-flex h-5 w-4 shrink-0 pointer-events-none" />;
+	}
 
 	return (
 		<button
@@ -159,7 +162,7 @@ export function ComposerFastModeIndicator({ sessionId, modelKey }: { sessionId: 
 			title={ctrl.title}
 			disabled={ctrl.pending}
 			onClick={() => void ctrl.toggle()}
-			className="-mx-1 inline-flex h-5 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-amber-500 dark:text-amber-400 transition-[opacity,transform] duration-150 ease-[var(--ease-out)] hover:opacity-80 active:scale-[0.95] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] disabled:cursor-not-allowed disabled:opacity-50"
+			className="press-scale -mx-1 inline-flex h-5 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-amber-500 dark:text-amber-400 transition-opacity duration-150 ease-[var(--ease-out)] hover:opacity-80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] disabled:cursor-not-allowed disabled:opacity-50"
 		>
 			<LightningIcon size={12} filled />
 		</button>

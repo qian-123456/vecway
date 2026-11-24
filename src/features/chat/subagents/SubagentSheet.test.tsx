@@ -110,8 +110,10 @@ describe("SubagentSheet", () => {
 		expect(durationEls.length).toBeGreaterThanOrEqual(1);
 		expect(screen.getAllByText(/已完成/).length).toBeGreaterThanOrEqual(1);
 		expect(screen.queryByText(/22秒/)).toBeNull();
-		// Should show completion time in Overview stat card
-		expect(screen.getByText("完成时间")).toBeTruthy();
+		// Should show timing card and "工具调用" label in execution stats card
+		expect(screen.getByText("运行时间")).toBeTruthy();
+		expect(screen.getByText("工具调用")).toBeTruthy();
+		expect(screen.getByText("42")).toBeTruthy();
 		// Should show non-zero cost formatted, not $0.00
 		expect(screen.getByText("$0.045")).toBeTruthy();
 	});
@@ -136,7 +138,7 @@ describe("SubagentSheet", () => {
 
 		expect(await screen.findByText("$0.000")).toBeTruthy();
 		expect(screen.queryByText("0秒")).toBeNull();
-		expect(screen.queryByText("用时")).toBeNull();
+		expect(screen.queryByText("运行时间")).toBeNull();
 	});
 
 	it("overview shows failure reason, solution space and shared context from the row alone", async () => {
@@ -195,8 +197,89 @@ describe("SubagentSheet", () => {
 		);
 
 		expect((await screen.findAllByText(/19分35秒/)).length).toBeGreaterThanOrEqual(1);
-		expect(screen.getByText("运行时段")).toBeTruthy();
+		expect(screen.getByText("运行时间")).toBeTruthy();
+		expect(screen.getByText("共 2 段")).toBeTruthy();
+		expect(screen.getByText("第 1 段")).toBeTruthy();
 		expect(screen.getByText("20:16:12 - 20:31:32 · 15分20秒")).toBeTruthy();
+		expect(screen.getByText("第 2 段")).toBeTruthy();
 		expect(screen.getByText("20:34:22 - 20:38:37 · 4分15秒")).toBeTruthy();
+	});
+
+	it("merges model with thinking level, omits source, and shows ongoing segment when resumed", async () => {
+		const s1 = new Date(2026, 10, 19, 20, 16, 12);
+		const e1 = new Date(2026, 10, 19, 20, 18, 12);
+		const s2 = new Date(2026, 10, 19, 20, 20, 0);
+		const segs = [
+			{ startedAt: s1.toISOString(), endedAt: e1.toISOString() },
+			{ startedAt: s2.toISOString(), endedAt: "" },
+		];
+		subagentTranscript.mockResolvedValueOnce({
+			...transcript(""),
+			summary: {
+				id: "resumed",
+				status: "running",
+				model: "openai-codex/gpt-6.2-sol",
+				thinkingLevel: "medium",
+				startedAt: segs[0].startedAt,
+				runSegments: segs,
+				toolCallCount: 10,
+				requestCount: 2,
+				tokens: 1200,
+				cost: 0.02,
+				filePath: "/s/parent/resumed.jsonl",
+			},
+		});
+		render(
+			<SubagentSheet
+				parentFile="/s/parent.jsonl"
+				row={{
+					...row("resumed"),
+					status: "running",
+					agent: "scout",
+					agentSource: "user",
+					modelRole: "scout",
+					runSegments: segs,
+					startedAt: segs[0].startedAt,
+				}}
+				onClose={() => {}}
+			/>,
+		);
+
+		expect(await screen.findByText("gpt-6.2-sol (medium)")).toBeTruthy();
+		expect(screen.getByText("openai-codex/gpt-6.2-sol · medium")).toBeTruthy();
+		expect(screen.getByText("角色: scout")).toBeTruthy();
+		expect(screen.queryByText("来源")).toBeNull();
+		expect(screen.getByText("工具调用")).toBeTruthy();
+		expect(screen.getByText("20:16:12 - 20:18:12 · 2分")).toBeTruthy();
+		expect(screen.getByText("20:20:00 - 进行中")).toBeTruthy();
+	});
+
+	it("prefers full transcript prompt over truncated row summary and folds systemPrompt into overview", async () => {
+		subagentTranscript.mockResolvedValueOnce({
+			systemPrompt: "SYS-PROMPT-BODY",
+			prompt: "Complete assignment thoroughly: FULL-VERBATIM-PROMPT-TEXT",
+			output: "DONE",
+			outputPath: null,
+			items: [],
+			nextByte: 1,
+			reset: false,
+		});
+		render(
+			<SubagentSheet
+				parentFile="/s/parent.jsonl"
+				row={{
+					...row("full-prompt"),
+					assignment: "TRUNCATED-SUMMARY...",
+					task: "TRUNCATED-TASK...",
+				}}
+				onClose={() => {}}
+			/>,
+		);
+
+		expect(await screen.findByText("FULL-VERBATIM-PROMPT-TEXT")).toBeTruthy();
+		expect(screen.queryByText("TRUNCATED-SUMMARY...")).toBeNull();
+		expect(screen.queryByRole("button", { name: "提示词" })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: /系统提示词/ }));
+		expect(screen.getByText("SYS-PROMPT-BODY")).toBeTruthy();
 	});
 });

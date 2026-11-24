@@ -332,4 +332,29 @@ describe("file tree preview routing", () => {
 			expect(screen.queryByPlaceholderText(tNow("explorer.searchFilterPlaceholder"))).toBeNull(),
 		);
 	});
+
+	it("keeps previous tree visible on refresh failure with inline retry and never renders read failure as empty directory", async () => {
+		h.fsReadDir.mockResolvedValueOnce([
+			{ name: "keep-me.ts", path: "/project/keep-me.ts", isDir: false },
+		]);
+		render(<FileExplorer />);
+		await screen.findByText("keep-me.ts");
+
+		h.fsReadDir.mockRejectedValueOnce(new Error("permission denied"));
+		fireEvent.click(screen.getByRole("button", { name: tNow("explorer.explorerActions") }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: tNow("explorer.refreshTreeTip") }));
+
+		const alert = await screen.findByRole("alert");
+		expect(alert.textContent).toContain("permission denied");
+		expect(screen.getByText("keep-me.ts")).toBeTruthy();
+		expect(screen.queryByText(tNow("explorer.noFilesInWorkspace"))).toBeNull();
+
+		h.fsReadDir.mockResolvedValueOnce([
+			{ name: "keep-me.ts", path: "/project/keep-me.ts", isDir: false },
+			{ name: "recovered.ts", path: "/project/recovered.ts", isDir: false },
+		]);
+		fireEvent.click(screen.getByRole("button", { name: tNow("common.retry") }));
+		await screen.findByText("recovered.ts");
+		expect(screen.queryByRole("alert")).toBeNull();
+	});
 });

@@ -18,6 +18,7 @@ import { createPortal } from "react-dom";
 import { copyText } from "../../core/lib/format";
 import { CodeBlock } from "../CodeBlock";
 import { toast } from "../Toast";
+import { scrollBehavior } from "../motion";
 import { vizBridgeSource } from "./bridge";
 import {
 	buildSrcDoc,
@@ -224,7 +225,7 @@ function VisualizeFrame({
 				const top = typeof msg.top === "number" ? msg.top : 0;
 				const frame = iframeRef.current;
 				if (!frame) return;
-				window.scrollTo({ top: frame.getBoundingClientRect().top + window.scrollY + top, behavior: "smooth" });
+				window.scrollTo({ top: frame.getBoundingClientRect().top + window.scrollY + top, behavior: scrollBehavior() });
 				break;
 			}
 		}

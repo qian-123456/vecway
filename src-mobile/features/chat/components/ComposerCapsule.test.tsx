@@ -186,4 +186,49 @@ describe("ComposerCapsule", () => {
 		expect(modelBtn.textContent).not.toContain(":high");
 		expect(thinkBtn.textContent).not.toContain("Auto");
 	});
+
+	it("keeps thinking control visible with read-only 不支持思考 when unsupported, avoids premature unsupported while loading, and disables Stop while stopping", () => {
+		const { rerender } = render(
+			<ComposerCapsule
+				placeholder="消息"
+				onPlus={() => {}}
+				onSend={() => {}}
+				model="openai/gpt-4"
+				thinking={null}
+				thinkingSupported={null}
+				onModel={() => {}}
+				onThinking={() => {}}
+			/>,
+		);
+		expect(screen.queryByText("不支持思考")).toBeNull();
+		expect(screen.getByRole("button", { name: /思考强度/ })).toBeTruthy();
+
+		rerender(
+			<ComposerCapsule
+				placeholder="消息"
+				onPlus={() => {}}
+				onSend={() => {}}
+				model="openai/gpt-4"
+				thinking={null}
+				thinkingSupported={false}
+				onModel={() => {}}
+				onThinking={() => {}}
+			/>,
+		);
+		expect(screen.getByText("不支持思考")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /思考强度/ })).toBeNull();
+
+		rerender(
+			<ComposerCapsule
+				placeholder="消息"
+				working
+				stopping
+				onPlus={() => {}}
+				onSend={() => {}}
+				onStop={() => {}}
+			/>,
+		);
+		const stopBtn = screen.getByRole("button", { name: "正在停止" }) as HTMLButtonElement;
+		expect(stopBtn.disabled).toBe(true);
+	});
 });

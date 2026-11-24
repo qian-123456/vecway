@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { subscribeKeyboardOpen } from "../app/viewport";
 import { useOverlay, usePresence } from "./overlay";
 
-const EXIT_MS = 180;
+const EXIT_MS = 135;
 const EDGE_PAD = 12;
 
 export interface AnchorBox {
@@ -235,7 +235,7 @@ export function AnchoredPopover({
 			<div
 				aria-hidden="true"
 				onClick={onClose}
-				className={`absolute inset-0 bg-m-scrim/35 transition-opacity duration-(--m-dur-fast) ${visible ? "opacity-100" : "opacity-0"}`}
+				className={`absolute inset-0 bg-m-scrim/35 transition-opacity ease-m ${visible ? "opacity-100 duration-(--m-dur-fast)" : "opacity-0 duration-(--m-dur-exit)"}`}
 			/>
 			<div
 				ref={panelRef}

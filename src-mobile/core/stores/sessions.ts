@@ -7,8 +7,9 @@ export interface CreateSessionInput {
 	model?: { provider: string; modelId: string };
 	thinking?: string;
 	mode?: SpaceMode;
+	appendSystemPrompt?: string;
+	automationMode?: boolean;
 }
-
 /** `POST /left/sessions` → `LiveSessionInfo` (a process-free draft id for new sessions). */
 interface CreateResponse {
 	sessionId?: string;
@@ -104,11 +105,13 @@ export const useSessions = create<SessionsState>((set, get) => ({
 		if (next === cur) return;
 		set((s) => ({ list: s.list.map((x) => (x.id === id ? next : x)), byId: { ...s.byId, [id]: next } }));
 	},
-	createSession: async ({ cwd, model, thinking, mode }) => {
+	createSession: async ({ cwd, model, thinking, mode, appendSystemPrompt, automationMode }) => {
 		const body: Record<string, unknown> = { cwd };
 		if (model) body.model = model;
 		if (thinking) body.thinking = thinking;
 		if (mode) body.mode = mode;
+		if (appendSystemPrompt) body.appendSystemPrompt = appendSystemPrompt;
+		if (automationMode) body.automationMode = true;
 		const res = await api<CreateResponse>("POST", "/left/sessions", body);
 		const id = res?.sessionId || res?.session?.id;
 		if (!id) throw new Error("创建会话失败：服务器未返回会话 id");

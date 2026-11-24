@@ -258,12 +258,22 @@ fn read_existing_staged_script(auto_dir: &Path) -> String {
     }
     out.trim().to_string()
 }
+pub fn resolve_stage_dir(auto_dir: &Path, preview: bool) -> Result<std::path::PathBuf, String> {
+    if !preview {
+        return Ok(auto_dir.to_path_buf());
+    }
+    let rev_id = uuid::Uuid::new_v4().to_string();
+    let stage_dir = auto_dir.join("revisions").join(&rev_id);
+    std::fs::create_dir_all(&stage_dir).map_err(|e| format!("无法准备自动化预览目录：{e}"))?;
+    Ok(stage_dir)
+}
 
-pub async fn generate_draft(
+pub async fn generate_draft_with_options(
     state: &AppState,
     request: &str,
     cwd: &str,
     current: Option<ScheduleDraft>,
+    preview: bool,
 ) -> Result<AutomationAuthorResult, String> {
     let trimmed_req = request.trim();
     if trimmed_req.is_empty() {
@@ -280,6 +290,7 @@ pub async fn generate_draft(
 
     let auto_dir = crate::paths::automation_dir(&schedule_id);
     std::fs::create_dir_all(&auto_dir).map_err(|e| format!("无法准备自动化目录：{e}"))?;
+    let stage_dir = resolve_stage_dir(&auto_dir, preview)?;
 
     let current_json = current
         .as_ref()
@@ -294,7 +305,7 @@ pub async fn generate_draft(
     let mut vars = HashMap::new();
     vars.insert("request", trimmed_req.to_string());
     vars.insert("cwd", cwd.trim().to_string());
-    vars.insert("automation_dir", auto_dir.to_string_lossy().into_owned());
+    vars.insert("automation_dir", stage_dir.to_string_lossy().into_owned());
     vars.insert("local_now", chrono::Local::now().to_rfc3339());
     vars.insert("current_json", current_json);
     vars.insert("existing_script", existing_script);
@@ -310,7 +321,16 @@ pub async fn generate_draft(
 
     let output =
         crate::todos::omp::run_print(state, &model, &prompt, Duration::from_secs(90)).await?;
-    parse_and_stage_output(&schedule_id, &auto_dir, &output, trimmed_req)
+    parse_and_stage_output(&schedule_id, &stage_dir, &output, trimmed_req)
+}
+
+pub async fn generate_draft(
+    state: &AppState,
+    request: &str,
+    cwd: &str,
+    current: Option<ScheduleDraft>,
+) -> Result<AutomationAuthorResult, String> {
+    generate_draft_with_options(state, request, cwd, current, false).await
 }
 
 #[cfg(test)]
@@ -344,5 +364,33 @@ mod tests {
         assert!(cmd.contains("_evil_check_errors.sh"));
         assert!(dir.join("state").is_dir());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_staging_isolates_revision_and_preserves_live_script() {
+        let auto_dir = std::env::temp_dir().join(format!("ompws-author-prev-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&auto_dir).unwrap();
+        let live_script = auto_dir.join("check.sh");
+        std::fs::write(&live_script, "#!/usr/bin/env bash\necho live\n").unwrap();
+
+        assert_eq!(read_existing_staged_script(&auto_dir), "# check.sh\n#!/usr/bin/env bash\necho live");
+
+        let stage_dir = resolve_stage_dir(&auto_dir, true).unwrap();
+        assert!(stage_dir.starts_with(auto_dir.join("revisions")));
+        assert_ne!(stage_dir, auto_dir);
+
+        let raw = r##"{"name":"Fixed","cadence":{"kind":"interval","minutes":5},"agentTrigger":"on_signal","scriptFilename":"check.sh","scriptContent":"#!/usr/bin/env bash\necho fixed","probeCommand":null,"prompt":"inspect"}"##;
+        let res = parse_and_stage_output("auto-prev", &stage_dir, raw, "fix").unwrap();
+        let cmd = res.probe_command.unwrap();
+        assert!(cmd.contains("revisions/"), "expected revision path in {cmd}");
+        assert_eq!(
+            std::fs::read_to_string(&live_script).unwrap(),
+            "#!/usr/bin/env bash\necho live\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(stage_dir.join("check.sh")).unwrap(),
+            "#!/usr/bin/env bash\necho fixed\n"
+        );
+        let _ = std::fs::remove_dir_all(&auto_dir);
     }
 }

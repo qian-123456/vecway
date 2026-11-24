@@ -60,12 +60,12 @@ describe("GeneralSection global automation overlap policy", () => {
 		["queue", "每次排队"],
 		["parallel", "同时运行"],
 	] as const)("saves %s through app settings, not an automation draft", async (value, label) => {
-		const save = vi.spyOn(ipc, "saveSettings").mockImplementation(async (settings) => ({ ...settings }));
+		const patchSpy = vi.spyOn(ipc, "patchSettings").mockImplementation(async (patch) => ({ ...DEFAULT_SETTINGS, ...patch }));
 		render(<GeneralSection />);
 		fireEvent.click(screen.getByRole("radio", { name: label }));
-		await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ automationOverlapPolicy: value })));
+		await waitFor(() => expect(patchSpy).toHaveBeenCalledWith({ automationOverlapPolicy: value }));
 		await waitFor(() => expect(useSettings.getState().settings?.automationOverlapPolicy).toBe(value));
-		expect(save.mock.calls[0]?.[0]).not.toHaveProperty("overlapPolicy");
+		expect(patchSpy.mock.calls[0]?.[0]).not.toHaveProperty("overlapPolicy");
 	});
 
 	it.each(["重合", "overlap", "排队", "coalesce"])("registers %s searches in General", (query) => {

@@ -1,6 +1,8 @@
 import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
 import type { ReactNode, Ref } from "react";
+import { readTranslateXY, VelocityTracker } from "./gesturePhysics";
+import { prefersReducedMotion } from "./motion";
 import { Spinner } from "./Spinner";
 
 export const PULL_THRESHOLD = 64;
@@ -11,6 +13,13 @@ const PULL_HOLD = 48;
 export function pullDistance(dy: number): number {
 	if (!(dy > 0)) return 0;
 	return (PULL_MAX * dy) / (dy + PULL_MAX);
+}
+
+/** Exact inverse of `pullDistance`, recovering raw pull displacement from a visual offset. */
+export function invertPullDistance(d: number): number {
+	if (!(d > 0)) return 0;
+	const clamped = Math.min(d, PULL_MAX - 1);
+	return (PULL_MAX * clamped) / (PULL_MAX - clamped);
 }
 
 export function PullToRefresh({
@@ -52,17 +61,17 @@ export function PullToRefresh({
 		const spinner = spinnerRef.current;
 		if (!scroller || !body || !indicator || !arrow || !spinner) return;
 		const status = statusRef.current;
-		const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+		const reducedMotion = prefersReducedMotion();
+		const tracker = new VelocityTracker();
 		let startX = 0;
-
 		let startY = 0;
+		let baseRaw = 0;
 		let armed = false;
 		let pulling = false;
 		let refreshing = false;
 		let dist = 0;
 		let alive = true;
 		let hideTimer: number | undefined;
-
 		const paint = (d: number, animate: boolean) => {
 			dist = d;
 			const t = animate && !reducedMotion ? "transform 220ms var(--m-ease)" : "none";
@@ -90,32 +99,45 @@ export function PullToRefresh({
 			if (armed) {
 				startY = e.touches[0]?.clientY ?? 0;
 				startX = e.touches[0]?.clientX ?? 0;
+				const currentOffset = Math.max(0, readTranslateXY(body).y);
+				baseRaw = invertPullDistance(currentOffset);
+				if (currentOffset > 0) paint(currentOffset, false);
+				tracker.reset();
+				tracker.add(startX, startY, e.timeStamp);
 			}
 		};
 		const onMove = (e: TouchEvent) => {
 			if (!armed) return;
-			if (e.touches.length !== 1 || Math.abs((e.touches[0]?.clientX ?? startX) - startX) > Math.abs((e.touches[0]?.clientY ?? startY) - startY)) {
+			const touch = e.touches[0];
+			if (e.touches.length !== 1 || Math.abs((touch?.clientX ?? startX) - startX) > Math.abs((touch?.clientY ?? startY) - startY)) {
 				armed = false;
 				paint(0, true);
 				return;
 			}
-			const y = e.touches[0]?.clientY ?? startY;
+			const x = touch?.clientX ?? startX;
+			const y = touch?.clientY ?? startY;
 			const dy = y - startY;
-			if (dy <= 0) {
+			if (baseRaw <= 0 && dy <= 0) {
 				if (pulling) paint(0, false);
 				pulling = false;
 				return;
 			}
 			pulling = true;
 			if (e.cancelable) e.preventDefault();
-			paint(pullDistance(dy), false);
+			tracker.add(x, y, e.timeStamp);
+			paint(pullDistance(Math.max(0, baseRaw + dy)), false);
 		};
-		const onEnd = () => {
+		const onEnd = (e: TouchEvent) => {
 			if (!armed) return;
 			armed = false;
-			if (!pulling) return;
+			if (!pulling) {
+				if (dist > 0) paint(0, true);
+				return;
+			}
 			pulling = false;
-			if (dist < PULL_THRESHOLD) {
+			const { vy } = tracker.velocity(e.timeStamp);
+			tracker.reset();
+			if (dist < PULL_THRESHOLD && !(dist >= PULL_THRESHOLD * 0.65 && vy > 0.45)) {
 				paint(0, true);
 				return;
 			}

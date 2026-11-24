@@ -2,6 +2,7 @@ export interface DisabledReason {
 	kind: string;
 	key?: string;
 	pattern?: string;
+	exact?: boolean;
 }
 
 export interface Skill {
@@ -44,15 +45,15 @@ export function reasonText(r: DisabledReason | null | undefined): string {
 	if (!r) return "";
 	switch (r.kind) {
 		case "all_off":
-			return "Skills 总开关已关闭";
+			return "技能功能已整体关闭";
 		case "disabled":
-			return "已手动禁用";
+			return "已手动停用";
 		case "source":
-			return `来源已关闭${r.key ? `（${r.key}）` : ""}`;
+			return "该来源已在设置中整体关闭";
 		case "ignored":
-			return `被忽略规则匹配${r.pattern ? `（${r.pattern}）` : ""}`;
+			return r.exact ? "已被忽略规则排除" : `已被忽略规则排除${r.pattern ? `（${r.pattern}）` : ""}`;
 		case "not_included":
-			return "不在包含列表中";
+			return "不在允许列表中";
 	}
 	return r.kind;
 }

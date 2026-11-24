@@ -2,7 +2,8 @@
 
 import { create } from "zustand";
 import type { Settings } from "../../lib/contracts";
-import { getSettings, saveSettings } from "../../lib/ipc";
+import { onSettingsChanged } from "../../lib/events";
+import { getSettings, patchSettings } from "../../lib/ipc";
 import { setDiagnosticsEnabled } from "../../lib/diagnostics";
 
 /** Mirror of `Settings::default()` in contracts.rs (used by import / restore). */
@@ -69,12 +70,17 @@ let lastConfirmed: Settings | null = null;
 let saveQueue: Promise<void> = Promise.resolve();
 const keyRevisions = new Map<keyof Settings, number>();
 let currentRev = 0;
+let activeSaves = 0;
+let pendingExternalReload = false;
 
 export function _resetSettingsStore(): void {
+	loading = null;
 	lastConfirmed = null;
 	keyRevisions.clear();
 	currentRev = 0;
 	saveQueue = Promise.resolve();
+	activeSaves = 0;
+	pendingExternalReload = false;
 }
 
 export const useSettings = create<SettingsState>((set, get) => ({
@@ -97,6 +103,10 @@ export const useSettings = create<SettingsState>((set, get) => ({
 			})
 			.finally(() => {
 				loading = null;
+				if (pendingExternalReload && activeSaves === 0) {
+					pendingExternalReload = false;
+					void useSettings.getState().load();
+				}
 			});
 		return loading;
 	},
@@ -115,23 +125,26 @@ export const useSettings = create<SettingsState>((set, get) => ({
 		setDiagnosticsEnabled(next.diagnosticsEnabled);
 		set({ settings: next });
 
+		activeSaves += 1;
 		const queued = saveQueue.then(async () => {
-			// Persist this request's patch, rebased on the last successful save.
-			const target = { ...(lastConfirmed ?? current), ...patch };
 			try {
-				const saved = await saveSettings(target);
+				const saved = await patchSettings(patch);
 				lastConfirmed = saved;
-				const confirmedPatch: Partial<Settings> = {};
 				for (const k of Object.keys(patch) as (keyof Settings)[]) {
-					if (keyRevisions.get(k) === rev) {
-						(confirmedPatch as Record<string, unknown>)[k] = saved[k];
+					if (keyRevisions.get(k) === rev) keyRevisions.delete(k);
+				}
+				const nextSettings: Settings = { ...saved };
+				const currentState = get().settings;
+				if (currentState) {
+					for (const k of Object.keys(currentState) as (keyof Settings)[]) {
+						const keyRev = keyRevisions.get(k);
+						if (keyRev !== undefined && keyRev !== rev) {
+							(nextSettings as Record<string, unknown>)[k] = currentState[k];
+						}
 					}
 				}
-				set((state) => {
-					const settings = state.settings ? { ...state.settings, ...confirmedPatch } : saved;
-					setDiagnosticsEnabled(settings.diagnosticsEnabled);
-					return { settings, error: null };
-				});
+				setDiagnosticsEnabled(nextSettings.diagnosticsEnabled);
+				set({ settings: nextSettings, error: null });
 			} catch (e) {
 				const revertPatch: Partial<Settings> = {};
 				for (const k of Object.keys(patch) as (keyof Settings)[]) {
@@ -141,6 +154,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
 						} else if (prevSnapshot[k] !== undefined) {
 							(revertPatch as Record<string, unknown>)[k] = prevSnapshot[k];
 						}
+						keyRevisions.delete(k);
 					}
 				}
 				set((state) => {
@@ -149,6 +163,12 @@ export const useSettings = create<SettingsState>((set, get) => ({
 					return { settings, error: String(e) };
 				});
 				throw e;
+			}
+		}).finally(() => {
+			activeSaves = Math.max(0, activeSaves - 1);
+			if (pendingExternalReload && activeSaves === 0 && !loading) {
+				pendingExternalReload = false;
+				void useSettings.getState().load();
 			}
 		});
 
@@ -164,4 +184,32 @@ export const useSettings = create<SettingsState>((set, get) => ({
 export function ensureSettings(): void {
 	const s = useSettings.getState();
 	if (!s.settings) void s.load();
+}
+
+/** Reload settings when changed externally (e.g. mobile), deferring if a save or load is active. */
+export function handleExternalSettingsChange(): void {
+	if (activeSaves > 0 || loading) {
+		pendingExternalReload = true;
+		return;
+	}
+	void useSettings.getState().load();
+}
+
+/** Subscribe to `"settings:changed"` events and refresh settings store safely. */
+export function startSettingsSync(): () => void {
+	let cancelled = false;
+	let unlisten: (() => void) | null = null;
+	void onSettingsChanged(() => {
+		handleExternalSettingsChange();
+	})
+		.then((fn) => {
+			if (cancelled) fn();
+			else unlisten = fn;
+		})
+		.catch(() => {});
+	return () => {
+		cancelled = true;
+		unlisten?.();
+		unlisten = null;
+	};
 }

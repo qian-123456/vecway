@@ -71,9 +71,11 @@ export interface RawToolCall {
 
 export interface RawToolResultDetails {
 	diff?: string;
+	draftId?: string;
+	action?: string;
+	scheduleId?: string;
 	[k: string]: unknown;
 }
-
 export interface RawToolResult {
 	toolCallId: string;
 	toolName?: string;
@@ -109,10 +111,18 @@ export interface TranscriptPage {
 	hasMore?: boolean;
 	oldestIndex?: number;
 	totalItems?: number;
+	automationState?: unknown;
 }
 
 export type ItemRole = "user" | "assistant" | "system";
 export type ToolStatus = "running" | "done" | "error";
+
+export interface ToolDetails {
+	diff?: string;
+	draftId?: string;
+	action?: string;
+	scheduleId?: string;
+}
 
 export interface ToolItem {
 	id: string;
@@ -122,8 +132,8 @@ export interface ToolItem {
 	status: ToolStatus;
 	result: string;
 	diff?: string;
+	details?: ToolDetails;
 }
-
 /** Image reference carried by a message (no bytes: the mobile API does not serve them). */
 export interface ImageRef {
 	id: string;

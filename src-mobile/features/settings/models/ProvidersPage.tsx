@@ -137,7 +137,7 @@ function ProviderItem({ row, onSaved }: { row: ProviderRow; onSaved: () => void 
 			/>
 			<SettingsSheet
 				open={open}
-				onClose={() => { if (!busy) setOpen(false); }}
+				onClose={() => { if (!busy) { reset(); setOpen(false); } }}
 				title={name}
 				subtitle={row.id !== name ? row.id : undefined}
 				footer={
@@ -213,8 +213,8 @@ function ProviderItem({ row, onSaved }: { row: ProviderRow; onSaved: () => void 
 				<ListGroup title="连接测试">
 					<ListRow
 						icon={<Activity {...ICON} />}
-						title={testing ? "正在测试连接" : "测试连接"}
-						subtitle={row.testable === false ? "此供应商不支持连接测试" : undefined}
+						title={testing ? "正在测试连接" : dirty ? "测试已保存配置" : "测试连接"}
+						subtitle={row.testable === false ? "此供应商不支持连接测试" : dirty ? "测试将使用当前已保存配置，未保存的修改需先保存" : undefined}
 						right={testing ? <Spinner size={18} /> : undefined}
 						chevron={false}
 						disabled={testing || row.testable === false}

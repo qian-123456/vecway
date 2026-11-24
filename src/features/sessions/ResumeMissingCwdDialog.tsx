@@ -61,9 +61,7 @@ function ResumeMissingCwdForm({ props }: { props: Record<string, unknown> }) {
 		repoRoot && !workspaceMissing ? "main" : "pick",
 	);
 	const [pickedDir, setPickedDir] = useState("");
-	const [relocateWholeProject, setRelocateWholeProject] = useState(
-		Boolean(workspaceId && workspaceMissing),
-	);
+	const [relocateWholeProject, setRelocateWholeProject] = useState(false);
 	const [branches, setBranches] = useState<string[] | null>(null);
 	const [branchSel, setBranchSel] = useState("");
 	const [busy, setBusy] = useState(false);
@@ -377,23 +375,28 @@ function ResumeMissingCwdForm({ props }: { props: Record<string, unknown> }) {
 								</span>
 							)}
 							{choice === "pick" && workspaceId && (
-								<label
+								<div
 									onClick={(e) => e.stopPropagation()}
-									className="mt-2 flex cursor-pointer items-start gap-2 text-[11px] text-neutral-300"
+									className="mt-2 space-y-1"
 								>
-									<input
-										type="checkbox"
-										className="mt-0.5"
-										checked={relocateWholeProject}
-										disabled={busy}
-										onChange={(e) => setRelocateWholeProject(e.target.checked)}
-									/>
-									<span>
-										{t("sessions.relocateWholeProjectLabel", {
-											name: workspaceName ?? "",
-										})}
-									</span>
-								</label>
+									<label className="flex cursor-pointer items-start gap-2 text-[11px] text-neutral-300">
+										<input
+											type="checkbox"
+											className="mt-0.5"
+											checked={relocateWholeProject}
+											disabled={busy}
+											onChange={(e) => setRelocateWholeProject(e.target.checked)}
+										/>
+										<span>
+											{t("sessions.relocateWholeProjectLabel", {
+												name: workspaceName ?? "",
+											})}
+										</span>
+									</label>
+									<p className="pl-5 text-[11px] text-neutral-500">
+										{t("sessions.relocateWholeProjectHint")}
+									</p>
+								</div>
 							)}
 						</span>
 					</label>
@@ -479,7 +482,11 @@ function ResumeMissingCwdForm({ props }: { props: Record<string, unknown> }) {
 						className="press-scale flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-[var(--accent)] px-4 py-1.5 text-xs font-medium text-[var(--accent-fg)] hover:opacity-90 disabled:opacity-40 transition-colors"
 					>
 						{busy && <Loader2 size={12} className="animate-spin" />}
-						{busy ? t("sessions.resuming") : t("sessions.continueAction")}
+						{busy
+							? t("sessions.resuming")
+							: choice === "pick" && workspaceId && relocateWholeProject
+								? t("sessions.moveProjectAndContinue")
+								: t("sessions.continueAction")}
 					</button>
 				</div>
 			</div>

@@ -362,7 +362,7 @@ describe("AskPanel", () => {
 		]);
 	});
 
-	it("clicking add-note on an unselected option selects it and Escape blurs input before cancelling", () => {
+	it("clicking add-note on an unselected option selects it, Escape blurs then collapses without cancelling, and skip cancels explicitly", () => {
 		const spec = parseAskArgs("ui-2", {
 			html: `<form><fieldset><legend>Env</legend>
 				<label><input type="radio" name="env" value="dev"> Dev</label>
@@ -376,10 +376,13 @@ describe("AskPanel", () => {
 				spec={spec}
 				startIndex={0}
 				busy={false}
+				hasComposerDraft
 				onSubmit={onSubmit}
 				onCancel={onCancel}
 			/>,
 		);
+
+		expect(screen.getByText("输入框中的草稿已保留，回答问题后可继续发送")).toBeTruthy();
 
 		// Click the second option's "备注" button -> selects Prod and focuses its inline note input.
 		const addNoteButtons = screen.getAllByRole("button", { name: "备注" });
@@ -391,6 +394,18 @@ describe("AskPanel", () => {
 		// First Escape inside note input blurs back to panel without cancelling.
 		fireEvent.keyDown(prodNote, { key: "Escape" });
 		expect(onCancel).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: "提交" })).toBeTruthy();
+
+		// Second Escape when panel has focus collapses the panel without cancelling.
+		const panel = screen.getByText("Env").closest("[tabindex]") as HTMLElement;
+		panel.focus();
+		fireEvent.keyDown(panel, { key: "Escape" });
+		expect(onCancel).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: "展开继续回答" })).toBeTruthy();
+
+		// Expanding restores state cleanly.
+		fireEvent.click(screen.getByRole("button", { name: "展开继续回答" }));
+		expect((screen.getByLabelText("Prod 补充说明") as HTMLInputElement).value).toBe("canary first");
 
 		// Submit preserves Prod + note.
 		fireEvent.click(screen.getByRole("button", { name: "提交" }));
@@ -398,10 +413,8 @@ describe("AskPanel", () => {
 			{ selected: ["Prod"], custom: "", notes: { Prod: "canary first" } },
 		]);
 
-		// Second Escape when panel has focus cancels.
-		const panel = screen.getByText("Env").closest("[tabindex]") as HTMLElement;
-		panel.focus();
-		fireEvent.keyDown(panel, { key: "Escape" });
+		// Cancelling requires clicking the explicit skip button.
+		fireEvent.click(screen.getByRole("button", { name: "跳过此问题" }));
 		expect(onCancel).toHaveBeenCalledTimes(1);
 	});
 });

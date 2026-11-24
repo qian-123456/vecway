@@ -51,11 +51,14 @@
 	--m-ease: cubic-bezier(0.23, 1, 0.32, 1);
 	--m-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 	--m-ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+	--m-ease-spring: cubic-bezier(0.25, 1, 0.5, 1);
 	--m-dur-press: 130ms;
 	--m-dur-fast: 160ms;
+	--m-dur-exit: 135ms;
+	--m-dur-modal: 180ms;
 	--m-dur: 260ms;
-	--m-dur-sheet: 380ms;
-
+	--m-dur-sheet: 300ms;
+	--m-dur-sheet-exit: 240ms;
 	/* Device */
 	--m-safe-top: env(safe-area-inset-top, 0px);
 	--m-safe-bottom: env(safe-area-inset-bottom, 0px);

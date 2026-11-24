@@ -2,6 +2,7 @@ import {
 	Bell,
 	BookOpen,
 	Brain,
+	CalendarClock,
 	Cpu,
 	FileText,
 	Gauge,
@@ -29,6 +30,7 @@ import {
 
 export type SheetId =
 	| "general"
+	| "automations"
 	| "appearance"
 	| "notifications"
 	| "privacy"
@@ -72,6 +74,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
 		title: "常规",
 		items: [
 			{ id: "general", label: "通用", icon: SlidersHorizontal },
+			{ id: "automations", label: "自动化", icon: CalendarClock },
 			{ id: "appearance", label: "外观", icon: Palette },
 			{ id: "notifications", label: "通知", icon: Bell },
 			{ id: "privacy", label: "隐私", icon: Shield },

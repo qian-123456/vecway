@@ -115,6 +115,16 @@ export function HandbackDialog() {
 							</div>
 						</div>
 					)}
+					{run?.previousDraft && (
+						<div className="flex flex-col gap-1">
+							<span className="text-[11px] text-[var(--text-40)]">
+								{t("sidechat.previousDraftPreview")}
+							</span>
+							<div className="max-h-40 overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--bg)]/70 p-2.5 text-xs leading-relaxed whitespace-pre-wrap break-words text-[var(--text-60)]">
+								{run.previousDraft}
+							</div>
+						</div>
+					)}
 				</div>
 			)}
 			{phase === "error" && (
@@ -147,8 +157,27 @@ export function HandbackDialog() {
 				</span>
 				<div className="flex flex-wrap items-center justify-end gap-2">
 					<button type="button" onClick={closeModal} className={BTN_BORDER}>
-						{t("common.cancel")}
+						{t("common.close")}
 					</button>
+					{phase !== "running" && run?.previousDraft && (
+						<button
+							type="button"
+							disabled={sending}
+							onClick={() => {
+								const prev = run.previousDraft ?? "";
+								const current = run.draft.trim() ? run.draft : undefined;
+								useHandback.getState().set(childId, {
+									phase: "ready",
+									draft: prev,
+									previousDraft: current,
+									error: null,
+								});
+							}}
+							className={BTN_BORDER}
+						>
+							{t("sidechat.restorePrevious")}
+						</button>
+					)}
 					{phase === "running" ? (
 						<button
 							type="button"

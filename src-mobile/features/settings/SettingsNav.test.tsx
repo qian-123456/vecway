@@ -60,13 +60,13 @@ describe("SettingsPage navigation and groups", () => {
 
 		await screen.findByText("通用");
 
-		// 常规: 通用, 外观, 通知, 隐私
+		// 常规: 通用, 自动化, 外观, 通知, 隐私
 		expect(screen.getByText("通用")).toBeDefined();
+		expect(screen.getByText("自动化")).toBeDefined();
 		expect(screen.getByText("外观")).toBeDefined();
 		expect(screen.getByText("通知")).toBeDefined();
 		expect(screen.getByText("隐私")).toBeDefined();
 
-		// 模型: 模型与供应商, 模型角色, 思考与采样, 辅助模型, 备用模型与重试, 上下文窗口
 		expect(screen.getByText("模型与供应商")).toBeDefined();
 		expect(screen.getByText("模型角色")).toBeDefined();
 		expect(screen.getByText("思考与采样")).toBeDefined();
@@ -113,7 +113,7 @@ describe("SettingsPage navigation and groups", () => {
 		expect(screen.queryByText("快捷键")).toBeNull();
 	});
 
-	it("opens the General bottom sheet on tapping 通用", async () => {
+	it("opens the General bottom sheet on tapping 通用 and hands off to 自动化设置", async () => {
 		render(<SettingsPage />);
 
 		const generalBtn = await screen.findByText("通用");
@@ -122,7 +122,8 @@ describe("SettingsPage navigation and groups", () => {
 		// Bottom sheet title should appear
 		expect(await screen.findByText("通用设置")).toBeDefined();
 		expect(screen.getByText("审批权限模式")).toBeDefined();
-		expect(screen.getByRole("button", { name: "运行重合策略，当前：跳过" })).toBeDefined();
+		fireEvent.click(screen.getByText("自动化设置"));
+		expect(await screen.findByRole("button", { name: "运行重合策略，当前：跳过" })).toBeDefined();
 	});
 
 	it.each([
@@ -130,16 +131,28 @@ describe("SettingsPage navigation and groups", () => {
 		["coalesce", "合并"],
 		["queue", "排队"],
 		["parallel", "并行"],
-	] as const)("reads and saves the global %s overlap policy in General settings", async (value, label) => {
+	] as const)("reads and saves the global %s overlap policy in Automation settings", async (value, label) => {
 		const initial = value === "skip" ? "queue" : "skip";
 		const load = vi.mocked(apiModule.api).getMockImplementation()!;
 		vi.mocked(apiModule.api).mockImplementation((method, path, body) => {
-			if (method === "POST" && path === "/left/settings/set") return Promise.resolve({ ok: true, key: "automationOverlapPolicy", value });
+			if (method === "POST" && path === "/left/settings/automation") {
+				return Promise.resolve({
+					automationBackgroundEnabled: true,
+					automationOverlapPolicy: value,
+					automationDefaultResultMode: "structured",
+					automationDefaultModel: null,
+					automationDefaultThinking: null,
+					automationPromptMockTest: null,
+					automationPromptRealOnceTest: null,
+					automationPromptRealLoopTest: null,
+					automationPromptAdjust: null,
+				});
+			}
 			if (path === "/left/settings") return Promise.resolve({ defaultApprovalMode: "write", automationOverlapPolicy: initial });
 			return load(method, path, body);
 		});
 		render(<SettingsPage />);
-		fireEvent.click(await screen.findByText("通用"));
+		fireEvent.click(await screen.findByText("自动化"));
 		const trigger = await screen.findByRole("button", {
 			name: `运行重合策略，当前：${initial === "queue" ? "排队" : "跳过"}`,
 		});
@@ -149,7 +162,7 @@ describe("SettingsPage navigation and groups", () => {
 		await waitFor(() =>
 			expect(screen.getByRole("button", { name: `运行重合策略，当前：${label}` })).toBeDefined(),
 		);
-		expect(apiModule.api).toHaveBeenCalledWith("POST", "/left/settings/set", { key: "automationOverlapPolicy", value });
+		expect(apiModule.api).toHaveBeenCalledWith("POST", "/left/settings/automation", { automationOverlapPolicy: value });
 		expect(screen.getByText(/对所有自动化的后续触发立即生效，不中断当前运行/)).toBeDefined();
 	});
 
@@ -157,38 +170,57 @@ describe("SettingsPage navigation and groups", () => {
 		let finishSave!: (result: unknown) => void;
 		const load = vi.mocked(apiModule.api).getMockImplementation()!;
 		vi.mocked(apiModule.api).mockImplementation((method, path, body) => {
-			// ES2021 target does not expose Promise.withResolvers.
-			if (method === "POST" && path === "/left/settings/set") return new Promise((resolve) => { finishSave = resolve; });
+			if (method === "POST" && path === "/left/settings/automation") return new Promise((resolve) => { finishSave = resolve; });
 			return load(method, path, body);
 		});
 		render(<SettingsPage />);
-		fireEvent.click(await screen.findByText("通用"));
+		fireEvent.click(await screen.findByText("自动化"));
 		const trigger = (await screen.findByRole("button", { name: "运行重合策略，当前：跳过" })) as HTMLButtonElement;
 		fireEvent.click(trigger);
 		fireEvent.click(screen.getByRole("menuitemradio", { name: /^排队/ }));
 		expect((screen.getByRole("button", { name: "运行重合策略，当前：跳过" }) as HTMLButtonElement).disabled).toBe(true);
 		expect(vi.mocked(apiModule.api).mock.calls.filter(([method]) => method === "POST")).toHaveLength(1);
-		await act(async () => finishSave({ ok: true, key: "automationOverlapPolicy", value: "queue" }));
+		await act(async () => finishSave({
+			automationBackgroundEnabled: true,
+			automationOverlapPolicy: "queue",
+			automationDefaultResultMode: "structured",
+			automationDefaultModel: null,
+			automationDefaultThinking: null,
+			automationPromptMockTest: null,
+			automationPromptRealOnceTest: null,
+			automationPromptRealLoopTest: null,
+			automationPromptAdjust: null,
+		}));
 		expect(screen.getByRole("button", { name: "运行重合策略，当前：排队" })).toBeDefined();
 	});
 
 	it.each([
 		{ name: "network failure", response: null, error: new Error("cannot save\nfull detail"), message: "cannot save" },
 		{ name: "missing confirmation", response: {}, error: null, message: "电脑未返回有效的自动化重合策略" },
-		{ name: "invalid policy", response: { ok: true, key: "automationOverlapPolicy", value: "discard" }, error: null, message: "电脑未返回有效的自动化重合策略" },
-		{ name: "wrong key", response: { ok: true, key: "overlapPolicy", value: "queue" }, error: null, message: "电脑未返回有效的自动化重合策略" },
+		{ name: "invalid policy", response: { automationOverlapPolicy: "discard" }, error: null, message: "电脑未返回有效的自动化重合策略" },
+		{ name: "wrong key", response: { overlapPolicy: "queue" }, error: null, message: "电脑未返回有效的自动化重合策略" },
 	])("shows $name without changing the confirmed policy and permits retry", async ({ response, error, message }) => {
 		let failed = true;
 		const load = vi.mocked(apiModule.api).getMockImplementation()!;
 		vi.mocked(apiModule.api).mockImplementation((method, path, body) => {
-			if (method === "POST" && path === "/left/settings/set") {
-				if (!failed) return Promise.resolve({ ok: true, key: "automationOverlapPolicy", value: "queue" });
+			if (method === "POST" && path === "/left/settings/automation") {
+				if (!failed) return Promise.resolve({
+					automationBackgroundEnabled: true,
+					automationOverlapPolicy: "queue",
+					automationDefaultResultMode: "structured",
+					automationDefaultModel: null,
+					automationDefaultThinking: null,
+					automationPromptMockTest: null,
+					automationPromptRealOnceTest: null,
+					automationPromptRealLoopTest: null,
+					automationPromptAdjust: null,
+				});
 				return error ? Promise.reject(error) : Promise.resolve(response);
 			}
 			return load(method, path, body);
 		});
 		render(<SettingsPage />);
-		fireEvent.click(await screen.findByText("通用"));
+		fireEvent.click(await screen.findByText("自动化"));
 		fireEvent.click(await screen.findByRole("button", { name: "运行重合策略，当前：跳过" }));
 		fireEvent.click(screen.getByRole("menuitemradio", { name: /^排队/ }));
 		await waitFor(() => expect(screen.getAllByRole("alert").some((alert) => alert.textContent?.includes(message))).toBe(true));
@@ -207,11 +239,43 @@ describe("SettingsPage navigation and groups", () => {
 			return load(method, path, body);
 		});
 		render(<SettingsPage />);
-		fireEvent.click(await screen.findByText("通用"));
+		fireEvent.click(await screen.findByText("自动化"));
 		const trigger = (await screen.findByRole("button", { name: "运行重合策略，当前：请选择" })) as HTMLButtonElement;
 		expect(trigger.disabled).toBe(true);
 		expect(screen.getByText("无法读取自动化重合策略，请返回设置后下拉刷新。")).toBeDefined();
 		expect(apiModule.api).not.toHaveBeenCalledWith("POST", expect.anything(), expect.anything());
+	});
+
+	it("toggles background daemon and default result mode via POST /left/settings/automation", async () => {
+		const load = vi.mocked(apiModule.api).getMockImplementation()!;
+		let state = {
+			automationBackgroundEnabled: true,
+			automationOverlapPolicy: "skip" as const,
+			automationDefaultResultMode: "structured" as const,
+			automationDefaultModel: null,
+			automationDefaultThinking: null,
+			automationPromptMockTest: null,
+			automationPromptRealOnceTest: null,
+			automationPromptRealLoopTest: null,
+			automationPromptAdjust: null,
+		};
+		vi.mocked(apiModule.api).mockImplementation((method, path, body) => {
+			if (method === "POST" && path === "/left/settings/automation") {
+				state = { ...state, ...(body as Record<string, unknown>) };
+				return Promise.resolve(state);
+			}
+			if (path === "/left/settings") return Promise.resolve({ defaultApprovalMode: "write", ...state });
+			return load(method, path, body);
+		});
+		render(<SettingsPage />);
+		fireEvent.click(await screen.findByText("自动化"));
+		const bgSwitch = await screen.findByRole("switch", { name: "后台常驻运行" });
+		fireEvent.click(bgSwitch);
+		await waitFor(() =>
+			expect(apiModule.api).toHaveBeenCalledWith("POST", "/left/settings/automation", {
+				automationBackgroundEnabled: false,
+			}),
+		);
 	});
 
 	it("opens the Appearance bottom sheet on tapping 外观", async () => {
@@ -346,5 +410,72 @@ describe("SettingsPage navigation and groups", () => {
 		expect(screen.getByRole("switch", { name: "长命令自动转后台" }).getAttribute("aria-checked")).toBe("true");
 		// Keys the desktop did not return are hidden instead of showing made-up defaults.
 		expect(screen.queryByText("工具最长超时")).toBeNull();
+	});
+
+	it("coalesces queued automation settings patches, protects active prompt edits during reconciliation, and configures default thinking", async () => {
+		let resolveBg!: (val: unknown) => void;
+		let postCount = 0;
+		let serverState = {
+			automationBackgroundEnabled: true,
+			automationOverlapPolicy: "skip" as const,
+			automationDefaultResultMode: "structured" as const,
+			automationDefaultModel: "anthropic/claude-sonnet-4-5",
+			automationDefaultThinking: "medium",
+			automationPromptMockTest: null as string | null,
+			automationPromptRealOnceTest: null as string | null,
+			automationPromptRealLoopTest: null as string | null,
+			automationPromptAdjust: null as string | null,
+		};
+		const load = vi.mocked(apiModule.api).getMockImplementation()!;
+		vi.mocked(apiModule.api).mockImplementation((method, path, body) => {
+			if (path === "/left/settings") return Promise.resolve({ defaultApprovalMode: "write", ...serverState });
+			if (method === "POST" && path === "/left/settings/automation") {
+				postCount++;
+				const patch = (body ?? {}) as Record<string, unknown>;
+				serverState = { ...serverState, ...patch };
+				if ("automationBackgroundEnabled" in patch) {
+					return new Promise((resolve) => {
+						resolveBg = () => resolve({ ...serverState });
+					});
+				}
+				return Promise.resolve({ ...serverState });
+			}
+			return load(method, path, body);
+		});
+
+		render(<SettingsPage />);
+		fireEvent.click(await screen.findByText("自动化"));
+
+		// M12: model display uses break-words (not break-all) & thinking selector is present
+		const modelText = await screen.findByText(/anthropic\/claude-sonnet-4-5 · medium/);
+		expect(modelText.className).toContain("break-words");
+		expect(modelText.className).not.toContain("break-all");
+
+		const thinkingBtn = screen.getByRole("button", { name: "默认思考力度，当前：medium" });
+		fireEvent.click(thinkingBtn);
+		fireEvent.click(screen.getByRole("menuitemradio", { name: /^xhigh/ }));
+		await waitFor(() =>
+			expect(apiModule.api).toHaveBeenCalledWith("POST", "/left/settings/automation", {
+				automationDefaultThinking: "xhigh",
+			}),
+		);
+
+		// M11: second patch while first is in-flight is queued/coalesced, and active prompt edit is preserved
+		postCount = 0;
+		fireEvent.click(screen.getByRole("switch", { name: "后台常驻运行" }));
+		fireEvent.click(screen.getByRole("button", { name: "默认结果汇报模式，当前：结构化回报" }));
+		fireEvent.click(screen.getByRole("menuitemradio", { name: /^轻量模型总结/ }));
+
+		const promptBoxes = document.querySelectorAll<HTMLTextAreaElement>("textarea");
+		expect(promptBoxes.length).toBeGreaterThanOrEqual(1);
+		fireEvent.focus(promptBoxes[0]);
+		fireEvent.change(promptBoxes[0], { target: { value: "正在编辑中的提示词" } });
+
+		await act(async () => resolveBg(serverState));
+		await waitFor(() => expect(postCount).toBe(2));
+		expect(apiModule.api).toHaveBeenLastCalledWith("POST", "/left/settings/automation", {
+			automationDefaultResultMode: "llm_summary",
+		});
+		expect(promptBoxes[0].value).toBe("正在编辑中的提示词");
 	});
 });

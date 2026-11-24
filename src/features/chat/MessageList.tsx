@@ -33,6 +33,7 @@ import type {
 import { confirmDialog, copyTextWithImages, errMsg } from "../../lib/dialogs";
 import { isResumeCancelled } from "../../lib/ensureLive";
 import { isComposing } from "../../lib/hooks";
+import { scrollBehavior } from "../../lib/motion";
 import { toast } from "../../lib/toast";
 import { useT } from "../../stores/language";
 import { withModelNotices } from "./modelChangeRows";
@@ -2682,7 +2683,7 @@ export function MessageList({
 			// would leave its question off-screen. A step target is refined below.
 			virtualizer.scrollToIndex(targetIndex, {
 				align: "start",
-				behavior: "smooth",
+				behavior: scrollBehavior(),
 			});
 			const quote = scrollRequest.quote;
 			const scrollToMessage = () => {
@@ -2690,7 +2691,7 @@ export function MessageList({
 					document.getElementById(`msg-${targetId}`) ||
 					document.querySelector(`[data-tool-id="${targetId}"]`);
 				if (el) {
-					el.scrollIntoView({ behavior: "smooth", block: "center" });
+					el.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
 				}
 			};
 			if (quote) {
@@ -2717,7 +2718,7 @@ export function MessageList({
 			if (!el) return;
 			lastHandledScrollReq.current = scrollRequest.timestamp;
 			followRef.current = detach(followRef.current);
-			el.scrollIntoView({ behavior: "smooth", block: "center" });
+			el.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
 			flashHighlight(targetId, 3000);
 			useLive.getState().clearScrollRequest(sessionId);
 		}
@@ -2741,7 +2742,7 @@ export function MessageList({
 		if (idx < 0) return;
 		// Jump wins over follow-bottom for the duration of the smooth scroll.
 		followRef.current = detach(followRef.current);
-		virtualizer.scrollToIndex(idx, { align: "start", behavior: "smooth" });
+		virtualizer.scrollToIndex(idx, { align: "start", behavior: scrollBehavior() });
 		flashHighlight(revealTurn.userItemId, 2500);
 		// A target deeper inside the turn (an assistant reply from a search hit):
 		// refine to the message itself once its row has mounted.
@@ -2752,7 +2753,7 @@ export function MessageList({
 				window.setTimeout(() => {
 					document
 						.getElementById(`msg-${targetId}`)
-						?.scrollIntoView({ behavior: "smooth", block: "center" });
+						?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
 				}, delay);
 			}
 		}
@@ -2789,7 +2790,7 @@ export function MessageList({
 			window.setTimeout(() => {
 				document
 					.querySelector(`[data-tool-id="${CSS.escape(callId)}"]`)
-					?.scrollIntoView({ behavior: "smooth", block: "center" });
+					?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
 			}, delay);
 		}
 	}, [locateTarget, rows, virtualizer, isLoadingTranscript, flashHighlight, t]);

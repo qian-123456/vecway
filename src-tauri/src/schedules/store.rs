@@ -566,8 +566,33 @@ fn normalize_cadence(cadence: &ScheduleCadence, today: NaiveDate) -> ScheduleCad
     cadence
 }
 
-pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, String> {
-    let ts = now_rfc3339();
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateScheduleError {
+    Conflict(String),
+    Invalid(String),
+}
+
+impl From<String> for CreateScheduleError {
+    fn from(msg: String) -> Self {
+        Self::Invalid(msg)
+    }
+}
+
+struct PreparedScheduleFields {
+    run_mode_str: &'static str,
+    notify_str: &'static str,
+    cadence: ScheduleCadence,
+    cadence_json: String,
+    end_at: Option<String>,
+    max_runs: Option<u32>,
+    probe_command: Option<String>,
+    probe_description: Option<String>,
+    agent_trigger_str: &'static str,
+    result_mode_str: &'static str,
+    invokes_external_model_int: i32,
+}
+
+fn prepare_schedule_fields(draft: &ScheduleDraft, now: DateTime<Local>) -> PreparedScheduleFields {
     let run_mode_str = match draft.run_mode {
         ScheduleRunMode::Worktree => "worktree",
         ScheduleRunMode::Local => "local",
@@ -577,17 +602,6 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
         ScheduleNotify::None => "none",
         ScheduleNotify::All => "all",
     };
-    let prev = draft
-        .id
-        .as_ref()
-        .map(|id| get(conn, id))
-        .transpose()
-        .map_err(|e| e.to_string())?
-        .flatten();
-
-    validate_draft(draft, prev.as_ref())?;
-
-    let now = Local::now();
     // Fill/normalize `anchor` before persisting so `next_run` always sees a
     // stable phase (and stored cadences round-trip through `keep` checks).
     let cadence = normalize_cadence(&draft.cadence, now.date_naive());
@@ -613,12 +627,118 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let agent_trigger_str = agent_trigger_as_str(draft.agent_trigger);
-    let result_mode_str = result_mode_as_str(draft.result_mode);
-    let invokes_external_model_int = draft.invokes_external_model as i32;
+    PreparedScheduleFields {
+        run_mode_str,
+        notify_str,
+        cadence,
+        cadence_json,
+        end_at,
+        max_runs,
+        probe_command,
+        probe_description,
+        agent_trigger_str: agent_trigger_as_str(draft.agent_trigger),
+        result_mode_str: result_mode_as_str(draft.result_mode),
+        invokes_external_model_int: draft.invokes_external_model as i32,
+    }
+}
 
+fn insert_schedule_row(
+    conn: &Connection,
+    draft: &ScheduleDraft,
+    fields: &PreparedScheduleFields,
+    ts: &str,
+    now: DateTime<Local>,
+) -> Result<Schedule, CreateScheduleError> {
+    let id = draft
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let next_run_at = if draft.enabled {
+        next_run_bounded(&fields.cadence, fields.end_at.as_deref(), now)
+            .map(|dt| dt.to_rfc3339())
+    } else {
+        None
+    };
+    let enabled = (draft.enabled && next_run_at.is_some()) as i32;
+
+    conn.execute(
+        "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, model, thinking, approval_mode, enabled, next_run_at, last_run_at, end_at, notify, new_chat_each_run, max_runs, created_at, updated_at, mode, probe_command, probe_description, agent_trigger, result_mode, invokes_external_model)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12, ?13, ?14, ?15, ?16, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+        params![
+            id,
+            draft.name,
+            draft.prompt,
+            draft.cwd,
+            fields.run_mode_str,
+            fields.cadence_json,
+            draft.model,
+            draft.thinking,
+            draft.approval_mode,
+            enabled,
+            next_run_at,
+            fields.end_at,
+            fields.notify_str,
+            draft.new_chat_each_run as i32,
+            fields.max_runs,
+            ts,
+            draft.mode.as_str(),
+            fields.probe_command,
+            fields.probe_description,
+            fields.agent_trigger_str,
+            fields.result_mode_str,
+            fields.invokes_external_model_int,
+        ],
+    )
+    .map_err(|e| match &e {
+        rusqlite::Error::SqliteFailure(err, msg)
+            if err.code == rusqlite::ErrorCode::ConstraintViolation
+                || msg
+                    .as_deref()
+                    .is_some_and(|m| m.contains("UNIQUE constraint failed")) =>
+        {
+            CreateScheduleError::Conflict("自动化 ID 已存在".to_string())
+        }
+        _ => CreateScheduleError::Invalid(e.to_string()),
+    })?;
+
+    get(conn, &id)
+        .map_err(|e| CreateScheduleError::Invalid(e.to_string()))?
+        .ok_or_else(|| CreateScheduleError::Invalid("自动化不存在".to_string()))
+}
+
+/// Insert a brand-new schedule atomically, preserving an unused caller-supplied
+/// `draft.id` and mapping primary-key constraint violations to `Conflict`.
+pub fn create_new(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, CreateScheduleError> {
+    validate_draft(draft, None).map_err(CreateScheduleError::Invalid)?;
+    let now = Local::now();
+    let ts = now_rfc3339();
+    let fields = prepare_schedule_fields(draft, now);
+    insert_schedule_row(conn, draft, &fields, &ts, now)
+}
+
+pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, String> {
+    let ts = now_rfc3339();
+    let prev = draft
+        .id
+        .as_ref()
+        .map(|id| get(conn, id))
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .flatten();
+
+    validate_draft(draft, prev.as_ref())?;
+
+    let now = Local::now();
+    let fields = prepare_schedule_fields(draft, now);
     if let (Some(id), Some(prev)) = (draft.id.as_ref(), prev) {
-        let rescheduled_once = match (&prev.cadence, &cadence) {
+        let cadence = &fields.cadence;
+        let end_at = &fields.end_at;
+        let max_runs = fields.max_runs;
+        let rescheduled_once = match (&prev.cadence, cadence) {
             (ScheduleCadence::Once { at: old }, ScheduleCadence::Once { at: new }) => {
                 DateTime::parse_from_rfc3339(old).ok() != DateTime::parse_from_rfc3339(new).ok()
             }
@@ -651,13 +771,13 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
         } else {
             // Keep the stored instant when nothing timing-related changed.
             let keep = prev.enabled
-                && prev.cadence == cadence
-                && prev.end_at == end_at
+                && prev.cadence == *cadence
+                && prev.end_at == *end_at
                 && prev.next_run_at.is_some();
             if keep {
                 prev.next_run_at.clone()
             } else {
-                next_run_bounded(&cadence, end_at.as_deref(), now).map(|dt| dt.to_rfc3339())
+                next_run_bounded(cadence, end_at.as_deref(), now).map(|dt| dt.to_rfc3339())
             }
         };
         // A schedule that can never fire again (once ran / once time passed /
@@ -679,8 +799,8 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
                 draft.name,
                 draft.prompt,
                 draft.cwd,
-                run_mode_str,
-                cadence_json,
+                fields.run_mode_str,
+                fields.cadence_json,
                 draft.model,
                 draft.thinking,
                 draft.approval_mode,
@@ -688,16 +808,16 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
                 next_run_at,
                 end_at,
                 ts,
-                notify_str,
+                fields.notify_str,
                 draft.new_chat_each_run as i32,
                 max_runs,
                 rescheduled_once,
                 draft.mode.as_str(),
-                probe_command,
-                probe_description,
-                agent_trigger_str,
-                result_mode_str,
-                invokes_external_model_int,
+                fields.probe_command,
+                fields.probe_description,
+                fields.agent_trigger_str,
+                fields.result_mode_str,
+                fields.invokes_external_model_int,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -707,52 +827,9 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
             .ok_or_else(|| "自动化不存在".to_string());
     }
 
-    let id = draft
-        .id
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    let next_run_at = if draft.enabled {
-        next_run_bounded(&cadence, end_at.as_deref(), now).map(|dt| dt.to_rfc3339())
-    } else {
-        None
-    };
-    let enabled = (draft.enabled && next_run_at.is_some()) as i32;
-
-    conn.execute(
-        "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, model, thinking, approval_mode, enabled, next_run_at, last_run_at, end_at, notify, new_chat_each_run, max_runs, created_at, updated_at, mode, probe_command, probe_description, agent_trigger, result_mode, invokes_external_model)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12, ?13, ?14, ?15, ?16, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
-        params![
-            id,
-            draft.name,
-            draft.prompt,
-            draft.cwd,
-            run_mode_str,
-            cadence_json,
-            draft.model,
-            draft.thinking,
-            draft.approval_mode,
-            enabled,
-            next_run_at,
-            end_at,
-            notify_str,
-            draft.new_chat_each_run as i32,
-            max_runs,
-            ts,
-            draft.mode.as_str(),
-            probe_command,
-            probe_description,
-            agent_trigger_str,
-            result_mode_str,
-            invokes_external_model_int,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-
-    get(conn, &id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "自动化不存在".to_string())
+    insert_schedule_row(conn, draft, &fields, &ts, now).map_err(|e| match e {
+        CreateScheduleError::Conflict(msg) | CreateScheduleError::Invalid(msg) => msg,
+    })
 }
 
 pub fn delete(conn: &Connection, id: &str) -> Result<(), String> {

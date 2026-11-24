@@ -210,26 +210,22 @@ pub fn sync_launch_agent_in(
     Ok(true)
 }
 
-/// Sync `~/Library/LaunchAgents/ai.omp.workspace.automation.plist` on macOS production
-/// instances only (isolated `OMPWS_DATA_DIR` dev worktrees and tests never touch user plists).
-pub fn sync_launch_agent(enabled: bool) {
+static LAUNCH_AGENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Synchronously sync `~/Library/LaunchAgents/ai.omp.workspace.automation.plist`
+/// on macOS production instances under an OS-level serialization lock.
+pub fn sync_launch_agent_blocking(enabled: bool) -> Result<bool, String> {
+    let _guard = LAUNCH_AGENT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if !cfg!(target_os = "macos") || !crate::paths::is_default_data_dir() {
-        return;
+        return Ok(false);
     }
-    let Ok(exe_path) = std::env::current_exe() else {
-        return;
-    };
+    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
     let Some(home) = dirs::home_dir() else {
-        return;
+        return Ok(false);
     };
     let agents_dir = home.join("Library").join("LaunchAgents");
     let log_path = crate::paths::logs_dir().join("automation-daemon.log");
-
-    std::thread::spawn(move || {
-        if let Err(e) = sync_launch_agent_in(&agents_dir, &exe_path, &log_path, enabled, true) {
-            tracing::warn!("sync launch agent failed: {e}");
-        }
-    });
+    sync_launch_agent_in(&agents_dir, &exe_path, &log_path, enabled, true)
 }
 
 fn should_notify_os(

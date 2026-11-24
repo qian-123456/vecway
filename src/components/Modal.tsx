@@ -1,8 +1,9 @@
 import clsx from "clsx";
 import { X } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useEscapeKey } from "../lib/hooks";
+import { prefersReducedMotion, usePresence } from "../lib/motion";
 import { Z_LAYER } from "./FloatingLayer";
 import { useT } from "../stores/language";
 
@@ -58,10 +59,13 @@ const SIZE_CLASS: Record<ModalSize, string> = {
 	none: "",
 };
 
+const MODAL_EXIT_MS = 165;
+
 export interface ModalProps {
+	/** Optional managed open state for reverse-path exit transition; defaults to true when omitted. */
+	open?: boolean;
 	/** Called on backdrop click, Escape and the header close button. */
 	onClose: () => void;
-	/** Renders the standard header (title + close button). Omit for a headerless panel. */
 	title?: ReactNode;
 	/** Leading icon in the standard header. */
 	icon?: ReactNode;
@@ -93,6 +97,7 @@ export interface ModalProps {
  * Children render below the standard header and should own their own padding/scroll.
  */
 export function Modal({
+	open,
 	onClose,
 	title,
 	icon,
@@ -107,19 +112,30 @@ export function Modal({
 	instant = false,
 	children,
 }: ModalProps) {
+	const isOpen = open ?? true;
+	const { present, exiting } = usePresence(isOpen, MODAL_EXIT_MS, instant);
 	const { t } = useT();
 	const titleId = useId();
 	const backdropRef = useRef<HTMLDivElement | null>(null);
 	const panelRef = useRef<HTMLDivElement | null>(null);
 	const backdropPressedRef = useRef(false);
-	// Captured during the first render, before any child `autoFocus` moves focus.
-	const [opener] = useState(() => (typeof document === "undefined" ? null : document.activeElement));
+	// Captured when `isOpen` transitions to true, before any child `autoFocus` moves focus.
+	const openerRef = useRef<Element | null>(null);
+	const wasOpenRef = useRef(false);
+	if (isOpen && !wasOpenRef.current) {
+		openerRef.current = typeof document === "undefined" ? null : document.activeElement;
+	}
+	wasOpenRef.current = isOpen;
+	const isOpenRef = useRef(isOpen);
+	isOpenRef.current = isOpen;
 	const onCloseRef = useRef(onClose);
 	onCloseRef.current = onClose;
 
-	useEscapeKey(onClose, closeOnEscape);
+	useEscapeKey(onClose, closeOnEscape && isOpen);
 
 	useEffect(() => {
+		if (!isOpen) return;
+		const opener = openerRef.current;
 		const releaseInert = acquireRootInert();
 		const panel = panelRef.current;
 		if (panel && !panel.contains(document.activeElement)) panel.focus({ preventScroll: true });
@@ -128,9 +144,10 @@ export function Modal({
 			releaseInert();
 			if (opener instanceof HTMLElement && opener.isConnected) opener.focus({ preventScroll: true });
 		};
-	}, [opener]);
+	}, [isOpen]);
 
 	const handleTabKey = useCallback((e: KeyboardEvent) => {
+		if (!isOpenRef.current) return;
 		if (e.key !== "Tab" || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
 		const backdrop = backdropRef.current;
 		const panel = panelRef.current;
@@ -176,32 +193,42 @@ export function Modal({
 	}, []);
 
 	useEffect(() => {
+		if (!isOpen) return;
 		window.addEventListener("keydown", handleTabKey);
 		return () => window.removeEventListener("keydown", handleTabKey);
-	}, [handleTabKey]);
+	}, [isOpen, handleTabKey]);
+
+	if (!present || (!isOpen && (instant || prefersReducedMotion()))) return null;
 
 	const hasTitle = title !== undefined && title !== null && title !== false;
 
 	return createPortal(
 		<div
 			ref={backdropRef}
-			data-layer="modal"
+			data-layer={exiting ? undefined : "modal"}
+			data-exiting={exiting ? "true" : undefined}
 			data-instant={instant ? "true" : undefined}
+			aria-hidden={exiting || undefined}
+			inert={exiting}
 			style={{ zIndex: Z_LAYER.modal }}
 			className={clsx(
 				"apple-modal-backdrop fixed inset-0 flex items-center justify-center p-4",
 				backdropBlur && "backdrop-blur-md",
 				backdropClassName ?? "bg-[var(--overlay)]",
+				exiting && "pointer-events-none",
 			)}
 			onMouseDown={(e) => {
+				if (exiting) return;
 				backdropPressedRef.current = e.target === e.currentTarget;
 			}}
 			onClick={(e) => {
+				if (exiting) return;
 				const pressed = backdropPressedRef.current;
 				backdropPressedRef.current = false;
 				if (closeOnBackdrop && pressed && e.target === e.currentTarget) onCloseRef.current();
 			}}
 			onKeyDown={(e) => {
+				if (exiting) return;
 				if (e.key === "Tab") {
 					handleTabKey(e.nativeEvent);
 					// Prevent React event bubbling from reaching any underlying modal's Tab trap (e.g. SettingsOverlay).
@@ -212,10 +239,11 @@ export function Modal({
 			<div
 				ref={panelRef}
 				role="dialog"
-				aria-modal="true"
+				aria-modal={exiting ? undefined : "true"}
 				aria-labelledby={hasTitle ? titleId : undefined}
 				aria-label={hasTitle ? undefined : ariaLabel}
 				tabIndex={-1}
+				data-exiting={exiting ? "true" : undefined}
 				data-instant={instant ? "true" : undefined}
 				className={clsx(
 					"apple-modal-panel apple-modal-surface flex max-h-[85vh] flex-col rounded-2xl shadow-apple-modal hairline outline-none",
@@ -239,7 +267,7 @@ export function Modal({
 								onClick={onClose}
 								title={t("components.closeEsc")}
 								aria-label={t("common.close")}
-								className="rounded-md p-1 text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-[0.97]"
+								className="press-scale rounded-md p-1 text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200"
 							>
 								<X className="h-3.5 w-3.5" />
 							</button>

@@ -332,44 +332,46 @@ export function ContextRing({
 					if (!open) setPrefetchTick((n) => n + 1);
 				}}
 				title={knownUsage ? t("chat.context.usageTooltip", { pct: pctInt, total: totalTokensStr ? ` (${totalTokensStr})` : "" }) : t("chat.context.window")}
-				className="group flex items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] text-[var(--text-40)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
+				className="press-scale group flex items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] text-[var(--text-40)] transition-colors hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
 			>
-				{/* Circular Progress Ring */}
-				<div className="relative flex h-[18px] w-[18px] items-center justify-center">
-					<svg
-						width={size}
-						height={size}
-						viewBox={`0 0 ${size} ${size}`}
-						className="shrink-0 -rotate-90"
-					>
-						{/* Background Track */}
-						<circle
-							cx={center}
-							cy={center}
-							r={radius}
-							fill="none"
-							strokeWidth={strokeWidth}
-							className="stroke-[var(--bg-selected)]"
-						/>
-						{/* Progress Arc */}
-						<circle
-							cx={center}
-							cy={center}
-							r={radius}
-							fill="none"
-							strokeWidth={strokeWidth}
-							strokeDasharray={circumference}
-							strokeDashoffset={strokeDashoffset}
-							strokeLinecap="round"
-							className={clsx("transition-all duration-300", ringColor)}
-						/>
-					</svg>
-				</div>
-				{showPercent && (
-					<span className="font-mono text-[11px] text-[var(--text-40)] group-hover:text-[var(--text)]">
-						{knownUsage ? `${pctInt}%` : "—"}
+				<span className="press-scale-inner flex items-center gap-1.5">
+					{/* Circular Progress Ring */}
+					<span className="relative flex h-[18px] w-[18px] items-center justify-center">
+						<svg
+							width={size}
+							height={size}
+							viewBox={`0 0 ${size} ${size}`}
+							className="shrink-0 -rotate-90"
+						>
+							{/* Background Track */}
+							<circle
+								cx={center}
+								cy={center}
+								r={radius}
+								fill="none"
+								strokeWidth={strokeWidth}
+								className="stroke-[var(--bg-selected)]"
+							/>
+							{/* Progress Arc */}
+							<circle
+								cx={center}
+								cy={center}
+								r={radius}
+								fill="none"
+								strokeWidth={strokeWidth}
+								strokeDasharray={circumference}
+								strokeDashoffset={strokeDashoffset}
+								strokeLinecap="round"
+								className={clsx("transition-[stroke-dashoffset] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none", ringColor)}
+							/>
+						</svg>
 					</span>
-				)}
+					{showPercent && (
+						<span className="font-mono text-[11px] text-[var(--text-40)] group-hover:text-[var(--text)]">
+							{knownUsage ? `${pctInt}%` : "—"}
+						</span>
+					)}
+				</span>
 			</button>
 
 			{/* Claude App Style Popover, styled strictly with system theme CSS variables */}
@@ -491,8 +493,8 @@ export function ContextRing({
 						<div className="mt-1 px-3 pb-1">
 							<div className="relative w-full h-[4px] rounded-full overflow-hidden bg-[var(--bg-selected)]">
 								<div
-									style={{ width: `${Math.min(100, percentage)}%` }}
-									className={clsx("h-full transition-all duration-300", barColor)}
+									style={{ transform: `scaleX(${Math.min(1, Math.max(0, percentage / 100))})` }}
+									className={clsx("h-full w-full origin-left transition-transform duration-200 ease-[var(--ease-out)] motion-reduce:transition-none", barColor)}
 								/>
 							</div>
 							{usageObj && (
@@ -509,21 +511,6 @@ export function ContextRing({
 											{typeof rawWindow === "number" ? compactTokens(rawWindow) : t("chat.context.windowUnknown")}
 										</span>
 									</div>
-									{Object.entries(usageObj)
-										.filter(
-											([k, v]) =>
-												k !== "percent" &&
-												k !== "tokens" &&
-												k !== "contextWindow" &&
-												v != null &&
-												v !== "",
-										)
-										.map(([k, v]) => (
-											<div key={k} className="flex justify-between">
-												<span>{k}</span>
-												<span className="font-mono text-[var(--text)]">{String(v)}</span>
-											</div>
-										))}
 								</div>
 							)}
 							{totalTokensStr && (

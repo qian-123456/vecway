@@ -23,6 +23,7 @@ import { refreshTranscriptCache } from "../../stores/transcript";
 import { useSessions } from "../../stores/sessions";
 import { useUi } from "../../stores/ui";
 import { toast } from "../../lib/toast";
+import { scrollBehavior } from "../../lib/motion";
 import { useT, tNow } from "../../stores/language";
 import { abortTurn } from "./send";
 import { HomeRecentSessions, StartGlow } from "../../components/StartHero";
@@ -39,6 +40,7 @@ import { AskPanel, useAskRouting } from "./ask/AskPanel";
 import { SelectionToolbar } from "./SelectionToolbar";
 import { ShareSelectionBar } from "./share/ShareSelectionBar";
 import { useShareSelection } from "./share/shareStore";
+import { useComposer } from "../../stores/composer";
 import { claimEscape, isEscapeClaimed } from "../../lib/escapeClaim";
 import { ThreadFindBar } from "./find/ThreadFindBar";
 import { useFindHighlights } from "./find/useFindHighlights";
@@ -346,7 +348,7 @@ export function SessionView({
 									if (el)
 										el.scrollTo({
 											top: el.scrollHeight,
-											behavior: "smooth",
+											behavior: scrollBehavior(),
 										});
 								}}
 								className="group vibrancy-popover shadow-apple-modal hairline absolute bottom-3 left-1/2 z-20 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full text-[var(--text-60)] transition-[background-color,color] duration-150 ease-[var(--ease-out)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
@@ -385,6 +387,12 @@ export function SessionView({
 									spec={ask.route.spec}
 									startIndex={ask.route.match.qIndex}
 									busy={ask.route.resolution.kind === "auto" || ask.route.resolution.kind === "autoForm"}
+									hasComposerDraft={useComposer(
+										(s) =>
+											(s.drafts[sessionId] ?? "").trim().length > 0 ||
+											(s.images[sessionId]?.length ?? 0) > 0 ||
+											(s.files[sessionId]?.length ?? 0) > 0,
+									)}
 									onSubmit={ask.submit}
 									onCancel={ask.cancel}
 								/>

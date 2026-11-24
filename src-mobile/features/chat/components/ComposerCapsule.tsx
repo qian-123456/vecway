@@ -30,6 +30,7 @@ export function ComposerCapsule({
 	initialText = "",
 	placeholder,
 	working = false,
+	stopping = false,
 	hasExtra = false,
 	busy = false,
 	top,
@@ -44,6 +45,7 @@ export function ComposerCapsule({
 	onFocusChange,
 	model,
 	thinking,
+	thinkingSupported,
 	onModel,
 	onThinking,
 	contextText,
@@ -57,6 +59,8 @@ export function ComposerCapsule({
 	placeholder: string;
 	/** A run is in progress: stop remains available alongside the independent send action. */
 	working?: boolean;
+	/** A stop request is currently in flight / pending turn completion. */
+	stopping?: boolean;
 	/** Something other than text can be sent (attachments). */
 	hasExtra?: boolean;
 	/** Sending is in flight: disables send. */
@@ -79,6 +83,8 @@ export function ComposerCapsule({
 	onFocusChange?: (focused: boolean) => void;
 	model?: string | null;
 	thinking?: string | null;
+	/** null/undefined = capabilities loading or unknown; false = explicitly unsupported. */
+	thinkingSupported?: boolean | null;
 	onModel?: (anchor?: HTMLElement | null) => void;
 	onThinking?: (anchor?: HTMLElement | null) => void;
 	contextText?: string | null;
@@ -220,7 +226,7 @@ export function ComposerCapsule({
 	const effectiveThinking = thinking || parseModelRef(model)?.thinking || null;
 	const thinkName = desktopThinkingLabel(effectiveThinking);
 	const hasModel = onModel != null || model != null;
-	const hasThinking = onThinking != null || thinking != null;
+	const hasThinking = onThinking != null || thinking != null || thinkingSupported === false;
 	const applyExpand = (nextText: string) => {
 		const el = ta.current;
 		if (!el) return;
@@ -240,11 +246,12 @@ export function ComposerCapsule({
 				<div className="mb-1.5 flex items-center justify-end px-2.5 text-m-xs">
 					<button
 						type="button"
-						aria-label="停止"
+						disabled={stopping}
+						aria-label={stopping ? "正在停止" : "停止"}
 						onClick={onStop}
-						className="m-press rounded-full bg-m-danger-bg px-2.5 py-0.5 font-medium whitespace-nowrap text-m-danger active:opacity-80"
+						className="m-press rounded-full bg-m-danger-bg px-2.5 py-0.5 font-medium whitespace-nowrap text-m-danger active:opacity-80 disabled:opacity-60"
 					>
-						停止
+						{stopping ? "正在停止" : "停止"}
 					</button>
 				</div>
 			)}
@@ -306,7 +313,7 @@ export function ComposerCapsule({
 							onClick={onPlus}
 							className="-m-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
 						>
-							<span className="flex h-8 w-8 items-center justify-center rounded-full text-m-text-2 transition-[background-color,color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2">
+							<span className="flex h-8 w-8 items-center justify-center rounded-full text-m-text-2 transition-[background-color,color,transform,scale] duration-(--m-dur-press) ease-m hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2">
 								<Plus size={18} strokeWidth={2} />
 							</span>
 						</button>
@@ -317,7 +324,7 @@ export function ComposerCapsule({
 								aria-label={`当前模型：${modelName}，点击切换`}
 								onClick={(e) => onModel?.(e.currentTarget)}
 								disabled={!onModel}
-								className="-my-1.5 flex min-h-11 min-w-0 flex-initial items-center gap-1 rounded-m-sm px-2 text-left transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface/70 active:scale-[0.98] active:bg-m-surface-2 disabled:cursor-default disabled:active:scale-100"
+								className="-my-1.5 flex min-h-11 min-w-0 flex-initial items-center gap-1 rounded-m-sm px-2 text-left transition-[background-color,transform,scale] duration-(--m-dur-press) ease-m hover:bg-m-surface/70 active:scale-[0.98] active:bg-m-surface-2 disabled:cursor-default disabled:active:scale-100"
 							>
 								<span className="min-w-0 truncate text-[12.5px] font-medium text-m-text">
 									{modelName}
@@ -327,18 +334,28 @@ export function ComposerCapsule({
 						)}
 
 						{hasThinking && (
-							<button
-								type="button"
-								aria-label={`思考强度：${thinkName}，点击切换`}
-								onClick={(e) => (onThinking ?? onModel)?.(e.currentTarget)}
-								disabled={!onThinking && !onModel}
-								className="-my-1.5 flex min-h-11 shrink-0 items-center gap-0.5 rounded-m-sm px-1.5 text-left transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface/70 active:scale-[0.98] active:bg-m-surface-2 disabled:cursor-default disabled:active:scale-100"
-							>
-								<span className="text-[12px] whitespace-nowrap text-m-text-2">
-									{thinkName}
+							thinkingSupported === false ? (
+								<span
+									title="这个模型不支持思考，没有可调的思考等级"
+									aria-label="不支持思考"
+									className="-my-1.5 inline-flex min-h-11 shrink-0 items-center px-1.5 text-[12px] whitespace-nowrap text-m-text-3 select-none"
+								>
+									不支持思考
 								</span>
-								<ChevronDown size={12} className="shrink-0 text-m-text-3" aria-hidden />
-							</button>
+							) : (
+								<button
+									type="button"
+									aria-label={`思考强度：${thinkName}，点击切换`}
+									onClick={(e) => (onThinking ?? onModel)?.(e.currentTarget)}
+									disabled={!onThinking && !onModel}
+									className="-my-1.5 flex min-h-11 shrink-0 items-center gap-0.5 rounded-m-sm px-1.5 text-left transition-[background-color,transform,scale] duration-(--m-dur-press) ease-m hover:bg-m-surface/70 active:scale-[0.98] active:bg-m-surface-2 disabled:cursor-default disabled:active:scale-100"
+								>
+									<span className="text-[12px] whitespace-nowrap text-m-text-2">
+										{thinkName}
+									</span>
+									<ChevronDown size={12} className="shrink-0 text-m-text-3" aria-hidden />
+								</button>
+							)
 						)}
 
 						{extraLeft}
@@ -354,7 +371,7 @@ export function ComposerCapsule({
 								disabled={!onContext}
 								className={`-mx-1 -my-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full disabled:opacity-60 ${contextToneClass}`}
 							>
-								<span className="flex h-8 w-8 items-center justify-center rounded-full transition-[background-color,transform] duration-(--m-dur-press) ease-m hover:bg-m-surface active:scale-95 active:bg-m-surface-2">
+								<span className="flex h-8 w-8 items-center justify-center rounded-full transition-[background-color,transform,scale] duration-(--m-dur-press) ease-m hover:bg-m-surface active:scale-95 active:bg-m-surface-2">
 									<ContextIndicator text={contextText} percent={contextPercent} compact />
 								</span>
 							</button>
@@ -369,7 +386,7 @@ export function ComposerCapsule({
 							className="-mx-1 -my-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
 						>
 							<span
-								className={`flex h-8 w-8 items-center justify-center rounded-full transition-[background-color,color,transform] duration-(--m-dur-press) ease-m ${
+								className={`flex h-8 w-8 items-center justify-center rounded-full transition-[background-color,color,transform,scale] duration-(--m-dur-press) ease-m ${
 									recording
 										? "m-pulse bg-m-danger text-white"
 										: "text-m-text-2 hover:bg-m-surface hover:text-m-text active:scale-95 active:bg-m-surface-2"
@@ -383,12 +400,14 @@ export function ComposerCapsule({
 							<button
 								key="stop"
 								type="button"
-								aria-label="停止"
+								disabled={stopping}
+								aria-label={stopping ? "正在停止" : "停止"}
+								title={stopping ? "正在停止" : "停止"}
 								onClick={onStop}
-								className="-my-1.5 -mr-1.5 -ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+								className="-my-1.5 -mr-1.5 -ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-65"
 							>
-								<span className="flex h-8 w-8 items-center justify-center rounded-full bg-m-text text-m-bg transition-transform duration-(--m-dur-press) ease-m active:scale-95">
-									<Square size={11} fill="currentColor" />
+								<span className="flex h-8 w-8 items-center justify-center rounded-full bg-m-text text-m-bg transition-[transform,scale] duration-(--m-dur-press) ease-m active:scale-95">
+									{stopping ? <Spinner size={14} /> : <Square size={11} fill="currentColor" />}
 								</span>
 							</button>
 						) : (
@@ -401,7 +420,7 @@ export function ComposerCapsule({
 								className="-my-1.5 -mr-1.5 -ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full disabled:cursor-not-allowed"
 							>
 								<span
-									className={`flex h-8 w-8 items-center justify-center rounded-full transition-[background-color,color,transform,opacity] duration-(--m-dur-press) ease-m ${
+									className={`flex h-8 w-8 items-center justify-center rounded-full transition-[background-color,color,transform,scale,opacity] duration-(--m-dur-press) ease-m ${
 										canSend
 											? "cursor-pointer bg-m-text text-m-bg shadow-xs active:scale-95"
 											: "bg-m-surface-2 text-m-text-3"

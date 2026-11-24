@@ -437,15 +437,23 @@ pub struct Settings {
   pub visualize_enabled: bool,        // default true; spawn adds `--plugin-dir ~/.vecway/plugins/vecway-visualize` (bundled `visualize` skill) and the chat renders ```` ```visualize ```` fragments in a sandboxed viewer; false = no skill + plain code block
   pub automation_background_enabled: bool, // default true; syncs ~/Library/LaunchAgents/ai.omp.workspace.automation.plist on production instances
   pub automation_overlap_policy: AutomationOverlapPolicy, // global automationOverlapPolicy; default Skip
+  pub automation_default_result_mode: ScheduleResultMode, // default Structured ("structured" | "llm_summary")
+  pub automation_default_model: Option<String>, // default None; optional default model selector
+  pub automation_default_thinking: Option<String>, // default None; optional default thinking level
+  pub automation_prompt_mock_test: Option<String>, // default None; mock-test prompt template
+  pub automation_prompt_real_once_test: Option<String>, // default None; single-shot real-test prompt template
+  pub automation_prompt_real_loop_test: Option<String>, // default None; iterative real-test prompt template
+  pub automation_prompt_adjust: Option<String>, // default None; "ask AI to adjust" prompt template
 }
 
 // Schedules (自动化 / Automations)
 pub enum ScheduleRunMode { Local, Worktree }
 pub enum AutomationOverlapPolicy { Skip, Coalesce, Queue, Parallel } // global application setting; lowercase wire strings
 pub enum ScheduleAgentTrigger { Always, OnSignal, Never } // snake_case; default Always
+pub enum ScheduleResultMode { Structured, LlmSummary } // snake_case; default Structured
 pub enum ScheduleRunPhase { ProbeQuiet, ProbeOnly, Agent, Awaiting } // snake_case; default Agent
 pub enum ScheduleCadence {                    // #[serde(tag="kind")]
-  Interval { minutes: u32 },                  // ≥5
+  Interval { minutes: u32 },                  // ≥1
   Daily { time: String, weekdays: Vec<u32>,   // HH:MM local; empty weekdays = every `every` days;
           every: u32, anchor: Option<String> },// weekday subset = every `every` weeks on those days;
                                               // `every` serde-default 1 (omitted in JSON when 1);
@@ -477,6 +485,8 @@ pub struct Schedule {
   pub probe_command: Option<String>,    // v25: optional lightweight shell check / local script
   pub probe_description: Option<String>, // v25: one-line summary of pre-check
   pub agent_trigger: ScheduleAgentTrigger, // v25: always | on_signal | never
+  pub result_mode: ScheduleResultMode,  // v28: structured | llm_summary
+  pub invokes_external_model: bool,     // v28: whether script-only job calls an external CLI model
   pub last_run_phase: Option<ScheduleRunPhase>, // derived from newest schedule_runs row
   pub last_run_session_id: Option<String>, // derived from newest schedule_runs row
 }
@@ -493,6 +503,8 @@ pub struct ScheduleDraft {
   pub probe_command: Option<String>,
   pub probe_description: Option<String>,
   pub agent_trigger: ScheduleAgentTrigger,
+  pub result_mode: ScheduleResultMode,
+  pub invokes_external_model: bool,
 }
 pub struct ScheduleRun {
   pub id: String, pub schedule_id: String, pub session_id: Option<String>,
@@ -507,7 +519,8 @@ pub struct ProbeTestResult {
 }
 pub struct AutomationAuthorResult {
   pub schedule_id: String, pub name: String, pub cadence: ScheduleCadence,
-  pub agent_trigger: ScheduleAgentTrigger, pub probe_description: Option<String>,
+  pub agent_trigger: ScheduleAgentTrigger, pub result_mode: ScheduleResultMode,
+  pub invokes_external_model: bool, pub probe_description: Option<String>,
   pub probe_command: Option<String>, pub prompt: String, pub notify: ScheduleNotify,
   pub explanation: String,
 }
@@ -613,7 +626,7 @@ Frontend events (`app.emit`), names are exact:
 | `terminal:exit` | `{ termId, code }` | E |
 | `tm:log` | `{ runId, line }` | C |
 | `quick-capture` | `null` (global shortcut fired) | D |
-| `schedules:changed` | `null` | E (schedules runner/scheduler/commands) |
+| `schedules:changed` | `null` | E (via `state::emit_schedules_changed`: schedules runner/scheduler/commands, `catalog`, `model_replace`, mobile automation settings; also broadcasts `AppEvent::SchedulesChanged` → SSE `event: schedules`) |
 | `search_index:progress` | `SearchIndexStatus` `{indexed,total,building}` (≤4/s while building + a final one) | A (`catalog/search.rs`) |
 | `session_groups:changed` | `null` | A (after any session-group create/rename/delete/reorder/assign) |
 | `privacy_changed` | `null` | P (after every privacy mutation) |
@@ -894,9 +907,9 @@ Plugin-SDK internal IPC and mobile are outside this capture boundary.
 - Provider-wide chat context defaults persist as `ompws.providerContextWindows.v1`, a localStorage object from exact provider id to positive integer (maximum 2,000,000). Only successful provider saves persist them; cancellation does not. After a successful backend deletion or ID rename, the provider store clears or migrates only the owning default before any catalog refresh, regardless of chat/other-model entry; failed backend mutations leave defaults untouched. Empty providers retain the number. Provider defaults precede generic model-keyword rules; explicit per-model overrides remain highest priority. Active user saves update existing model windows through the ordinary writer; later discoveries use conditional writes.
 - `install_status_extension_globally() -> String` — copies the extension into `~/.omp/agent/extensions/` (opt-in button)
 
-**E — schedules (自动化):**
+**E — schedules (自动化, 1-minute min interval):**
 - `schedules_list() -> Vec<Schedule>`
-- `schedules_save(schedule: ScheduleDraft) -> Schedule`
+- `schedules_save(schedule: ScheduleDraft) -> Schedule` (mobile `POST /left/schedules` preserves an unused valid `draft.id` to bind staged script/state dirs, returning `409 Conflict` on duplicate ID; `PUT /left/schedules/{id}` validates optional `approvalMode` in `always-ask|write|yolo` and passes full `ScheduleDraft` fields)
 - `schedules_delete(id: String)`
 - `schedules_set_enabled(id: String, enabled: bool) -> Schedule`
 - `schedules_run_now(id: String) -> ScheduleRun`
@@ -904,9 +917,9 @@ Plugin-SDK internal IPC and mobile are outside this capture boundary.
 - `schedules_list_awaiting(schedule_id: String) -> Vec<ScheduleRun>` returns every explicitly releasable paused run, independent of history paging.
 - `schedules_resume_awaiting(schedule_id: String, run_id: String)` reserves an idle original session and submits a continuation. Mobile: `POST /left/schedules/{id}/runs/{run_id}/resume-awaiting`. Success means the request was accepted, not that it finished.
 - `schedules_release_awaiting(schedule_id: String, run_id: String)` explicitly releases one paused run and records it as unconfirmed/error; it does not stop the original session. Mobile equivalents: `GET /left/schedules/{id}/awaiting` and `POST /left/schedules/{id}/runs/{run_id}/release-awaiting`. Confirming UI must warn about possible concurrent execution.
-- `schedules_test_probe(cwd: String, probe_command: String, agent_trigger: ScheduleAgentTrigger, schedule_id: Option<String>) -> ProbeTestResult`
-- `schedules_generate_draft(request: String, cwd: String, current: Option<ScheduleDraft>) -> AutomationAuthorResult`
-
+- `schedules_test_probe(cwd: String, probe_command: String, agent_trigger: ScheduleAgentTrigger, schedule_id: Option<String>) -> ProbeTestResult` (Mobile: `POST /left/schedules/probe-test` with `confine_cwd` & 30 s timeout)
+- `schedules_generate_draft(request: String, cwd: String, current: Option<ScheduleDraft>) -> AutomationAuthorResult` (Mobile: `POST /left/schedules/generate-draft` with `confine_cwd` & 90 s timeout)
+- Mobile worktree review/merge/discard strictly scoped by `schedule_id`: `GET /left/schedules/{id}/worktree`, `POST /left/schedules/{id}/worktree/merge`, `POST /left/schedules/{id}/worktree/discard` (never exposes raw path-arbitrary `git_remove_worktree`).
 **F — skills & extensions (技能与扩展):**
 - `skills_list(cwd: Option<String>) -> SkillsCatalog`
 - `skills_read(path: String) -> String`
@@ -1044,9 +1057,10 @@ Plan selection highlights and pending-comment highlights are mounted inside the 
 
 ### 8.4 Automations extension
 
-`extension/vecway-automation.ts`, installed at startup by `src-tauri/src/rpc/automation_ext.rs` to `~/.vecway/extension/vecway-automation.ts` and passed via `-e` in `prompt_shape_args` (with `AUTOMATION_HINT` appended while present).
-- Exposes tool `vecway_automation` (`list`: reads `~/.vecway/automations/catalog.json`; `stage_script`: writes scripts into `~/.vecway/automations/<id>/` + `state/`; `propose`: stores `"ompws-automation-draft"` custom entry and emits `setStatus` under `"ompws-automation"` so `SessionView` renders `AutomationDraftCard` above the composer for user confirmation).
-- Exposes host command `/automation-action resolve <draftId> saved|dismissed`.
+`extension/vecway-automation.ts`, installed at startup by `src-tauri/src/rpc/automation_ext.rs` to `~/.vecway/extension/vecway-automation.ts` and passed via `-e` in `prompt_shape_args`.
+- Exposes tool `vecway_automation` (`list`: reads `~/.vecway/automations/catalog.json`; `stage_script`: writes scripts into `~/.vecway/automations/<id>/` + `state/`; `propose`: stores `"ompws-automation-state"` (v2; legacy `"ompws-automation-draft"` v1) custom entry and emits `setStatus` under `"ompws-automation"` so `SessionView` renders `AutomationDraftCard` above the composer for user confirmation).
+- `SessionHandle.automation_status` caches `setStatus` frames for `"ompws-automation"` (and mobile SSE forwards read-only `extension_ui_request` frames only when `method == "setStatus"` and `statusKey` is `"ompws-plan"` or `"ompws-automation"`; `transcript` preserves `details.{draftId,action,scheduleId}` alongside `diff`).
+- Exposes host command `/automation-action enable|disable|resolve <draftId> saved|dismissed`; mobile `POST /sessions/{id}/automation` mirrors `plan_set` with draft materialization and status polling.
 
 ## 9. Cross-module Rust API
 
@@ -1590,24 +1604,25 @@ containment, and sessions in deleted worktree dirs group under a default-collaps
   Work attribution records newly initiated mobile work only, never a merely viewed session. Old/mixed-origin work is not guessed; session auto-stop is unavailable without an upstream atomic task guard.
   API: `GET /api/sessions` (id,label,title,status,pending,updatedAt,cwd), `GET /api/todos`, `POST /api/todos/:id/act {action}`,
   `GET /api/sessions/:id/pending-ui`, `POST /api/sessions/:id/ui-respond {response}`, `POST /api/sessions/:id/prompt {text}`,
-  `POST /api/sessions/:id/resume`, `GET /api/sessions/:id/last` (last assistant text), `GET /api/events` (SSE: todos changed, session status changed).
+  `POST /api/sessions/:id/resume`, `GET /api/sessions/:id/last` (last assistant text), `GET /api/events` (SSE: todos changed, schedules changed, session status changed, whitelisted `rpc` frames incl. `setStatus` for `ompws-plan` / `ompws-automation`).
   Static serving (`mobile/assets.rs`): the React bundle in `src-tauri/mobile-dist/` (vite base `/static/`) is embedded with rust-embed
   (`build.rs` creates the dir so a fresh checkout compiles; without a bundle `/` answers 503 with a hint). `/` = `index.html` (no-store),
   `/static/assets/*` immutable 1-year, other `/static/*` no-cache, `/sw.js` no-store + `Service-Worker-Allowed: /`; traversal rejected.
   Additional routes (all behind the device auth):
   - Draft sessions (`api/draft.rs`) are accepted by every session-id route via `find_session` (backend, else draft registry): reads return neutral data
     (`[]`/null), actions needing a process return 409, and the first prompt starts the real process and returns `{ok, sessionId}`.
-  - `POST /left/sessions {cwd, model?:{provider,modelId}, thinking?}` creates a draft with the selection applied; handoff keeps it.
+  - `POST /left/sessions {cwd, model?:{provider,modelId}, thinking?, appendSystemPrompt?, automationMode?}` creates a draft with the selection and optional hidden launch context (≤32 KiB `appendSystemPrompt`, never concatenated into visible user text; drafts carrying either never reuse plain blank drafts; when `automationMode` is true, first prompt delivery activates `/automation-action enable` before sending the user prompt).
   - `GET /left/dirs` keeps `dirs` and adds `homeDir: string|null`; clients tolerate its omission from older servers. Home-directory abbreviation uses an exact path boundary; a similarly prefixed directory is not home. Mobile directory selection alone does not create a session, and sending revalidates the selected exact project/worktree `cwd`.
   - `POST /left/inbox/:id/unread {unread: boolean}` requires the boolean and returns `{ok: true, unread: boolean}`. `false` uses the original `mark_seen` path, including Review acceptance; `true` persists `set_unread` and recomputes the catalog. Unknown sessions return 404; marking a draft unread returns 400. Session-row gestures use the actual unread flag and refresh the catalog after success.
-  - `GET /sessions/:id/composer-state` includes `contextTokens/contextWindow/contextPercent` (null for drafts / unknown), plus normalized desktop `PlanStatus|null` as `planStatus`; compatibility `planMode` is derived from the same snapshot. Resolution uses the live handle first, then the latest complete persisted custom `ompws-plan-state` record in a blocking worker, without waking an RPC session. `approved.status` (`executing|completed|failed|handoff`) is independent of `enabled`.
+  - `GET /sessions/:id/composer-state` includes `contextTokens/contextWindow/contextPercent` (null for drafts / unknown), normalized desktop `PlanStatus|null` as `planStatus` (compatibility `planMode` derived from the same snapshot), and `automationState` (from live `SessionHandle.automation_status`, falling back to latest persisted `ompws-automation-state` / `ompws-automation-draft` custom entry when offline). Resolution uses the live handle first, then the transcript in a blocking worker without waking an RPC session. `approved.status` (`executing|completed|failed|handoff`) is independent of `enabled`.
+  - `POST /sessions/:id/automation {action: "enable"|"disable"|"resolve", draftId?, resolution?: "saved"|"dismissed"}` → `{automationState, sessionId?}` mirrors `plan-mode` with draft materialization, `/automation-action` dispatch, and short-polling of `SessionHandle.automation_status`.
   - `GET /sessions/:id/plan` preserves `{text: string|null, streaming: boolean}` and adds the same `planStatus` snapshot. Text prefers `approved.content`, then status `content`; the latest assistant reply is a legacy fallback only when `planStatus === null`. Explicit off/empty plan state suppresses that old-reply fallback. A missing snapshot body may be read only from a bounded, canonical regular plan file inside the session directory. Reading the plan never enables planning or invokes a model.
   - `POST /sessions/:id/ui-respond-all {action: approve|deny, ids: string[]}` → `{handled, skipped, handledIds: string[]}`: answers only selected tool-approval requests from the displayed snapshot; missing IDs are refused, new unselected arrivals are untouched.
   - `POST /sessions/:id/navigate-tree {entryId}` → upstream `navigate_tree` data (`{cancelled, editorText?}`): move the same-session leaf pointer. Errors are explicit: 409 `会话未在运行` (offline), 409 `会话正在回答，完成后可切换版本` (`session_busy`), 404 unknown entry; a refusal never changes state. Success reaches other devices through the SSE `touch` event.
   - `GET /sessions/:id/tree` → upstream `get_tree` verbatim (`{tree, leafId}`); 409 when the session is not live. Clients filter their transcript to the root→leaf path (`src-mobile/features/chat/lib/tree.ts`).
   - `POST /presence {sessionId, visible}` records receipt time. Chat views send a 15-second foreground heartbeat and clear presence on hide/unmount; push suppression expires after 45 seconds. Approval notifications are deduplicated by request identity, not only session.
   - Before prompt dispatch, the client persists the original payload and attachment paths. Any ambiguous HTTP failure is shown as delivery-unknown, never automatically restored/retried as unsent; a deliberate risk confirmation is required to recover it. This is not a server exactly-once guarantee.
-  - `GET /left/settings/desktop` → `{defaultApprovalMode, capsuleVisible, automationOverlapPolicy}`; `GET /left/settings` also includes the global `automationOverlapPolicy` at top level. `POST /left/settings/approval-mode {mode: always-ask|write|yolo}` remains unchanged. `POST /left/settings/set {key:"automationOverlapPolicy", value:"skip"|"coalesce"|"queue"|"parallel"}` returns `{ok,key,value}`; this app-setting allowlist entry uses the serialized Settings writer, never `omp config set`.
+  - `GET /left/settings/desktop` and `GET /left/settings` expose all 9 global automation settings (`automationBackgroundEnabled`, `automationOverlapPolicy`, `automationDefaultResultMode`, `automationDefaultModel`, `automationDefaultThinking`, `automationPromptMockTest`, `automationPromptRealOnceTest`, `automationPromptRealLoopTest`, `automationPromptAdjust`) alongside `defaultApprovalMode` and `capsuleVisible`. `POST /left/settings/automation` applies partial validated updates atomically under `SAVE_LOCK`, syncs LaunchAgent when `automationBackgroundEnabled` changes, wakes the scheduler, broadcasts `SchedulesChanged` (SSE `event: schedules`), and returns the updated 9-field snapshot. `POST /left/settings/approval-mode {mode: always-ask|write|yolo}` and `POST /left/settings/set {key:"automationOverlapPolicy", value:"skip"|"coalesce"|"queue"|"parallel"}` remain compatible.
   - Existing `POST /left/settings/set` writes are serialized per key. Numeric changes debounce for 350ms with one in-flight write plus the latest trailing value; unrelated keys may run concurrently. Blur/group exit/hide/pagehide/unmount flush pending numeric values, and owned writes may finish after unmount without stale UI callbacks. Boolean/enum writes are immediate but use the same keyed serialization; a latest failure restores the last successful value and exposes the full error.
   - Role edits read `GET /left/roles[?cwd]` before `POST /left/roles/set`, retaining the previous raw scope-layer value (including null). Model-only/thinking-only changes save directly; compound edits and restore-inheritance retain confirmation. Provider edits read `GET /left/providers` before `POST /left/providers/save`; URL-only changes with a known nonempty inverse save directly, while a typed key or unavailable inverse keeps masked confirmation. Undo rereads the same scope/provider and requires the exact expected value plus the matching edit version; newer edits invalidate it. Provider URL undo never sends an API key. Writes/undo lock their affected target; role locks/version guards survive remounts.
   - Quota uses `GET /quota` for cached data and `GET /quota?refresh=true` for an explicit refresh, single-flight with a queued refresh after the initial cache read when necessary. Refresh failures retain the previous real snapshot/timestamp with stale/error/retry UI; unmount aborts the owned read. These persistence/undo changes add no backend endpoints.

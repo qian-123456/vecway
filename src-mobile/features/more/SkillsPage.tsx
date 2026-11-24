@@ -78,7 +78,13 @@ function SkillDetail({ skill, onClose, onToggle }: { skill: Skill | null; onClos
 			{skill && (
 				<div className="flex flex-col gap-5 pb-8">
 					<ListGroup>
-						<ToggleRow title="启用" subtitle="对新会话生效" checked={skill.enabled} label={`启用 ${skill.name}`} onToggle={() => onToggle(skill)} />
+						<ToggleRow
+							title={skill.enabled ? "启用" : "重新启用"}
+							subtitle="对新会话生效；若当前项目单独管理了技能开关，全局设置在此项目里不生效"
+							checked={skill.enabled}
+							label={`启用 ${skill.name}`}
+							onToggle={() => onToggle(skill)}
+						/>
 					</ListGroup>
 					<div className="flex flex-wrap gap-1.5 px-5">
 						<Chip tone="accent">{skill.provider}</Chip>
@@ -92,7 +98,10 @@ function SkillDetail({ skill, onClose, onToggle }: { skill: Skill | null; onClos
 							{skill.issues.length > 0 && <p className="text-m-danger">问题：{skill.issues.map((i) => ISSUE_LABEL[i] ?? i).join("、")}</p>}
 						</div>
 					) : null}
-					<p className="m-selectable px-5 text-m-xs break-all text-m-text-3">{skill.path}</p>
+					<details className="px-5 text-m-xs text-m-text-3">
+						<summary className="cursor-pointer select-none">查看文件路径</summary>
+						<p className="m-selectable mt-1 break-all">{skill.path}</p>
+					</details>
 					{skill.description && (
 						<div className="m-selectable px-5">
 							<Markdown text={skill.description} />
@@ -185,13 +194,13 @@ export function SkillsPage() {
 										subtitle={<span className="m-selectable">{data.configError}</span>}
 									/>
 								)}
-								{data.skillsEnabled === false && <ListRow title="Skills 总开关已关闭" subtitle="在电脑端设置中打开后才会加载" />}
+								{data.skillsEnabled === false && <ListRow title="技能功能已整体关闭" subtitle="在电脑端设置中打开后才会加载" />}
 							</ListGroup>
 						)}
 						{shown.length === 0 ? (
-							<EmptyState icon={<Puzzle size={26} strokeWidth={1.75} />} title={query ? "没有匹配的 Skill" : "没有 Skill"} />
+							<EmptyState icon={<Puzzle size={26} strokeWidth={1.75} />} title={query ? "没有匹配的技能" : "没有技能"} />
 						) : (
-							<ListGroup title={`Skills · ${shown.length}`}>
+							<ListGroup title={`技能 · ${shown.length}`} note="这里的开关影响所有项目的新会话；当前项目单独管理了技能开关，全局设置在此项目里不生效时请以项目设置为准。">
 								{shown.map((s) => (
 									<ToggleRow
 										key={`${s.name}:${s.path}`}

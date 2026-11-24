@@ -56,19 +56,23 @@ export const useExplorer = create<{
 	revealNonce: number;
 	/** Whether dotfiles and common build/dependency directories are shown in the tree. */
 	showHidden: boolean;
+	/** Last directory load/refresh error, cleared on successful read or root switch. */
+	loadError: string | null;
 	setWorkspaceId(id: string | null): void;
 	openDirectory(dirPath: string): void;
 	clearCustomRoot(): void;
 	setCustomRootPath(path: string | null): void;
 	setShowHidden(show: boolean): void;
 	toggleShowHidden(): void;
+	setLoadError(error: string | null): void;
 }>((set) => ({
 	workspaceId: null,
 	customRootPath: null,
 	pendingRevealPath: null,
 	revealNonce: 0,
 	showHidden: readShowHidden(),
-	setWorkspaceId: (id) => set({ workspaceId: id, customRootPath: null }),
+	loadError: null,
+	setWorkspaceId: (id) => set({ workspaceId: id, customRootPath: null, loadError: null }),
 	openDirectory: (dirPath) => {
 		const normalized = normalizeDirPath(dirPath);
 		set((s) => ({
@@ -77,8 +81,8 @@ export const useExplorer = create<{
 		}));
 		useUi.getState().setRightTab("explorer");
 	},
-	clearCustomRoot: () => set({ customRootPath: null }),
-	setCustomRootPath: (path) => set({ customRootPath: path ? normalizeDirPath(path) : null }),
+	clearCustomRoot: () => set({ customRootPath: null, loadError: null }),
+	setCustomRootPath: (path) => set({ customRootPath: path ? normalizeDirPath(path) : null, loadError: null }),
 	setShowHidden: (show) => {
 		writeShowHidden(show);
 		set({ showHidden: show });
@@ -89,4 +93,5 @@ export const useExplorer = create<{
 			writeShowHidden(next);
 			return { showHidden: next };
 		}),
+	setLoadError: (loadError) => set({ loadError }),
 }));

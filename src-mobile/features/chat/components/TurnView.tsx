@@ -15,6 +15,7 @@ import { type Step, type Turn } from "../lib/turns";
 import { StatLine, TurnSummaryRows } from "./StatLine";
 import { Thinking } from "./Thinking";
 import { toolState, ToolCard } from "./ToolCard";
+import { AutomationTurnCard, extractAutomationProposeCalls } from "../automation/AutomationTurnCard";
 import { TurnDiffCard } from "./TurnDiffCard";
 import { useLongPress } from "./useLongPress";
 
@@ -182,7 +183,7 @@ export const UserBubble = memo(function UserBubble({ item, sessionId }: { item: 
 	const { openActions } = useChatUi();
 	const cleaned = stripImageMarkers(item.text);
 	const displayText = item.images.length > 0 && cleaned === "（图片）" ? "" : cleaned;
-	const lp = useLongPress(() => openActions({ role: "user", text: displayText || item.text, entryId: item.id, canRetry: false }));
+	const lp = useLongPress(() => openActions({ role: "user", text: displayText || item.text, entryId: item.id, canRetry: false, hasImages: item.images.length > 0, imageCount: item.images.length }));
 	if (!displayText && !item.images.length) return null;
 	return (
 		<div className="flex flex-col items-end gap-1.5 px-5 pt-4 pb-2">
@@ -559,6 +560,7 @@ export const TurnView = memo(function TurnView({
 	const live = useChat((s) => (isLast ? s.live : null));
 	const working = useChat((s) => (isLast ? s.working : false));
 	const planStatus = useChat((s) => (isPlanHost && turn.id !== "turn-live" ? s.cstate?.planStatus : null));
+	const automationState = useChat((s) => s.automationState);
 	const acceptedPlan = useChat((s) => (s.acceptedPlan?.turnId === turn.id ? s.acceptedPlan : null));
 	const approved = planStatus?.approved;
 	const cardStatus = approved?.status ?? (acceptedPlan ? "pending" : "review");
@@ -575,6 +577,15 @@ export const TurnView = memo(function TurnView({
 		}
 		return parts.steps;
 	}, [parts, turn.answer]);
+	const automationCalls = useMemo(
+		() =>
+			extractAutomationProposeCalls(
+				steps
+					.filter((s): s is Extract<Step, { kind: "tool" }> => s.kind === "tool")
+					.map((s) => s.tool),
+			),
+		[steps],
+	);
 	const parallelMarks = useMemo(
 		() => computeParallelMarks(steps, turn.src, live),
 		[steps, turn.src, live],
@@ -584,7 +595,8 @@ export const TurnView = memo(function TurnView({
 	const answerClock = formatHourMinute(
 		answerStat?.stat.completedAt ?? answerStat?.stat.startedAt ?? (turn.end > 0 ? turn.end : null),
 	);
-	const target = { role: "assistant" as const, text: answerText, entryId: turn.lastAssistantId, canRetry: isLast && !running };
+	const answerImages = turn.answer?.images ?? [];
+	const target = { role: "assistant" as const, text: answerText, entryId: turn.lastAssistantId, canRetry: isLast && !running, hasImages: answerImages.length > 0, imageCount: answerImages.length };
 	const lp = useLongPress(() => {
 		if (answerText) openActions(target);
 	});
@@ -630,6 +642,13 @@ export const TurnView = memo(function TurnView({
 							running={running}
 							status={cardStatus}
 							version={approved?.version ?? planStatus?.version}
+						/>
+					)}
+					{automationCalls.length > 0 && (
+						<AutomationTurnCard
+							sessionId={sessionId}
+							calls={automationCalls}
+							automationState={automationState}
 						/>
 					)}
 					{!running && <TurnDiffCard steps={steps} cwd={sessionCwd} />}

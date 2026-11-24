@@ -99,14 +99,23 @@ describe("ConnectionBanner", () => {
 
 		await waitFor(() => expect(bridge.openPairScanner).toHaveBeenCalledTimes(1));
 		await waitFor(() => expect(useConnection.getState().phase).not.toBe("unauthorized"));
-		expect(screen.queryByText(/点击「生成配对二维码」/)).toBeNull();
+		expect(screen.queryByText(/点击「生成二维码」/)).toBeNull();
 	});
 
 	it("keeps the manual re-pair guide sheet on web", () => {
 		useConnection.setState({ phase: "unauthorized", error: "revoked" });
 		render(<ConnectionBanner />);
 		fireEvent.click(screen.getByRole("button", { name: "重新配对" }));
-		expect(screen.getByText(/点击「生成配对二维码」/)).toBeDefined();
+		expect(screen.getByText(/点击「生成二维码」/)).toBeDefined();
+	});
+
+	it("shows stable offline title with expandable full error detail", () => {
+		useConnection.setState({ phase: "closed", error: "TLS handshake failed on 192.168.1.10:7790: unexpected EOF" });
+		render(<ConnectionBanner />);
+		expect(screen.getByText("连接已断开")).toBeDefined();
+		expect(screen.queryByText(/unexpected EOF/)).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "详情" }));
+		expect(screen.getByText("TLS handshake failed on 192.168.1.10:7790: unexpected EOF")).toBeDefined();
 	});
 });
 

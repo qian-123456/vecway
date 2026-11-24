@@ -126,6 +126,28 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 	const [showKey, setShowKey] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [formError, setFormError] = useState<string | null>(null);
+	const [touchedFields, setTouchedFields] = useState<{ id?: boolean; url?: boolean; apiOther?: boolean; key?: boolean }>({});
+	const [submitAttempted, setSubmitAttempted] = useState(false);
+	const [presetUndo, setPresetUndo] = useState<{
+		name: string;
+		snapshot: {
+			selectedPresetId: string | null;
+			id: string;
+			baseUrl: string;
+			authNone: boolean;
+			keyMode: Mode;
+			envName: string;
+			apiKey: string;
+			apiChoice: string;
+			apiOther: string;
+			autoDiscover: boolean;
+			modelRows: ModelRow[];
+			newModelInput: string;
+			providerWindow: string;
+			providerWindowChanged: boolean;
+			batchMaxTokens: string;
+		};
+	} | null>(null);
 
 	// .env import state.
 	const [pasteText, setPasteText] = useState("");
@@ -238,9 +260,34 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 
 	const applyPreset = (presetId: string) => {
 		const p = PROVIDER_PRESETS.find((x) => x.id === presetId);
-		setSelectedPresetId(presetId);
 		setPresetOpen(false);
 		if (!p) return;
+		if (presetId === selectedPresetId) return;
+		if (isDirty) {
+			setPresetUndo({
+				name: p.name,
+				snapshot: {
+					selectedPresetId,
+					id,
+					baseUrl,
+					authNone,
+					keyMode,
+					envName,
+					apiKey,
+					apiChoice,
+					apiOther,
+					autoDiscover,
+					modelRows,
+					newModelInput,
+					providerWindow,
+					providerWindowChanged,
+					batchMaxTokens,
+				},
+			});
+		} else {
+			setPresetUndo(null);
+		}
+		setSelectedPresetId(presetId);
 		setEnvName(p.envVar);
 		setAuthNone(Boolean(p.noKey));
 		setKeyMode("plain");
@@ -261,8 +308,31 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 		clearModelSearch();
 	};
 
+	const undoPresetSwitch = () => {
+		if (!presetUndo) return;
+		const snap = presetUndo.snapshot;
+		setSelectedPresetId(snap.selectedPresetId);
+		setId(snap.id);
+		setBaseUrl(snap.baseUrl);
+		setAuthNone(snap.authNone);
+		setKeyMode(snap.keyMode);
+		setEnvName(snap.envName);
+		setApiKey(snap.apiKey);
+		setApiChoice(snap.apiChoice);
+		setApiOther(snap.apiOther);
+		setAutoDiscover(snap.autoDiscover);
+		setModelRows(snap.modelRows);
+		setNewModelInput(snap.newModelInput);
+		setProviderWindow(snap.providerWindow);
+		setProviderWindowChanged(snap.providerWindowChanged);
+		setBatchMaxTokens(snap.batchMaxTokens);
+		setPresetUndo(null);
+		clearModelSearch();
+	};
+
 	const resetPreset = () => {
 		setSelectedPresetId(null);
+		setPresetUndo(null);
 		setPresetOpen(false);
 		setId("");
 		setBaseUrl("");
@@ -438,6 +508,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 	};
 
 	const handleSave = async () => {
+		setSubmitAttempted(true);
 		setFormError(null);
 		const effectiveModelRows = newModelInput.trim() ? buildAppendedRows(modelRows, newModelInput) : modelRows;
 		if (newModelInput.trim()) {
@@ -687,6 +758,26 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 	}, [isImport, loadEnvFile]);
 
 	const selectedPreset = selectedPresetId ? presetById(selectedPresetId) : undefined;
+	const presetLocksProtocol = !isBuiltin && !serviceMode && Boolean(selectedPreset && selectedPreset.id !== "custom");
+	const touchField = (field: "id" | "url" | "apiOther" | "key") =>
+		setTouchedFields((prev) => (prev[field] ? prev : { ...prev, [field]: true }));
+	const trimmedId = id.trim();
+	const idError =
+		!isBuiltin && (touchedFields.id || submitAttempted)
+			? !trimmedId
+				? t("providers.missingFieldsError", { fields: t("providers.fieldName") })
+				: rows.some((r) => r.id === trimmedId && r.id !== editing?.id)
+					? t("providers.duplicateIdError", { id: trimmedId })
+					: null
+			: null;
+	const urlError =
+		!isBuiltin && (touchedFields.url || submitAttempted) && !baseUrl.trim()
+			? t("providers.missingFieldsError", { fields: t("providers.fieldUrl") })
+			: null;
+	const apiOtherError =
+		!isBuiltin && !serviceMode && apiChoice === OTHER_API && (touchedFields.apiOther || submitAttempted) && !apiOther.trim()
+			? t("providers.enterApiToast")
+			: null;
 	const problemKey: Record<KeyInputProblem, string> = {
 		envEmpty: "providers.envNameEmpty",
 		envInvalid: "providers.envNameInvalid",
@@ -696,7 +787,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 	const showKeyProblem =
 		!authNone &&
 		keyProblem !== null &&
-		(keyAttempted || (keyProblem !== "envEmpty" && keyProblem !== "plainRequired"));
+		(keyAttempted || touchedFields.key || (keyProblem !== "envEmpty" && keyProblem !== "plainRequired"));
 	const shownEnvName = envName.trim();
 	const envStatus = editing?.key.kind === "envVar" && editing.key.envVar === shownEnvName ? editing.key.envSet : undefined;
 	const activeAuthSeg = authNone ? "none" : keyMode;
@@ -916,6 +1007,21 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 					</div>
 				) : (
 					<div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3.5">
+						{presetUndo && !editing && !isImport && (
+							<div
+								role="status"
+								className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border-divider)] bg-[var(--well-bg)]/70 px-3 py-1.5 text-xs text-neutral-300"
+							>
+								<span>{t("providers.presetSwitchedNotice", { name: presetUndo.name })}</span>
+								<button
+									type="button"
+									onClick={undoPresetSwitch}
+									className="whitespace-nowrap rounded-md border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2 py-0.5 text-[11px] font-medium text-[var(--accent)] transition-colors hover:bg-[var(--bg-hover)]"
+								>
+									{t("common.undo")}
+								</button>
+							</div>
+						)}
 						{/* 1. Core connection & credentials */}
 						<section className="shrink-0 space-y-2.5 rounded-xl border border-[var(--border-divider)] bg-[var(--well-bg)]/45 p-2.5">
 							<div className="grid grid-cols-1 gap-3 @[540px]:grid-cols-2">
@@ -935,17 +1041,29 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 										type="text"
 										value={id}
 										onChange={(e) => setId(e.target.value)}
+										onBlur={() => touchField("id")}
+										aria-invalid={Boolean(idError)}
 										readOnly={isBuiltin}
 										spellCheck={false}
 										className={`mt-1.5 ${inputCls} font-mono ${isBuiltin ? "cursor-default opacity-70" : ""}`}
 										placeholder={t("providers.namePlaceholder")}
 									/>
+									{idError && (
+										<div role="alert" className="mt-1 select-text break-words text-[11px] text-rose-300">
+											{idError}
+										</div>
+									)}
 								</div>
 								<div className="min-w-0">
-									<div className="flex min-h-[22px] items-center">
+									<div className="flex min-h-[22px] items-center justify-between gap-2">
 										<label htmlFor="provider-api" className={labelCls}>
 											{t("providers.apiLabel")}
 										</label>
+										{presetLocksProtocol && (
+											<span className="whitespace-nowrap rounded bg-[var(--bg-active-fill)] px-1.5 py-0.5 text-[10px] text-neutral-400">
+												{t("providers.presetProtocolLocked")}
+											</span>
+										)}
 									</div>
 									{isBuiltin ? (
 										<div
@@ -958,6 +1076,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 										<NativeSelect
 											id="provider-api"
 											value={apiChoice}
+											disabled={presetLocksProtocol}
 											onChange={(e) => setApiChoice(e.target.value)}
 											containerClassName="mt-1.5"
 										>
@@ -967,23 +1086,35 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 													{a.label}
 												</option>
 											))}
+											{!availableApis.some((a) => a.value === apiChoice) && apiChoice && apiChoice !== OTHER_API && (
+												<option value={apiChoice}>
+													{compactApiLabel(apiChoice)} ({apiChoice})
+												</option>
+											)}
 											<option value={OTHER_API}>{t("providers.otherApiOption")}</option>
 										</NativeSelect>
 									)}
 								</div>
 							</div>
 
-							{!isBuiltin && apiChoice === OTHER_API && (
+							{!isBuiltin && !presetLocksProtocol && apiChoice === OTHER_API && (
 								<div>
 									<input
 										type="text"
 										value={apiOther}
 										onChange={(e) => setApiOther(e.target.value)}
+										onBlur={() => touchField("apiOther")}
+										aria-invalid={Boolean(apiOtherError)}
 										aria-label={t("providers.otherApiAria")}
 										spellCheck={false}
 										className={`${inputCls} font-mono`}
 										placeholder={t("providers.otherApiPlaceholder")}
 									/>
+									{apiOtherError && (
+										<div role="alert" className="mt-1 select-text break-words text-[11px] text-rose-300">
+											{apiOtherError}
+										</div>
+									)}
 								</div>
 							)}
 
@@ -1025,10 +1156,17 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 										type="text"
 										value={baseUrl}
 										onChange={(e) => setBaseUrl(e.target.value)}
+										onBlur={() => touchField("url")}
+										aria-invalid={Boolean(urlError)}
 										spellCheck={false}
 										className={`mt-1.5 ${inputCls} font-mono`}
 										placeholder={isBuiltin ? (defaultBaseUrl ?? "https://api.example.com/v1") : "https://api.example.com/v1"}
 									/>
+									{urlError && (
+										<div role="alert" className="mt-1 select-text break-words text-[11px] text-rose-300">
+											{urlError}
+										</div>
+									)}
 									{isBuiltin && <div className={hintCls}>{t("providers.builtinUrlHint")}</div>}
 									{insecureHttpWarning(baseUrl) && (
 										<p
@@ -1102,6 +1240,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 													type={showKey ? "text" : "password"}
 													value={apiKey}
 													onChange={(e) => setApiKey(e.target.value)}
+													onBlur={() => touchField("key")}
 													onKeyDown={(e) => {
 														if (isComposing(e)) return;
 														if (e.key === "Enter" && !saving) void handleSave();
@@ -1135,6 +1274,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 												type="text"
 												value={envName}
 												onChange={(e) => setEnvName(e.target.value.trim())}
+												onBlur={() => touchField("key")}
 												onKeyDown={(e) => {
 													if (e.key === "Enter" && !isComposing(e)) void handleSave();
 												}}
@@ -1616,7 +1756,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 					</div>
 				)}
 
-				{formError && (
+				{formError && formError !== idError && formError !== urlError && formError !== apiOtherError && (
 					<div
 						role="alert"
 						className="mx-4 mb-2 select-text rounded-xl border border-rose-800/40 bg-rose-950/20 px-3 py-2 text-xs text-rose-300"

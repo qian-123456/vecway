@@ -73,12 +73,14 @@ export function normalizeTranscript(raw: readonly (TranscriptItem | null | undef
 		} else if (kind === "tool_result") {
 			const r = it.toolResult;
 			if (!r) continue;
-			const diff = resultDiff(r.details);
+			const details = resultDetails(r.details);
+			const diff = details?.diff;
 			const owner = findTool(out, r.toolCallId);
 			if (owner) {
 				owner.status = r.isError ? "error" : "done";
 				owner.result = r.text || "";
 				if (diff) owner.diff = diff;
+				if (details) owner.details = { ...owner.details, ...details };
 				continue;
 			}
 			const host = lastAssistant(out);
@@ -89,6 +91,7 @@ export function normalizeTranscript(raw: readonly (TranscriptItem | null | undef
 				status: r.isError ? "error" : "done",
 				result: r.text || "",
 				...(diff ? { diff } : {}),
+				...(details ? { details } : {}),
 			};
 			if (host) host.tools.push(orphan);
 			else {
@@ -194,8 +197,20 @@ function resultText(r: { content?: { type?: string; text?: string }[] } | null |
 /** Extract `details.diff` from a tool result payload when present and non-empty. */
 export function resultDiff(details: unknown): string | undefined {
 	if (!details || typeof details !== "object" || !("diff" in details)) return undefined;
-	const diff = details.diff;
+	const diff = (details as Record<string, unknown>).diff;
 	return typeof diff === "string" && diff.length > 0 ? diff : undefined;
+}
+
+/** Extract preserved structured tool result details (`diff`, `draftId`, `action`, `scheduleId`). */
+export function resultDetails(details: unknown): ToolItem["details"] | undefined {
+	if (!details || typeof details !== "object") return undefined;
+	const rec = details as Record<string, unknown>;
+	const out: NonNullable<ToolItem["details"]> = {};
+	if (typeof rec.diff === "string" && rec.diff.length > 0) out.diff = rec.diff;
+	if (typeof rec.draftId === "string" && rec.draftId.length > 0) out.draftId = rec.draftId;
+	if (typeof rec.action === "string" && rec.action.length > 0) out.action = rec.action;
+	if (typeof rec.scheduleId === "string" && rec.scheduleId.length > 0) out.scheduleId = rec.scheduleId;
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -250,14 +265,21 @@ export function applyLiveFrame(live: Item | null, frame: RpcFrame, now?: string)
 		case "tool_execution_update": {
 			if (!live) return keep(null);
 			const result = resultText(frame.partialResult);
-			const diff = resultDiff(frame.partialResult?.details);
+			const details = resultDetails(frame.partialResult?.details);
+			const diff = details?.diff;
 			let changed = false;
 			const tools = live.tools.map((t) => {
 				if (t.id !== frame.toolCallId) return t;
 				const nextDiff = diff ?? t.diff;
-				if (t.result === result && t.diff === nextDiff) return t;
+				const nextDetails = details ? { ...t.details, ...details } : t.details;
+				if (t.result === result && t.diff === nextDiff && t.details === nextDetails) return t;
 				changed = true;
-				return nextDiff ? { ...t, result, diff: nextDiff } : { ...t, result };
+				return {
+					...t,
+					result,
+					...(nextDiff ? { diff: nextDiff } : {}),
+					...(nextDetails ? { details: nextDetails } : {}),
+				};
 			});
 			if (!changed) return keep(null);
 			return { live: { ...live, tools }, streaming: null, refetch: false, handled: true };
@@ -265,12 +287,20 @@ export function applyLiveFrame(live: Item | null, frame: RpcFrame, now?: string)
 		case "tool_execution_end": {
 			if (!live) return keep(null, true);
 			const result = resultText(frame.result);
-			const diff = resultDiff(frame.result?.details);
+			const details = resultDetails(frame.result?.details);
+			const diff = details?.diff;
 			const status = frame.isError === true ? ("error" as const) : ("done" as const);
 			const tools = live.tools.map((t) => {
 				if (t.id !== frame.toolCallId) return t;
 				const nextDiff = diff ?? t.diff;
-				return nextDiff ? { ...t, status, result, diff: nextDiff } : { ...t, status, result };
+				const nextDetails = details ? { ...t.details, ...details } : t.details;
+				return {
+					...t,
+					status,
+					result,
+					...(nextDiff ? { diff: nextDiff } : {}),
+					...(nextDetails ? { details: nextDetails } : {}),
+				};
 			});
 			return { live: { ...live, tools }, streaming: null, refetch: true, handled: true };
 		}

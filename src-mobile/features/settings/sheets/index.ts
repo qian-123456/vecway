@@ -1,4 +1,5 @@
 export { GeneralSheet } from "./GeneralSheet";
+export { AutomationSettingsSheet } from "./AutomationSettingsSheet";
 export { AppearanceSheet } from "./AppearanceSheet";
 export { NotifySheet } from "./NotifySheet";
 export { PrivacySheet } from "./PrivacySheet";

@@ -36,8 +36,11 @@ export default defineMessages({
 		toastIpv6RestartedPort: "已用新端口重新启动 IPv6 直连",
 		toastTokenSaved: "Cloudflare API 令牌已保存并验证",
 		toastTokenCleared: "Cloudflare API 令牌已清除",
+		clearTokenConfirmTitle: "清除 Cloudflare API 令牌",
+		clearTokenConfirmMessage: "清除后将无法自动更新域名解析记录，如需继续使用需要重新填写令牌。确定清除吗？",
+		clearTokenConfirmOk: "清除令牌",
 		toastDdnsSynced: "DDNS 记录已同步",
-		errorNamedMissing: "固定域名模式需要同时填写隧道名称和域名",
+		errorNamedMissing: "请填写域名",
 		toastTunnelClosed: "公网访问已关闭",
 		toastTunnelStarted: "公网隧道已启动",
 		revokeConfirmMessage:
@@ -76,6 +79,10 @@ export default defineMessages({
 		pairLanDescStopped: "需要先启动上面的「手机访问」",
 		pairLanTitleStopped: "请先启动手机访问",
 		btnGenerateQr: "生成二维码",
+		btnStartPairing: "开始配对",
+		pairRemoteMissingIpv6Address: "尚未检测到公网 IPv6 地址，无法生成 IPv6 配对二维码",
+		pairRemoteMissingIpv6Server: "请先启动下方「IPv6 直连」服务，待地址就绪后再生成配对二维码",
+		pairRemoteMissingTunnel: "请先在下方连接 Cloudflare 公网隧道，待公网地址就绪后再生成配对二维码",
 		cardIpv6Title: "IPv6 直连",
 		cardIpv6Footer:
 			"利用公网 IPv6 无 NAT 特性，让手机在蜂窝移动网络（4G/5G）下直接连接这台电脑，无需第三方服务器中转。",
@@ -258,9 +265,11 @@ export default defineMessages({
 		toastIpv6RestartedPort: "Restarted IPv6 direct access with new port",
 		toastTokenSaved: "Cloudflare API token saved and verified",
 		toastTokenCleared: "Cloudflare API token cleared",
+		clearTokenConfirmTitle: "Clear Cloudflare API token",
+		clearTokenConfirmMessage: "Automatic DNS updates will stop until you enter a new token. Clear this token?",
+		clearTokenConfirmOk: "Clear token",
 		toastDdnsSynced: "DDNS record synced",
-		errorNamedMissing:
-			"Tunnel name and hostname are required for custom domain mode",
+		errorNamedMissing: "Please enter a hostname",
 		toastTunnelClosed: "Public access closed",
 		toastTunnelStarted: "Public tunnel started",
 		revokeConfirmMessage:
@@ -301,6 +310,10 @@ export default defineMessages({
 		pairLanDescStopped: "Start \"Mobile access\" above first",
 		pairLanTitleStopped: "Please start mobile access first",
 		btnGenerateQr: "Generate QR",
+		btnStartPairing: "Start pairing",
+		pairRemoteMissingIpv6Address: "No public IPv6 address detected yet; cannot generate an IPv6 pairing QR code",
+		pairRemoteMissingIpv6Server: "Start the IPv6 direct service below first and wait for its URL before generating a QR code",
+		pairRemoteMissingTunnel: "Connect the Cloudflare tunnel below first and wait for the public URL before generating a QR code",
 		cardIpv6Title: "IPv6 direct access",
 		cardIpv6Footer:
 			"Leverage NAT-free public IPv6 to connect phones directly to this PC over mobile data (4G/5G) without third-party servers.",

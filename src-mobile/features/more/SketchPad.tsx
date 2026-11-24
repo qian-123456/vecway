@@ -28,6 +28,7 @@ function SketchOverlay({ onClose, onDone }: { onClose: () => void; onDone: (png:
 	const stageRef = useRef<HTMLDivElement>(null);
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const strokes = useRef<Stroke[]>([]);
+	const undoSnapshots = useRef<Stroke[][]>([]);
 	const drawing = useRef<number | null>(null);
 	const model = useRef<SketchSize | null>(null);
 	const exporting = useRef(false);
@@ -36,8 +37,8 @@ function SketchOverlay({ onClose, onDone }: { onClose: () => void; onDone: (png:
 	const [width, setWidth] = useState<number>(SKETCH_WIDTHS[1]);
 	const [tool, setTool] = useState<SketchTool>("pen");
 	const [count, setCount] = useState(0);
+	const [undoDepth, setUndoDepth] = useState(0);
 	const [busy, setBusy] = useState(false);
-
 	const redraw = useCallback(() => {
 		const cv = canvasRef.current;
 		if (cv && model.current) replaySketch(cv, strokes.current, model.current, PAPER);
@@ -85,12 +86,21 @@ function SketchOverlay({ onClose, onDone }: { onClose: () => void; onDone: (png:
 	};
 	const undo = () => {
 		drawing.current = null;
-		strokes.current = undoStroke(strokes.current);
+		if (strokes.current.length > 0) {
+			strokes.current = undoStroke(strokes.current);
+		} else if (undoSnapshots.current.length > 0) {
+			strokes.current = undoSnapshots.current.pop() ?? [];
+			setUndoDepth(undoSnapshots.current.length);
+		}
 		setCount(strokes.current.length);
 		redraw();
 	};
 	const clear = () => {
 		drawing.current = null;
+		if (strokes.current.length > 0) {
+			undoSnapshots.current.push([...strokes.current]);
+			setUndoDepth(undoSnapshots.current.length);
+		}
 		strokes.current = [];
 		setCount(0);
 		redraw();
@@ -121,7 +131,7 @@ function SketchOverlay({ onClose, onDone }: { onClose: () => void; onDone: (png:
 			<div className="flex h-14 shrink-0 items-center gap-1 px-2" style={{ marginTop: "var(--m-safe-top)" }}>
 				<IconButton variant="filled" icon={<X size={22} strokeWidth={1.75} />} label="取消" onClick={onClose} />
 				<div className="min-w-0 flex-1 px-2 text-m-md font-semibold whitespace-nowrap">手绘草图</div>
-				<IconButton icon={<Undo2 size={22} strokeWidth={1.75} />} label="撤销" disabled={count === 0 || busy} onClick={undo} />
+				<IconButton icon={<Undo2 size={22} strokeWidth={1.75} />} label="撤销" disabled={(count === 0 && undoDepth === 0) || busy} onClick={undo} />
 				<IconButton icon={<Trash2 size={22} strokeWidth={1.75} />} label="清空" disabled={count === 0 || busy} onClick={clear} />
 				<Button variant="primary" size="sm" className="ml-1 shrink-0 whitespace-nowrap" disabled={count === 0 || busy} onClick={done}>
 					完成

@@ -110,7 +110,7 @@ export function takeFirstSend(id: string): string | null {
 	return t;
 }
 
-export type ComposerAction = "goal" | "finder" | "workspace" | "sketch" | "plan";
+export type ComposerAction = "goal" | "finder" | "workspace" | "sketch" | "plan" | "automation";
 interface ComposerHandoff { id: string; action?: ComposerAction; files?: File[] }
 let composerHandoff: ComposerHandoff | null = null;
 export function queueComposerAction(id: string, action?: ComposerAction, files?: File[]): void {

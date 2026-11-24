@@ -12,6 +12,7 @@ import {
 	formatClockTime,
 	formatElapsed,
 	formatRunSegmentLines,
+	subagentName,
 	subagentTitle,
 } from "./subagentTree";
 
@@ -99,39 +100,53 @@ export function SubagentHoverCard({
 			className="liquid-glass pointer-events-none w-[300px] p-3 text-[12.5px] text-[var(--text)]"
 			style={{ "--glass-radius": "18px" } as CSSProperties}
 		>
-			<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-				<span className="font-semibold">{subagentTitle(id, info, row)}</span>
+			<div className="flex items-start justify-between gap-2">
+				<span className="min-w-0 break-words font-semibold text-[var(--text)]">
+					{subagentName(id, info.agent) || subagentTitle(id, info, row)}
+				</span>
+				<span className={`shrink-0 whitespace-nowrap text-[11px] font-medium ${STATE_COLOR[state]}`}>
+					{t(STATE_LABEL_KEYS[state])}
+				</span>
+			</div>
+			<div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--text-40)]">
 				{info.agent && (
-					<span className="rounded-md bg-[var(--ghost-hover)] px-[5px] text-[10.5px] text-[var(--text-60)]">
+					<span className="rounded-md bg-[var(--ghost-hover)] px-1.5 py-0.5 text-[10.5px] text-[var(--text-60)]">
 						{info.agent}
 					</span>
 				)}
 				{model && (
-					<span className="text-[11px] text-[var(--text-40)]">{formatShortModel(model)}</span>
+					<span className="rounded-md bg-[var(--ghost-hover)] px-1.5 py-0.5 text-[10.5px] text-[var(--text-60)]">
+						{[formatShortModel(model), thinking].filter(Boolean).join(" · ")}
+					</span>
 				)}
-				<span className={`text-[11px] ${STATE_COLOR[state]}`}>{t(STATE_LABEL_KEYS[state])}</span>
-				<span className="ml-auto text-[11px] text-[var(--text-60)]">
+				<span className="ml-auto whitespace-nowrap text-[10.5px]">
 					{parentName ? t("subagents.dispatchedByParent", { parent: parentName }) : t("subagents.dispatchedByMain")}
 				</span>
 			</div>
 			{task && (
-				<div className="mt-1.5 line-clamp-5 whitespace-pre-wrap break-words text-[var(--text-60)]">
+				<div className="mt-2 line-clamp-4 whitespace-pre-wrap break-words rounded-[10px] bg-[var(--ghost-hover)] px-2.5 py-1.5 text-[12px] leading-[1.45] text-[var(--text-60)]">
 					{task.replace(/^Complete assignment thoroughly:\s*/, "")}
 				</div>
 			)}
-			<dl className="mt-2 grid grid-cols-[44px_1fr] gap-x-2 gap-y-1">
-				{fields.map(([k, v, isErr]) =>
-					k && v ? (
-						<div key={k} className="contents">
-							<dt className="whitespace-nowrap text-[var(--text-40)]">{k}</dt>
-							<dd className={`m-0 break-words ${isErr ? "text-[var(--status-error)]" : ""}`}>{v}</dd>
-						</div>
-					) : null,
-				)}
+			<dl className="mt-2.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12px]">
+				{fields
+					.filter(([k]) => k !== t("subagents.fieldModel"))
+					.map(([k, v, isErr]) =>
+						k && v ? (
+							<div key={k} className="contents">
+								<dt className="whitespace-nowrap text-[var(--text-40)]">{k}</dt>
+								<dd
+									className={`m-0 min-w-0 break-words tabular-nums ${isErr ? "text-[var(--status-error)]" : "text-[var(--text)]"}`}
+								>
+									{v}
+								</dd>
+							</div>
+						) : null,
+					)}
 				{segmentLines.length > 0 && (
 					<div className="contents">
 						<dt className="whitespace-nowrap text-[var(--text-40)]">{t("subagents.fieldSegments")}</dt>
-						<dd className="m-0 flex flex-col gap-0.5 tabular-nums">
+						<dd className="m-0 flex flex-col gap-0.5 tabular-nums text-[var(--text)]">
 							{segmentLines.map((line, i) => (
 								<div key={`${i}-${line}`} className="whitespace-nowrap">
 									{line}
@@ -141,7 +156,9 @@ export function SubagentHoverCard({
 					</div>
 				)}
 			</dl>
-			<div className="mt-2 text-[11px] text-[var(--text-40)]">{t("subagents.clickToViewProcess")}</div>
+			<div className="mt-2 border-t border-[var(--line)] pt-1.5 text-[11px] text-[var(--text-40)]">
+				{t("subagents.clickToViewProcess")}
+			</div>
 		</FloatingLayer>
 	);
 }

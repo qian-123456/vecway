@@ -60,9 +60,9 @@ export function thinkingOptions(model: PickerModel | undefined): { value: string
 	const levels = (model?.thinking ?? []).filter((l) => l !== THINKING_AUTO && l !== THINKING_OFF);
 	if (!levels.length) return [];
 	return [
-		{ value: null, label: "自动" },
+		{ value: null, label: THINKING_AUTO },
 		...levels.map((l) => ({ value: l, label: thinkLabel(l) })),
-		{ value: THINKING_OFF, label: "关闭" },
+		{ value: THINKING_OFF, label: THINKING_OFF },
 	];
 }
 

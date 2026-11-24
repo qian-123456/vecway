@@ -43,21 +43,28 @@ export function DiagnoseDialog() {
 	const [prompt, setPrompt] = useState<string>("");
 	const [loadingPrompt, setLoadingPrompt] = useState(false);
 	const [showPromptPreview, setShowPromptPreview] = useState(true);
-	const [targetType, setTargetType] = useState<"existing" | "new">("existing");
+	const [targetType, setTargetType] = useState<"existing" | "new">("new");
 	const [selectedExistingId, setSelectedExistingId] = useState<string>("");
 	const [newSessionModel, setNewSessionModel] = useState<string>("");
 	const [dispatching, setDispatching] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const [promptError, setPromptError] = useState<string | null>(null);
+	const [dispatchError, setDispatchError] = useState<string | null>(null);
 	const sending = useRef(false);
 	const promptRequest = useRef(0);
 	const visit = useRef(0);
+	const createdSessionRef = useRef<{
+		sessionId: string;
+		cwd: string;
+		model: string;
+		mode: string | undefined;
+	} | null>(null);
 
 	const targetSession = targetSessionId ? sessions[targetSessionId] : undefined;
 
 	const fetchPrompt = useCallback(() => {
 		if (!targetSessionId) return;
 		const request = ++promptRequest.current;
-		setError(null);
+		setPromptError(null);
 		setLoadingPrompt(true);
 		diagnoseBuildPrompt(targetSessionId)
 			.then((p) => {
@@ -66,8 +73,7 @@ export function DiagnoseDialog() {
 			.catch((err) => {
 				if (request !== promptRequest.current) return;
 				const msg = errMsg(err);
-				setError(t("diagnose.errorGeneratingPrompt", { error: msg }));
-				toast.error(t("diagnose.errorGeneratingPrompt", { error: msg }));
+				setPromptError(t("diagnose.errorGeneratingPrompt", { error: msg }));
 			})
 			.finally(() => {
 				if (request === promptRequest.current) setLoadingPrompt(false);
@@ -77,64 +83,110 @@ export function DiagnoseDialog() {
 	useEffect(() => {
 		visit.current++;
 		if (isVisible && targetSessionId) {
+			createdSessionRef.current = null;
 			setPrompt("");
+			setPromptError(null);
+			setDispatchError(null);
 			setDispatching(sending.current);
-			setTargetType("existing");
+			setTargetType("new");
 			setNewSessionModel("");
-			// Read once per opening, not on catalog refresh.
-			const candidateIds = Object.keys(useSessions.getState().sessions).filter(
-				(id) => id !== targetSessionId,
-			);
+			// Read once per opening, not on catalog refresh; exclude busy sessions.
+			const candidateIds = Object.values(useSessions.getState().sessions)
+				.filter((s) => s.id !== targetSessionId && s.status !== "working")
+				.map((s) => s.id);
 			setSelectedExistingId(candidateIds[0] || "");
 			fetchPrompt();
 		}
 		return () => { promptRequest.current++; };
 	}, [isVisible, targetSessionId, fetchPrompt]);
+	useEffect(() => {
+		createdSessionRef.current = null;
+	}, [targetSession?.cwd, targetSession?.mode]);
+
+
+	const candidateSessions = Object.values(sessions).filter(
+		(s) => s.id !== targetSessionId && s.status !== "working",
+	);
+	// Keep "existing" selected once the user chose it so unavailability is shown explicitly
+	// instead of silently substituting another session or switching to "new".
+	const effectiveTargetType: "existing" | "new" =
+		targetType === "existing" ? "existing" : "new";
+	const selectedExistingSession = selectedExistingId ? sessions[selectedExistingId] : undefined;
+	const isSelectedExistingValid = Boolean(
+		selectedExistingId && candidateSessions.some((s) => s.id === selectedExistingId),
+	);
+	const existingTargetError =
+		effectiveTargetType === "existing" && !isSelectedExistingValid
+			? selectedExistingSession?.status === "working"
+				? t("diagnose.selectedSessionBusy")
+				: t("diagnose.selectedSessionUnavailable")
+			: null;
+	const canSubmit =
+		Boolean(prompt) &&
+		!loadingPrompt &&
+		!dispatching &&
+		(effectiveTargetType !== "existing" || isSelectedExistingValid);
 
 	if (!isVisible) return null;
 
 	const handleExecuteDiagnose = async () => {
-		if (!prompt || loadingPrompt || sending.current) return;
+		if (!canSubmit || sending.current) return;
 		sending.current = true;
 		const currentVisit = visit.current;
 		setDispatching(true);
-		setError(null);
+		setDispatchError(null);
 		try {
-			let diagnoserId = selectedExistingId;
-			if (targetType === "new") {
+			let diagnoserId = "";
+			if (effectiveTargetType === "new") {
 				const cwd = targetSession?.cwd || ".";
-				// The diagnoser lives in the diagnosed session's space.
-				const info = await rpcStart({
-					cwd,
-					model: newSessionModel.trim() || undefined,
-					mode: targetSession?.mode,
-				});
-				diagnoserId = info.sessionId;
+				const model = newSessionModel.trim() || undefined;
+				const mode = targetSession?.mode;
+				const existingCreated = createdSessionRef.current;
+				if (
+					existingCreated &&
+					existingCreated.cwd === cwd &&
+					existingCreated.model === (model ?? "") &&
+					existingCreated.mode === mode
+				) {
+					diagnoserId = existingCreated.sessionId;
+				} else {
+					// The diagnoser lives in the diagnosed session's space.
+					const info = await rpcStart({
+						cwd,
+						model,
+						mode,
+					});
+					if (currentVisit !== visit.current) return;
+					diagnoserId = info.sessionId;
+					createdSessionRef.current = {
+						sessionId: diagnoserId,
+						cwd,
+						model: model ?? "",
+						mode,
+					};
+				}
 			} else {
-				if (!diagnoserId) throw new Error(t("diagnose.selectDiagnoserSession"));
+				if (!isSelectedExistingValid) {
+					throw new Error(t("diagnose.selectDiagnoserSession"));
+				}
+				diagnoserId = selectedExistingId;
 			}
 
 			await dispatchPrompt(diagnoserId, prompt);
 
 			if (currentVisit !== visit.current) return;
+			createdSessionRef.current = null;
 			toast.success(t("diagnose.diagnosisStarted"));
 			closeModal();
 			selectSession(diagnoserId);
 		} catch (err) {
 			if (currentVisit !== visit.current) return;
-			const msg = errMsg(err);
-			setError(msg);
-			toast.error(t("diagnose.errorStartingDiagnosis", { error: msg }));
+			setDispatchError(errMsg(err));
 		} finally {
 			sending.current = false;
 			setDispatching(false);
 		}
 	};
-
-	const candidateSessions = Object.values(sessions).filter(
-		(s) => s.id !== targetSessionId,
-	);
-
 	return (
 		<Modal
 			onClose={closeModal}
@@ -148,7 +200,7 @@ export function DiagnoseDialog() {
 					if (isComposing(e)) return;
 					if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
 						e.preventDefault();
-						if (!loadingPrompt && !dispatching && prompt && (targetType !== "existing" || selectedExistingId)) {
+						if (canSubmit) {
 							void handleExecuteDiagnose();
 						}
 						return;
@@ -197,7 +249,7 @@ export function DiagnoseDialog() {
 
 				<div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
 
-				{error && (
+				{promptError && (
 					<div className="mb-4">
 						<Notice
 							tone="danger"
@@ -206,14 +258,35 @@ export function DiagnoseDialog() {
 									type="button"
 									onClick={fetchPrompt}
 									disabled={loadingPrompt}
-									className="inline-flex items-center gap-1 rounded bg-[var(--bg-hover)] px-2 py-1 text-xs text-neutral-200 hover:bg-[var(--bg-active-fill)] disabled:opacity-40"
+									className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-[var(--bg-hover)] px-2 py-1 text-xs text-neutral-200 hover:bg-[var(--bg-active-fill)] disabled:opacity-40"
 								>
 									<RefreshCw className={`h-3 w-3 ${loadingPrompt ? "animate-spin" : ""}`} />
-									<span>{t("diagnose.retry")}</span>
+									<span>{t("diagnose.retryGeneratePrompt")}</span>
 								</button>
 							}
 						>
-							<span className="select-text break-words">{error}</span>
+							<span className="select-text break-words">{promptError}</span>
+						</Notice>
+					</div>
+				)}
+
+				{dispatchError && (
+					<div className="mb-4">
+						<Notice
+							tone="danger"
+							action={
+								<button
+									type="button"
+									onClick={() => void handleExecuteDiagnose()}
+									disabled={!canSubmit}
+									className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-[var(--bg-hover)] px-2 py-1 text-xs text-neutral-200 hover:bg-[var(--bg-active-fill)] disabled:opacity-40"
+								>
+									<RefreshCw className={`h-3 w-3 ${dispatching ? "animate-spin" : ""}`} />
+									<span>{t("diagnose.retrySend")}</span>
+								</button>
+							}
+						>
+							<span className="select-text break-words">{dispatchError}</span>
 						</Notice>
 					</div>
 				)}
@@ -312,66 +385,85 @@ export function DiagnoseDialog() {
 						{t("diagnose.whichAgentLabel")}
 					</div>
 
-					<div className="flex rounded-lg border border-[var(--border-divider)] bg-[var(--well-bg)] p-1 text-xs font-medium">
-						<button
-							type="button"
-							onClick={() => setTargetType("existing")}
-							className={`flex-1 rounded-md py-1.5 transition-colors ${
-								targetType === "existing"
-									? "bg-neutral-800 text-neutral-100"
-									: "text-neutral-400 hover:text-neutral-200"
-							}`}
-						>
-							{t("diagnose.tabExisting")}
-						</button>
-						<button
-							type="button"
-							onClick={() => setTargetType("new")}
-							className={`flex-1 rounded-md py-1.5 transition-colors ${
-								targetType === "new"
-									? "bg-neutral-800 text-neutral-100"
-									: "text-neutral-400 hover:text-neutral-200"
-							}`}
-						>
-							{t("diagnose.tabNew")}
-						</button>
-					</div>
+					{(candidateSessions.length > 0 || effectiveTargetType === "existing") && (
+						<div className="flex rounded-lg border border-[var(--border-divider)] bg-[var(--well-bg)] p-1 text-xs font-medium">
+							<button
+								type="button"
+								onClick={() => {
+									createdSessionRef.current = null;
+									setDispatchError(null);
+									setTargetType("new");
+								}}
+								className={`flex-1 rounded-md py-1.5 transition-colors ${
+									effectiveTargetType === "new"
+										? "bg-neutral-800 text-neutral-100"
+										: "text-neutral-400 hover:text-neutral-200"
+								}`}
+							>
+								{t("diagnose.tabNew")}
+							</button>
+							<button
+								type="button"
+								onClick={() => {
+									createdSessionRef.current = null;
+									setDispatchError(null);
+									setTargetType("existing");
+									if (!candidateSessions.some((s) => s.id === selectedExistingId)) {
+										setSelectedExistingId(candidateSessions[0]?.id ?? "");
+									}
+								}}
+								className={`flex-1 rounded-md py-1.5 transition-colors ${
+									effectiveTargetType === "existing"
+										? "bg-neutral-800 text-neutral-100"
+										: "text-neutral-400 hover:text-neutral-200"
+								}`}
+							>
+								{t("diagnose.tabExisting")}
+							</button>
+						</div>
+					)}
 
-					{targetType === "existing" ? (
-						candidateSessions.length === 0 ? (
-							<div className="rounded-lg border border-[var(--border-divider)] bg-[var(--well-bg)] p-3 text-xs text-neutral-500">
-								{t("diagnose.noAvailableSessions")}
-							</div>
-						) : (
-							<div>
-								<label className="mb-1 block text-xs text-neutral-400">
-									{t("diagnose.selectSessionLabel")}
-								</label>
-								<NativeSelect
-									value={selectedExistingId}
-									onChange={(e) => setSelectedExistingId(e.target.value)}
-								>
-									{candidateSessions.map((s) => {
-										const modelLabel = s.model ? ` [${s.model}]` : "";
-										const statusLabel =
-											s.status === "working"
-												? t("diagnose.statusWorking")
-												: s.status === "idle"
-													? t("diagnose.statusIdle")
-													: s.status === "error"
-														? t("diagnose.statusError")
-														: s.status === "suspended"
-															? t("diagnose.statusSuspended")
-															: s.status;
-										return (
-											<option key={s.id} value={s.id}>
-												{s.title || s.id}{modelLabel} · {statusLabel}
-											</option>
-										);
-									})}
-								</NativeSelect>
+					{effectiveTargetType === "existing" ? (
+						<div>
+							<label className="mb-1 block text-xs text-neutral-400">
+								{t("diagnose.selectSessionLabel")}
+							</label>
+							<NativeSelect
+								value={isSelectedExistingValid ? selectedExistingId : ""}
+								onChange={(e) => {
+									createdSessionRef.current = null;
+									setDispatchError(null);
+									setSelectedExistingId(e.target.value);
+								}}
+							>
+								{!isSelectedExistingValid && (
+									<option value="" disabled>
+										{t("diagnose.selectSessionPlaceholder")}
+									</option>
+								)}
+								{candidateSessions.map((s) => {
+									const modelLabel = s.model ? ` [${s.model}]` : "";
+									const statusLabel =
+										s.status === "idle"
+											? t("diagnose.statusIdle")
+											: s.status === "error"
+												? t("diagnose.statusError")
+												: s.status === "suspended"
+													? t("diagnose.statusSuspended")
+													: s.status;
+									return (
+										<option key={s.id} value={s.id}>
+											{s.title || s.id}{modelLabel} · {statusLabel}
+										</option>
+									);
+								})}
+							</NativeSelect>
+							{existingTargetError && (
+								<div className="mt-1.5 text-xs text-rose-400" role="alert">
+									{existingTargetError}
 								</div>
-						)
+							)}
+						</div>
 					) : (
 						<div className="space-y-2">
 							<div>
@@ -381,7 +473,11 @@ export function DiagnoseDialog() {
 								<input
 									type="text"
 									value={newSessionModel}
-									onChange={(e) => setNewSessionModel(e.target.value)}
+									onChange={(e) => {
+										createdSessionRef.current = null;
+										setDispatchError(null);
+										setNewSessionModel(e.target.value);
+									}}
 									placeholder={t("diagnose.modelPlaceholder")}
 									className="w-full rounded-lg hairline bg-[var(--well-bg)] px-3 py-2 text-xs text-neutral-100 placeholder-neutral-500 focus:ring-1 focus:ring-amber-500 focus:outline-none transition-all"
 								/>
@@ -406,12 +502,7 @@ export function DiagnoseDialog() {
 					</button>
 					<button
 						type="button"
-						disabled={
-							loadingPrompt ||
-							dispatching ||
-							!prompt ||
-							(targetType === "existing" && !selectedExistingId)
-						}
+						disabled={!canSubmit}
 						onClick={handleExecuteDiagnose}
 						className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-4 py-1.5 text-xs font-semibold text-neutral-950 hover:bg-amber-400 disabled:opacity-40 transition-colors"
 					>

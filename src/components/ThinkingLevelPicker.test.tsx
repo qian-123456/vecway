@@ -49,12 +49,23 @@ describe("ThinkingLevelPicker", () => {
 			expect(unconfiguredBtn.className).toContain("shrink-0");
 			unconfiguredRender.unmount();
 
+			const pendingRender = render(
+				<ThinkingLevelPicker levels={[]} reasoning={undefined} value="" open={false} onOpenChange={() => {}} onSelect={() => {}} variant={variant} />,
+			);
+			const pendingSpan = pendingRender.container.querySelector("span")!;
+			expect(pendingSpan.className).toContain("whitespace-nowrap");
+			expect(pendingSpan.className).toContain("shrink-0");
+			expect(pendingSpan.textContent).toBe("加载中");
+			expect(pendingSpan.textContent).not.toContain("不支持思考");
+			pendingRender.unmount();
+
 			const unsupportedRender = render(
 				<ThinkingLevelPicker levels={[]} reasoning={false} value="" open={false} onOpenChange={() => {}} onSelect={() => {}} variant={variant} />,
 			);
 			const unsupportedSpan = unsupportedRender.container.querySelector("span")!;
 			expect(unsupportedSpan.className).toContain("whitespace-nowrap");
 			expect(unsupportedSpan.className).toContain("shrink-0");
+			expect(unsupportedSpan.textContent).toBe("不支持思考");
 			unsupportedRender.unmount();
 		}
 	});
@@ -108,5 +119,23 @@ describe("ThinkingLevelPicker", () => {
 		expect(slider().getAttribute("aria-disabled")).toBe("true");
 		fireEvent.keyDown(slider(), { key: "ArrowLeft" });
 		expect(onSelect).not.toHaveBeenCalled();
+	});
+
+	it("keeps a neutral loading state while capabilities are loading and keeps all level names in English", () => {
+		const { rerender } = render(
+			<ThinkingLevelPicker levels={[]} loading value="" open={false} onOpenChange={() => {}} onSelect={() => {}} />,
+		);
+		expect(document.body.textContent).toContain("加载中");
+		expect(document.body.textContent).not.toContain("不支持思考");
+
+		rerender(
+			<ThinkingLevelPicker levels={[]} reasoning={false} value="" open={false} onOpenChange={() => {}} onSelect={() => {}} />,
+		);
+		expect(document.body.textContent).toContain("不支持思考");
+
+		const allLevels = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+		openPicker({ levels: allLevels, value: "minimal", onSelect: () => {} });
+		fireEvent.click(status());
+		expect(items().map((b) => b.querySelector(".font-medium")?.textContent)).toEqual(allLevels);
 	});
 });

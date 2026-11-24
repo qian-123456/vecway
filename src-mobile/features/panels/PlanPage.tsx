@@ -8,6 +8,7 @@ import { useSession } from "../../core/stores/sessions";
 import { isDraftId } from "../../core/types";
 import { AnchoredPopover, EmptyState, IconButton, MenuRow, PageHeader, PullToRefresh, toast } from "../../ui";
 import { Markdown } from "../../ui/Markdown";
+import { scrollBehavior } from "../../ui/motion";
 import { ChatCtx } from "../chat/ChatContext";
 import {
 	computeLineDiff,
@@ -140,7 +141,7 @@ export function PlanPanel({ sessionId, embedded = false, active = true }: { sess
 		);
 		const target = nodes[index];
 		if (target && typeof target.scrollIntoView === "function") {
-			target.scrollIntoView({ behavior: "smooth", block: "start" });
+			target.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
 		}
 	};
 

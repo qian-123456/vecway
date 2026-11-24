@@ -28,7 +28,6 @@ use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tauri::Emitter as _;
 
 use crate::contracts::{Schedule, Settings};
 use crate::settings;
@@ -831,7 +830,7 @@ impl ReplaceBackend for AppBackend<'_> {
         // The scheduler and the 定时任务 list both read the row fresh; wake them so the new
         // model is picked up by the next run and shown immediately.
         crate::schedules::scheduler::notify_scheduler();
-        let _ = self.state.app.emit("schedules:changed", ());
+        crate::state::emit_schedules_changed(self.state);
         Ok(())
     }
 

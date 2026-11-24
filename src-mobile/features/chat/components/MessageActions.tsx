@@ -40,13 +40,24 @@ export function MessageActionsSheet({
 		>
 			{t && (
 				<div className="pb-2">
-					<MenuRow
-						icon={<Copy {...ICON} />}
-						label="复制"
-						onClick={done(() => {
-							void copyText(t.text).then((ok) => toast(ok ? "已复制" : "复制失败", { kind: ok ? "success" : "error" }));
-						})}
-					/>
+					{t.text.trim() ? (
+						<MenuRow
+							icon={<Copy {...ICON} />}
+							label="复制文字"
+							hint={t.hasImages ? "仅复制文本内容；图片请点击缩略图预览或保存" : undefined}
+							onClick={done(() => {
+								void copyText(t.text).then((ok) => toast(ok ? "已复制文字" : "复制失败", { kind: ok ? "success" : "error" }));
+							})}
+						/>
+					) : t.hasImages ? (
+						<MenuRow
+							icon={<Copy {...ICON} />}
+							label="复制文字（无文本）"
+							hint="此消息仅含图片附件，请点击图片缩略图查看"
+							disabled
+							onClick={() => {}}
+						/>
+					) : null}
 					<MenuRow icon={<Quote {...ICON} />} label="引用回复" hint="保留草稿，插入引用" onClick={done(() => controller.stageAnnotation(t.text))} />
 					{t.role === "user" && (
 						<MenuRow

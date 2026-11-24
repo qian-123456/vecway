@@ -26,6 +26,8 @@ export interface HandbackRun {
 	phase: HandbackPhase;
 	/** Edited note while `ready`. */
 	draft: string;
+	/** Previous non-empty draft backed up before regeneration so users can restore it. */
+	previousDraft?: string;
 	/** Side-chat conversation before the instruction (for 「同时附上完整对话」). */
 	transcript: string;
 	/** Tail discussion item id covered by `draft`, so reopening reuses an up-to-date summary. */
@@ -196,7 +198,15 @@ export async function startHandback(childId: string): Promise<void> {
 		toast.info(tNow("sidechat.sideChatBusyWait"));
 		return;
 	}
-	store.set(childId, { phase: "running", draft: "", transcript: "", error: null });
+	const existing = store.runs[childId];
+	const previousDraft = existing?.draft.trim() ? existing.draft : existing?.previousDraft;
+	store.set(childId, {
+		phase: "running",
+		draft: "",
+		previousDraft,
+		transcript: existing?.transcript ?? "",
+		error: null,
+	});
 	const watcherEntry = { cancel: () => {}, cancelled: false };
 	activeWatchers.set(childId, watcherEntry);
 	try {

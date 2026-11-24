@@ -316,7 +316,7 @@ pub(crate) fn apply_relocation_side_effects(state: &AppState, outcomes: &[store:
         .collect();
     let _ = state.app.emit("workspaces:relocated", &payloads);
     let _ = state.app.emit("backlog:changed", ());
-    let _ = state.app.emit("schedules:changed", ());
+    crate::state::emit_schedules_changed(state);
 }
 
 /// Remap a raw transcript header cwd through workspace path aliases when

@@ -11,6 +11,10 @@ import { NewSessionSheet } from "../sessions";
 import type { DirEntry } from "../sessions/tree";
 import "./chat.css";
 import { ChatCtx, type ChatUi, type MessageTarget } from "./ChatContext";
+import {
+	createAutomationDraftAutoOpenTracker,
+	type AutomationSessionState,
+} from "./automation/automationStatus";
 import { ChatController, isDeadStatus } from "./chatStore";
 import { Composer } from "./components/Composer";
 import { WorkspacePickerSheet } from "./components/WorkspacePickerSheet";
@@ -20,6 +24,7 @@ import { ChatHeader } from "./components/ChatHeader";
 import { PathSheet } from "./components/PathSheet";
 import { abbreviateHomePath } from "../sessions/NewSessionSheet";
 import { sessionModelSource } from "./components/useModelFacts";
+import { resolveThinkingSupported, type ModelFacts, type ModelOpt } from "./lib/models";
 import { takeFirstSend } from "./lib/drafts";
 import { MessageActionsSheet } from "./components/MessageActions";
 import { MessageList } from "./components/MessageList";
@@ -169,8 +174,29 @@ export function ChatPage({ route }: PageProps) {
 	const [statAnchor, setStatAnchor] = useState<{ el: HTMLElement | null; rect: AnchorBox | null } | null>(null);
 	const lastTriggerRef = useRef<{ el: HTMLElement | null; rect: AnchorBox | null; at: number } | null>(null);
 	const modelSource = useMemo(() => sessionModelSource(id), [id]);
+	const [modelCaps, setModelCaps] = useState<{ models: ModelOpt[]; current: ModelFacts["current"]; liveThinking: string[] } | null>(null);
+	const [cstateModel, setCstateModel] = useState<string | null | undefined>(undefined);
+	const [cstateThinking, setCstateThinking] = useState<string | null | undefined>(undefined);
+	const [automationState, setAutomationState] = useState<AutomationSessionState | null>(null);
+	const [automationHydrated, setAutomationHydrated] = useState(false);
+	const [automationSource, setAutomationSource] = useState<"snapshot" | "live">("snapshot");
+	const autoOpenTrackerRef = useRef(createAutomationDraftAutoOpenTracker());
 	const pendingMain = useRightDrawer((s) => s.pendingMain);
 	const drawerOpen = useRightDrawer((s) => s.open);
+	useEffect(() => {
+		setModelCaps(null);
+		let alive = true;
+		void modelSource
+			.load()
+			.then((res) => {
+				if (!alive) return;
+				setModelCaps({ models: res.models ?? [], current: res.current ?? null, liveThinking: res.liveThinking ?? [] });
+			})
+			.catch(() => {});
+		return () => {
+			alive = false;
+		};
+	}, [modelSource]);
 	useEffect(() => {
 		if (!controller || controller.id !== id) return;
 		const first = takeFirstSend(id);
@@ -189,13 +215,48 @@ export function ChatPage({ route }: PageProps) {
 		c.start();
 		const stopPresence = startViewingPresence(id);
 		setController(c);
+		setCstateModel(c.state.cstate?.model);
+		setCstateThinking(c.state.cstate?.thinkingLevel);
+		setAutomationState(c.state.automationState);
+		setAutomationHydrated(c.state.automationHydrated);
+		setAutomationSource(c.state.automationSource);
+		autoOpenTrackerRef.current.reset();
+		const unsubState = c.store.subscribe((next, prev) => {
+			if (next.cstate !== prev.cstate) {
+				setCstateModel(next.cstate?.model);
+				setCstateThinking(next.cstate?.thinkingLevel);
+			}
+			if (next.automationState !== prev.automationState) {
+				setAutomationState(next.automationState);
+			}
+			if (next.automationHydrated !== prev.automationHydrated) {
+				setAutomationHydrated(next.automationHydrated);
+			}
+			if (next.automationSource !== prev.automationSource) {
+				setAutomationSource(next.automationSource);
+			}
+		});
 		return () => {
+			unsubState();
 			stopPresence();
 			c.dispose();
 			setController(null);
 		};
 	}, [id]);
 
+	// Auto-open the right workspace drawer on the "automation" tab ONLY when a brand-new
+	// pending draftId arrives AFTER initial composer-state hydration (never on reconnect or
+	// repeated streaming frames for an already-seen draftId).
+	useEffect(() => {
+		const nextDraftId = autoOpenTrackerRef.current.next(
+			automationHydrated,
+			automationState,
+			automationSource,
+		);
+		if (nextDraftId) {
+			useRightDrawer.getState().openAutomationDraft(id, nextDraftId);
+		}
+	}, [id, automationHydrated, automationState, automationSource]);
 	useEffect(() => {
 		if (!controller || controller.id !== id || !pendingMain || pendingMain.sessionId !== id) return;
 		const payload = useRightDrawer.getState().consumeMainAnnotation(id);
@@ -237,6 +298,9 @@ export function ChatPage({ route }: PageProps) {
 			}
 			const { id: nextId } = await useSessions.getState().createSession({ cwd, ...(mode ? { mode } : {}) });
 			nav.push(paths.chat(nextId));
+			toast("已在当前工作区新建会话", {
+				action: { label: "更换目录/模型", onClick: () => setNewOpen(true) },
+			});
 		} catch (e) {
 			toast(`新建失败：${errorMessage(e)}`, { kind: "error" });
 		} finally {
@@ -259,6 +323,11 @@ export function ChatPage({ route }: PageProps) {
 			lastTriggerRef.current = { el: node, rect: null, at: Date.now() };
 		}
 	};
+
+	const thinkingSupported = useMemo(
+		() => resolveThinkingSupported(modelCaps, cstateModel, cstateThinking),
+		[modelCaps, cstateModel, cstateThinking],
+	);
 
 	const ui = useMemo<ChatUi | null>(
 		() =>
@@ -324,6 +393,7 @@ export function ChatPage({ route }: PageProps) {
 							setThinkingAnchor(el);
 							setThinkingOpen(true);
 						}}
+						thinkingSupported={thinkingSupported}
 					/>
 				</div>
 			</div>
@@ -340,17 +410,24 @@ export function ChatPage({ route }: PageProps) {
 				anchorEl={statAnchor?.el}
 				anchorRect={statAnchor?.rect}
 			/>
-			<RightWorkspaceDrawer sessionId={id} />
+			<RightWorkspaceDrawer
+				sessionId={id}
+				automationState={automationState}
+				onResolveAutomation={(draftId, resolution) => controller.resolveAutomationDraft(draftId, resolution)}
+			/>
 			<SessionPlanSheet sessionId={id} cwd={session?.cwd} />
-			<MenuSheet open={menuSheet} onClose={() => setMenuSheet(false)} onNewSession={() => setNewOpen(true)} />
-			<NewSessionSheet open={newOpen} onClose={() => setNewOpen(false)} defaultCwd={session?.cwd} />
+			<MenuSheet open={menuSheet} onClose={() => setMenuSheet(false)} onNewSession={() => { if (session?.cwd) void createFreshChat(); else setNewOpen(true); }} />
+			<NewSessionSheet open={newOpen} onClose={() => setNewOpen(false)} defaultCwd={session?.cwd} title={session?.cwd ? "更换目录/模型" : undefined} />
 			<WorkspacePickerSheet open={workspaceOpen} onClose={() => setWorkspaceOpen(false)} sessionId={id} currentCwd={session?.cwd} />
 			<ModelThinkingSheet
 				open={pickerOpen}
 				onClose={() => setPickerOpen(false)}
 				source={modelSource}
 				currentLevel={controller.state.cstate?.thinkingLevel ?? null}
-				onFacts={(f) => controller.patchState({ ...(f.model ? { model: f.model } : {}), thinkingLevel: f.thinkingLevel })}
+				onFacts={(f) => {
+					controller.patchState({ ...(f.model ? { model: f.model } : {}), thinkingLevel: f.thinkingLevel });
+					setModelCaps((prev) => (prev ? { ...prev, current: f.current ?? prev.current, liveThinking: f.liveThinking } : prev));
+				}}
 			/>
 			<ThinkingSourcePopover
 				open={thinkingOpen}
@@ -358,7 +435,10 @@ export function ChatPage({ route }: PageProps) {
 				anchorEl={thinkingAnchor}
 				source={modelSource}
 				currentLevel={controller.state.cstate?.thinkingLevel ?? null}
-				onFacts={(f) => controller.patchState({ thinkingLevel: f.thinkingLevel })}
+				onFacts={(f) => {
+					controller.patchState({ thinkingLevel: f.thinkingLevel });
+					setModelCaps((prev) => (prev ? { ...prev, current: f.current ?? prev.current, liveThinking: f.liveThinking } : prev));
+				}}
 			/>
 			<PathSheet
 				open={pathOpen}

@@ -70,8 +70,13 @@ function EntryRow({
 	const [revealed, setRevealed] = useState(false);
 	const risky = entry.risk === "risky";
 	const remove = async () => {
-		if (!(await confirmUnprotect(entry, "delete"))) return;
-		const ok = await confirmDialog(t("settingsSectionsPrivacy.privacy.deletePermanentConfirm"), {
+		const message =
+			entry.sessionCount > 0
+				? t("settingsSectionsPrivacy.privacy.deletePermanentWithSessionsConfirm", {
+						count: entry.sessionCount,
+					})
+				: t("settingsSectionsPrivacy.privacy.deletePermanentConfirm");
+		const ok = await confirmDialog(message, {
 			title: t("settingsSectionsPrivacy.privacy.deletePermanentTitle"),
 			danger: true,
 			okLabel: t("settingsSectionsPrivacy.privacy.deletePermanentOk"),

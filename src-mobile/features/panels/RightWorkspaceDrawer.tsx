@@ -12,15 +12,18 @@ import {
 import { createPortal } from "react-dom";
 import { errorMessage } from "../../core/api";
 import { AnchoredPopover, MenuRow, TitleSwitcher, toast } from "../../ui";
-import { hasBlockingOverlay, useOverlay } from "../../ui/overlay";
+import { readTranslateXY, rubberBand, VelocityTracker } from "../../ui/gesturePhysics";
+import { prefersReducedMotion } from "../../ui/motion";
+import { hasBlockingOverlay, useOverlay, usePresence } from "../../ui/overlay";
 import { FilesPanel } from "./FilesPage";
 import { GitPanel } from "./GitPage";
 import { ErrorState, Loading } from "./PanelState";
 import { ServicesPanel } from "./ServicesPage";
 import { SidechatPanel } from "./SidechatPage";
 import { TerminalPanel } from "./TerminalPage";
+import { AutomationDraftsPanel } from "../chat/automation/AutomationDraftsPanel";
+import type { AutomationSessionState } from "../chat/automation/automationStatus";
 import { tabHeaderKey, useRightDrawer, type WorkspaceTab } from "./rightDrawerStore";
-
 const BASE_TABS: ReadonlyArray<{ id: WorkspaceTab; label: string }> = [
 	{ id: "sidechat", label: "辅助对话" },
 	{ id: "git", label: "Git" },
@@ -140,9 +143,13 @@ export function useRightEdgeSwipe(onOpen: () => void, enabled = true): void {
 export function RightWorkspaceDrawer({
 	sessionId,
 	resolveSessionId,
+	automationState,
+	onResolveAutomation,
 }: {
 	sessionId?: string;
 	resolveSessionId?: () => Promise<string>;
+	automationState?: AutomationSessionState | null;
+	onResolveAutomation?: (draftId: string, resolution: "saved" | "dismissed") => Promise<void>;
 }): ReactElement | null {
 	const open = useRightDrawer((s) => s.open);
 	const drawerSessionId = useRightDrawer((s) => s.sessionId);
@@ -153,10 +160,13 @@ export function RightWorkspaceDrawer({
 
 	const [resolving, setResolving] = useState(false);
 	const [resolveError, setResolveError] = useState<string | null>(null);
+	const [shown, setShown] = useState(false);
 	const resolveAttempted = useRef(false);
+	const outerRef = useRef<HTMLDivElement>(null);
+	const scrimRef = useRef<HTMLDivElement>(null);
 	const panelRef = useRef<HTMLDivElement>(null);
-	const swipeRef = useRef<{ x: number; y: number; t: number; dx: number; axis: "x" | "y" | null } | null>(null);
-
+	const trackerRef = useRef(new VelocityTracker());
+	const swipeRef = useRef<{ x: number; y: number; baseX: number; dx: number; axis: "x" | "y" | null } | null>(null);
 	// Effective session id prefers explicit prop, then store sessionId (ignoring empty pending sentinel).
 	const effectiveId = sessionId || (drawerSessionId && drawerSessionId !== "__pending__" ? drawerSessionId : "") || "";
 
@@ -205,33 +215,78 @@ export function RightWorkspaceDrawer({
 
 	const isTopModal = useOverlay(open, closeDrawer);
 
+	const reducedMotion = prefersReducedMotion();
+	const { mounted: reducedHold } = usePresence(open && reducedMotion, 150);
+	const swipedCloseRef = useRef(false);
+	const keepOnscreen = !open && reducedMotion && reducedHold && !swipedCloseRef.current;
+	const activeOpen = open && shown;
+	const restTransform = activeOpen || keepOnscreen ? "translate3d(0,0,0)" : "translate3d(100%,0,0)";
+
+	useEffect(() => {
+		if (!open) {
+			setShown(false);
+			return;
+		}
+		swipedCloseRef.current = false;
+		if (reducedMotion) {
+			setShown(true);
+			return;
+		}
+		const raf = requestAnimationFrame(() => setShown(true));
+		return () => cancelAnimationFrame(raf);
+	}, [open, reducedMotion]);
+
 	// Sync `inert` attribute when drawer is collapsed so hidden kept-alive panels are non-interactive.
-	// Sync `inert` attribute and clear any swipe-dismiss inline transform when drawer opens/closes.
 	useEffect(() => {
 		const el = panelRef.current;
+		const outer = outerRef.current;
+		if (outer) {
+			if (open) outer.removeAttribute("inert");
+			else outer.setAttribute("inert", "");
+		}
 		if (!el) return;
 		if (open) {
+			swipedCloseRef.current = false;
+			delete el.dataset.dragging;
 			el.style.transition = "";
-			el.style.transform = "";
+			el.style.transform = "translate3d(0,0,0)";
+			if (scrimRef.current) {
+				scrimRef.current.style.transition = "";
+				scrimRef.current.style.opacity = "";
+			}
 			el.removeAttribute("inert");
 			if (document.activeElement instanceof HTMLElement && !el.contains(document.activeElement)) {
 				document.activeElement.blur();
 			}
 		} else {
+			delete el.dataset.dragging;
+			el.style.transition = "";
+			el.style.transform = keepOnscreen ? "translate3d(0,0,0)" : "translate3d(100%,0,0)";
+			if (scrimRef.current) {
+				scrimRef.current.style.transition = "";
+				scrimRef.current.style.opacity = "";
+			}
 			el.setAttribute("inert", "");
 		}
-	}, [open]);
-
-	const activeTab: WorkspaceTab = (effectiveId ? tabBySession[effectiveId] : undefined) ?? (drawerSessionId ? tabBySession[drawerSessionId] : undefined) ?? "git";
+	}, [open, keepOnscreen]);
+	const hasAutomationTab = Boolean(
+		(automationState?.drafts ?? []).some((d) => d.status === "pending" || d.status === "saved"),
+	);
+	const tabs = useMemo(
+		() => (hasAutomationTab ? [...BASE_TABS, { id: "automation" as const, label: "自动化" }] : BASE_TABS),
+		[hasAutomationTab],
+	);
+	const rawActiveTab: WorkspaceTab =
+		(effectiveId ? tabBySession[effectiveId] : undefined) ??
+		(drawerSessionId ? tabBySession[drawerSessionId] : undefined) ??
+		"git";
+	const activeTab: WorkspaceTab = rawActiveTab === "automation" && !hasAutomationTab ? "git" : rawActiveTab;
 	const visitedTabs = useMemo(() => {
 		if (!effectiveId) return [] as WorkspaceTab[];
-		const list = visitedBySession[effectiveId] ?? [];
+		const list = (visitedBySession[effectiveId] ?? []).filter((t) => t !== "automation" || hasAutomationTab);
 		if (open && !list.includes(activeTab)) return [...list, activeTab];
 		return list;
-	}, [effectiveId, visitedBySession, open, activeTab]);
-
-	const tabs = BASE_TABS;
-
+	}, [effectiveId, visitedBySession, open, activeTab, hasAutomationTab]);
 	const tabHeader = useRightDrawer((s) => (effectiveId ? s.tabHeaders?.[tabHeaderKey(effectiveId, activeTab)] : undefined));
 	const moreActions = tabHeader?.moreActions ?? [];
 	const titleSwitcher = tabHeader?.titleSwitcher;
@@ -314,10 +369,16 @@ export function RightWorkspaceDrawer({
 
 	const resetSwipe = () => {
 		swipeRef.current = null;
+		trackerRef.current.reset();
+		if (scrimRef.current) {
+			scrimRef.current.style.transition = "";
+			scrimRef.current.style.opacity = "";
+		}
 		const el = panelRef.current;
 		if (el) {
+			delete el.dataset.dragging;
 			el.style.transition = "";
-			el.style.transform = "";
+			el.style.transform = restTransform;
 		}
 	};
 
@@ -339,7 +400,10 @@ export function RightWorkspaceDrawer({
 		}
 		const p = e.touches[0];
 		if (!p) return;
-		swipeRef.current = { x: p.clientX, y: p.clientY, t: e.timeStamp, dx: 0, axis: null };
+		const baseX = Math.max(0, readTranslateXY(el).x);
+		trackerRef.current.reset();
+		trackerRef.current.add(p.clientX, p.clientY, e.timeStamp);
+		swipeRef.current = { x: p.clientX, y: p.clientY, baseX, dx: baseX, axis: null };
 	};
 
 	const onTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
@@ -357,24 +421,41 @@ export function RightWorkspaceDrawer({
 		if (s.axis === null) {
 			if (Math.abs(dx) <= 10 && Math.abs(dy) <= 10) return;
 			s.axis = Math.abs(dx) > Math.abs(dy) * 1.5 && dx > 10 ? "x" : "y";
-			if (s.axis === "x") el.style.transition = "none";
+			if (s.axis === "x") {
+				el.dataset.dragging = "true";
+				el.style.transition = "none";
+				if (scrimRef.current) scrimRef.current.style.transition = "none";
+			}
 		}
 		if (s.axis !== "x") return;
-		s.dx = Math.max(0, dx);
+		const rawDx = s.baseX + dx;
+		const width = Math.max(200, el.clientWidth || 320);
+		s.dx = rawDx < 0 ? rubberBand(rawDx, width, 0.25) : rawDx;
+		trackerRef.current.add(p.clientX, p.clientY, e.timeStamp);
 		el.style.transform = `translate3d(${s.dx}px,0,0)`;
+		if (scrimRef.current) {
+			scrimRef.current.style.opacity = String(Math.max(0, Math.min(1, 1 - Math.max(0, s.dx) / width)));
+		}
 	};
 
 	const onTouchEnd = (e: ReactTouchEvent<HTMLDivElement>) => {
 		const s = swipeRef.current;
 		swipeRef.current = null;
+		const { vx } = trackerRef.current.velocity(e.timeStamp);
+		trackerRef.current.reset();
 		if (!s || s.axis !== "x") {
 			resetSwipe();
 			return;
 		}
-		const v = s.dx / Math.max(1, e.timeStamp - s.t);
 		const el = panelRef.current;
-		if (s.dx > CLOSE_SWIPE_PX || v > CLOSE_SWIPE_V) {
+		if (el) delete el.dataset.dragging;
+		if (scrimRef.current) {
+			scrimRef.current.style.transition = "";
+			scrimRef.current.style.opacity = "";
+		}
+		if (s.dx > CLOSE_SWIPE_PX || vx > CLOSE_SWIPE_V) {
 			// Settle directly from the dragged offset to off-screen without snapping back to 0 first.
+			swipedCloseRef.current = true;
 			if (el) {
 				el.style.transition = "";
 				el.style.transform = "translate3d(100%,0,0)";
@@ -398,24 +479,32 @@ export function RightWorkspaceDrawer({
 				return <TerminalPanel sessionId={effectiveId} embedded active={isTabActive} visible={isTabActive} />;
 			case "services":
 				return <ServicesPanel sessionId={effectiveId} embedded active={isTabActive} />;
+			case "automation":
+				return (
+					<AutomationDraftsPanel
+						sessionId={effectiveId}
+						automationState={automationState ?? null}
+						onResolve={onResolveAutomation ?? (async () => {})}
+					/>
+				);
 		}
 	};
-
 	return createPortal(
 		<div
+			ref={outerRef}
 			aria-hidden={!open}
 			className={`fixed inset-x-0 z-(--z-sheet) ${open ? "" : "pointer-events-none"}`}
 			style={{
 				top: "var(--m-vv-top, 0px)",
 				height: "var(--m-vh, 100dvh)",
-				transition: "height var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1)",
 			}}
 		>
 			<div
+				ref={scrimRef}
 				aria-hidden="true"
 				onClick={closeDrawer}
-				className={`absolute inset-0 bg-m-scrim transition-opacity duration-300 ${
-					open ? "opacity-100" : "pointer-events-none opacity-0"
+				className={`absolute inset-0 bg-m-scrim transition-opacity ease-m motion-reduce:duration-150 ${
+					activeOpen ? "opacity-100 duration-(--m-dur-sheet)" : "pointer-events-none opacity-0 duration-(--m-dur-sheet-exit)"
 				}`}
 			/>
 			<div
@@ -423,20 +512,17 @@ export function RightWorkspaceDrawer({
 				role="dialog"
 				aria-modal={open && isTopModal ? "true" : undefined}
 				aria-label="工作区抽屉"
+				data-visible={activeOpen ? "true" : "false"}
 				tabIndex={-1}
 				onTouchStart={onTouchStart}
 				onTouchMove={onTouchMove}
 				onTouchEnd={onTouchEnd}
 				onTouchCancel={resetSwipe}
-				onTransitionEnd={(e) => {
-					if (e.target === panelRef.current && !open && panelRef.current) {
-						panelRef.current.style.transform = "";
-					}
-				}}
-				className={`absolute inset-y-0 right-0 flex w-full sm:w-[92vw] max-w-[460px] touch-pan-y flex-col border-l border-m-border bg-m-bg text-m-text shadow-m-pop outline-none transition-transform duration-300 ease-m-sheet ${
-					open ? "translate-x-0" : "translate-x-full"
+				className={`m-drawer-surface absolute inset-y-0 right-0 flex w-full sm:w-[92vw] max-w-[460px] touch-pan-y flex-col border-l border-m-border bg-m-bg text-m-text shadow-m-pop outline-none transition-transform ease-m-sheet ${
+					activeOpen ? "duration-(--m-dur-sheet)" : "duration-(--m-dur-sheet-exit)"
 				}`}
 				style={{
+					transform: restTransform,
 					paddingTop: "var(--m-safe-top)",
 					paddingLeft: "max(0px, calc(var(--m-safe-left, 0px) - (100vw - 100%)))",
 					paddingRight: "var(--m-safe-right, 0px)",
@@ -597,13 +683,13 @@ export function RightWorkspaceDrawer({
 				) : (
 					<div key={effectiveId} className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
 						{visitedTabs.map((tab) => {
-							const active = open && activeTab === tab;
+							const selected = activeTab === tab;
 							return (
 								<div
 									key={tab}
 									role="tabpanel"
-									aria-hidden={!active}
-									className={active ? "flex h-full min-h-0 flex-1 flex-col" : "hidden"}
+									aria-hidden={!selected}
+									className={selected ? "flex h-full min-h-0 flex-1 flex-col" : "hidden"}
 								>
 									{renderPanel(tab)}
 								</div>

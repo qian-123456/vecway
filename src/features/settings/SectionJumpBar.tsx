@@ -7,6 +7,7 @@
  */
 import clsx from "clsx";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { scrollBehavior } from "../../lib/motion";
 
 /** Attribute that marks a jump target; its value is the chip label. */
 export const JUMP_ATTR = "data-jump";
@@ -39,7 +40,7 @@ export function SectionJumpBar({ min = 4 }: { min?: number }) {
 
 	const jump = useCallback((index: number) => {
 		const root = ref.current?.parentElement;
-		root?.querySelectorAll<HTMLElement>(SELECTOR)[index]?.scrollIntoView({ behavior: "smooth", block: "start" });
+		root?.querySelectorAll<HTMLElement>(SELECTOR)[index]?.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
 	}, []);
 
 	const visible = labels.length >= min;

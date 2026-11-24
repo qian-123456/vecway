@@ -164,11 +164,11 @@ export function ImagePreviewModal({
 
 			{/* Main Image Container */}
 			<div
-				className="relative flex max-h-[85vh] max-w-[85vw] items-center justify-center overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--bg-panel)] p-2 shadow-apple-modal"
+				className="apple-modal-panel relative flex min-h-[240px] min-w-[320px] max-h-[85vh] max-w-[85vw] items-center justify-center overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--bg-panel)] p-2 shadow-apple-modal"
 				onClick={(e) => e.stopPropagation()}
 			>
 				{failedPath === current.path ? (
-					<div className="flex min-h-32 min-w-64 max-w-full flex-col items-center justify-center gap-1 px-6 py-8 text-center text-[13px] text-[var(--text-60)]">
+					<div className="flex min-h-[224px] min-w-[304px] max-w-full flex-col items-center justify-center gap-1 px-6 py-8 text-center text-[13px] text-[var(--text-60)]">
 						<span>{t("components.imageLoadFailed")}</span>
 						<span className="select-text break-all text-[12px] text-[var(--text-40)]">
 							{current.path}
@@ -180,7 +180,7 @@ export function ImagePreviewModal({
 						src={convertFileSrc(current.path)}
 						alt={t("components.imageIndex", { index: index + 1 })}
 						onError={() => setFailedPath(current.path)}
-						className="apple-modal-panel max-h-[78vh] max-w-full rounded-xl object-contain"
+						className="apple-lightbox-img max-h-[78vh] max-w-full rounded-xl object-contain"
 					/>
 				)}
 			</div>

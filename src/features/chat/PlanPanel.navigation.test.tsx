@@ -104,6 +104,31 @@ describe("PlanPanel section navigation", () => {
 		expect(scrollTo).toHaveBeenCalledWith({ top: 430, behavior: "smooth" });
 	});
 
+	it("uses instant auto scroll when prefers-reduced-motion is active", () => {
+		const matchMediaSpy = vi.spyOn(window, "matchMedia").mockImplementation(
+			(query: string) =>
+				({
+					matches: query === "(prefers-reduced-motion: reduce)",
+					media: query,
+					onchange: null,
+					addListener: vi.fn(),
+					removeListener: vi.fn(),
+					addEventListener: vi.fn(),
+					removeEventListener: vi.fn(),
+					dispatchEvent: vi.fn(),
+				}) as unknown as MediaQueryList,
+		);
+		try {
+			show();
+			render(<PlanPanel />);
+			const { scrollTo } = geometry();
+			fireEvent.click(navigation().getByRole("button", { name: (name) => name.includes(APPROACH) }));
+			expect(scrollTo).toHaveBeenCalledWith({ top: 430, behavior: "auto" });
+		} finally {
+			matchMediaSpy.mockRestore();
+		}
+	});
+
 	it("keeps the full current heading and accessible section selection in sync with scrolling", () => {
 		show();
 		render(<PlanPanel />);

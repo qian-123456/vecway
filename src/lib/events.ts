@@ -134,3 +134,6 @@ export const onWorkspacesRelocated = (
 	cb: (items: WorkspaceRelocation[]) => void,
 ): Promise<UnlistenFn> =>
 	listen<WorkspaceRelocation[]>("workspaces:relocated", (e) => cb(e.payload));
+
+export const onSettingsChanged = (cb: () => void): Promise<UnlistenFn> =>
+	listen<null>("settings:changed", () => cb());

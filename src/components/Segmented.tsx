@@ -86,7 +86,7 @@ export function Segmented<T extends string>({
 						"apple-seg-thumb pointer-events-none absolute top-0.5 bottom-0.5 left-0 bg-[var(--seg-thumb-bg)] shadow-[var(--seg-thumb-shadow)]",
 						pill ? "rounded-full" : "rounded-md",
 					)}
-					style={{ width: thumb.width, transform: `translateX(${thumb.left}px)` }}
+					style={{ width: thumb.width, transform: `translate3d(${thumb.left}px, 0, 0)` }}
 				/>
 			)}
 			{options.map((o) => {
@@ -105,7 +105,7 @@ export function Segmented<T extends string>({
 						title={o.title}
 						onClick={() => onChange(o.value)}
 						className={clsx(
-							"relative z-10 whitespace-nowrap px-2.5 py-1 transition-[color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50",
+							"press-scale relative z-10 whitespace-nowrap px-2.5 py-1 transition-[background-color,color,opacity] duration-150 ease-[var(--ease-out)] disabled:cursor-not-allowed disabled:opacity-50",
 							pill ? "rounded-full" : "rounded-md",
 							size === "sm" ? "text-[11px]" : "text-xs font-medium",
 							active

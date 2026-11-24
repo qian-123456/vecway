@@ -31,16 +31,16 @@ export const THINK_DESC: Record<string, string> = {
 	max: "无限制深度推理，耗费最多预算",
 };
 
-/** Short Chinese name of a thinking level for the top bar and the level picker. */
+/** Canonical OMP English thinking level name (`auto`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). */
 export const THINK_LABEL: Record<string, string> = {
-	auto: "自动",
-	off: "关闭",
-	minimal: "极简",
-	low: "低",
-	medium: "中",
-	high: "高",
-	xhigh: "超高",
-	max: "最高",
+	auto: "auto",
+	off: "off",
+	minimal: "minimal",
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "xhigh",
+	max: "max",
 };
 
 export function thinkLabel(level: string | null | undefined): string {
@@ -155,6 +155,26 @@ export function resolveThinkingLevels(
 	if (!levels.includes("off")) levels.push("off");
 	if (cur && !levels.includes(cur)) levels.push(cur);
 	return sortThinkingLevels(levels);
+}
+
+/**
+ * Determine whether the active model supports thinking without prematurely reporting unsupported
+ * while capabilities/catalog are still loading (`null` = loading/unknown, `false` = unsupported).
+ */
+export function resolveThinkingSupported(
+	caps: { models: readonly ModelOpt[]; current?: ModelFacts["current"]; liveThinking?: readonly string[] } | null | undefined,
+	modelRef?: string | null,
+	thinkingLevel?: string | null,
+): boolean | null {
+	if (!caps || caps.models.length === 0) return null;
+	const parsed = parseModelRef(modelRef);
+	const current = parsed ? { provider: parsed.provider, id: parsed.id } : (caps.current ?? null);
+	if (!current?.id) return null;
+	const opt = currentModelOpt([...caps.models], current);
+	if (!opt) return null;
+	if (opt.reasoning === true) return true;
+	const levels = resolveThinkingLevels(opt, caps.liveThinking ? [...caps.liveThinking] : null, thinkingLevel ?? parsed?.thinking ?? null);
+	return levels.length > 0;
 }
 
 /** Display name: the catalog name when it adds information, else the id. */

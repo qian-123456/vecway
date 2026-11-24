@@ -10,7 +10,26 @@ import { Spinner } from "../ui/Spinner";
 import { toast } from "../ui/Toast";
 
 /** Sleek in-flow status strip above route content; collapses to 0px when connected so it never overlaps text. */
-function Strip({ role, tone, icon, text, action, onAction, actionRef }: { role: "alert" | "status"; tone: "warn" | "danger"; icon: ReactNode; text: string; action: string; onAction: () => void; actionRef?: Ref<HTMLButtonElement> }) {
+function Strip({
+	role,
+	tone,
+	icon,
+	text,
+	detail,
+	action,
+	onAction,
+	actionRef,
+}: {
+	role: "alert" | "status";
+	tone: "warn" | "danger";
+	icon: ReactNode;
+	text: string;
+	detail?: string | null;
+	action: string;
+	onAction: () => void;
+	actionRef?: Ref<HTMLButtonElement>;
+}) {
+	const [detailOpen, setDetailOpen] = useState(false);
 	return (
 		<div
 			className={`m-top-banner pointer-events-none shrink-0 border-b ${
@@ -24,14 +43,33 @@ function Strip({ role, tone, icon, text, action, onAction, actionRef }: { role: 
 				paddingRight: "max(12px, var(--m-safe-right))",
 			}}
 		>
-			<div role={role} className="mx-auto flex min-h-11 max-w-2xl items-center justify-between gap-2 py-0.5 pl-1">
-				<div className="flex min-w-0 items-center gap-2 text-m-sm font-medium">
-					<span className="shrink-0">{icon}</span>
-					<span className="min-w-0 truncate">{text}</span>
+			<div role={role} className="mx-auto max-w-2xl py-0.5 pl-1">
+				<div className="flex min-h-11 items-center justify-between gap-2">
+					<div className="flex min-w-0 items-center gap-2 text-m-sm font-medium">
+						<span className="shrink-0">{icon}</span>
+						<span className="min-w-0">{text}</span>
+					</div>
+					<div className="flex shrink-0 items-center gap-1">
+						{detail && (
+							<button
+								type="button"
+								aria-expanded={detailOpen}
+								onClick={() => setDetailOpen((v) => !v)}
+								className="pointer-events-auto min-h-11 shrink-0 rounded-m-pill px-2.5 text-m-xs font-medium whitespace-nowrap opacity-85 active:bg-m-surface-hover"
+							>
+								{detailOpen ? "收起详情" : "详情"}
+							</button>
+						)}
+						<button ref={actionRef} type="button" onClick={onAction} className="pointer-events-auto min-h-11 min-w-11 shrink-0 rounded-m-pill px-3 text-m-sm font-semibold whitespace-nowrap active:bg-m-surface-hover">
+							{action}
+						</button>
+					</div>
 				</div>
-				<button ref={actionRef} type="button" onClick={onAction} className="pointer-events-auto min-h-11 min-w-11 shrink-0 rounded-m-pill px-3 text-m-sm font-semibold whitespace-nowrap active:bg-m-surface-hover">
-					{action}
-				</button>
+				{detail && detailOpen && (
+					<div className="m-selectable pointer-events-auto pb-2.5 pl-6 text-m-xs whitespace-pre-wrap break-words opacity-90">
+						{detail}
+					</div>
+				)}
 			</div>
 		</div>
 	);
@@ -98,7 +136,7 @@ export function ConnectionBanner() {
 				>
 					<ol className="m-selectable list-decimal space-y-2.5 px-4 py-3 pl-9 text-m-sm text-m-text-2">
 						<li>在电脑上打开 Vecway，进入「设置 → 连接与设备」。</li>
-						<li>点击「生成配对二维码」。</li>
+						<li>点击「生成二维码」。</li>
 						<li>用手机相机扫描二维码，或直接打开配对链接。</li>
 						<li>配对成功后这里会自动恢复。</li>
 					</ol>
@@ -115,7 +153,8 @@ export function ConnectionBanner() {
 			role="status"
 			tone="warn"
 			icon={connecting ? <Spinner size={14} /> : <CloudOff size={16} />}
-			text={connecting ? "正在重新连接" : error || "连接已断开"}
+			text={connecting ? "正在重新连接" : "连接已断开"}
+			detail={connecting ? null : error}
 			action="重试"
 			onAction={reconnectEvents}
 		/>

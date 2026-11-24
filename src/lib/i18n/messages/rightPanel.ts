@@ -27,6 +27,10 @@ export default defineMessages({
 		openTabsDesc: "选择要在侧边面板中打开的标签。",
 		loading: "正在加载中",
 		panelTitle: "右侧面板",
+		sideChatDraftClosed: "已关闭未发送的辅助对话草稿",
+		restoreSideChatDraft: "恢复草稿",
+		restoreSideChatDraftCount: "恢复草稿 ({count})",
+		attachmentOnlyDraft: "仅附件草稿（{count} 个）",
 	},
 	"en-US": {
 		sidechat: "Side Chat",
@@ -54,5 +58,9 @@ export default defineMessages({
 		openTabsDesc: "Select tabs to open in the side panel.",
 		loading: "Loading…",
 		panelTitle: "Right Panel",
+		sideChatDraftClosed: "Closed unsent side chat draft",
+		restoreSideChatDraft: "Restore draft",
+		restoreSideChatDraftCount: "Restore draft ({count})",
+		attachmentOnlyDraft: "Attachment draft ({count})",
 	},
 });

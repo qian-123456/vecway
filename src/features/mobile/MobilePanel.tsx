@@ -368,6 +368,15 @@ export function MobilePanel() {
 
 	const clearDdnsToken = () =>
 		run("ddnsClear", async () => {
+			const confirmed = await confirmDialog(
+				t("mobile.clearTokenConfirmMessage"),
+				{
+					title: t("mobile.clearTokenConfirmTitle"),
+					okLabel: t("mobile.clearTokenConfirmOk"),
+					danger: true,
+				},
+			);
+			if (!confirmed) return;
 			const nextDdns = await mobileDdnsClearToken();
 			setDdnsTokenDraft("");
 			setStatus((prev) => (prev ? { ...prev, ddns: nextDdns } : prev));
@@ -388,6 +397,17 @@ export function MobilePanel() {
 			const info = await mobileCreatePairing(target);
 			setPairing(info);
 			setPairTarget(target);
+			setQrMode("universal");
+		});
+
+	const startAndPairLan = () =>
+		run("pair", async () => {
+			await mobileStart();
+			toast.success(t("mobile.toastStarted"));
+			setStatus(await mobileStatus());
+			const info = await mobileCreatePairing("lan");
+			setPairing(info);
+			setPairTarget("lan");
 			setQrMode("universal");
 		});
 
@@ -455,6 +475,18 @@ export function MobilePanel() {
 			? t("mobile.btnSaveAndReconnect")
 			: t("mobile.btnCloseTunnel")
 		: t("mobile.btnSaveAndStartTunnel");
+	const remotePairMissingReason = (() => {
+		if (view !== "remote" || status == null) return null;
+		if (remote === "ipv6") {
+			if (!status.ipv6Address) return t("mobile.pairRemoteMissingIpv6Address");
+			if (!ipv6Running || !status.ipv6Url) return t("mobile.pairRemoteMissingIpv6Server");
+			if (!running) return t("mobile.pairLanTitleStopped");
+			return null;
+		}
+		if (!isTunnelRunning || !status.tunnelUrl) return t("mobile.pairRemoteMissingTunnel");
+		if (!running) return t("mobile.pairLanTitleStopped");
+		return null;
+	})();
 	return (
 		<div className="min-w-0 space-y-4 [overflow-wrap:anywhere]">
 			{error && (
@@ -484,16 +516,28 @@ export function MobilePanel() {
 					>
 						{busy === "server" ? (running ? t("mobile.btnStopping") : t("mobile.btnStarting")) : running ? t("mobile.btnStop") : t("mobile.btnStart")}
 					</Button>
-					<Button
-						variant="secondary"
-						icon={QrCode}
-						loading={busy === "pair"}
-						disabled={busy !== null || !running || (view === "remote" && remote === "ipv6" && !status?.ipv6Url) || (view === "remote" && remote === "tunnel" && !status?.tunnelUrl)}
-						title={running ? undefined : t("mobile.pairLanTitleStopped")}
-						onClick={() => makePairing(view === "lan" ? "lan" : remote)}
-					>
-						{t("mobile.btnGenerateQr")}
-					</Button>
+					{view === "lan" && status !== null && !running ? (
+						<Button
+							variant="primary"
+							icon={QrCode}
+							loading={busy === "pair"}
+							disabled={busy !== null || status == null}
+							onClick={startAndPairLan}
+						>
+							{t("mobile.btnStartPairing")}
+						</Button>
+					) : (
+						<Button
+							variant="secondary"
+							icon={QrCode}
+							loading={busy === "pair"}
+							disabled={busy !== null || !running || (view === "remote" && remote === "ipv6" && !status?.ipv6Url) || (view === "remote" && remote === "tunnel" && !status?.tunnelUrl)}
+							title={remotePairMissingReason ?? (running ? undefined : t("mobile.pairLanTitleStopped"))}
+							onClick={() => makePairing(view === "lan" ? "lan" : remote)}
+						>
+							{t("mobile.btnGenerateQr")}
+						</Button>
+					)}
 					<IconButton icon={RefreshCw} label={t("mobile.btnRefreshStatus")} disabled={busy !== null} onClick={() => run("refresh", refresh)} />
 				</div>
 			</div>
@@ -607,6 +651,11 @@ export function MobilePanel() {
 					<label className="flex items-center gap-2 whitespace-nowrap"><input type="radio" name="remote-transport" checked={remote === "ipv6"} onChange={() => setRemote("ipv6")} />{t("mobile.remoteIpv6")}</label>
 					<label className="flex items-center gap-2 whitespace-nowrap"><input type="radio" name="remote-transport" checked={remote === "tunnel"} onChange={() => setRemote("tunnel")} />{t("mobile.remoteTunnel")}</label>
 				</fieldset>
+			)}
+			{view === "remote" && remotePairMissingReason && (
+				<p data-field-id="remotePairGuidance" className="text-xs text-[var(--text-muted)]">
+					{remotePairMissingReason}
+				</p>
 			)}
 
 			{/* LAN Panel */}

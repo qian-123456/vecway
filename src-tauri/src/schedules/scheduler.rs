@@ -3,7 +3,6 @@
 use chrono::Local;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tauri::Emitter;
 
 use crate::schedules::{runner, store};
 use crate::state::AppState;
@@ -61,7 +60,7 @@ pub fn start(state: AppState) {
             Some(Ok(0)) | None => {}
             Some(Ok(n)) => {
                 tracing::info!("Settled {n} interrupted scheduled run(s)");
-                let _ = state.app.emit("schedules:changed", ());
+                crate::state::emit_schedules_changed(&state);
             }
             Some(Err(e)) => tracing::warn!("recover interrupted scheduled runs: {e}"),
         }
@@ -89,7 +88,7 @@ pub fn start(state: AppState) {
                 }
             }
             if any_changed {
-                let _ = state.app.emit("schedules:changed", ());
+                crate::state::emit_schedules_changed(&state);
             }
         }
 
@@ -145,7 +144,7 @@ pub fn start(state: AppState) {
                         }
 
                         if any_changed {
-                            let _ = state.app.emit("schedules:changed", ());
+                            crate::state::emit_schedules_changed(&state);
                         }
 
                         if stalled {

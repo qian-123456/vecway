@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { CircleAlert, CircleCheck } from "lucide-react";
 import { errorMessage } from "../core/api";
+import { isNonCompositedTestEnv, prefersReducedMotion } from "./motion";
 
 export type ToastKind = "info" | "success" | "error";
 
@@ -11,11 +12,14 @@ interface ToastItem {
 	kind: ToastKind;
 	action?: { label: string; onClick: () => void | Promise<void> };
 	busy?: boolean;
+	exiting?: boolean;
 }
 
 const MAX_VISIBLE = 3;
+const EXIT_MS = 160;
 let items: readonly ToastItem[] = [];
 let nextId = 1;
+const timers = new Map<number, number>();
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -29,30 +33,64 @@ function getItems(): readonly ToastItem[] {
 	return items;
 }
 
+function clearToastTimer(id: number): void {
+	const timer = timers.get(id);
+	if (timer !== undefined) {
+		window.clearTimeout(timer);
+		timers.delete(id);
+	}
+}
+
+function dismissToast(id: number): void {
+	clearToastTimer(id);
+	const current = items.find((t) => t.id === id);
+	if (!current || current.exiting) return;
+	const exitMs = prefersReducedMotion() || isNonCompositedTestEnv() ? 0 : EXIT_MS;
+	if (exitMs <= 0) {
+		items = items.filter((t) => t.id !== id);
+		emit();
+		return;
+	}
+	items = items.map((t) => (t.id === id ? { ...t, exiting: true } : t));
+	emit();
+	const removeTimer = window.setTimeout(() => {
+		timers.delete(id);
+		items = items.filter((t) => t.id !== id);
+		emit();
+	}, exitMs);
+	timers.set(id, removeTimer);
+}
+
 export function toast(text: string, opts?: { kind?: ToastKind; ms?: number; action?: { label: string; onClick: () => void | Promise<void> } }): void {
 	const kind = opts?.kind ?? "info";
 	const ms = opts?.ms ?? (opts?.action ? 5000 : kind === "error" ? 4000 : 2400);
 	const id = nextId++;
-	items = [...items, { id, text, kind, action: opts?.action }].slice(-MAX_VISIBLE);
+	const next = [...items, { id, text, kind, action: opts?.action }];
+	const evicted = next.slice(0, Math.max(0, next.length - MAX_VISIBLE));
+	for (const old of evicted) clearToastTimer(old.id);
+	items = next.slice(-MAX_VISIBLE);
 	emit();
-	setTimeout(() => {
-		if (!items.some((t) => t.id === id) || items.some((t) => t.id === id && t.busy)) return;
-		items = items.filter((t) => t.id !== id);
-		emit();
+	const timer = window.setTimeout(() => {
+		timers.delete(id);
+		const target = items.find((t) => t.id === id);
+		if (!target || target.busy) return;
+		dismissToast(id);
 	}, ms);
+	timers.set(id, timer);
 }
 
 async function runAction(id: number): Promise<void> {
 	const item = items.find((t) => t.id === id);
-	if (!item?.action || item.busy) return;
+	if (!item?.action || item.busy || item.exiting) return;
 	const action = item.action;
+	clearToastTimer(id);
 	items = items.map((t) => (t.id === id ? { ...t, action: undefined, busy: true } : t));
 	emit();
 	try {
 		await action.onClick();
-		items = items.filter((t) => t.id !== id);
-		emit();
+		dismissToast(id);
 	} catch (e) {
+		clearToastTimer(id);
 		items = items.filter((t) => t.id !== id);
 		toast(errorMessage(e), { kind: "error", ms: 8000 });
 	}
@@ -76,7 +114,10 @@ export function ToastHost() {
 				<div
 					key={t.id}
 					role="status"
-					className={`m-selectable pointer-events-auto flex max-w-full items-center gap-2 rounded-m-md px-4 py-3 text-m-sm shadow-m-pop transition-[opacity,transform] duration-(--m-dur-fast) ease-m starting:translate-y-2 starting:opacity-0 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 ${
+					data-exiting={t.exiting ? "true" : undefined}
+					className={`m-selectable pointer-events-auto flex max-w-full items-center gap-2 rounded-m-md px-4 py-3 text-m-sm shadow-m-pop transition-[opacity,transform,translate,scale] duration-(--m-dur-fast) ease-m starting:translate-y-2 starting:opacity-0 motion-reduce:transition-opacity motion-reduce:starting:translate-y-0 ${
+						t.exiting ? "pointer-events-none translate-y-1.5 opacity-0 motion-reduce:translate-y-0" : "translate-y-0 opacity-100"
+					} ${
 						t.kind === "error" ? "bg-m-danger-bg text-m-danger" : "bg-m-text text-m-bg"
 					}`}
 				>

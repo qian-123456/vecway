@@ -29,7 +29,6 @@ import { createSession } from "../../lib/createSession";
 import { confirmDialog, copyText, errMsg } from "../../lib/dialogs";
 import { isComposing, useEscapeKey } from "../../lib/hooks";
 import {
-	addWorkspace,
 	gitCreateWorktree,
 	gitDiffBase,
 	gitDiscardAll,
@@ -111,7 +110,7 @@ export function WorktreeSection({
 	const openModal = useUi((s) => s.openModal);
 	const selectSession = useUi((s) => s.selectSession);
 	const setRightTab = useUi((s) => s.setRightTab);
-	const setExplorerWorkspace = useExplorer((s) => s.setWorkspaceId);
+	const setCustomRootPath = useExplorer((s) => s.setCustomRootPath);
 	const sessions = useSessions((s) => s.sessions);
 	const workspaces = useSessions((s) => s.workspaces);
 	const deliveryMode = useSettings((s) => s.settings?.gitDeliveryMode ?? "pr");
@@ -267,15 +266,9 @@ export function WorktreeSection({
 			}
 		});
 
-	const openInExplorer = async (path: string) => {
-		try {
-			const ws = await addWorkspace(path);
-			void useSessions.getState().refreshWorkspaces();
-			setExplorerWorkspace(ws.id);
-			setRightTab("explorer");
-		} catch (e) {
-			toast.error(t("worktree.openInSidebarFailed", { error: errMsg(e) }));
-		}
+	const openInExplorer = (path: string) => {
+		setCustomRootPath(path);
+		setRightTab("explorer");
 	};
 
 	const openTerminal = async (wt: WorktreeInfo) => {

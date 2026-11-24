@@ -47,6 +47,7 @@ pub enum AppEvent {
     TodosChanged,
     BacklogChanged,
     ServicesChanged,
+    SchedulesChanged,
     /// Privacy entries mutated; frontend receives `privacy_changed` (no payload).
     PrivacyChanged,
 }
@@ -75,4 +76,11 @@ impl AppState {
         // Receivers may all be gone; that is fine.
         let _ = self.bus.send(event);
     }
+}
+
+/// Emit `schedules:changed` to the desktop webview and `AppEvent::SchedulesChanged` to the mobile SSE bus.
+pub fn emit_schedules_changed(state: &AppState) {
+    use tauri::Emitter as _;
+    let _ = state.app.emit("schedules:changed", ());
+    state.emit(AppEvent::SchedulesChanged);
 }

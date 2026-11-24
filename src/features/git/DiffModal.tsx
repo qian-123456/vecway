@@ -6,6 +6,7 @@ import {
 	PanelLeftClose,
 	PanelLeftOpen,
 	Plus,
+	RefreshCw,
 	Rows,
 	Send,
 	WrapText,
@@ -171,6 +172,7 @@ export function DiffModal({
 	const { t } = useT();
 	const [text, setText] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [reloadNonce, setReloadNonce] = useState(0);
 	const [sel, setSel] = useState<[number, number] | null>(null);
 	const [comment, setComment] = useState("");
 	const [note, setNote] = useState<string | null>(null);
@@ -197,6 +199,8 @@ export function DiffModal({
 	useEscapeKey(onClose);
 	useEffect(() => {
 		let alive = true;
+		setError(null);
+		setText(null);
 		load()
 			.then((t) => {
 				if (alive) setText(t);
@@ -207,7 +211,7 @@ export function DiffModal({
 		return () => {
 			alive = false;
 		};
-	}, [load]);
+	}, [load, reloadNonce]);
 
 	useLayoutEffect(() => {
 		const el = dialogRef.current;
@@ -434,7 +438,7 @@ export function DiffModal({
 			title={mode === "unified" ? t("git.diff.viewUnifiedTitle") : t("git.diff.viewSplitTitle")}
 		>
 			{mode === "unified" ? <Rows size={13} /> : <Columns2 size={13} />}
-			{mode === "unified" ? "Unified" : "Split"}
+			{mode === "unified" ? t("git.diff.viewUnifiedLabel") : t("git.diff.viewSplitLabel")}
 		</button>
 	);
 
@@ -629,7 +633,19 @@ export function DiffModal({
 						onScroll={onScroll}
 						className="relative min-w-0 flex-1 overflow-y-auto font-mono text-[12.5px] leading-5"
 					>
-						{error && <div className="p-3 text-rose-400">{error}</div>}
+						{error && (
+							<div role="alert" className="flex flex-col items-start gap-2 p-4 text-rose-400">
+								<span className="select-text whitespace-pre-wrap break-words font-sans text-xs">{error}</span>
+								<button
+									type="button"
+									onClick={() => setReloadNonce((n) => n + 1)}
+									className="press-scale inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-[var(--border-divider)] bg-[var(--bg-panel)] px-2.5 py-1 font-sans text-xs text-[var(--text)] transition-colors hover:bg-[var(--bg-hover)]"
+								>
+									<RefreshCw size={12} />
+									{t("git.diff.reload")}
+								</button>
+							</div>
+						)}
 						{text === null && !error && (
 							<div className="p-3 text-neutral-500">{t("common.loading")}</div>
 						)}

@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use tauri::{Emitter, State};
+use tauri::State;
 
 use crate::contracts::{
     AutomationAuthorResult, ProbeTestResult, Schedule, ScheduleAgentTrigger, ScheduleDraft,
@@ -24,10 +24,11 @@ where
         .map_err(|e| format!("task failed: {e}"))?
 }
 
-async fn blocking_db_with_snapshot<T, F>(state: &AppState, f: F) -> Result<T, String>
+async fn blocking_db_with_snapshot<T, E, F>(state: &AppState, f: F) -> Result<T, E>
 where
     T: Send + 'static,
-    F: FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
+    E: From<String> + Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> Result<T, E> + Send + 'static,
 {
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || {
@@ -44,7 +45,7 @@ where
         Ok(res)
     })
     .await
-    .map_err(|e| format!("task failed: {e}"))?
+    .map_err(|e| E::from(format!("task failed: {e}")))?
 }
 
 #[tauri::command]
@@ -59,7 +60,18 @@ pub async fn schedules_save(
 ) -> Result<Schedule, String> {
     let saved = blocking_db_with_snapshot(&state, move |db| store::upsert(db, &schedule)).await?;
     scheduler::notify_scheduler();
-    let _ = state.app.emit("schedules:changed", ());
+    crate::state::emit_schedules_changed(&state);
+    Ok(saved)
+}
+
+/// Create a brand-new schedule (preserving an unused `schedule.id`, rejecting duplicates).
+pub async fn schedules_create_unique(
+    state: &AppState,
+    schedule: ScheduleDraft,
+) -> Result<Schedule, store::CreateScheduleError> {
+    let saved = blocking_db_with_snapshot(state, move |db| store::create_new(db, &schedule)).await?;
+    scheduler::notify_scheduler();
+    crate::state::emit_schedules_changed(state);
     Ok(saved)
 }
 
@@ -67,7 +79,7 @@ pub async fn schedules_save(
 pub async fn schedules_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
     blocking_db_with_snapshot(&state, move |db| store::delete(db, &id)).await?;
     scheduler::notify_scheduler();
-    let _ = state.app.emit("schedules:changed", ());
+    crate::state::emit_schedules_changed(&state);
     Ok(())
 }
 
@@ -80,7 +92,7 @@ pub async fn schedules_set_enabled(
     let updated =
         blocking_db_with_snapshot(&state, move |db| store::set_enabled(db, &id, enabled)).await?;
     scheduler::notify_scheduler();
-    let _ = state.app.emit("schedules:changed", ());
+    crate::state::emit_schedules_changed(&state);
     Ok(updated)
 }
 
@@ -123,7 +135,7 @@ pub async fn schedules_release_awaiting(
             .ok()
             .flatten();
         store::release_awaiting(db, &schedule_id, &run_id)?;
-        Ok((session_id, attempt))
+        Ok::<_, String>((session_id, attempt))
     })
     .await?;
     if let (Some(handle), Some(attempt)) = (
@@ -134,7 +146,7 @@ pub async fn schedules_release_awaiting(
     }
     crate::todos::notify_changed(&state);
     scheduler::notify_scheduler();
-    let _ = state.app.emit("schedules:changed", ());
+    crate::state::emit_schedules_changed(&state);
     Ok(())
 }
 
@@ -206,4 +218,14 @@ pub async fn schedules_generate_draft(
     current: Option<ScheduleDraft>,
 ) -> Result<AutomationAuthorResult, String> {
     author::generate_draft(&state, &request, &cwd, current).await
+}
+
+pub async fn schedules_generate_draft_with_options(
+    state: &AppState,
+    request: String,
+    cwd: String,
+    current: Option<ScheduleDraft>,
+    preview: bool,
+) -> Result<AutomationAuthorResult, String> {
+    author::generate_draft_with_options(state, &request, &cwd, current, preview).await
 }

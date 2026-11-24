@@ -239,4 +239,26 @@ describe("ProviderDialog model search and scoped batch actions", () => {
 		);
 		expect((screen.getByLabelText(tNow("providers.modelSearchAria")) as HTMLInputElement).value).toBe("");
 	});
+
+	it("locks protocol when a preset determines it, shows blur validation, and allows undoing preset switch with unsaved edits", () => {
+		render(<ProviderDialog target={{ mode: "add" }} onClose={vi.fn()} />);
+
+		const nameInput = screen.getByLabelText(tNow("providers.nameLabel")) as HTMLInputElement;
+		fireEvent.focus(nameInput);
+		fireEvent.blur(nameInput);
+		expect(screen.getByText(tNow("providers.missingFieldsError", { fields: tNow("providers.fieldName") }))).toBeTruthy();
+
+		// User enters unsaved edits, then picks a preset (Anthropic) -> protocol locks + Undo banner appears.
+		fireEvent.change(nameInput, { target: { value: "my-custom-provider" } });
+		fireEvent.click(screen.getByRole("button", { name: tNow("providers.startFromPreset") }));
+		fireEvent.click(screen.getByRole("button", { name: "Anthropic" }));
+
+		expect(nameInput.value).toBe("anthropic");
+		expect(screen.getByText(tNow("providers.presetProtocolLocked"))).toBeTruthy();
+		expect(screen.getByText(tNow("providers.presetSwitchedNotice", { name: "Anthropic" }))).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: tNow("common.undo") }));
+		expect(nameInput.value).toBe("my-custom-provider");
+		expect(screen.queryByText(tNow("providers.presetProtocolLocked"))).toBeNull();
+	});
 });

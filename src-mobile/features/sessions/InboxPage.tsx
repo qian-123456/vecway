@@ -5,6 +5,8 @@ import { nav, paths, type PageProps } from "../../core/nav";
 import { relTime, sessionName } from "../../core/lib/format";
 import { events } from "../../core/sse";
 import { Button, EmptyState, ListGroup, PageHeader, PullToRefresh, Spinner, toast } from "../../ui";
+import { rubberBand, VelocityTracker } from "../../ui/gesturePhysics";
+import { prefersReducedMotion } from "../../ui/motion";
 import { INBOX_TITLES, inboxSections, type InboxData } from "./inbox";
 import { STATUS_DOT, statusLine } from "./SessionRow";
 import { TodosPane } from "./TodosPane";
@@ -15,7 +17,8 @@ import { refreshAll } from "./treeStore";
 /** Swipe right to read; the action sheet provides the same keyboard-accessible action. */
 function InboxRow({ s, onOpen, onSeen }: { s: TreeSession; onOpen: () => void; onSeen?: () => Promise<void> }) {
 	const [reading, setReading] = useState(false);
-	const [offset, setOffset] = useState(0);
+	const rowRef = useRef<HTMLDivElement>(null);
+	const trackerRef = useRef(new VelocityTracker());
 	const pending = useRef(false);
 	const suppressClickUntil = useRef(0);
 	const gesture = useRef<{ id: number; x: number; y: number; dx: number; axis: "x" | "y" | null } | null>(null);
@@ -32,14 +35,22 @@ function InboxRow({ s, onOpen, onSeen }: { s: TreeSession; onOpen: () => void; o
 			setReading(false);
 		}
 	};
+	const applySwipe = (px: number, animate: boolean) => {
+		const row = rowRef.current;
+		if (!row) return;
+		row.style.transition = animate && !prefersReducedMotion() ? "transform var(--m-dur-fast) var(--m-ease)" : "none";
+		row.style.transform = px !== 0 ? `translate3d(${px}px,0,0)` : "";
+	};
 	const finishSwipe = (e: ReactPointerEvent<HTMLDivElement>) => {
 		const g = gesture.current;
 		if (!g || g.id !== e.pointerId) return;
 		gesture.current = null;
-		setOffset(0);
+		const { vx } = trackerRef.current.velocity(e.timeStamp);
+		trackerRef.current.reset();
+		applySwipe(0, true);
 		if (g.axis) suppressClickUntil.current = Date.now() + 500;
 		if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-		if (e.type === "pointerup" && g.axis === "x" && g.dx >= 80) void markRead();
+		if (e.type === "pointerup" && g.axis === "x" && (g.dx >= 80 || vx >= 0.45)) void markRead();
 	};
 	return (
 			<div
@@ -48,6 +59,8 @@ function InboxRow({ s, onOpen, onSeen }: { s: TreeSession; onOpen: () => void; o
 				onPointerDown={(e) => {
 					if (!onSeen || pending.current || !e.isPrimary || e.button !== 0 || (e.target as HTMLElement).closest("[data-inbox-actions]")) return;
 					suppressClickUntil.current = 0;
+					trackerRef.current.reset();
+					trackerRef.current.add(e.clientX, e.clientY, e.timeStamp);
 					gesture.current = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, axis: null };
 				}}
 				onPointerMove={(e) => {
@@ -62,8 +75,10 @@ function InboxRow({ s, onOpen, onSeen }: { s: TreeSession; onOpen: () => void; o
 					}
 					if (g.axis !== "x") return;
 					e.preventDefault();
+					trackerRef.current.add(e.clientX, e.clientY, e.timeStamp);
 					g.dx = Math.max(0, dx);
-					setOffset(Math.min(112, g.dx));
+					const clamped = g.dx <= 112 ? g.dx : 112 + rubberBand(g.dx - 112, 80, 0.45);
+					applySwipe(clamped, false);
 				}}
 				onPointerUp={finishSwipe}
 				onPointerCancel={finishSwipe}
@@ -73,7 +88,7 @@ function InboxRow({ s, onOpen, onSeen }: { s: TreeSession; onOpen: () => void; o
 				}}
 			>
 				{onSeen && <div aria-hidden className="absolute inset-y-0 left-0 flex w-28 items-center justify-center gap-2 bg-m-accent-soft text-m-sm whitespace-nowrap text-m-accent-soft-text"><CheckCheck size={20} />已读</div>}
-				<div className="relative flex items-stretch bg-m-card pl-4" style={{ transform: `translateX(${offset}px)` }}>
+				<div ref={rowRef} className="relative flex items-stretch bg-m-card pl-4">
 					<span aria-hidden className="flex w-6 shrink-0 items-center justify-center">
 						<span className={`size-2.5 rounded-m-pill ${STATUS_DOT[st] ?? "bg-m-surface-2"}`} />
 					</span>
@@ -159,7 +174,7 @@ export function InboxPage(_props: PageProps) {
 		setReadingAll(true);
 		try {
 			const r = await api<{ count?: number }>("POST", "/left/inbox/read-all");
-			toast(`已标记 ${r.count ?? 0} 个会话`, { kind: "success" });
+			toast(`已将 ${r.count ?? 0} 个会话标为已读`, { kind: "success" });
 			await Promise.all([load(), refreshAll()]);
 		} catch (e) {
 			toast(`操作失败：${errorMessage(e)}`, { kind: "error" });
@@ -179,7 +194,13 @@ export function InboxPage(_props: PageProps) {
 				className="bg-m-bg-elev!"
 				right={
 					canReadAll ? (
-						<Button size="sm" className="min-h-11" variant="ghost" busy={readingAll} onClick={() => void readAll()}>
+						<Button
+							size="sm"
+							className="min-h-11"
+							variant="ghost"
+							busy={readingAll}
+							onClick={() => void readAll()}
+						>
 							全部已读
 						</Button>
 					) : undefined
@@ -198,10 +219,14 @@ export function InboxPage(_props: PageProps) {
 				)}
 				<TodosPane />
 				{data && !error && todosReady && sections.length === 0 && todoCount === 0 && (
-					<EmptyState icon={<Inbox size={26} strokeWidth={1.75} />} title="收件箱是空的" hint="需要你处理的会话和待办会出现在这里" />
+					<EmptyState
+						icon={<Inbox size={26} strokeWidth={1.75} />}
+						title="收件箱是空的"
+						hint="等待审批或回答的会话、出错或中断的会话、已完成但未查看的会话、运行中会话及自动化待办会出现在这里"
+					/>
 				)}
 				{sections.map(({ key, items }) => {
-					const markable = key === "unread" || key === "error";
+					const markable = key === "unread" || key === "error" || key === "interrupted";
 					return (
 						<div key={key} data-sec={key}>
 							<ListGroup title={`${INBOX_TITLES[key] ?? key} · ${items.length}`}>

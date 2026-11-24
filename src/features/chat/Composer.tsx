@@ -120,6 +120,7 @@ import {
 	toModelKey,
 } from "../../lib/models";
 import { resolveModelCapabilities } from "../../components/modelSelectLogic";
+import { scrollBehavior } from "../../lib/motion";
 import { pickToolbarTier, TIER_FULL, TIER_TIGHT } from "./composerToolbar";
 import {
 	buildSlashSections,
@@ -1150,7 +1151,10 @@ export function Composer({
 			: models === null
 				? t("chat.loadingShort")
 				: t("composer.selectModel");
-	const thinkingKind = thinkingChipState(thinkingLevels, currentModelOption?.reasoning).kind;
+	const thinkingKind = thinkingChipState(
+		thinkingLevels,
+		currentModelOption ? (currentModelOption.reasoning ?? false) : undefined,
+	).kind;
 	const toolbarTier = pickToolbarTier({
 		width: toolbarWidth,
 		modelLabel,
@@ -2989,9 +2993,11 @@ export function Composer({
 								title={t("composer.thinkingLevel")}
 								className="shrink-0 whitespace-nowrap px-2 py-1 text-[12px] text-[var(--text-60,var(--text-muted))]"
 							>
-								{thinkingKind === "unsupported" && !stateThinkingLevel
-									? t("chat.toolbar.unsupportedThinking")
-									: currentThinking}
+								{!currentModelOption && !stateThinkingLevel && (models === null || !current.value)
+									? t("chat.loadingShort")
+									: thinkingKind === "unsupported" && !stateThinkingLevel
+										? t("chat.toolbar.unsupportedThinking")
+										: currentThinking}
 							</span>
 						</div>
 					) : (
@@ -3047,7 +3053,7 @@ export function Composer({
 							currentThinking={currentThinking}
 							thinkingKind={thinkingKind}
 							thinkingLevels={thinkingLevels}
-							reasoning={currentModelOption?.reasoning}
+							reasoning={currentModelOption ? (currentModelOption.reasoning ?? false) : undefined}
 							planPreview={planPreview}
 							planChoiceUnknown={planChoiceUnknown}
 							contextTokens={currentTokens}
@@ -3084,7 +3090,7 @@ export function Composer({
 								onClick={() => {
 									const root = document.querySelector(`[data-session-view="${CSS.escape(sessionId)}"]`) ?? document;
 									const target = root.querySelector("[data-queued-message]");
-									target?.scrollIntoView({ behavior: "smooth", block: "center" });
+									target?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
 								}}
 								aria-label={t("composer.viewHeldQueue")}
 								title={t("composer.clickToViewHeldQueue")}
@@ -3168,14 +3174,18 @@ export function Composer({
 											<ArrowUp size={14} />
 										</button>
 									)}
-									{!hasPayload && (
 									<button
 										type="button"
 										onClick={() => void handleAbort()}
 										disabled={isAborting}
 										aria-label={t("composer.stopCurrentTurn")}
 										title={isAborting ? t("composer.stoppingCurrentTurn") : t("composer.stopCurrentTurn")}
-										className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--text)] text-[var(--bg)] transition-[opacity,transform] duration-150 ease-[var(--ease-out)] hover:opacity-85 active:scale-[0.97] disabled:opacity-50 disabled:active:scale-100"
+										className={clsx(
+											"flex h-7 w-7 items-center justify-center rounded-full transition-[background-color,color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] disabled:opacity-50 disabled:active:scale-100",
+											hasPayload
+												? "border border-[var(--border-divider)] bg-[var(--bg-active-fill)] text-[var(--text)] hover:bg-[var(--bg-hover)]"
+												: "bg-[var(--text)] text-[var(--bg)] hover:opacity-85",
+										)}
 									>
 										{isAborting ? (
 											<Loader2 size={13} className="animate-spin" />
@@ -3183,7 +3193,6 @@ export function Composer({
 											<Square size={11} />
 										)}
 									</button>
-									)}
 								</>
 							) : (
 								<button

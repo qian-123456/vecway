@@ -2,7 +2,6 @@
 
 use std::path::Path;
 use std::time::Duration;
-use tauri::Emitter;
 
 use crate::contracts::{
     AutomationOverlapPolicy, Schedule, ScheduleAgentTrigger, ScheduleNotify, ScheduleResultMode,
@@ -121,7 +120,7 @@ pub(crate) async fn spawn_pending_async(state: AppState, schedule_id: String) {
     .await;
     match claimed {
         Ok(Ok(Some((schedule, _, policy)))) => {
-            let _ = state.app.emit("schedules:changed", ());
+            crate::state::emit_schedules_changed(&state);
             tauri::async_runtime::spawn(async move {
                 execute_run_with_existing_run(state, schedule, run_id, true, policy).await;
                 crate::schedules::scheduler::notify_scheduler();
@@ -313,7 +312,7 @@ pub async fn resume_awaiting(
             .unwrap_or((false, None))
         };
         crate::rpc::clear_automation_resume_guard(handle.pid, &attempt);
-        let _ = state.app.emit("schedules:changed", ());
+        crate::state::emit_schedules_changed(&state);
         if changed {
             crate::todos::notify_changed(&state);
             if let Some(items) = snapshot_items {
@@ -355,7 +354,7 @@ pub async fn run_now(state: AppState, id: String) -> Result<ScheduleRun, String>
     })
     .await
     .map_err(|e| e.to_string())??;
-    let _ = state.app.emit("schedules:changed", ());
+    crate::state::emit_schedules_changed(&state);
     tauri::async_runtime::spawn(async move {
         execute_run_with_existing_run(state, schedule, run_id, false, policy).await;
         crate::schedules::scheduler::notify_scheduler();
@@ -467,7 +466,7 @@ async fn execute_run_with_existing_run(
                         None,
                     );
                 }
-                let _ = state.app.emit("schedules:changed", ());
+                crate::state::emit_schedules_changed(&state);
                 return;
             }
             ProbeOutcome::ScriptOk { output } => {
@@ -620,7 +619,7 @@ async fn execute_run_with_existing_run(
                 if create_todo {
                     crate::todos::notify_changed(&state);
                 }
-                let _ = state.app.emit("schedules:changed", ());
+                crate::state::emit_schedules_changed(&state);
                 return;
             }
             ProbeOutcome::Failed { output } => {
@@ -792,7 +791,7 @@ async fn execute_run_with_existing_run(
             }
         }
     }
-    let _ = state.app.emit("schedules:changed", ());
+    crate::state::emit_schedules_changed(&state);
 
     let effective_prompt = match probe_context
         .as_deref()
@@ -967,7 +966,7 @@ async fn execute_run_with_existing_run(
             );
         }
         crate::todos::notify_changed(&state);
-        let _ = state.app.emit("schedules:changed", ());
+        crate::state::emit_schedules_changed(&state);
         return;
     }
 
@@ -1039,7 +1038,7 @@ async fn execute_run_with_existing_run(
     if should_create_inbox_todo(schedule.notify, ok, needed_attention) {
         crate::todos::notify_changed(&state);
     }
-    let _ = state.app.emit("schedules:changed", ());
+    crate::state::emit_schedules_changed(&state);
 }
 
 fn main_window_visible(state: &AppState) -> bool {
@@ -1129,5 +1128,5 @@ fn finish_with_error_phase(
     if should_create_inbox_todo(schedule.notify, false, false) {
         crate::todos::notify_changed(state);
     }
-    let _ = state.app.emit("schedules:changed", ());
+    crate::state::emit_schedules_changed(state);
 }

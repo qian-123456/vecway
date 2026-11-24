@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
 import { Markdown } from "../../components/Markdown";
 import { copyText, errMsg } from "../../lib/dialogs";
+import { scrollBehavior } from "../../lib/motion";
 import { toast } from "../../lib/toast";
 import { useComposer } from "../../stores/composer";
 import { useT } from "../../stores/language";
@@ -222,7 +223,7 @@ function PlanReview({
 		const el = scrollRef.current;
 		if (!h || !el) return;
 		const top = el.scrollTop + h.getBoundingClientRect().top - el.getBoundingClientRect().top - el.clientTop - 8;
-		el.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+		el.scrollTo({ top: Math.max(0, top), behavior: scrollBehavior() });
 	};
 	const sectionNotes = (i: number) =>
 		pendingBySection.list.filter((a) => sectionOf(content, a.text, sectionRanges) === i).length;

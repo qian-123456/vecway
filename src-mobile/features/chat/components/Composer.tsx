@@ -1,4 +1,4 @@
-import { Camera, FileText, FolderOpen, GitBranch, ImageOff, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, RotateCcw, Target, X } from "lucide-react";
+import { CalendarClock, Camera, FileText, FolderOpen, GitBranch, ImageOff, ImagePlus, Lightbulb, Monitor, Paperclip, PenLine, RotateCcw, Target, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { api, errorMessage } from "../../../core/api";
 import { baseName } from "../../../core/lib/format";
@@ -31,16 +31,20 @@ export function Composer({
 	sessionId,
 	onOpenPicker,
 	onOpenThinking,
+	thinkingSupported,
 }: {
 	sessionId: string;
 	onOpenPicker?: () => void;
 	onOpenThinking?: (anchor: HTMLElement | null) => void;
+	thinkingSupported?: boolean | null;
 }) {
 	const { controller } = useChatUi();
 	const session = useSession(sessionId);
 	const working = useChat((s) => s.working);
+	const stopping = useChat((s) => s.stopping);
 	const atts = useChat((s) => s.atts);
 	const cstate = useChat((s) => s.cstate);
+	const automationState = useChat((s) => s.automationState);
 	const forkFrom = useChat((s) => s.forkFrom);
 	const treeEdit = useChat((s) => s.treeEdit);
 	const compacting = useChat((s) => s.compacting);
@@ -119,12 +123,51 @@ export function Composer({
 		}
 	};
 
+	const automationOn = automationState?.mode === "active";
+	const toggleAutomation = async () => {
+		const next = !automationOn;
+		try {
+			await controller.setAutomationMode(next);
+			toast(next ? "自动化定制模式已开启" : "自动化定制模式已关闭");
+		} catch (e) {
+			toast(`切换失败：${errorMessage(e)}`, { kind: "error" });
+		}
+	};
+
+	const handleSend = async (raw: string) => {
+		const trimmed = raw.trim();
+		if (/^\/automate(?:\s|$)/i.test(trimmed)) {
+			const goalText = trimmed.replace(/^\/automate\s*/i, "").trim();
+			try {
+				const targetId = await controller.setAutomationMode(true, goalText || undefined);
+				toast("自动化定制模式已开启");
+				if (targetId === sessionId) {
+					if (goalText) {
+						const sent = await controller.send(goalText, behavior);
+						if (!sent) {
+							apiRef.current?.set(raw, true);
+							saveUnsent(sessionId, raw);
+						}
+					} else if (apiRef.current?.get() === raw) {
+						apiRef.current?.set("");
+						clearUnsent(sessionId);
+					}
+				}
+			} catch (e) {
+				toast(`开启自动化定制失败：${errorMessage(e)}`, { kind: "error" });
+			}
+			return;
+		}
+		await controller.send(raw, behavior);
+	};
+
 	useEffect(() => {
 		const handoff = takeComposerAction(sessionId);
 		if (!handoff) return;
 		if (handoff.files?.length) controller.addFiles(handoff.files);
 		if (handoff.action === "sketch") setSketch(true);
 		else if (handoff.action === "plan") void togglePlan();
+		else if (handoff.action === "automation") void controller.setAutomationMode(true);
 		else if (handoff.action) setSheet(handoff.action);
 	}, [controller, sessionId]);
 
@@ -265,7 +308,7 @@ export function Composer({
 			</div>
 		) : undefined;
 
-	const showEarBar = working || planOn || Boolean(goal) || Boolean(queued);
+	const showEarBar = working || planOn || automationOn || Boolean(goal) || Boolean(queued);
 
 	return (
 		<div
@@ -327,6 +370,17 @@ export function Composer({
 								<X size={11} className="shrink-0 text-m-text-3" aria-hidden />
 							</button>
 						)}
+						{automationOn && (
+							<button
+								type="button"
+								onClick={() => void toggleAutomation()}
+								className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-m-text-2 active:text-m-text"
+							>
+								<CalendarClock size={12} className="shrink-0 text-m-accent" aria-hidden />
+								<span>定制自动化</span>
+								<X size={11} className="shrink-0 text-m-text-3" aria-hidden />
+							</button>
+						)}
 						{goal && (
 							<button
 								type="button"
@@ -344,11 +398,12 @@ export function Composer({
 					{working && canSend && (
 						<button
 							type="button"
-							aria-label="停止"
+							disabled={stopping}
+							aria-label={stopping ? "正在停止" : "停止"}
 							onClick={() => void controller.stop()}
-							className="shrink-0 px-1 py-0.5 font-medium whitespace-nowrap text-m-danger active:opacity-70"
+							className="shrink-0 px-1 py-0.5 font-medium whitespace-nowrap text-m-danger active:opacity-70 disabled:opacity-60"
 						>
-							停止
+							{stopping ? "正在停止" : "停止"}
 						</button>
 					)}
 				</div>
@@ -361,9 +416,10 @@ export function Composer({
 				hasExtra={atts.length > 0}
 				top={attachments}
 				onPlus={() => setSheet("plus")}
-				onSend={(v) => void controller.send(v, behavior)}
+				onSend={(v) => void handleSend(v)}
 				onStop={() => void controller.stop()}
 				working={working}
+				stopping={stopping}
 				onInput={onInput}
 				onSync={onSync}
 				onUnmount={onUnmount}
@@ -371,6 +427,7 @@ export function Composer({
 				externalStopBar
 				model={cstate?.model}
 				thinking={cstate?.thinkingLevel}
+				thinkingSupported={thinkingSupported}
 				onModel={() => onOpenPicker?.()}
 				onThinking={(el) => (onOpenThinking ? onOpenThinking(el ?? null) : onOpenPicker?.())}
 				contextText={formatContextPercent(pct) ?? "未知"}
@@ -439,6 +496,16 @@ export function Composer({
 							<span className="mt-0.5 block text-m-xs text-m-text-3">先出计划，确认后再动手</span>
 						</span>
 						<Switch label="规划模式" checked={planOn} onChange={() => void togglePlan()} />
+					</div>
+					<div className="flex min-h-13 w-full items-center gap-3.5 py-1.5 pr-4 pl-5">
+						<span className="flex w-6 shrink-0 items-center justify-center text-m-text-2">
+							<CalendarClock size={21} strokeWidth={1.75} />
+						</span>
+						<span className="min-w-0 flex-1">
+							<span className="block text-m-md text-m-text">定制自动化</span>
+							<span className="mt-0.5 block text-m-xs text-m-text-3">对话式设计定时或脚本触发自动化草案</span>
+						</span>
+						<Switch label="定制自动化" checked={automationOn} onChange={() => void toggleAutomation()} />
 					</div>
 				</div>
 			</BottomSheet>

@@ -6,6 +6,7 @@ import { Search, X } from "lucide-react";
 import clsx from "clsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isComposing } from "../../lib/hooks";
+import { prefersReducedMotion, scrollBehavior } from "../../lib/motion";
 import { useUi } from "../../stores/ui";
 import { useSettingsEscape } from "./nestedModal";
 import { FIELD_REGISTRY, findMatchingField } from "./fieldRegistry";
@@ -157,28 +158,43 @@ export function SettingsPage({ onClose, initialSection }: SettingsPageProps = {}
 	useEffect(() => {
 		if (!focusFlash || !contentRef.current) return;
 		const selector = `[data-field-id="${CSS.escape(focusFlash.key)}"],[data-omp-key="${CSS.escape(focusFlash.key)}"]`;
+		let highlightedEl: HTMLElement | null = null;
+		let holdTimer = 0;
+		let clearTimer = 0;
+		const clearHighlight = () => {
+			highlightedEl?.classList.remove("settings-deeplink-flash", "settings-deeplink-flash-active");
+			highlightedEl = null;
+		};
 		const tryScroll = () => {
 			const el = contentRef.current?.querySelector<HTMLElement>(selector);
 			if (!el) return false;
-			el.scrollIntoView({ behavior: "smooth", block: "center" });
-			el.style.transition = "background-color 0.9s ease";
-			el.style.backgroundColor = "var(--ghost-hover, color-mix(in oklab, currentColor 6%, transparent))";
-			setTimeout(() => {
-				el.style.backgroundColor = "";
-				setTimeout(() => {
-					el.style.transition = "";
-				}, 950);
-			}, 900);
+			clearHighlight();
+			el.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
+			highlightedEl = el;
+			el.classList.add("settings-deeplink-flash", "settings-deeplink-flash-active");
+			const duration = prefersReducedMotion() ? 600 : 320;
+			holdTimer = window.setTimeout(() => {
+				el.classList.remove("settings-deeplink-flash-active");
+				clearTimer = window.setTimeout(() => {
+					el.classList.remove("settings-deeplink-flash");
+					if (highlightedEl === el) highlightedEl = null;
+				}, duration);
+			}, duration);
 			return true;
 		};
-		if (tryScroll()) return;
-		const t = setInterval(() => {
-			if (tryScroll()) clearInterval(t);
-		}, 160);
-		const stop = setTimeout(() => clearInterval(t), 3000);
+		const found = tryScroll();
+		const t = found
+			? 0
+			: window.setInterval(() => {
+					if (tryScroll()) window.clearInterval(t);
+				}, 160);
+		const stop = window.setTimeout(() => window.clearInterval(t), 3000);
 		return () => {
-			clearInterval(t);
-			clearTimeout(stop);
+			window.clearInterval(t);
+			window.clearTimeout(stop);
+			window.clearTimeout(holdTimer);
+			window.clearTimeout(clearTimer);
+			clearHighlight();
 		};
 	}, [focusFlash, activeSection]);
 
@@ -241,7 +257,7 @@ export function SettingsPage({ onClose, initialSection }: SettingsPageProps = {}
 		const tryFlash = () => {
 			const el = find();
 			if (!el) return false;
-			el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+			el.scrollIntoView({ behavior: scrollBehavior(), block: "nearest" });
 			el.classList.add(...FLASH_CLASSES);
 			flashed = el;
 			flashTimer = window.setTimeout(() => el.classList.remove(...FLASH_CLASSES), 1800);

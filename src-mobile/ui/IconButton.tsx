@@ -46,7 +46,7 @@ export function IconButton({
 			className={`group/icon-button relative flex h-11 min-w-11 shrink-0 items-center justify-center rounded-[10px] disabled:opacity-35 ${className}`}
 		>
 			<span
-				className={`flex ${disc} items-center justify-center rounded-[10px] transition-[background-color,color,opacity,transform] duration-(--m-dur-press) ease-m group-active/icon-button:group-enabled/icon-button:scale-[0.94] motion-reduce:group-active/icon-button:scale-100 ${VARIANTS[variant]}`}
+				className={`flex ${disc} items-center justify-center rounded-[10px] transition-[background-color,color,opacity,transform,scale] duration-(--m-dur-press) ease-m group-active/icon-button:group-enabled/icon-button:scale-[0.94] motion-reduce:group-active/icon-button:scale-100 ${VARIANTS[variant]}`}
 			>
 				{icon}
 			</span>

@@ -1,6 +1,14 @@
 @import "tailwindcss";
 @import "./tokens.css";
 
+@custom-variant hover {
+	@media (hover: hover) and (pointer: fine) {
+		&:hover {
+			@slot;
+		}
+	}
+}
+
 /* Tailwind utilities bound to the semantic tokens: bg-m-surface, text-m-text-2, rounded-m-md, text-m-sm ... */
 @theme inline {
 	--color-m-bg: var(--m-bg);
@@ -74,6 +82,7 @@
 	--ease-m: var(--m-ease);
 	--ease-m-sheet: var(--m-ease-sheet);
 	--ease-m-in-out: var(--m-ease-in-out);
+	--ease-m-spring: var(--m-ease-spring);
 }
 
 /* Layer scale (Tailwind: z-(--z-sheet)). Never use raw z-index numbers in components. */
@@ -193,12 +202,12 @@ html[data-kb-native="1"] .m-app {
 /* GPU-composited keyboard dock: translates without per-frame layout reflow. */
 html[data-kb-native="1"] .m-kb-dock {
 	transform: translate3d(0, calc(-1 * var(--m-kb, 0px)), 0);
-	transition: transform var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1);
+	transition: transform var(--m-kb-dur, 0ms) var(--m-ease-sheet);
 	will-change: transform;
 }
 html[data-kb-native="1"] .m-kb-lift {
 	transform: translate3d(0, calc(-0.32 * var(--m-kb, 0px)), 0);
-	transition: transform var(--m-kb-dur, 0ms) cubic-bezier(0.32, 0.72, 0, 1);
+	transition: transform var(--m-kb-dur, 0ms) var(--m-ease-sheet);
 	will-change: transform;
 }
 .m-kb-pad {
@@ -339,15 +348,28 @@ html[data-scheme="light"] .m-glass-btn:active {
 	.m-sheet-surface {
 		box-shadow: var(--m-shadow-pop);
 		transition:
-			translate 300ms var(--m-ease-sheet),
-			transform 300ms var(--m-ease-sheet),
+			translate var(--m-dur-sheet) var(--m-ease-sheet),
+			transform var(--m-dur-sheet) var(--m-ease-sheet),
 			opacity var(--m-dur-fast) var(--m-ease);
+	}
+	.m-sheet-surface[data-visible="false"] {
+		transition-duration: var(--m-dur-sheet-exit), var(--m-dur-sheet-exit), var(--m-dur-exit);
 	}
 	@starting-style {
 		.m-sheet-surface:not([data-visible="false"]) {
 			opacity: 0;
 			transform: translateY(20px);
 		}
+	}
+
+	.m-plan-sheet-surface {
+		transition:
+			height var(--m-dur-sheet) var(--m-ease-sheet),
+			transform var(--m-dur-sheet) var(--m-ease-sheet),
+			opacity var(--m-dur-fast) var(--m-ease);
+	}
+	.m-plan-sheet-surface[data-dragging="true"] {
+		transition: none;
 	}
 
 	/* Contextual popover surface with scale(0.96) + opacity @starting-style entrance. */
@@ -357,7 +379,12 @@ html[data-scheme="light"] .m-glass-btn:active {
 		transform: scale(1) translateY(0);
 		transition:
 			opacity var(--m-dur-fast) var(--m-ease),
-			transform var(--m-dur-fast) var(--m-ease);
+			transform var(--m-dur-fast) var(--m-ease),
+			translate var(--m-dur-fast) var(--m-ease),
+			scale var(--m-dur-fast) var(--m-ease);
+	}
+	.m-popover-surface[data-visible="false"] {
+		transition-duration: var(--m-dur-exit);
 	}
 	@starting-style {
 		.m-popover-surface:not([data-visible="false"]) {
@@ -456,6 +483,10 @@ html[data-scheme="light"] .m-glass-btn:active {
 	.m-app {
 		transition: none;
 	}
+	html[data-kb-native="1"] .m-kb-dock,
+	html[data-kb-native="1"] .m-kb-lift {
+		transition: none;
+	}
 	.m-shimmer {
 		animation: none;
 		background: none;
@@ -493,19 +524,34 @@ html[data-scheme="light"] .m-glass-btn:active {
 	button[role="switch"][aria-checked="true"]:active:not(:disabled) .m-switch-knob {
 		transform: translateX(20px);
 	}
-	.m-sheet-surface,
+	.m-sheet-surface:not([data-dragging="true"]) {
+		translate: none;
+		transition: opacity 150ms var(--m-ease);
+	}
+	.m-sheet-surface[data-visible="false"]:not([data-dragging="true"]) {
+		opacity: 0;
+	}
+	.m-drawer-surface:not([data-dragging="true"]) {
+		transition: opacity 150ms var(--m-ease) !important;
+	}
+	.m-drawer-surface[data-visible="false"]:not([data-dragging="true"]) {
+		opacity: 0;
+	}
+	.m-plan-sheet-surface:not([data-dragging="true"]) {
+		transition: opacity 150ms var(--m-ease);
+	}
 	.m-popover-surface {
 		translate: none !important;
 		transform: none !important;
+		scale: none !important;
 		transition: opacity 150ms var(--m-ease) !important;
 	}
-	.m-sheet-surface[data-visible="false"],
 	.m-popover-surface[data-visible="false"] {
 		opacity: 0;
 	}
 	@starting-style {
-		.m-sheet-surface,
-		.m-popover-surface {
+		.m-sheet-surface:not([data-visible="false"]),
+		.m-popover-surface:not([data-visible="false"]) {
 			transform: none;
 		}
 	}
@@ -521,6 +567,9 @@ html[data-scheme="light"] .m-glass-btn:active {
 	[class*="transition-["][class*="transform"],
 	[class*="transition-["][class*="scale"] {
 		transition-property: color, background-color, border-color, opacity, box-shadow !important;
+	}
+	[class*="transition-[stroke-"] {
+		transition: none !important;
 	}
 	.es-burst > span {
 		animation: none;
@@ -564,8 +613,8 @@ html[data-scheme="light"] .m-glass-btn:active {
 	padding: 2px 2px;
 }
 .es-root {
-	--es-dur: 0.3s;
-	--es-ease: cubic-bezier(0.23, 1, 0.32, 1);
+	--es-dur: 0.24s;
+	--es-ease: var(--m-ease);
 	--es-fill: var(--m-accent);
 	--es-normal-start: #6377df;
 	--es-normal-end: #9a70d6;
@@ -585,7 +634,7 @@ html[data-scheme="light"] .m-glass-btn:active {
 	transition: --es-p var(--es-dur) var(--es-ease);
 }
 .es-root[data-dragging="true"] {
-	--es-dur: 0.15s;
+	--es-dur: 0s;
 	cursor: grabbing;
 }
 .es-track {
@@ -682,8 +731,8 @@ html[data-scheme="light"] .m-glass-btn:active {
 	border-radius: 999px;
 	background: #ffffffb8;
 	box-shadow: 0 0 5px #ffffff57;
-	will-change: left, top;
-	transition-property: left, top;
+	will-change: transform;
+	transition-property: transform;
 	transition-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
 }
 @keyframes es-fade-in {

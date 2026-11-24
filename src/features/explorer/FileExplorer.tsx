@@ -17,12 +17,13 @@ import { resolveActiveSessionTarget } from "../../lib/activeSessionTarget";
 import { canPreviewFile } from "../../lib/fileLinks";
 import { basename, isInside, shortPath, trimTrailingSlash } from "../../lib/paths";
 import { usePendingSession } from "../sessions/pendingSession";
-import { fsReadDir, listWorkspaceFiles } from "../../lib/ipc";
+import { addWorkspace, fsReadDir, listWorkspaceFiles } from "../../lib/ipc";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { EmptyState } from "../../components/EmptyState";
 import { FloatingLayer } from "../../components/FloatingLayer";
 import { SearchInput } from "../../components/SearchInput";
 import { toast } from "../../lib/toast";
+import { errMsg } from "../../lib/dialogs";
 import { isComposing, useHomeDir } from "../../lib/hooks";
 import { useExplorer } from "../../stores/explorer";
 import { useFilePreview } from "../../stores/filePreview";
@@ -60,10 +61,13 @@ export function FileExplorer() {
 	const revealNonce = useExplorer((s) => s.revealNonce);
 	const setCustomRootPath = useExplorer((s) => s.setCustomRootPath);
 	const clearCustomRoot = useExplorer((s) => s.clearCustomRoot);
+	const loadError = useExplorer((s) => s.loadError);
+	const setLoadError = useExplorer((s) => s.setLoadError);
 	const showHidden = useExplorer((s) => s.showHidden);
 	const setShowHidden = useExplorer((s) => s.setShowHidden);
 	const toggleShowHidden = useExplorer((s) => s.toggleShowHidden);
 	const home = useHomeDir();
+	const [addingWorkspace, setAddingWorkspace] = useState(false);
 
 	const currentWorkspace = useMemo(() => {
 		if (workspaces.length === 0) return null;
@@ -150,6 +154,7 @@ export function FileExplorer() {
 		async (opts?: { silent?: boolean }) => {
 			const root = rootPathRef.current;
 			if (!root) {
+				setLoadError(null);
 				setRootEntries((prev) => (prev.length === 0 ? prev : []));
 				return;
 			}
@@ -158,8 +163,8 @@ export function FileExplorer() {
 			try {
 				const entries = await fsReadDir(root);
 				if (rootPathRef.current !== root) return;
+				setLoadError(null);
 				setRootEntries((prev) => keepIfEqual(prev, entries));
-
 				const expanded = Array.from(expandedPathsRef.current).filter((p) => isInside(p, root));
 				if (expanded.length > 0) {
 					const results = await Promise.allSettled(
@@ -205,15 +210,15 @@ export function FileExplorer() {
 				}
 			} catch (err) {
 				if (rootPathRef.current !== root) return;
+				setLoadError(errMsg(err));
 				if (!silent) {
-					toast.error(t("explorer.loadWorkspaceFilesFailed", { error: String(err) }));
-					setRootEntries([]);
+					toast.error(t("explorer.loadWorkspaceFilesFailed", { error: errMsg(err) }));
 				}
 			} finally {
 				if (!silent && rootPathRef.current === root) setIsRootLoading(false);
 			}
 		},
-		[t],
+		[setLoadError, t],
 	);
 
 	// Auto-refresh on window focus, tab visibility restore, and calm interval while visible
@@ -235,27 +240,30 @@ export function FileExplorer() {
 		let cancelled = false;
 		setExpandedPaths(new Set());
 		setChildrenMap({});
+		setLoadError(null);
+		setRootEntries([]);
 		if (!effectiveRootPath) {
-			setRootEntries([]);
 			return;
 		}
 		setIsRootLoading(true);
 		fsReadDir(effectiveRootPath)
 			.then((entries) => {
 				if (cancelled) return;
+				setLoadError(null);
 				setRootEntries(entries);
 			})
 			.catch((err) => {
 				if (cancelled) return;
-				toast.error(t("explorer.loadWorkspaceFilesFailed", { error: String(err) }));
-				setRootEntries([]);
+				const msg = errMsg(err);
+				setLoadError(msg);
+				toast.error(t("explorer.loadWorkspaceFilesFailed", { error: msg }));
 			})
 			.finally(() => {
 				if (cancelled) return;
 				setIsRootLoading(false);
 			});
 		return () => { cancelled = true; };
-	}, [effectiveRootPath]);
+	}, [effectiveRootPath, setLoadError]);
 
 	// Reveal/expand a directory requested from chat links or external callers
 	useEffect(() => {
@@ -530,6 +538,31 @@ export function FileExplorer() {
 										{shortPath(customRootPath, home)}
 									</span>
 								</div>
+								{!workspaces.some(
+									(w) => w.kind !== "global" && trimTrailingSlash(w.path) === trimTrailingSlash(customRootPath),
+								) && (
+									<button
+										type="button"
+										disabled={addingWorkspace}
+										onClick={() => {
+											if (addingWorkspace) return;
+											setAddingWorkspace(true);
+											void addWorkspace(customRootPath)
+												.then((ws) => {
+													void useSessions.getState().refreshWorkspaces();
+													setManualWorkspaceId(ws.id);
+													toast.success(t("explorer.addedAsWorkspace", { name: ws.name }));
+												})
+												.catch((err) => {
+													toast.error(t("explorer.addWorkspaceFailed", { error: errMsg(err) }));
+												})
+												.finally(() => setAddingWorkspace(false));
+										}}
+										className="shrink-0 whitespace-nowrap rounded-md border border-[var(--line)] bg-[var(--bg-panel)] px-1.5 py-0.5 text-[10.5px] font-medium text-[var(--accent)] transition-colors hover:bg-[var(--bg-hover)] active:scale-95 disabled:opacity-50"
+									>
+										{t("explorer.addAsWorkspace")}
+									</button>
+								)}
 								<button
 									type="button"
 									onClick={clearCustomRoot}
@@ -729,13 +762,31 @@ export function FileExplorer() {
 				) : (
 					/* Regular File Tree Mode */
 					<div>
+						{loadError && (
+							<div
+								role="alert"
+								className="m-1.5 flex items-start justify-between gap-2 rounded-lg border border-rose-500/35 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-300"
+							>
+								<span className="min-w-0 flex-1 select-text whitespace-pre-wrap break-words">
+									{t("explorer.loadWorkspaceFilesFailed", { error: loadError })}
+								</span>
+								<button
+									type="button"
+									disabled={isRootLoading}
+									onClick={() => void refreshTree()}
+									className="shrink-0 whitespace-nowrap rounded border border-rose-500/40 bg-[var(--bg-panel)] px-2 py-0.5 text-[11px] font-medium text-[var(--text)] transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-50"
+								>
+									{t("common.retry")}
+								</button>
+							</div>
+						)}
 						{isRootLoading && rootEntries.length === 0 ? (
 							<div className="flex items-center justify-center gap-1.5 py-6 text-neutral-500 text-xs">
 								<Loader2 size={13} className="animate-spin" />
 								<span>{t("explorer.loadingDirectory")}</span>
 							</div>
 						) : rootEntries.length === 0 ? (
-							<EmptyState title={customRootPath ? t("explorer.emptyDirectory") : t("explorer.noFilesInWorkspace")} />
+							loadError ? null : <EmptyState title={customRootPath ? t("explorer.emptyDirectory") : t("explorer.noFilesInWorkspace")} />
 						) : visibleRootEntries.length === 0 ? (
 							<div className="flex flex-col items-center justify-center gap-2 py-6 text-center text-xs text-[var(--text-muted)]">
 								<span>{t("explorer.allItemsHidden")}</span>

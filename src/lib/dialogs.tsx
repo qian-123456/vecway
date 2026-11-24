@@ -8,7 +8,7 @@
  */
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { X } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { Z_LAYER } from "../components/FloatingLayer";
 import { acquireRootInert } from "../components/Modal";
@@ -17,12 +17,13 @@ import { claimEscape } from "./escapeClaim";
 import { notifyCopied } from "./copyFeedback";
 import { clipboardWriteMessage } from "./ipc";
 import { tNow } from "../stores/language";
+import { prefersReducedMotion } from "./motion";
+const MODAL_EXIT_MS = 165;
 const CANCEL_BTN_CLASS =
-	"whitespace-nowrap rounded-lg border border-[var(--border-divider)] px-3 py-1.5 text-xs text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-neutral-200 active:scale-[0.97]";
+	"press-scale whitespace-nowrap rounded-lg border border-[var(--border-divider)] px-3 py-1.5 text-xs text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200";
 const OK_BTN_CLASS =
-	"whitespace-nowrap rounded-lg px-4 py-1.5 text-xs font-medium text-white transition-[background-color,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]";
+	"press-scale whitespace-nowrap rounded-lg px-4 py-1.5 text-xs font-medium text-white";
 const OK_TONE = { normal: "bg-[#0A84FF] hover:bg-[#0A84FF]/90", danger: "bg-[#FF453A] hover:bg-[#FF453A]/90" };
-
 function ConfirmDialogView({
 	title,
 	message,
@@ -42,10 +43,20 @@ function ConfirmDialogView({
 	const cancelRef = useRef<HTMLButtonElement | null>(null);
 	const okRef = useRef<HTMLButtonElement | null>(null);
 	const backdropPressedRef = useRef(false);
-	const cancel = useCallback(() => onDone(false), [onDone]);
-	useEscapeKey(cancel);
+	const [exiting, setExiting] = useState(false);
+	const finish = useCallback(
+		(ok: boolean) => {
+			if (exiting) return;
+			setExiting(true);
+			onDone(ok);
+		},
+		[exiting, onDone],
+	);
+	const cancel = useCallback(() => finish(false), [finish]);
+	useEscapeKey(cancel, !exiting);
 
 	useEffect(() => {
+		if (exiting) return;
 		const previousFocus = document.activeElement as HTMLElement | null;
 		const releaseInert = acquireRootInert();
 		return () => {
@@ -55,7 +66,7 @@ function ConfirmDialogView({
 				previousFocus.focus?.({ preventScroll: true });
 			}
 		};
-	}, []);
+	}, [exiting]);
 
 	useEffect(() => {
 		(danger ? cancelRef : okRef).current?.focus();
@@ -63,13 +74,18 @@ function ConfirmDialogView({
 
 	return (
 		<div
-			data-layer="modal"
+			data-layer={exiting ? undefined : "modal"}
+			data-exiting={exiting ? "true" : undefined}
+			aria-hidden={exiting || undefined}
+			inert={exiting}
 			style={{ zIndex: Z_LAYER.modal }}
-			className="apple-modal-backdrop fixed inset-0 flex items-center justify-center bg-[var(--overlay)] backdrop-blur-sm p-6"
+			className={`apple-modal-backdrop fixed inset-0 flex items-center justify-center bg-[var(--overlay)] backdrop-blur-sm p-6${exiting ? " pointer-events-none" : ""}`}
 			onMouseDown={(e) => {
+				if (exiting) return;
 				backdropPressedRef.current = e.target === e.currentTarget;
 			}}
 			onClick={(e) => {
+				if (exiting) return;
 				const pressed = backdropPressedRef.current;
 				backdropPressedRef.current = false;
 				if (pressed && e.target === e.currentTarget) cancel();
@@ -77,12 +93,13 @@ function ConfirmDialogView({
 		>
 			<div
 				role="dialog"
-				aria-modal="true"
+				aria-modal={exiting ? undefined : "true"}
 				aria-labelledby={titleId}
+				data-exiting={exiting ? "true" : undefined}
 				className="apple-modal-panel apple-modal-surface w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(85vh,560px)] flex flex-col rounded-2xl p-5 text-neutral-300 shadow-apple-modal hairline"
 				onKeyDown={(e) => {
+					if (exiting) return;
 					e.stopPropagation();
-					if (isComposing(e)) return;
 					if (e.key === "Escape") {
 						// stopPropagation above would keep Esc from reaching the
 						// window listener, so cancel here directly.
@@ -90,11 +107,11 @@ function ConfirmDialogView({
 						cancel();
 						return;
 					}
-					if (e.key === "Enter") {
+					if (e.key === "Enter" && !isComposing(e)) {
 						const target = e.target as HTMLElement | null;
 						if (target?.tagName === "BUTTON") return;
 						e.preventDefault();
-						onDone(true);
+						if (!danger) finish(true);
 						return;
 					}
 					if (e.key === "Tab") {
@@ -127,7 +144,7 @@ function ConfirmDialogView({
 						title={tNow("components.closeEsc")}
 						aria-label={tNow("shell.closeDialog")}
 						onClick={cancel}
-						className="rounded-lg p-1 text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-neutral-100 active:scale-[0.97]"
+						className="press-scale rounded-lg p-1 text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-100"
 					>
 						<X size={15} />
 					</button>
@@ -142,7 +159,7 @@ function ConfirmDialogView({
 					<button
 						ref={okRef}
 						type="button"
-						onClick={() => onDone(true)}
+						onClick={() => finish(true)}
 						className={`${OK_BTN_CLASS} ${danger ? OK_TONE.danger : OK_TONE.normal}`}
 					>
 						{okLabel}
@@ -167,9 +184,27 @@ export function mountPromptDialog<T>(render: (resolve: (value: T) => void) => Re
 		const done = (value: T) => {
 			if (settled) return;
 			settled = true;
-			root.unmount();
-			host.remove();
+			const backdrop = host.querySelector<HTMLElement>(".apple-modal-backdrop");
+			const panel = host.querySelector<HTMLElement>(".apple-modal-panel");
+			const dur = backdrop ? Number.parseFloat(getComputedStyle(backdrop).transitionDuration) : 0;
+			if (prefersReducedMotion() || !backdrop || !Number.isFinite(dur) || dur <= 0) {
+				root.unmount();
+				host.remove();
+				resolve(value);
+				return;
+			}
 			resolve(value);
+			backdrop.setAttribute("data-exiting", "true");
+			backdrop.removeAttribute("data-layer");
+			backdrop.style.pointerEvents = "none";
+			backdrop.setAttribute("inert", "");
+			backdrop.setAttribute("aria-hidden", "true");
+			panel?.setAttribute("data-exiting", "true");
+			panel?.removeAttribute("aria-modal");
+			window.setTimeout(() => {
+				root.unmount();
+				host.remove();
+			}, MODAL_EXIT_MS);
 		};
 		root.render(render(done));
 	});

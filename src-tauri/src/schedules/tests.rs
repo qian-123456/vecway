@@ -2063,3 +2063,31 @@ fn dead_resume_owner_can_be_replaced_without_unblocking_queue() {
     assert!(find_open_awaiting_session(&conn, &schedule.id).unwrap().is_some());
     assert!(finish_awaiting_resume(&conn, "paused", "session", "new").unwrap());
 }
+
+#[test]
+fn create_new_preserves_unused_id_and_rejects_duplicate_id() {
+    use crate::schedules::store::{create_new, CreateScheduleError};
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrate(&conn).unwrap();
+
+    let mut draft = daily_draft(None, true);
+    draft.id = Some("auto-staged-123".to_string());
+    draft.name = "First".to_string();
+    let created = create_new(&conn, &draft).unwrap();
+    assert_eq!(created.id, "auto-staged-123");
+    assert_eq!(created.name, "First");
+
+    // Duplicate ID must return Conflict without overwriting the existing row.
+    let mut dup = daily_draft(None, true);
+    dup.id = Some("auto-staged-123".to_string());
+    dup.name = "Overwrite".to_string();
+    let err = create_new(&conn, &dup).unwrap_err();
+    assert!(matches!(err, CreateScheduleError::Conflict(_)));
+    assert_eq!(get(&conn, "auto-staged-123").unwrap().unwrap().name, "First");
+
+    // Blank or omitted ID allocates a new UUID.
+    let mut blank = daily_draft(None, true);
+    blank.id = Some("   ".to_string());
+    let auto = create_new(&conn, &blank).unwrap();
+    assert_ne!(auto.id, "auto-staged-123");
+}

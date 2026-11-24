@@ -31,6 +31,7 @@ export default defineMessages({
 		expand: "展开",
 		collapse: "收起",
 		refresh: "刷新",
+		undo: "撤销",
 	},
 	"en-US": {
 		confirm: "Confirm",
@@ -62,5 +63,6 @@ export default defineMessages({
 		expand: "Expand",
 		collapse: "Collapse",
 		refresh: "Refresh",
+		undo: "Undo",
 	},
 });

@@ -5,6 +5,7 @@ import type { GitCommit, GitSummary, TmRun, WorktreeInfo } from "../../lib/contr
 import { resolveActiveSessionTarget } from "../../lib/activeSessionTarget";
 import { usePendingSession } from "../sessions/pendingSession";
 import { errMsg } from "../../lib/dialogs";
+import { claimEscape } from "../../lib/escapeClaim";
 import { useShortPath } from "../../lib/hooks";
 import { gitDiff, gitListWorktrees, gitLog, gitRepoRoot, gitSummary, tmList } from "../../lib/ipc";
 import { basename } from "../../lib/paths";
@@ -88,6 +89,7 @@ function RepoView({ cwd, tick }: { cwd: string; tick: string }) {
 	const [mode, setMode] = useState<RepoMode | null>(null);
 	const listHeight = useUi((s) => s.gitListHeight);
 	const splitRef = useRef<HTMLDivElement>(null);
+	const listRef = useRef<HTMLDivElement>(null);
 	/** Bumped to make the focus pane reload (manual refresh, session activity). */
 	const [paneNonce, setPaneNonce] = useState(0);
 	const [diff, setDiff] = useState<DiffReq | null>(null);
@@ -134,6 +136,13 @@ function RepoView({ cwd, tick }: { cwd: string; tick: string }) {
 	// A response applies only while it is still the newest request.
 	const reqSeq = useRef(0);
 	const lastTick = useRef(0);
+	const dragCleanupRef = useRef<(() => void) | null>(null);
+	useEffect(() => () => {
+		dragCleanupRef.current?.();
+	}, []);
+	useEffect(() => {
+		if (worktrees.length <= 1) dragCleanupRef.current?.();
+	}, [worktrees.length]);
 
 	const load = useCallback(
 		async (spinner: boolean) => {
@@ -241,29 +250,96 @@ function RepoView({ cwd, tick }: { cwd: string; tick: string }) {
 
 	const selectWorktree = (path: string) => setFocus(path === top ? null : path);
 
-	/** Divider drag: live update via setState, persist once on release (same as dock widths). */
+	/** Divider drag: rAF-throttled direct DOM height update with grabOffsetY, commit on release, Escape rollback. */
 	const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+		if (e.button !== 0) return;
 		const box = splitRef.current?.getBoundingClientRect();
-		if (!box) return;
+		const listEl = listRef.current;
+		if (!box || !listEl) return;
 		e.preventDefault();
+		dragCleanupRef.current?.();
+		const pointerId = e.pointerId;
 		const target = e.currentTarget;
-		target.setPointerCapture(e.pointerId);
-		const clamp = (y: number) =>
-			Math.max(MIN_LIST_H, Math.min(box.height - MIN_DETAIL_H, y - box.top));
-		let last = listHeight;
-		const onMove = (ev: PointerEvent) => {
-			last = clamp(ev.clientY);
-			useUi.setState({ gitListHeight: Math.round(last) });
+		try {
+			target.setPointerCapture(pointerId);
+		} catch {
+			/* synthetic test events may not support pointer capture */
+		}
+		const startHeight = listEl.getBoundingClientRect().height || listHeight;
+		const grabOffsetY = e.clientY - (box.top + startHeight);
+		const clamp = (clientY: number) =>
+			Math.max(MIN_LIST_H, Math.min(box.height - MIN_DETAIL_H, clientY - grabOffsetY - box.top));
+		let last = startHeight;
+		let rafId: number | null = null;
+		let latestClientY: number | null = null;
+
+		const applyDom = () => {
+			rafId = null;
+			if (latestClientY === null) return;
+			last = clamp(latestClientY);
+			const rounded = Math.round(last);
+			listEl.style.height = `${rounded}px`;
+			target.setAttribute("aria-valuenow", String(rounded));
 		};
-		const onUp = () => {
+
+		const onMove = (ev: PointerEvent) => {
+			if (ev.pointerId !== pointerId) return;
+			latestClientY = ev.clientY;
+			if (rafId === null) rafId = requestAnimationFrame(applyDom);
+		};
+
+		const cleanup = () => {
+			dragCleanupRef.current = null;
+			if (rafId !== null) {
+				cancelAnimationFrame(rafId);
+				rafId = null;
+			}
 			target.removeEventListener("pointermove", onMove);
 			target.removeEventListener("pointerup", onUp);
-			target.removeEventListener("pointercancel", onUp);
-			useUi.getState().setGitListHeight(last);
+			target.removeEventListener("pointercancel", onCancel);
+			target.removeEventListener("lostpointercapture", onLostCapture);
+			window.removeEventListener("keydown", onKey, true);
+			try {
+				if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+			} catch {
+				/* ignore if unmounted */
+			}
 		};
+
+		const onUp = (ev: PointerEvent) => {
+			if (ev.pointerId !== pointerId) return;
+			if (rafId !== null) applyDom();
+			cleanup();
+			useUi.getState().setGitListHeight(Math.round(last));
+		};
+
+		const onCancel = (ev?: PointerEvent) => {
+			if (ev && ev.pointerId !== pointerId) return;
+			cleanup();
+			const restored = Math.round(startHeight);
+			listEl.style.height = `${restored}px`;
+			target.setAttribute("aria-valuenow", String(restored));
+		};
+
+		const onLostCapture = (ev: PointerEvent) => {
+			if (ev.pointerId !== pointerId) return;
+			onCancel();
+		};
+
+		const onKey = (ev: KeyboardEvent) => {
+			if (ev.key !== "Escape") return;
+			ev.preventDefault();
+			ev.stopPropagation();
+			claimEscape(ev);
+			onCancel();
+		};
+
+		dragCleanupRef.current = cleanup;
 		target.addEventListener("pointermove", onMove);
 		target.addEventListener("pointerup", onUp);
-		target.addEventListener("pointercancel", onUp);
+		target.addEventListener("pointercancel", onCancel);
+		target.addEventListener("lostpointercapture", onLostCapture);
+		window.addEventListener("keydown", onKey, true);
 	};
 
 	return (
@@ -343,6 +419,7 @@ function RepoView({ cwd, tick }: { cwd: string; tick: string }) {
 			{isRepo && mode === "worktrees" && (
 				<div ref={splitRef} className="flex min-h-0 flex-1 flex-col">
 					<div
+						ref={listRef}
 						className={clsx("overflow-auto p-2.5", worktrees.length > 1 && "shrink-0")}
 						style={
 							worktrees.length > 1
@@ -376,9 +453,23 @@ function RepoView({ cwd, tick }: { cwd: string; tick: string }) {
 							role="separator"
 							aria-orientation="horizontal"
 							aria-label={t("git.panel.dragResizeHeight")}
-							tabIndex={-1}
+							aria-valuemin={MIN_LIST_H}
+							aria-valuenow={Math.round(listHeight)}
+							tabIndex={0}
 							onPointerDown={startDrag}
-							className="group relative h-1.5 shrink-0 cursor-row-resize touch-none border-y border-[var(--border-divider)] bg-[var(--bg-panel)] hover:bg-indigo-500/30"
+							onKeyDown={(e) => {
+								if (e.key === "ArrowUp") {
+									e.preventDefault();
+									useUi.getState().setGitListHeight(Math.max(MIN_LIST_H, listHeight - 16));
+								} else if (e.key === "ArrowDown") {
+									e.preventDefault();
+									const maxH = splitRef.current
+										? Math.max(MIN_LIST_H, splitRef.current.getBoundingClientRect().height - MIN_DETAIL_H)
+										: listHeight + 16;
+									useUi.getState().setGitListHeight(Math.min(maxH, listHeight + 16));
+								}
+							}}
+							className="group relative h-1.5 shrink-0 cursor-row-resize touch-none border-y border-[var(--border-divider)] bg-[var(--bg-panel)] hover:bg-indigo-500/30 focus-visible:bg-indigo-500/40 focus-visible:outline-none"
 						/>
 					)}
 					{worktrees.length <= 1 && <div className="h-px shrink-0 bg-[var(--well-bg)]" />}

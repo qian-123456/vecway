@@ -147,6 +147,8 @@ describe("ConnectionSheet native mode", () => {
 
 		render(<ConnectionSheet open onClose={() => {}} />);
 		await screen.findByText("局域网 TLS");
+		expect(screen.queryByLabelText("局域网 TLS 地址")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: /高级：手动配置端点/ }));
 
 		const lanInput = screen.getByLabelText("局域网 TLS 地址") as HTMLInputElement;
 		fireEvent.change(lanInput, { target: { value: "http://192.168.1.10:7788" } });
@@ -248,11 +250,16 @@ describe("ConnectionSheet native mode", () => {
 			/>,
 		);
 
-		// LAN input and optional SHA-256 fingerprint input are unlocked (never forcing QR rescan)
+		// Manual endpoint form is collapsed by default; expanding unlocks LAN + SHA-256 entry
+		await screen.findByRole("button", { name: "信任并切换至局域网直连" });
+		expect(screen.queryByLabelText("局域网 TLS 地址")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: /高级：手动配置端点/ }));
 		const lanInput = (await screen.findByLabelText("局域网 TLS 地址")) as HTMLInputElement;
 		expect(lanInput.disabled).toBe(false);
 		expect(screen.getByLabelText("局域网证书指纹 (SHA-256，可选)")).toBeDefined();
-
+		fireEvent.change(lanInput, { target: { value: "https://192.168.1.10:7790" } });
+		expect(screen.getByLabelText("局域网证书指纹 (SHA-256，首次直连必填)")).toBeDefined();
+		fireEvent.change(lanInput, { target: { value: "" } });
 		// One-tap trust & switch adopts the desktop LAN TLS endpoint and cert fingerprint
 		fireEvent.click(screen.getByRole("button", { name: "信任并切换至局域网直连" }));
 		await waitFor(() =>

@@ -3,11 +3,12 @@ import { useCallback, useEffect, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { IconButton } from "./IconButton";
+import { readTranslateXY, rubberBand, VelocityTracker } from "./gesturePhysics";
 import { useOverlay, usePresence } from "./overlay";
 
 const CLOSE_DISTANCE = 96;
 const CLOSE_VELOCITY = 0.6;
-const EXIT_MS = 300;
+const EXIT_MS = 240;
 
 /**
  * Bottom sheet (docs/MOBILE_DESIGN.md §3).
@@ -57,21 +58,32 @@ export function BottomSheet({
 	const activeSubtitle = open ? subtitle : (subtitle ?? snapshotRef.current.subtitle);
 	const activeFooter = open ? footer : (footer ?? snapshotRef.current.footer);
 	const sheetRef = useRef<HTMLDivElement>(null);
+	const scrimRef = useRef<HTMLDivElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
+	const trackerRef = useRef(new VelocityTracker());
 	const drag = useRef<{
-		id: number; startX: number; startY: number; lastY: number; lastT: number;
-		v: number; active: boolean; content: boolean; touch: boolean; target: HTMLElement;
+		id: number; startX: number; startY: number; baseY: number; lastY: number;
+		active: boolean; content: boolean; touch: boolean; target: HTMLElement;
 	} | null>(null);
 	const interactive = "button,a,input,textarea,select,label,[contenteditable]:not([contenteditable='false']),[role='slider']";
+	const activateDrag = useCallback((el: HTMLDivElement, baseY: number) => {
+		el.style.transform = `translate3d(0,${baseY}px,0)`;
+		el.dataset.dragging = "true";
+		el.style.transition = "none";
+		if (scrimRef.current) scrimRef.current.style.transition = "none";
+	}, []);
 	const moveDrag = useCallback((x: number, y: number, time: number) => {
 		const d = drag.current;
 		if (!d) return false;
+		const el = sheetRef.current;
 		if (!d.active && d.content) {
 			// Leave nested scroll containers in control until every vertical boundary is at the top.
 			let node: HTMLElement | null = d.target;
 			while (node && contentRef.current?.contains(node)) {
 				if (node.scrollTop > 0) {
-					d.startX = x; d.startY = y; d.lastY = y; d.lastT = time;
+					d.startX = x; d.startY = y; d.lastY = y;
+					trackerRef.current.reset();
+					trackerRef.current.add(x, y, time);
 					return false;
 				}
 				node = node.parentElement;
@@ -79,38 +91,56 @@ export function BottomSheet({
 			const dy = y - d.startY;
 			if (dy <= 6 || dy <= Math.abs(x - d.startX)) return false;
 			d.active = true;
-			if (sheetRef.current) sheetRef.current.style.transition = "none";
+			if (el) {
+				d.baseY = Math.max(0, readTranslateXY(el).y);
+				activateDrag(el, d.baseY);
+			}
 		}
-		const dt = time - d.lastT;
-		if (dt > 0) d.v = (y - d.lastY) / dt;
+		const rawDy = d.baseY + (y - d.startY);
+		const dim = Math.max(160, el?.clientHeight || 320);
+		const offset = rawDy < 0 ? rubberBand(rawDy, dim, 0.25) : rawDy;
 		d.lastY = y;
-		d.lastT = time;
-		if (sheetRef.current) sheetRef.current.style.transform = `translateY(${Math.max(0, y - d.startY)}px)`;
+		trackerRef.current.add(x, y, time);
+		if (el) el.style.transform = `translate3d(0,${offset}px,0)`;
+		if (scrimRef.current) {
+			scrimRef.current.style.opacity = String(Math.max(0, Math.min(1, 1 - Math.max(0, offset) / dim)));
+		}
 		return true;
-	}, []);
+	}, [activateDrag]);
 	const finishDrag = useCallback((y: number, time: number, cancelled: boolean) => {
 		const d = drag.current;
 		drag.current = null;
 		const el = sheetRef.current;
+		const { vy } = trackerRef.current.velocity(time);
+		trackerRef.current.reset();
+		if (scrimRef.current) {
+			scrimRef.current.style.transition = "";
+			scrimRef.current.style.opacity = "";
+		}
 		if (!d || !el) return;
+		delete el.dataset.dragging;
 		el.style.transition = "";
 		// Inline transforms must never override the CSS exit or the next opening.
 		el.style.transform = "";
-		const dy = Math.max(0, y - d.startY);
-		const velocity = time - d.lastT < 100 ? d.v : 0;
-		if (!cancelled && d.active && dy > 0 && (dy > CLOSE_DISTANCE || velocity > CLOSE_VELOCITY)) onClose();
+		const dy = d.baseY + (y - d.startY);
+		if (!cancelled && d.active && dy > 0 && (dy > CLOSE_DISTANCE || vy > CLOSE_VELOCITY)) onClose();
 	}, [onClose]);
 
 	useEffect(() => {
 		drag.current = null;
+		trackerRef.current.reset();
 		const el = sheetRef.current;
+		if (scrimRef.current) {
+			scrimRef.current.style.transition = "";
+			scrimRef.current.style.opacity = "";
+		}
 		if (el) {
+			delete el.dataset.dragging;
 			el.style.transition = "";
 			el.style.transform = "";
 			if (open && mounted && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
 		}
 	}, [open, mounted]);
-
 	useEffect(() => {
 		const content = contentRef.current;
 		if (!open || !content) return;
@@ -122,7 +152,9 @@ export function BottomSheet({
 			const target = e.target;
 			if (!(target instanceof HTMLElement) || target.closest(interactive) || drag.current) return;
 			const t = e.touches[0];
-			drag.current = { id: t.identifier, startX: t.clientX, startY: t.clientY, lastY: t.clientY, lastT: e.timeStamp, v: 0, active: false, content: true, touch: true, target };
+			trackerRef.current.reset();
+			trackerRef.current.add(t.clientX, t.clientY, e.timeStamp);
+			drag.current = { id: t.identifier, startX: t.clientX, startY: t.clientY, baseY: 0, lastY: t.clientY, active: false, content: true, touch: true, target };
 		};
 		const onTouchMove = (e: TouchEvent) => {
 			const d = drag.current;
@@ -161,8 +193,12 @@ export function BottomSheet({
 		const target = e.target;
 		if (!(target instanceof HTMLElement) || target.closest(interactive)) return;
 		e.currentTarget.setPointerCapture(e.pointerId);
-		drag.current = { id: e.pointerId, startX: e.clientX, startY: e.clientY, lastY: e.clientY, lastT: e.timeStamp, v: 0, active: !content, content, touch: false, target };
-		if (!content && sheetRef.current) sheetRef.current.style.transition = "none";
+		const el = sheetRef.current;
+		const baseY = !content && el ? Math.max(0, readTranslateXY(el).y) : 0;
+		trackerRef.current.reset();
+		trackerRef.current.add(e.clientX, e.clientY, e.timeStamp);
+		drag.current = { id: e.pointerId, startX: e.clientX, startY: e.clientY, baseY, lastY: e.clientY, active: !content, content, touch: false, target };
+		if (!content && el) activateDrag(el, baseY);
 	};
 	const onMove = (e: ReactPointerEvent<HTMLDivElement>) => {
 		const d = drag.current;
@@ -188,9 +224,10 @@ export function BottomSheet({
 			}}
 		>
 			<div
+				ref={scrimRef}
 				aria-hidden
 				onClick={onClose}
-				className={`absolute inset-0 bg-m-scrim transition-opacity duration-300 ease-m ${visible ? "opacity-100" : "opacity-0"}`}
+				className={`absolute inset-0 bg-m-scrim transition-opacity ease-m motion-reduce:duration-150 ${visible ? "opacity-100 duration-(--m-dur-sheet)" : "opacity-0 duration-(--m-dur-sheet-exit)"}`}
 			/>
 			<div
 				ref={sheetRef}

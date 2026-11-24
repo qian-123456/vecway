@@ -18,6 +18,7 @@ export interface SseEventMap {
 	rpc: { sessionId: string; frame: RpcFrame };
 	touch: { sessionId?: string };
 	todos: Record<string, never>;
+	schedules: Record<string, never>;
 	/** Server asked for a full refetch, or the page became visible again / network returned. */
 	resync: { reason?: "server" | "visible" | "online" };
 }
@@ -35,7 +36,7 @@ export function backoffMs(attempt: number, random: () => number = Math.random): 
 	return Math.round(Math.min(RETRY_CAP_MS, Math.max(400, base + jitter)));
 }
 
-const NAMES: readonly SseEventName[] = ["hello", "session", "rpc", "touch", "todos", "resync"];
+const NAMES: readonly SseEventName[] = ["hello", "session", "rpc", "touch", "todos", "schedules", "resync"];
 
 export class EventBus {
 	private handlers = new Map<SseEventName, Set<(data: never) => void>>();

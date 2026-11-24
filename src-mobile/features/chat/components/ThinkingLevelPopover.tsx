@@ -65,7 +65,8 @@ export function ThinkingLevelPopover({
 		}
 	}, [open]);
 
-	const safeLevels = levels.length > 0 ? levels : ["auto"];
+	const hasLevels = levels.length > 0;
+	const safeLevels = hasLevels ? levels : ["auto"];
 	const current = value || safeLevels[0] || "auto";
 	const committedIdx = Math.max(0, safeLevels.indexOf(current));
 	const shownIdx = previewIdx !== null && previewIdx >= 0 && previewIdx < safeLevels.length ? previewIdx : committedIdx;
@@ -102,6 +103,11 @@ export function ThinkingLevelPopover({
 							重试
 						</Button>
 					)}
+				</div>
+			) : !hasLevels ? (
+				<div className="space-y-1.5 p-4 text-center" role="status">
+					<div className="text-m-sm font-medium text-m-text-2">不支持思考</div>
+					<p className="text-m-xs text-m-text-3">当前模型不支持思考，没有可调的思考等级</p>
 				</div>
 			) : (
 				<div className="flex flex-col p-4" role="dialog" aria-label="思考强度">
@@ -204,9 +210,10 @@ export function ThinkingSourcePopover({
 	const [busy, setBusy] = useState(false);
 
 	const curOpt = data ? currentModelOpt(data.models, data.current) : null;
-	const activeLevel = data?.thinkingLevel ?? currentLevel ?? "auto";
-	const levels = data ? resolveThinkingLevels(curOpt, data.liveThinking, activeLevel) : [];
-
+	const activeLevel = data?.thinkingLevel ?? currentLevel ?? null;
+	const levels = data
+		? resolveThinkingLevels(curOpt, data.liveThinking, curOpt?.thinking?.length || data.liveThinking?.length ? activeLevel : null)
+		: [];
 	const handleChange = async (lvl: string) => {
 		if (busy) return;
 		setBusy(true);

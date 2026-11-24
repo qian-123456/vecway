@@ -175,7 +175,6 @@ function TreeRows({ nodes, ctx }: { nodes: TreeNode[]; ctx: RowCtx }) {
 							onMouseEnter={(e) => ctx.onHover(n.id, e.currentTarget)}
 							onMouseLeave={() => ctx.onHover(null)}
 							className="glass-row flex min-h-7 cursor-pointer items-center gap-[7px] rounded-[10px] px-2 py-[3px] text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
-							title={detail ? `${name} — ${detail}` : title}
 						>
 							<StatusGlyph state={n.state} />
 							<div className="min-w-0 flex-1">
@@ -269,6 +268,7 @@ export function TopCapsule() {
 	const anchorRef = useRef<HTMLDivElement>(null);
 	const panelRef = useRef<HTMLDivElement>(null);
 	const seenRef = useRef<Set<string>>(new Set());
+	const lastSheetRowRef = useRef<AgentRow | undefined>(undefined);
 
 	useEffect(() => {
 		void loadSettings();
@@ -282,6 +282,7 @@ export function TopCapsule() {
 		setShowAll(false);
 		setHover(null);
 		seenRef.current = new Set();
+		lastSheetRowRef.current = undefined;
 		setCollapsed(new Set());
 	}, [selectedSessionId]);
 
@@ -403,7 +404,9 @@ export function TopCapsule() {
 	};
 	const hoverInfo = hover ? subagents[hover.id] : undefined;
 	const hoverState = hover ? flattenTree(tree).find((n) => n.id === hover.id)?.state : undefined;
-
+	const activeSheetRow = sheetId ? rows[sheetId] : undefined;
+	if (activeSheetRow) lastSheetRowRef.current = activeSheetRow;
+	const sheetRow = activeSheetRow ?? lastSheetRowRef.current;
 	return (
 		<div ref={anchorRef} className="pointer-events-none absolute right-4 top-3 z-30 flex max-w-[calc(100%-2rem)] justify-end">
 			{!open && (
@@ -412,7 +415,7 @@ export function TopCapsule() {
 					onClick={() => setOpen(true)}
 					aria-expanded={false}
 					style={{ "--glass-radius": "999px" } as CSSProperties}
-					className="liquid-glass pointer-events-auto relative inline-flex h-8 items-center gap-1.5 py-0 pl-2.5 pr-2 text-[12px] text-[var(--text)]"
+					className="liquid-glass press-scale pointer-events-auto relative inline-flex h-8 items-center gap-1.5 py-0 pl-2.5 pr-2 text-[12px] text-[var(--text)]"
 					title={t("subagents.expandPanelTitle")}
 				>
 					<Bot className="h-[15px] w-[15px] shrink-0 text-[var(--accent)]" />
@@ -437,7 +440,7 @@ export function TopCapsule() {
 						<button
 							type="button"
 							onClick={() => setOpen(false)}
-							className="grid h-[22px] w-[22px] place-items-center rounded-full text-[var(--text-60)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
+							className="press-scale grid h-[22px] w-[22px] place-items-center rounded-full text-[var(--text-60)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
 							title={t("subagents.collapseToCapsuleTitle")}
 							aria-label={t("subagents.collapsePanelAria")}
 						>
@@ -462,7 +465,7 @@ export function TopCapsule() {
 							className="mt-1 ml-[15px] flex h-[26px] w-[calc(100%-15px)] items-center gap-1 rounded-[10px] px-2 text-left text-[12px] text-[var(--text-60)] hover:bg-[var(--ghost-hover)] hover:text-[var(--text)]"
 						>
 							{showAll ? t("subagents.collapseExtraRows") : moreLabel(capped.hidden, capped.hiddenAllDone)}
-							{showAll ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+							<ChevronDown className={clsx("h-3 w-3 transition-transform duration-150 ease-[var(--ease-out)]", showAll && "rotate-180")} />
 						</button>
 					)}
 					</div>
@@ -481,16 +484,16 @@ export function TopCapsule() {
 				/>
 			)}
 
-			{sheetId && rows[sheetId] && (
+			{sheetRow && (
 				<SubagentSheet
-					key={sheetId}
+					open={Boolean(activeSheetRow)}
 					parentFile={parentFile}
-					row={rows[sheetId]}
+					row={sheetRow}
 					onClose={() => setSheetId(null)}
-					onPrev={visibleIds.indexOf(sheetId) > 0 ? () => setSheetId(visibleIds[visibleIds.indexOf(sheetId) - 1]) : undefined}
+					onPrev={visibleIds.indexOf(sheetRow.id) > 0 ? () => setSheetId(visibleIds[visibleIds.indexOf(sheetRow.id) - 1]) : undefined}
 					onNext={
-						visibleIds.indexOf(sheetId) >= 0 && visibleIds.indexOf(sheetId) < visibleIds.length - 1
-							? () => setSheetId(visibleIds[visibleIds.indexOf(sheetId) + 1])
+						visibleIds.indexOf(sheetRow.id) >= 0 && visibleIds.indexOf(sheetRow.id) < visibleIds.length - 1
+							? () => setSheetId(visibleIds[visibleIds.indexOf(sheetRow.id) + 1])
 							: undefined
 					}
 				/>

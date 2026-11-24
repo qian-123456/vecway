@@ -8,6 +8,7 @@ import { ModelSelect } from "../../../components/ModelSelect";
 import { parseSelection } from "../../../components/modelSelectLogic";
 import { Segmented } from "../../../components/Segmented";
 import type { ScheduleResultMode, Settings } from "../../../lib/contracts";
+import { toast } from "../../../lib/toast";
 import { useT } from "../../../stores/language";
 import {
 	type AutomationPromptKey,
@@ -118,11 +119,23 @@ export function AutomationSection() {
 	};
 
 	const resetPrompt = async (key: AutomationPromptKey, settingsKey: keyof Settings) => {
+		const previousCustom =
+			typeof settings?.[settingsKey] === "string" && (settings[settingsKey] as string).trim()
+				? (settings[settingsKey] as string)
+				: draftPrompts[key];
 		const defaultText = DEFAULT_AUTOMATION_PROMPTS[locale][key];
 		setDraftPrompts((prev) => ({ ...prev, [key]: defaultText }));
-		await promptSave.run(() => save({ [settingsKey]: null } as Partial<Settings>));
+		const ok = await promptSave.run(() => save({ [settingsKey]: null } as Partial<Settings>));
+		if (ok && previousCustom.trim() && previousCustom.trim() !== defaultText.trim()) {
+			toast.info(t("settingsSections.automations.resetPromptToast"), 6000, {
+				label: t("common.undo"),
+				onClick: () => {
+					setDraftPrompts((prev) => ({ ...prev, [key]: previousCustom }));
+					void promptSave.run(() => save({ [settingsKey]: previousCustom } as Partial<Settings>));
+				},
+			});
+		}
 	};
-
 	return (
 		<div className="space-y-5">
 			<SectionHeader

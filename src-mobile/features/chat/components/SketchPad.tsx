@@ -22,6 +22,7 @@ function SketchOverlay({ onClose, onDone }: { onClose: () => void; onDone: (blob
 	const stageRef = useRef<HTMLDivElement>(null);
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const strokes = useRef<Stroke[]>([]);
+	const undoSnapshots = useRef<Stroke[][]>([]);
 	const drawing = useRef<number | null>(null);
 	const model = useRef<SketchSize | null>(null);
 	const exporting = useRef(false);
@@ -30,8 +31,8 @@ function SketchOverlay({ onClose, onDone }: { onClose: () => void; onDone: (blob
 	const [width, setWidth] = useState<number>(SKETCH_WIDTHS[1]);
 	const [tool, setTool] = useState<SketchTool>("pen");
 	const [count, setCount] = useState(0);
+	const [undoDepth, setUndoDepth] = useState(0);
 	const [busy, setBusy] = useState(false);
-
 	const redraw = useCallback(() => {
 		const cv = canvasRef.current;
 		if (cv && model.current) replaySketch(cv, strokes.current, model.current, SKETCH_PAPER);
@@ -119,10 +120,15 @@ function SketchOverlay({ onClose, onDone }: { onClose: () => void; onDone: (blob
 					variant="filled"
 					icon={<Undo2 size={20} />}
 					label="撤销"
-					disabled={count === 0 || busy}
+					disabled={(count === 0 && undoDepth === 0) || busy}
 					onClick={() => {
 						drawing.current = null;
-						strokes.current = undoStroke(strokes.current);
+						if (strokes.current.length > 0) {
+							strokes.current = undoStroke(strokes.current);
+						} else if (undoSnapshots.current.length > 0) {
+							strokes.current = undoSnapshots.current.pop() ?? [];
+							setUndoDepth(undoSnapshots.current.length);
+						}
 						setCount(strokes.current.length);
 						redraw();
 					}}
@@ -134,6 +140,10 @@ function SketchOverlay({ onClose, onDone }: { onClose: () => void; onDone: (blob
 					disabled={count === 0 || busy}
 					onClick={() => {
 						drawing.current = null;
+						if (strokes.current.length > 0) {
+							undoSnapshots.current.push([...strokes.current]);
+							setUndoDepth(undoSnapshots.current.length);
+						}
 						strokes.current = [];
 						setCount(0);
 						redraw();

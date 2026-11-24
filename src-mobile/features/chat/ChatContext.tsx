@@ -11,6 +11,9 @@ export interface MessageTarget {
 	entryId: string | null;
 	/** Last assistant answer of the whole transcript: eligible for retry/regenerate. */
 	canRetry: boolean;
+	/** True when the message contains image attachments. */
+	hasImages?: boolean;
+	imageCount?: number;
 }
 
 export interface ChatUi {

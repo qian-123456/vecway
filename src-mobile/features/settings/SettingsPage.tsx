@@ -10,6 +10,7 @@ import { QUOTA_ITEM, SETTINGS_GROUPS, type SettingsItemDef, type SheetId } from 
 import {
 	AboutSheet,
 	AppearanceSheet,
+	AutomationSettingsSheet,
 	ConnectionSheet,
 	DoctorSheet,
 	GeneralSheet,
@@ -34,11 +35,18 @@ interface SettingsData {
 	defaultModel?: string | null;
 	defaultModelSource?: string | null;
 	defaultApprovalMode?: string | null;
-	automationOverlapPolicy?: string | null;
+	automationBackgroundEnabled?: boolean;
+	automationOverlapPolicy?: "skip" | "coalesce" | "queue" | "parallel" | null;
+	automationDefaultResultMode?: "structured" | "llm_summary" | null;
+	automationDefaultModel?: string | null;
+	automationDefaultThinking?: string | null;
+	automationPromptMockTest?: string | null;
+	automationPromptRealOnceTest?: string | null;
+	automationPromptRealLoopTest?: string | null;
+	automationPromptAdjust?: string | null;
 	omp?: Record<string, OmpValue>;
 	ompError?: string | null;
 }
-
 interface DirEntry {
 	path: string;
 	label?: string;
@@ -237,7 +245,7 @@ export function SettingsPage() {
 					<div className="pointer-events-none flex min-w-0 flex-1 items-center justify-center">
 						<span
 							aria-hidden="true"
-							className={`truncate text-m-md font-semibold tracking-[-0.01em] text-m-text transition-[opacity,transform] duration-(--m-dur-fast) ease-m motion-reduce:translate-y-0 motion-reduce:transition-opacity ${
+							className={`truncate text-m-md font-semibold tracking-[-0.01em] text-m-text transition-[opacity,transform,translate] duration-(--m-dur-fast) ease-m motion-reduce:translate-y-0 motion-reduce:transition-opacity ${
 								collapsed ? "translate-y-0 opacity-100" : "translate-y-1.5 opacity-0"
 							}`}
 						>
@@ -352,6 +360,26 @@ export function SettingsPage() {
 				onModeChange={(m) => setData((d) => (d ? { ...d, defaultApprovalMode: m } : d))}
 				automationOverlapPolicy={automationOverlapPolicy}
 				onAutomationOverlapPolicyChange={(policy) => setData((d) => (d ? { ...d, automationOverlapPolicy: policy } : d))}
+				onOpenAutomations={() => {
+					setActiveSheet("automations");
+					setSheetOpen(true);
+				}}
+			/>}
+			{activeSheet === "automations" && <AutomationSettingsSheet
+				open={sheetOpen}
+				onClose={close}
+				snapshot={data ? {
+					automationBackgroundEnabled: data.automationBackgroundEnabled,
+					automationOverlapPolicy: automationOverlapPolicy ?? undefined,
+					automationDefaultResultMode: data.automationDefaultResultMode ?? undefined,
+					automationDefaultModel: data.automationDefaultModel,
+					automationDefaultThinking: data.automationDefaultThinking,
+					automationPromptMockTest: data.automationPromptMockTest,
+					automationPromptRealOnceTest: data.automationPromptRealOnceTest,
+					automationPromptRealLoopTest: data.automationPromptRealLoopTest,
+					automationPromptAdjust: data.automationPromptAdjust,
+				} : null}
+				onUpdate={(next) => setData((d) => (d ? { ...d, ...next } : next))}
 			/>}
 			{activeSheet === "appearance" && <AppearanceSheet open={sheetOpen} onClose={close} />}
 			{activeSheet === "notifications" && <NotifySheet open={sheetOpen} onClose={close} />}

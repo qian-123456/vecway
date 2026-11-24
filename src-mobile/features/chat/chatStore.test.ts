@@ -1044,3 +1044,86 @@ describe("tail pagination & slim hot path", () => {
 		c.dispose();
 	});
 });
+
+describe("automation status sync & sequencing", () => {
+	it("normalizes empty/null setStatus clear frames, blocks stale composer-state overwrites, and marks snapshot vs live", async () => {
+		let resolveState!: (v: unknown) => void;
+		let stateCalls = 0;
+		apiMock.mockImplementation(async (_m: string, path: string) => {
+			if (path.endsWith("/composer-state")) {
+				stateCalls++;
+				if (stateCalls === 1) {
+					return new Promise((resolve) => {
+						resolveState = resolve;
+					});
+				}
+				return {
+					streaming: false,
+					automationState: {
+						mode: "active",
+						drafts: [
+							{
+								draftId: "d-reconn",
+								status: "pending",
+								draft: { name: "重连", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 10 } },
+							},
+						],
+					},
+				};
+			}
+			if (path.includes("/transcript")) return { items: [], nextOffset: 0 };
+			return {};
+		});
+
+		const c = new ChatController("s-auto-seq");
+		c.start();
+		await rafTick();
+		expect(stateCalls).toBe(1);
+
+		// Live SSE setStatus arrives while initial GET /composer-state is still in-flight
+		events.emit("rpc", {
+			sessionId: "s-auto-seq",
+			frame: {
+				type: "extension_ui_request",
+				method: "setStatus",
+				statusKey: "ompws-automation",
+				statusText: JSON.stringify({
+					mode: "active",
+					drafts: [
+						{
+							draftId: "d-live",
+							status: "pending",
+							draft: { name: "实时草案", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 15 } },
+						},
+					],
+				}),
+			},
+		});
+		expect(c.state.automationSource).toBe("live");
+		expect(c.state.automationState?.drafts[0].draftId).toBe("d-live");
+
+		// Stale in-flight composer-state lands later -> must NOT overwrite newer live automationState
+		resolveState({ streaming: false, automationState: { mode: "idle", drafts: [] } });
+		await rafTick();
+		expect(c.state.automationState?.drafts[0].draftId).toBe("d-live");
+
+		// Null/empty statusText clear frame resets to idle empty drafts
+		events.emit("rpc", {
+			sessionId: "s-auto-seq",
+			frame: {
+				type: "extension_ui_request",
+				method: "setStatus",
+				statusKey: "ompws-automation",
+				statusText: "",
+			},
+		});
+		expect(c.state.automationState).toEqual({ mode: "idle", drafts: [] });
+		expect(c.state.automationSource).toBe("live");
+
+		// Subsequent reconnect loadState() tags update as snapshot
+		await c.loadState();
+		expect(c.state.automationSource).toBe("snapshot");
+		expect(c.state.automationState?.drafts[0].draftId).toBe("d-reconn");
+		c.dispose();
+	});
+});

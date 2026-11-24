@@ -583,4 +583,32 @@ describe("Image and composer parity", () => {
 			imageUrls: ["blob:shot"],
 		});
 	});
+
+	it("keeps /automate text when setAutomationMode fails or when follow-up send returns false", async () => {
+		const c = new ChatController("s-comp");
+		const setAutoSpy = vi.spyOn(c, "setAutomationMode").mockRejectedValueOnce(new Error("offline"));
+		const sendSpy = vi.spyOn(c, "send");
+		render(wrap(c, <Composer sessionId="s-comp" />));
+
+		const box = screen.getByLabelText("消息输入框") as HTMLTextAreaElement;
+		await act(async () => {
+			fireEvent.input(box, { target: { value: "/automate 每小时检查日志" } });
+			await new Promise((r) => requestAnimationFrame(r));
+		});
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "发送" }));
+		});
+		expect(setAutoSpy).toHaveBeenCalledWith(true, "每小时检查日志");
+		expect(box.value).toBe("/automate 每小时检查日志");
+		expect(sendSpy).not.toHaveBeenCalled();
+
+		setAutoSpy.mockResolvedValueOnce("s-comp");
+		sendSpy.mockResolvedValueOnce(false);
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "发送" }));
+		});
+		expect(sendSpy).toHaveBeenCalledWith("每小时检查日志", expect.any(String));
+		expect(box.value).toBe("/automate 每小时检查日志");
+		c.dispose();
+	});
 });

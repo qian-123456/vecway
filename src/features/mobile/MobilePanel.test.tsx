@@ -163,4 +163,39 @@ describe("LAN TLS & dual-use QR", () => {
   expect(within(qrCard).getByText("vecway://pair?v=1&code=ABC&t=lan&lt=https%3A%2F%2F192.168.1.10%3A7790")).toBeTruthy();
   expect(qrCard.innerHTML).toContain("data-kind=\"app\"");
  });
+
+ it("starts LAN server then creates QR in one click when stopped, and explains missing remote pairing requirements", async () => {
+  fixture.running = false;
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  vi.mocked(ipc.mobileCreatePairing).mockResolvedValue({
+   url: "http://192.168.1.10:7788/pair?code=XYZ",
+   qrSvg: "<svg data-kind='lan'></svg>",
+   expiresAt,
+  });
+  render(<MobilePanel />);
+  const startPairBtn = await screen.findByRole("button", { name: tNow("mobile.btnStartPairing") });
+  expect(ipc.mobileStart).not.toHaveBeenCalled();
+  expect(ipc.mobileCreatePairing).not.toHaveBeenCalled();
+
+  await act(async () => {
+   fireEvent.click(startPairBtn);
+  });
+  expect(fixture.order).toEqual(["start"]);
+  expect(ipc.mobileCreatePairing).toHaveBeenCalledWith("lan");
+  expect(document.querySelector("[data-field-id='mobileQr']")).toBeTruthy();
+
+  // Switch to remote IPv6 without IPv6 address: disabled QR button carries accurate title + inline guidance.
+  fireEvent.click(screen.getByRole("radio", { name: tNow("mobile.tabRemote") }));
+  const qrBtn = screen.getByRole("button", { name: tNow("mobile.btnGenerateQr") }) as HTMLButtonElement;
+  expect(qrBtn.disabled).toBe(true);
+  expect(qrBtn.title).toBe(tNow("mobile.pairRemoteMissingIpv6Address"));
+  expect(screen.getByText(tNow("mobile.pairRemoteMissingIpv6Address"))).toBeTruthy();
+
+  // Switch to tunnel when tunnel is not connected: accurate title + inline guidance.
+  fireEvent.click(screen.getByLabelText(tNow("mobile.remoteTunnel")));
+  const tunnelQrBtn = screen.getByRole("button", { name: tNow("mobile.btnGenerateQr") }) as HTMLButtonElement;
+  expect(tunnelQrBtn.disabled).toBe(true);
+  expect(tunnelQrBtn.title).toBe(tNow("mobile.pairRemoteMissingTunnel"));
+  expect(screen.getByText(tNow("mobile.pairRemoteMissingTunnel"))).toBeTruthy();
+ });
 });

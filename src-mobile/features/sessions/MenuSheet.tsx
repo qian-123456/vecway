@@ -15,6 +15,7 @@ import {
 import { nav, paths } from "../../core/nav";
 import { events, reconnectEvents } from "../../core/sse";
 import { IconButton, toast } from "../../ui";
+import { readTranslateXY, rubberBand, VelocityTracker } from "../../ui/gesturePhysics";
 import { useOverlay, usePresence } from "../../ui/overlay";
 import { ConnectionSheet, type MobileInfo } from "../settings/sheets/ConnectionSheet";
 import { useSessionActions } from "./ActionSheets";
@@ -28,7 +29,7 @@ import type { TreeSession } from "./tree";
 
 export type LeftNavViewMode = "project" | "time";
 
-const ANIM_MS = 300;
+const ANIM_MS = 240;
 /** Horizontal swipe distance (px) or flick velocity (px/ms) that closes the drawer. */
 const SWIPE_CLOSE_PX = 90;
 const SWIPE_CLOSE_V = 0.5;
@@ -76,11 +77,19 @@ export function MenuSheet({
 	}, []);
 	useOverlay(filterOpen, closeFilter);
 	const panelRef = useRef<HTMLDivElement>(null);
-	const swipe = useRef<{ x: number; y: number; t: number; dx: number; axis: "x" | "y" | null } | null>(null);
+	const scrimRef = useRef<HTMLDivElement>(null);
+	const trackerRef = useRef(new VelocityTracker());
+	const swipe = useRef<{ x: number; y: number; baseX: number; dx: number; axis: "x" | "y" | null } | null>(null);
 	const resetSwipe = useCallback(() => {
 		swipe.current = null;
+		trackerRef.current.reset();
+		if (scrimRef.current) {
+			scrimRef.current.style.removeProperty("transition");
+			scrimRef.current.style.removeProperty("opacity");
+		}
 		const el = panelRef.current;
 		if (!el) return;
+		delete el.dataset.dragging;
 		// Removing only the inline overrides restores the CSS spring-back transition.
 		el.style.removeProperty("transition");
 		el.style.removeProperty("transform");
@@ -208,7 +217,11 @@ export function MenuSheet({
 		if (e.target instanceof Element && (e.target.closest("[data-session-row]") || e.target.closest("[role='menu']"))) return;
 		const p = e.touches[0];
 		if (!p || e.touches.length !== 1) return;
-		swipe.current = { x: p.clientX, y: p.clientY, t: e.timeStamp, dx: 0, axis: null };
+		const el = panelRef.current;
+		const baseX = el ? Math.min(0, readTranslateXY(el).x) : 0;
+		trackerRef.current.reset();
+		trackerRef.current.add(p.clientX, p.clientY, e.timeStamp);
+		swipe.current = { x: p.clientX, y: p.clientY, baseX, dx: baseX, axis: null };
 	};
 	const onTouchMove = (e: ReactTouchEvent) => {
 		const s = swipe.current;
@@ -224,18 +237,28 @@ export function MenuSheet({
 		if (s.axis === null) {
 			if (Math.abs(dx) <= 10 && Math.abs(dy) <= 10) return;
 			s.axis = Math.abs(dx) > Math.abs(dy) * 1.6 && dx < -10 ? "x" : "y";
-			if (s.axis === "x") el.style.transition = "none";
+			if (s.axis === "x") {
+				el.dataset.dragging = "true";
+				el.style.transition = "none";
+				if (scrimRef.current) scrimRef.current.style.transition = "none";
+			}
 		}
 		if (s.axis !== "x") return;
-		s.dx = Math.min(0, dx);
+		const rawDx = s.baseX + dx;
+		const width = Math.max(200, el.clientWidth || 300);
+		s.dx = rawDx > 0 ? rubberBand(rawDx, width, 0.25) : rawDx;
+		trackerRef.current.add(p.clientX, p.clientY, e.timeStamp);
 		el.style.transform = `translate3d(${s.dx}px,0,0)`;
+		if (scrimRef.current) {
+			scrimRef.current.style.opacity = String(Math.max(0, Math.min(1, 1 + Math.min(0, s.dx) / width)));
+		}
 	};
 	const onTouchEnd = (e: ReactTouchEvent) => {
 		const s = swipe.current;
+		const { vx } = trackerRef.current.velocity(e.timeStamp);
 		resetSwipe();
 		if (!s || s.axis !== "x") return;
-		const v = -s.dx / Math.max(1, e.timeStamp - s.t);
-		if (-s.dx > SWIPE_CLOSE_PX || v > SWIPE_CLOSE_V) onClose();
+		if (-s.dx > SWIPE_CLOSE_PX || -vx > SWIPE_CLOSE_V) onClose();
 	};
 	const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
 		if (e.key !== "Tab") return;
@@ -261,9 +284,10 @@ export function MenuSheet({
 	return createPortal(
 		<div ref={outerRef} aria-hidden={!open || undefined} className={`fixed inset-0 z-(--z-sheet) ${open ? "" : "pointer-events-none"}`}>
 			<div
+				ref={scrimRef}
 				aria-hidden="true"
 				onClick={onClose}
-				className={`absolute inset-0 bg-m-scrim transition-opacity duration-300 ${visible ? "opacity-100" : "opacity-0"}`}
+				className={`absolute inset-0 bg-m-scrim transition-opacity ease-m motion-reduce:duration-150 ${visible ? "opacity-100 duration-(--m-dur-sheet)" : "opacity-0 duration-(--m-dur-sheet-exit)"}`}
 			/>
 			<div
 				ref={panelRef}
@@ -271,12 +295,13 @@ export function MenuSheet({
 				aria-modal={isTopModal ? "true" : undefined}
 				aria-label="导航"
 				tabIndex={-1}
+				data-visible={visible ? "true" : "false"}
 				onKeyDown={onKeyDown}
 				onTouchStart={onTouchStart}
 				onTouchMove={onTouchMove}
 				onTouchEnd={onTouchEnd}
 				onTouchCancel={resetSwipe}
-				className={`m-sheet-surface absolute inset-y-0 left-0 flex w-[85vw] max-w-[340px] touch-pan-y flex-col border-r border-m-border/80 bg-m-drawer-bg text-m-text shadow-m-pop backdrop-blur-2xl backdrop-saturate-150 outline-none transition-transform duration-300 ease-m-sheet ${
+				className={`m-sheet-surface absolute inset-y-0 left-0 flex w-[85vw] max-w-[340px] touch-pan-y flex-col border-r border-m-border/80 bg-m-drawer-bg text-m-text shadow-m-pop backdrop-blur-2xl backdrop-saturate-150 outline-none ${
 					visible ? "translate-x-0" : "-translate-x-full"
 				}`}
 				style={{ paddingTop: "var(--m-safe-top)", paddingBottom: "calc(var(--m-safe-bottom) + 6px)", paddingLeft: "var(--m-safe-left)" }}

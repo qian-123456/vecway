@@ -77,4 +77,12 @@ describe("ContextRing", () => {
 		fireEvent.click(screen.getByRole("button"));
 		expect(screen.getByText("未知")).toBeTruthy();
 	});
+
+	it("never renders raw unknown backend keys in the context usage popover", () => {
+		render(<ContextRing usageObj={{ tokens: 50_000, internalDebugFlag: "xyz123", trailingTokens: 42 } as never} />);
+		fireEvent.click(screen.getByRole("button"));
+		expect(document.body.textContent).not.toContain("internalDebugFlag");
+		expect(document.body.textContent).not.toContain("trailingTokens");
+		expect(document.body.textContent).not.toContain("xyz123");
+	});
 });

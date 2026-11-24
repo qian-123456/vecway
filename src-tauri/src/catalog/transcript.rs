@@ -127,13 +127,52 @@ fn entry_id(line: &[u8]) -> Option<String> {
 /// diff as `oldText`/`newText`/`perFileResults`). The renderers only use
 /// `details.diff` (ToolCard), the `ask` answers and the `task`/`agent`
 /// progress+results, so every other tool keeps just its diff.
+/// Extract `vecway_automation` proposal metadata (`draftId`, `action`, `scheduleId`).
+/// Infers `action = "propose"` when `draftId` is present and `action` is missing,
+/// and falls back to nested `draft.id` if top-level `scheduleId` is absent.
+pub(crate) fn extract_automation_details(
+    details: &Value,
+    out: &mut serde_json::Map<String, Value>,
+) {
+    let non_empty = |v: Option<&Value>| -> Option<String> {
+        v.and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let draft_id = non_empty(details.get("draftId"));
+    if let Some(did) = &draft_id {
+        out.insert("draftId".into(), Value::String(did.clone()));
+    }
+    if let Some(action) = non_empty(details.get("action")) {
+        out.insert("action".into(), Value::String(action));
+    } else if draft_id.is_some() {
+        out.insert("action".into(), Value::String("propose".to_string()));
+    }
+    if let Some(schedule_id) =
+        non_empty(details.get("scheduleId")).or_else(|| non_empty(details.pointer("/draft/id")))
+    {
+        out.insert("scheduleId".into(), Value::String(schedule_id));
+    }
+}
+
 fn slim_details(tool_name: &str, details: Option<&Value>) -> Option<Value> {
     let details = details?;
     if matches!(tool_name, "task" | "agent" | "ask") {
         return Some(details.clone());
     }
-    let diff = details.get("diff").filter(|d| d.is_string())?;
-    Some(serde_json::json!({ "diff": diff }))
+    let mut out = serde_json::Map::new();
+    if let Some(diff) = details.get("diff").filter(|d| d.is_string()) {
+        out.insert("diff".into(), diff.clone());
+    }
+    let has_draft_id = details
+        .get("draftId")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty());
+    if tool_name == "vecway_automation" || has_draft_id {
+        extract_automation_details(details, &mut out);
+    }
+    (!out.is_empty()).then_some(Value::Object(out))
 }
 
 #[cfg(test)]
@@ -1006,7 +1045,32 @@ mod tests {
             Some(serde_json::from_str(task).unwrap())
         );
         assert!(details("ask", r#"{"results":[]}"#).is_some());
+        // vecway_automation (or any tool result with draftId): preserves draftId,
+        // infers action="propose" when missing, and reads nested draft.id.
+        assert_eq!(
+            details(
+                "vecway_automation",
+                r#"{"draftId":"d-1","draft":{"id":"sched-nested","name":"n"},"extra":"drop"}"#
+            ),
+            Some(serde_json::json!({
+                "draftId": "d-1",
+                "action": "propose",
+                "scheduleId": "sched-nested"
+            }))
+        );
+        assert_eq!(
+            details(
+                "custom_tool",
+                r#"{"draftId":"d-2","action":"update","scheduleId":"sched-top"}"#
+            ),
+            Some(serde_json::json!({
+                "draftId": "d-2",
+                "action": "update",
+                "scheduleId": "sched-top"
+            }))
+        );
     }
+
 
     #[test]
     fn preserves_error_message_even_when_partial_text_streamed() {

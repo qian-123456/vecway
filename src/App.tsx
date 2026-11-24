@@ -19,10 +19,12 @@ import { useForkDraft } from "./features/sessions/forkDraft";
 import { StartPage } from "./features/home/StartPage";
 import { useDoctorAutoScheduler } from "./features/heatmap/doctorStore";
 import { startTodos } from "./features/todos/store";
+import { startSettingsSync } from "./features/settings/store";
 
 import { terminalSetCurrentSession } from "./lib/ipc";
 import { RESUME_MISSING_CWD_MODAL, RESUME_MISSING_MODEL_MODAL } from "./lib/ensureLive";
 import { captureDiagnosticError } from "./lib/diagnostics";
+import { claimEscape } from "./lib/escapeClaim";
 import { installNativeShortcuts } from "./lib/nativeShortcuts";
 import { installShortcutDispatcher } from "./features/shortcuts/dispatcher";
 import { effectiveCenterViewOf } from "./features/shortcuts/actions/navigation";
@@ -37,10 +39,8 @@ import { useStartupImageGc } from "./features/settings/useStartupImageGc";
 import {
 	MAX_RIGHT_WIDTH,
 	MAX_SIDEBAR_WIDTH,
-	MIN_CENTER_WIDTH,
 	MIN_RIGHT_WIDTH,
 	MIN_SIDEBAR_WIDTH,
-	SIDEBAR_COLLAPSE_THRESHOLD,
 	type CenterView,
 	useUi,
 } from "./stores/ui";
@@ -165,6 +165,10 @@ function MainCenterView({ activeView }: { activeView: CenterView }) {
 function LazyOverlays() {
 	const modalName = useUi((s) => s.modal?.name ?? null);
 	const settingsOpen = useUi((s) => s.centerView === "settings");
+	const [settingsEverOpened, setSettingsEverOpened] = useState(settingsOpen);
+	useEffect(() => {
+		if (settingsOpen) setSettingsEverOpened(true);
+	}, [settingsOpen]);
 	return (
 		<>
 			{modalName === "diagnose" && (
@@ -192,9 +196,9 @@ function LazyOverlays() {
 					<ResumeMissingModelDialog />
 				</Suspense>
 			)}
-			{settingsOpen && (
+			{(settingsOpen || settingsEverOpened) && (
 				<Suspense fallback={null}>
-					<SettingsOverlay />
+					<SettingsOverlay open={settingsOpen} />
 				</Suspense>
 			)}
 		</>
@@ -219,11 +223,6 @@ export default function App() {
 	const [viewportWidth, setViewportWidth] = useState(() =>
 		typeof window !== "undefined" ? window.innerWidth : 1440,
 	);
-	useEffect(() => {
-		const onResize = () => setViewportWidth(window.innerWidth);
-		window.addEventListener("resize", onResize);
-		return () => window.removeEventListener("resize", onResize);
-	}, []);
 	const centerView = useUi((s) => s.centerView);
 	const previousCenterView = useUi((s) => s.previousCenterView);
 	const selectedSessionId = useUi((s) => s.selectedSessionId);
@@ -257,98 +256,331 @@ export default function App() {
 	const effectiveRightWidthRef = useRef(effectiveRightWidth);
 	effectiveRightWidthRef.current = effectiveRightWidth;
 
-	// Resizable sidebars: delta-drag (seam keeps its grab offset under the pointer), rAF-throttled
-	// live updates, persistence only on drag end. Cursor/user-select live on the overlay div, so
-	// they disappear with it — no global body styles to leak.
-	const drag = useRef<{ side: "left" | "right"; grabOffsetX: number } | null>(null);
+	useEffect(() => {
+		let raf = 0;
+		let settleTimer = 0;
+		const onResize = () => {
+			document.documentElement.classList.add("is-window-resizing");
+			window.clearTimeout(settleTimer);
+			settleTimer = window.setTimeout(() => {
+				document.documentElement.classList.remove("is-window-resizing");
+			}, 140);
+			if (raf !== 0) return;
+			raf = window.requestAnimationFrame(() => {
+				raf = 0;
+				setViewportWidth(window.innerWidth);
+			});
+		};
+		window.addEventListener("resize", onResize, { passive: true });
+		return () => {
+			window.removeEventListener("resize", onResize);
+			window.cancelAnimationFrame(raf);
+			window.clearTimeout(settleTimer);
+			document.documentElement.classList.remove("is-window-resizing");
+		};
+	}, []);
+
+	// Resizable sidebars: pointer capture + rAF-throttled direct DOM width updates (zero per-frame
+	// App rerenders), hysteresis collapse preview, Escape rollback, and persistence only on commit.
+	const LEFT_COLLAPSE_PREVIEW_THRESHOLD = 152;
+	const LEFT_COLLAPSE_THRESHOLD = 124;
+	const LEFT_EXPAND_THRESHOLD = 148;
+	const leftPaneRef = useRef<HTMLDivElement>(null);
+	const leftHandleRef = useRef<HTMLDivElement>(null);
+	const rightHandleRef = useRef<HTMLDivElement>(null);
+	const drag = useRef<{
+		side: "left" | "right";
+		pointerId: number;
+		handleEl: HTMLDivElement;
+		grabOffsetX: number;
+		startClientX: number;
+		moved: boolean;
+		startWidth: number;
+		startLeftWidth: number;
+		startRightWidth: number;
+		startOpen: boolean;
+		currentWidth: number;
+		currentOpen: boolean;
+		previewCollapse: boolean;
+	} | null>(null);
 	const [draggingSide, setDraggingSide] = useState<"left" | "right" | null>(null);
 	const isDragging = draggingSide !== null;
 
-	const onLeftDragStart = useCallback((e: React.MouseEvent) => {
-		if (e.button !== 0) return;
+	const onLeftDragStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+		if (e.button !== 0 || drag.current) return;
 		e.preventDefault();
-		drag.current = { side: "left", grabOffsetX: e.clientX - effectiveSidebarWidthRef.current };
+		try {
+			e.currentTarget.setPointerCapture(e.pointerId);
+		} catch {
+			/* synthetic test events may not support pointer capture */
+		}
+		const startWidth = effectiveSidebarWidthRef.current;
+		const ui = useUi.getState();
+		drag.current = {
+			side: "left",
+			pointerId: e.pointerId,
+			handleEl: e.currentTarget,
+			grabOffsetX: e.clientX - startWidth,
+			startClientX: e.clientX,
+			moved: false,
+			startWidth,
+			startLeftWidth: startWidth,
+			startRightWidth: effectiveRightWidthRef.current,
+			startOpen: ui.sidebarOpen,
+			currentWidth: ui.sidebarWidth,
+			currentOpen: ui.sidebarOpen,
+			previewCollapse: false,
+		};
 		setDraggingSide("left");
 	}, []);
 
-	const onRightDragStart = useCallback((e: React.MouseEvent) => {
-		if (e.button !== 0) return;
+	const onRightDragStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+		if (e.button !== 0 || drag.current) return;
 		e.preventDefault();
-		const seamX = window.innerWidth - effectiveRightWidthRef.current;
-		drag.current = { side: "right", grabOffsetX: e.clientX - seamX };
+		try {
+			e.currentTarget.setPointerCapture(e.pointerId);
+		} catch {
+			/* synthetic test events may not support pointer capture */
+		}
+		const startWidth = effectiveRightWidthRef.current;
+		const seamX = window.innerWidth - startWidth;
+		const ui = useUi.getState();
+		drag.current = {
+			side: "right",
+			pointerId: e.pointerId,
+			handleEl: e.currentTarget,
+			grabOffsetX: e.clientX - seamX,
+			startClientX: e.clientX,
+			moved: false,
+			startWidth,
+			startLeftWidth: effectiveSidebarWidthRef.current,
+			startRightWidth: startWidth,
+			startOpen: true,
+			currentWidth: ui.rightWidth,
+			currentOpen: true,
+			previewCollapse: false,
+		};
 		setDraggingSide("right");
 	}, []);
 	useEffect(() => {
 		if (!draggingSide) return;
 		let rafId: number | null = null;
 		let latestClientX: number | null = null;
+		const handleEl = drag.current?.handleEl ?? null;
+
+		const applyLeftDom = (open: boolean, width: number, preview: boolean) => {
+			const pane = leftPaneRef.current;
+			if (!pane) return;
+			if (!open) {
+				pane.style.width = "0px";
+				pane.style.opacity = "0";
+				delete pane.dataset.collapsePreview;
+				return;
+			}
+			pane.style.width = `${Math.round(width)}px`;
+			pane.style.opacity = preview ? "0.48" : "";
+			if (preview) pane.dataset.collapsePreview = "true";
+			else delete pane.dataset.collapsePreview;
+		};
+
+		const applyRightDom = (width: number) => {
+			const rightEl = rightHandleRef.current?.nextElementSibling as HTMLElement | null;
+			if (rightEl) rightEl.style.width = `${Math.round(width)}px`;
+		};
 
 		const updateWidth = () => {
 			rafId = null;
 			const d = drag.current;
 			if (!d || latestClientX === null) return;
-			// Live update without persisting; the store setter (which writes localStorage) runs on end.
+			const ui = useUi.getState();
+			const vw = window.innerWidth;
 			if (d.side === "left") {
 				const raw = latestClientX - d.grabOffsetX;
-				if (raw < SIDEBAR_COLLAPSE_THRESHOLD) {
-					useUi.setState({ sidebarOpen: false });
-				} else {
-					const rightReserved = rightVisibleRef.current ? effectiveRightWidthRef.current : 0;
-					const maxLeft = Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth - rightReserved - MIN_CENTER_WIDTH);
-					const w = Math.min(MAX_SIDEBAR_WIDTH, maxLeft, Math.max(MIN_SIDEBAR_WIDTH, raw));
-					useUi.setState({ sidebarOpen: true, sidebarWidth: w });
+				if (d.currentOpen) {
+					if (raw < LEFT_COLLAPSE_THRESHOLD) {
+						d.currentOpen = false;
+						d.previewCollapse = false;
+					} else {
+						d.currentOpen = true;
+						d.previewCollapse = raw < LEFT_COLLAPSE_PREVIEW_THRESHOLD;
+						d.currentWidth = Math.min(
+							MAX_SIDEBAR_WIDTH,
+							Math.max(MIN_SIDEBAR_WIDTH, Math.round(raw)),
+						);
+					}
+				} else if (raw >= LEFT_EXPAND_THRESHOLD) {
+					d.currentOpen = true;
+					d.previewCollapse = raw < LEFT_COLLAPSE_PREVIEW_THRESHOLD;
+					d.currentWidth = Math.min(
+						MAX_SIDEBAR_WIDTH,
+						Math.max(MIN_SIDEBAR_WIDTH, Math.round(raw)),
+					);
 				}
+				const widths = computeShellWidths({
+					viewportWidth: vw,
+					sidebarOpen: d.currentOpen,
+					sidebarWidth: d.currentWidth,
+					rightVisible: rightVisibleRef.current,
+					rightWidth: ui.rightWidth,
+				});
+				applyLeftDom(d.currentOpen, widths.leftWidth, d.previewCollapse);
+				if (rightVisibleRef.current) applyRightDom(widths.rightWidth);
+				d.handleEl.setAttribute(
+					"aria-valuenow",
+					String(Math.round(d.currentOpen ? widths.leftWidth : 0)),
+				);
 			} else {
-				const s = useUi.getState();
-				const leftReserved = s.sidebarOpen ? effectiveSidebarWidthRef.current : 0;
-				const maxRight = Math.max(MIN_RIGHT_WIDTH, window.innerWidth - leftReserved - MIN_CENTER_WIDTH);
-				const w = Math.min(MAX_RIGHT_WIDTH, maxRight, Math.max(MIN_RIGHT_WIDTH, window.innerWidth - latestClientX + d.grabOffsetX));
-				useUi.setState({ rightWidth: w });
+				const raw = vw - latestClientX + d.grabOffsetX;
+				d.currentWidth = Math.min(
+					MAX_RIGHT_WIDTH,
+					Math.max(MIN_RIGHT_WIDTH, Math.round(raw)),
+				);
+				const widths = computeShellWidths({
+					viewportWidth: vw,
+					sidebarOpen: ui.sidebarOpen,
+					sidebarWidth: ui.sidebarWidth,
+					rightVisible: true,
+					rightWidth: d.currentWidth,
+				});
+				applyRightDom(widths.rightWidth);
+				if (ui.sidebarOpen) applyLeftDom(true, widths.leftWidth, false);
+				d.handleEl.setAttribute("aria-valuenow", String(Math.round(widths.rightWidth)));
 			}
 		};
 
-		const onMove = (e: MouseEvent) => {
+		const onMove = (e: PointerEvent) => {
+			const d = drag.current;
+			if (!d || e.pointerId !== d.pointerId) return;
+			if (e.clientX !== d.startClientX) d.moved = true;
 			latestClientX = e.clientX;
 			if (rafId === null) rafId = requestAnimationFrame(updateWidth);
 		};
 
-		const end = () => {
+		const releaseCapture = (d: NonNullable<typeof drag.current>) => {
+			try {
+				if (d.handleEl.hasPointerCapture(d.pointerId)) {
+					d.handleEl.releasePointerCapture(d.pointerId);
+				}
+			} catch {
+				/* handle may have unmounted */
+			}
+		};
+
+		const commit = () => {
 			if (rafId !== null) {
 				cancelAnimationFrame(rafId);
+				rafId = null;
 				updateWidth();
 			}
 			const d = drag.current;
 			drag.current = null;
 			if (d) {
-				const s = useUi.getState();
-				if (d.side === "left") {
-					if (!s.sidebarOpen) {
-						setSidebarOpen(false);
+				releaseCapture(d);
+				if (d.side === "left" && leftPaneRef.current) {
+					leftPaneRef.current.style.opacity = "";
+					delete leftPaneRef.current.dataset.collapsePreview;
+				}
+				if (d.moved) {
+					const ui = useUi.getState();
+					const vw = window.innerWidth;
+					setViewportWidth(vw);
+					if (d.side === "left") {
+						if (!d.currentOpen) {
+							setSidebarOpen(false);
+						} else {
+							const committed = Math.min(
+								MAX_SIDEBAR_WIDTH,
+								Math.max(MIN_SIDEBAR_WIDTH, Math.round(d.currentWidth)),
+							);
+							const widths = computeShellWidths({
+								viewportWidth: vw,
+								sidebarOpen: true,
+								sidebarWidth: committed,
+								rightVisible: rightVisibleRef.current,
+								rightWidth: ui.rightWidth,
+							});
+							applyLeftDom(true, widths.leftWidth, false);
+							if (rightVisibleRef.current) applyRightDom(widths.rightWidth);
+							setSidebarOpen(true);
+							setSidebarWidth(committed);
+						}
 					} else {
-						setSidebarOpen(true);
-						setSidebarWidth(s.sidebarWidth);
+						const committed = Math.min(
+							MAX_RIGHT_WIDTH,
+							Math.max(MIN_RIGHT_WIDTH, Math.round(d.currentWidth)),
+						);
+						const widths = computeShellWidths({
+							viewportWidth: vw,
+							sidebarOpen: ui.sidebarOpen,
+							sidebarWidth: ui.sidebarWidth,
+							rightVisible: true,
+							rightWidth: committed,
+						});
+						applyRightDom(widths.rightWidth);
+						if (ui.sidebarOpen) applyLeftDom(true, widths.leftWidth, false);
+						setRightWidth(committed);
 					}
-				} else {
-					setRightWidth(s.rightWidth);
 				}
 			}
 			setDraggingSide(null);
 		};
 
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") end();
+		const cancel = (ev?: KeyboardEvent) => {
+			if (rafId !== null) {
+				cancelAnimationFrame(rafId);
+				rafId = null;
+			}
+			if (ev) {
+				ev.preventDefault();
+				ev.stopPropagation();
+				claimEscape(ev);
+			}
+			const d = drag.current;
+			drag.current = null;
+			if (d) {
+				releaseCapture(d);
+				applyLeftDom(d.startOpen, d.startLeftWidth, false);
+				if (rightVisibleRef.current) applyRightDom(d.startRightWidth);
+				d.handleEl.setAttribute("aria-valuenow", String(Math.round(d.startWidth)));
+			}
+			setDraggingSide(null);
 		};
 
-		window.addEventListener("mousemove", onMove);
-		window.addEventListener("mouseup", end);
-		window.addEventListener("blur", end);
-		window.addEventListener("keydown", onKey);
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") cancel(e);
+		};
+		const onPointerUp = (e: PointerEvent) => {
+			if (!drag.current || e.pointerId !== drag.current.pointerId) return;
+			commit();
+		};
+		const onPointerCancel = (e: PointerEvent) => {
+			if (!drag.current || e.pointerId !== drag.current.pointerId) return;
+			cancel();
+		};
+		const onLostPointerCapture = (e: PointerEvent) => {
+			if (!drag.current || e.pointerId !== drag.current.pointerId) return;
+			cancel();
+		};
+
+		window.addEventListener("pointermove", onMove);
+		window.addEventListener("pointerup", onPointerUp);
+		window.addEventListener("pointercancel", onPointerCancel);
+		window.addEventListener("blur", commit);
+		window.addEventListener("keydown", onKey, true);
+		handleEl?.addEventListener("lostpointercapture", onLostPointerCapture);
 		return () => {
 			if (rafId !== null) cancelAnimationFrame(rafId);
-			window.removeEventListener("mousemove", onMove);
-			window.removeEventListener("mouseup", end);
-			window.removeEventListener("blur", end);
-			window.removeEventListener("keydown", onKey);
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onPointerUp);
+			window.removeEventListener("pointercancel", onPointerCancel);
+			window.removeEventListener("blur", commit);
+			window.removeEventListener("keydown", onKey, true);
+			handleEl?.removeEventListener("lostpointercapture", onLostPointerCapture);
+			const active = drag.current;
+			if (active) {
+				drag.current = null;
+				releaseCapture(active);
+			}
 		};
 	}, [draggingSide, setSidebarWidth, setRightWidth, setSidebarOpen]);
 
@@ -360,6 +592,7 @@ export default function App() {
 	useEffect(() => installNativeShortcuts(), []);
 	useEffect(() => installShortcutDispatcher(), []);
 
+	useEffect(() => startSettingsSync(), []);
 	// Initialize todos subscription; load versions and auto-check omp updates at the configured interval
 	useEffect(() => {
 		startTodos();
@@ -437,7 +670,7 @@ export default function App() {
 	}, [hasLoaded]);
 
 	return (
-		<div id="app-shell" className="relative flex h-screen flex-col overflow-hidden bg-neutral-950 text-neutral-200">
+		<div id="app-shell" className="relative flex h-full w-full flex-col overflow-hidden bg-neutral-950 text-neutral-200">
 			<div
 				id="app-wallpaper-background"
 				aria-hidden
@@ -460,22 +693,41 @@ export default function App() {
 				{sidebarOpen && !isRightMaximized && (
 					<>
 						<div
+							ref={leftPaneRef}
 							style={{ width: effectiveSidebarWidth }}
-							className="flex shrink-0 flex-col overflow-hidden vibrancy-chrome"
+							className="flex shrink-0 flex-col overflow-hidden vibrancy-chrome transition-[opacity] duration-150 ease-[var(--ease-out)]"
 						>
 							<aside className="min-h-0 flex-1">
 								<SessionSidebar />
 							</aside>
 						</div>
 						{/* Sidebar drag handle */}
+						{/* biome-ignore lint/a11y/useSemanticElements: interactive resize separator */}
 						<div
-							onMouseDown={onLeftDragStart}
-							className="group/handle relative z-40 w-0 shrink-0 cursor-col-resize"
+							ref={leftHandleRef}
+							role="separator"
+							aria-orientation="vertical"
+							aria-label={t("shortcuts.dragLeftCol")}
+							aria-valuemin={MIN_SIDEBAR_WIDTH}
+							aria-valuemax={MAX_SIDEBAR_WIDTH}
+							aria-valuenow={Math.round(effectiveSidebarWidth)}
+							tabIndex={0}
+							onPointerDown={onLeftDragStart}
+							onKeyDown={(e) => {
+								if (e.key === "ArrowLeft") {
+									e.preventDefault();
+									setSidebarWidth(effectiveSidebarWidth - 16);
+								} else if (e.key === "ArrowRight") {
+									e.preventDefault();
+									setSidebarWidth(effectiveSidebarWidth + 16);
+								}
+							}}
+							className="group/handle relative z-40 w-0 shrink-0 cursor-col-resize touch-none outline-none"
 							title={t("shortcuts.dragLeftCol")}
 						>
 							<div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2" />
 							<div
-								className={`pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 transition-[width,background-color] duration-150 ease-[var(--ease-out)] ${draggingSide === "left" ? "w-[2px] bg-[var(--accent)]/65" : "w-[1px] bg-[var(--border-divider)] group-hover/handle:w-[2px] group-hover/handle:bg-[var(--accent)]/65"}`}
+								className={`pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 transition-[width,background-color] duration-150 ease-[var(--ease-out)] ${draggingSide === "left" ? "w-[2px] bg-[var(--accent)]/65" : "w-[1px] bg-[var(--border-divider)] group-hover/handle:w-[2px] group-hover/handle:bg-[var(--accent)]/65 group-focus-visible/handle:w-[2px] group-focus-visible/handle:bg-[var(--accent)]/65"}`}
 							/>
 						</div>
 					</>
@@ -508,14 +760,32 @@ export default function App() {
 							<>
 								{/* Right panel drag handle */}
 								{!isRightMaximized && (
+									// biome-ignore lint/a11y/useSemanticElements: interactive resize separator
 									<div
-										onMouseDown={onRightDragStart}
-										className="group/handle relative z-40 w-0 shrink-0 cursor-col-resize"
+										ref={rightHandleRef}
+										role="separator"
+										aria-orientation="vertical"
+										aria-label={t("shortcuts.dragRightCol")}
+										aria-valuemin={MIN_RIGHT_WIDTH}
+										aria-valuemax={MAX_RIGHT_WIDTH}
+										aria-valuenow={Math.round(effectiveRightWidth)}
+										tabIndex={0}
+										onPointerDown={onRightDragStart}
+										onKeyDown={(e) => {
+											if (e.key === "ArrowLeft") {
+												e.preventDefault();
+												setRightWidth(effectiveRightWidth + 16);
+											} else if (e.key === "ArrowRight") {
+												e.preventDefault();
+												setRightWidth(effectiveRightWidth - 16);
+											}
+										}}
+										className="group/handle relative z-40 w-0 shrink-0 cursor-col-resize touch-none outline-none"
 										title={t("shortcuts.dragRightCol")}
 									>
 										<div className="absolute inset-y-0 left-1/2 w-2 -translate-x-1/2" />
 										<div
-											className={`pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 transition-[width,background-color] duration-150 ease-[var(--ease-out)] ${draggingSide === "right" ? "w-[2px] bg-[var(--accent)]/65" : "w-[1px] bg-[var(--border-divider)] group-hover/handle:w-[2px] group-hover/handle:bg-[var(--accent)]/65"}`}
+											className={`pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 transition-[width,background-color] duration-150 ease-[var(--ease-out)] ${draggingSide === "right" ? "w-[2px] bg-[var(--accent)]/65" : "w-[1px] bg-[var(--border-divider)] group-hover/handle:w-[2px] group-hover/handle:bg-[var(--accent)]/65 group-focus-visible/handle:w-[2px] group-focus-visible/handle:bg-[var(--accent)]/65"}`}
 										/>
 									</div>
 								)}

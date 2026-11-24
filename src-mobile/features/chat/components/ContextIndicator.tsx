@@ -8,7 +8,7 @@ export function ContextIndicator({ text, percent, compact = false }: { text: str
 		<>
 			<svg width={18} height={18} viewBox="0 0 18 18" className="shrink-0 -rotate-90" aria-hidden="true">
 				<circle cx={9} cy={9} r={7} fill="none" strokeWidth={2.2} className="stroke-m-surface-2" />
-				<circle cx={9} cy={9} r={7} fill="none" strokeWidth={2.2} stroke="currentColor" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - fraction)} strokeLinecap="round" className="transition-[stroke-dashoffset] duration-300 ease-m" />
+				<circle cx={9} cy={9} r={7} fill="none" strokeWidth={2.2} stroke="currentColor" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - fraction)} strokeLinecap="round" className="transition-[stroke-dashoffset] duration-300 ease-m motion-reduce:transition-none" />
 			</svg>
 			{!compact && <span className="font-mono text-[11px] font-medium leading-none tabular-nums">{text === "未知" ? "—" : text}</span>}
 		</>

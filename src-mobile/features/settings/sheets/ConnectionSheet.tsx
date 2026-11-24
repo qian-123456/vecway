@@ -1,4 +1,4 @@
-import { Check, Copy, QrCode, RefreshCw, ShieldCheck, Unlink, Wifi } from "lucide-react";
+import { Check, ChevronDown, Copy, QrCode, RefreshCw, ShieldCheck, Unlink, Wifi } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorMessage } from "../../../core/api";
 import { copyText } from "../../../core/lib/format";
@@ -96,13 +96,16 @@ export function ConnectionSheet({
 	const [tunnelInput, setTunnelInput] = useState("");
 	const [certSha256Input, setCertSha256Input] = useState("");
 	const [endpointError, setEndpointError] = useState<string | null>(null);
+	const [manualOpen, setManualOpen] = useState(false);
+	const [touched, setTouched] = useState<{ tunnel?: boolean; lanTls?: boolean; ipv6?: boolean; cert?: boolean }>({});
 	const [switchingChannel, setSwitchingChannel] = useState(false);
 	const [adoptingLan, setAdoptingLan] = useState(false);
 	const [probing, setProbing] = useState(false);
 	const [scanning, setScanning] = useState(false);
 	const [updatingEndpoints, setUpdatingEndpoints] = useState(false);
 	const [unpairing, setUnpairing] = useState(false);
-
+	const connPhase = useConnection((s) => s.phase);
+	const connError = useConnection((s) => s.error);
 	const effectiveMobile: MobileInfo = { ...discoveredMobile, ...mobile };
 
 	const syncCandidateInputs = useCallback((status: NativeEndpointStatus) => {
@@ -111,6 +114,14 @@ export function ConnectionSheet({
 		setTunnelInput(status.candidates.tunnel ?? "");
 		if (status.certSha256) setCertSha256Input("");
 	}, []);
+
+	useEffect(() => {
+		if (!open) {
+			setManualOpen(false);
+			setTouched({});
+			setEndpointError(null);
+		}
+	}, [open]);
 
 	useEffect(() => {
 		if (!open || !native) return;
@@ -389,7 +400,17 @@ export function ConnectionSheet({
 			effectiveMobile.lanTlsUrl &&
 			effectiveMobile.certSha256,
 	);
-
+	const connFailed = connPhase === "closed" || Boolean(connError) || Boolean(nativeStatus?.paired && !nativeStatus.activeChannel);
+	const normalizedTunnel = normalizeHttpsEndpointInput(tunnelInput);
+	const normalizedLan = normalizeHttpsEndpointInput(lanTlsInput);
+	const normalizedIpv6 = normalizeHttpsEndpointInput(ipv6Input);
+	const needsDirectCert = Boolean(!nativeStatus?.certSha256 && (normalizedLan || normalizedIpv6));
+	const tunnelFieldError = touched.tunnel ? validateHttpsEndpoint(normalizedTunnel, "Cloudflare / 公网域名地址") : null;
+	const lanFieldError = touched.lanTls ? validateHttpsEndpoint(normalizedLan, "局域网 TLS 地址") : null;
+	const ipv6FieldError = touched.ipv6 ? validateHttpsEndpoint(normalizedIpv6, "IPv6 TLS 地址") : null;
+	const certFieldError = !nativeStatus?.certSha256 && touched.cert
+		? (validateCertSha256(certSha256Input) ?? (needsDirectCert && !certSha256Input.trim() ? "首次直连必填：请填写 64 位 SHA-256 证书指纹" : null))
+		: null;
 	const channelOptions: ReadonlyArray<{ value: ChannelChoice; label: string; disabled?: boolean }> = [
 		{ value: "auto", label: "自动优选" },
 		{ value: "lan_tls", label: "局域网直连", disabled: !hasLanCandidate },
@@ -488,84 +509,121 @@ export function ConnectionSheet({
 							<Button variant="accent" size="sm" icon={<QrCode size={16} />} busy={scanning} onClick={() => void handleRepair()}>
 								重新扫码配对
 							</Button>
+							{connFailed && !manualOpen && (
+								<Button variant="ghost" size="sm" onClick={() => setManualOpen(true)}>
+									连接失败？手动配置端点
+								</Button>
+							)}
 						</GroupBlock>
 					</ListGroup>
-					<ListGroup title="手动更新端点" note="支持直接填写域名（自动补全 https://），禁止降级为明文 http://。">
-						<GroupBlock>
-							<form
-								noValidate
-								onSubmit={(event) => {
-									event.preventDefault();
-									void handleSaveEndpoints();
-								}}
-								className="flex flex-col gap-3"
-							>
-								<div className="flex flex-col gap-1">
-									<label htmlFor="endpoint-tunnel" className="text-m-sm text-m-text">Cloudflare / 公网域名地址</label>
-									<input
-										id="endpoint-tunnel"
-										type="url"
-										inputMode="url"
-										value={tunnelInput}
-										onChange={(event) => setTunnelInput(event.target.value)}
-										placeholder="https://omp.example.com 或 xxx.trycloudflare.com"
-										className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text"
-									/>
-									<p className="text-m-xs text-m-text-3">适用于 Cloudflare Tunnel 域名或有效 HTTPS 反代域名，走系统根证书校验。</p>
-								</div>
-								<div className="flex flex-col gap-1">
-									<label htmlFor="endpoint-lan-tls" className="text-m-sm text-m-text">局域网 TLS 地址</label>
-									<input
-										id="endpoint-lan-tls"
-										type="url"
-										inputMode="url"
-										value={lanTlsInput}
-										onChange={(event) => setLanTlsInput(event.target.value)}
-										placeholder="https://192.168.1.10:7790"
-										className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text"
-									/>
-									<p className="text-m-xs text-m-text-3">与电脑同一 Wi-Fi 下直连桌面端 TLS 端口，延迟最低。</p>
-								</div>
-								<div className="flex flex-col gap-1">
-									<label htmlFor="endpoint-ipv6" className="text-m-sm text-m-text">IPv6 TLS 地址</label>
-									<input
-										id="endpoint-ipv6"
-										type="url"
-										inputMode="url"
-										value={ipv6Input}
-										onChange={(event) => setIpv6Input(event.target.value)}
-										placeholder="https://[240e:...]:7789 或 DDNS 域名:7789"
-										className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text"
-									/>
-									<p className="text-m-xs text-m-text-3">仅用于电脑 IPv6 / Cloudflare DDNS 端口直连（校验证书指纹）；Cloudflare Tunnel 域名请填在上方。</p>
-								</div>
-								{!nativeStatus?.certSha256 && (
+					<ListGroup note="支持直接填写域名（自动补全 https://），禁止降级为明文 http://。">
+						<button
+							type="button"
+							aria-expanded={manualOpen}
+							onClick={() => setManualOpen((v) => !v)}
+							className="m-list-row flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-m-sm font-medium text-m-text active:bg-m-surface-hover"
+						>
+							<span>高级：手动配置端点</span>
+							<ChevronDown
+								size={16}
+								className={`shrink-0 text-m-text-3 transition-transform duration-(--m-dur-fast) ease-m ${manualOpen ? "rotate-180" : ""}`}
+								aria-hidden
+							/>
+						</button>
+						{manualOpen && (
+							<GroupBlock className="border-t border-m-border pt-3">
+								<form
+									noValidate
+									onSubmit={(event) => {
+										event.preventDefault();
+										setTouched({ tunnel: true, lanTls: true, ipv6: true, cert: true });
+										void handleSaveEndpoints();
+									}}
+									className="flex flex-col gap-3"
+								>
 									<div className="flex flex-col gap-1">
-										<label htmlFor="endpoint-cert-sha256" className="text-m-sm text-m-text">局域网证书指纹 (SHA-256，可选)</label>
+										<label htmlFor="endpoint-tunnel" className="text-m-sm text-m-text">Cloudflare / 公网域名地址</label>
 										<input
-											id="endpoint-cert-sha256"
-											type="text"
-											autoCapitalize="off"
-											autoCorrect="off"
-											spellCheck={false}
-											value={certSha256Input}
-											onChange={(event) => setCertSha256Input(event.target.value)}
-											placeholder="AA:BB:CC:...（首次启用局域网/IPv6 时填写）"
-											className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-xs text-m-text"
+											id="endpoint-tunnel"
+											type="url"
+											inputMode="url"
+											value={tunnelInput}
+											onChange={(event) => setTunnelInput(event.target.value)}
+											onBlur={() => setTouched((t) => ({ ...t, tunnel: true }))}
+											aria-invalid={tunnelFieldError ? "true" : undefined}
+											placeholder="https://omp.example.com 或 xxx.trycloudflare.com"
+											className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text"
 										/>
-										<p className="text-m-xs text-m-text-3">仅首次添加局域网或 IPv6 直连时需要锁定证书指纹，锁定后不会静默覆盖。</p>
+										{tunnelFieldError && <p className="text-m-xs break-words text-m-danger">{tunnelFieldError}</p>}
+										<p className="text-m-xs text-m-text-3">适用于 Cloudflare Tunnel 域名或有效 HTTPS 反代域名，走系统根证书校验。</p>
 									</div>
-								)}
-								{endpointError && (
-									<p role="alert" className="text-m-sm break-words text-m-danger">
-										{endpointError}
-									</p>
-								)}
-								<Button type="submit" busy={updatingEndpoints}>
-									保存端点
-								</Button>
-							</form>
-						</GroupBlock>
+									<div className="flex flex-col gap-1">
+										<label htmlFor="endpoint-lan-tls" className="text-m-sm text-m-text">局域网 TLS 地址</label>
+										<input
+											id="endpoint-lan-tls"
+											type="url"
+											inputMode="url"
+											value={lanTlsInput}
+											onChange={(event) => setLanTlsInput(event.target.value)}
+											onBlur={() => setTouched((t) => ({ ...t, lanTls: true }))}
+											aria-invalid={lanFieldError ? "true" : undefined}
+											placeholder="https://192.168.1.10:7790"
+											className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text"
+										/>
+										{lanFieldError && <p className="text-m-xs break-words text-m-danger">{lanFieldError}</p>}
+										<p className="text-m-xs text-m-text-3">与电脑同一 Wi-Fi 下直连桌面端 TLS 端口，延迟最低。</p>
+									</div>
+									<div className="flex flex-col gap-1">
+										<label htmlFor="endpoint-ipv6" className="text-m-sm text-m-text">IPv6 TLS 地址</label>
+										<input
+											id="endpoint-ipv6"
+											type="url"
+											inputMode="url"
+											value={ipv6Input}
+											onChange={(event) => setIpv6Input(event.target.value)}
+											onBlur={() => setTouched((t) => ({ ...t, ipv6: true }))}
+											aria-invalid={ipv6FieldError ? "true" : undefined}
+											placeholder="https://[240e:...]:7789 或 DDNS 域名:7789"
+											className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-sm text-m-text"
+										/>
+										{ipv6FieldError && <p className="text-m-xs break-words text-m-danger">{ipv6FieldError}</p>}
+										<p className="text-m-xs text-m-text-3">仅用于电脑 IPv6 / Cloudflare DDNS 端口直连（校验证书指纹）；Cloudflare Tunnel 域名请填在上方。</p>
+									</div>
+									{!nativeStatus?.certSha256 && (
+										<div className="flex flex-col gap-1">
+											<label htmlFor="endpoint-cert-sha256" className="text-m-sm text-m-text">
+												{needsDirectCert ? "局域网证书指纹 (SHA-256，首次直连必填)" : "局域网证书指纹 (SHA-256，可选)"}
+											</label>
+											<input
+												id="endpoint-cert-sha256"
+												type="text"
+												autoCapitalize="off"
+												autoCorrect="off"
+												spellCheck={false}
+												required={needsDirectCert}
+												aria-required={needsDirectCert || undefined}
+												aria-invalid={certFieldError ? "true" : undefined}
+												value={certSha256Input}
+												onChange={(event) => setCertSha256Input(event.target.value)}
+												onBlur={() => setTouched((t) => ({ ...t, cert: true }))}
+												placeholder="AA:BB:CC:...（首次启用局域网/IPv6 时填写）"
+												className="w-full rounded-m-md bg-m-surface px-3 py-2 font-m-mono text-m-xs text-m-text"
+											/>
+											{certFieldError && <p className="text-m-xs break-words text-m-danger">{certFieldError}</p>}
+											<p className="text-m-xs text-m-text-3">仅首次添加局域网或 IPv6 直连时需要锁定证书指纹，锁定后不会静默覆盖。</p>
+										</div>
+									)}
+									{endpointError && (
+										<p role="alert" className="text-m-sm break-words text-m-danger">
+											{endpointError}
+										</p>
+									)}
+									<Button type="submit" busy={updatingEndpoints}>
+										保存端点
+									</Button>
+								</form>
+							</GroupBlock>
+						)}
 					</ListGroup>
 					<ListGroup title="当前设备" note="名称仅用于区分配对记录，不影响连接。留空可使用默认名称。">
 						<GroupBlock>

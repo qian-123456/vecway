@@ -1,4 +1,4 @@
-import { Archive, Check, GitFork, Mail, MessageSquare, Pin } from "lucide-react";
+import { Archive, Check, Mail, Pin } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { api, errorMessage } from "../../core/api";
@@ -6,6 +6,8 @@ import { nav, paths } from "../../core/nav";
 import { relTime, sessionName } from "../../core/lib/format";
 import { isDraftId, STATUS_LABEL } from "../../core/types";
 import { confirm, toast } from "../../ui";
+import { rubberBand, VelocityTracker } from "../../ui/gesturePhysics";
+import { prefersReducedMotion } from "../../ui/motion";
 import { patchSession } from "./actions";
 import { needsAttn, type TreeSession } from "./tree";
 import { refreshAll } from "./treeStore";
@@ -35,22 +37,42 @@ const ACTION_WIDTH = 96;
 
 /** A vertical gesture belongs to scrolling; only a committed horizontal axis owns the pointer. */
 function useRowGesture(onLong: (() => void) | undefined, onSwipe: ((right: boolean) => void) | undefined) {
-	const gesture = useRef<{ x: number; y: number; id: number; axis: "pending" | "horizontal" | "vertical"; revealed: boolean } | null>(null);
+	const gesture = useRef<{ x: number; y: number; id: number; axis: "pending" | "horizontal" | "vertical"; revealed: boolean; offset: number } | null>(null);
 	const timer = useRef<number | undefined>(undefined);
 	const consumed = useRef(false);
-	const [offset, setOffset] = useState(0);
+	const offsetRef = useRef(0);
+	const trackerRef = useRef(new VelocityTracker());
+	const wrapRef = useRef<HTMLDivElement>(null);
+	const btnRef = useRef<HTMLButtonElement>(null);
+	const hintRef = useRef<HTMLSpanElement>(null);
 	const [revealed, setRevealed] = useState(false);
-	const [dragging, setDragging] = useState(false);
-	const close = () => { setRevealed(false); setOffset(0); };
+
+	const applyOffset = (px: number, animate: boolean) => {
+		offsetRef.current = px;
+		const btn = btnRef.current;
+		if (btn) {
+			btn.style.transition = animate && !prefersReducedMotion() ? "transform var(--m-dur-fast) var(--m-ease), background-color var(--m-dur-fast) var(--m-ease)" : "none";
+			btn.style.transform = px !== 0 ? `translate3d(${px}px,0,0)` : "";
+			btn.classList.toggle("bg-m-drawer-bg", px !== 0 && !btn.getAttribute("aria-current"));
+		}
+		if (wrapRef.current) wrapRef.current.classList.toggle("bg-m-surface", px !== 0);
+		if (hintRef.current) hintRef.current.style.opacity = px > 0 ? "1" : "0";
+	};
+
+	const close = () => {
+		setRevealed(false);
+		applyOffset(0, true);
+	};
 	const clearTimer = () => {
 		window.clearTimeout(timer.current);
 		timer.current = undefined;
 	};
 	useEffect(() => clearTimer, []);
 	return {
-		offset,
+		wrapRef,
+		btnRef,
+		hintRef,
 		revealed,
-		dragging,
 		close,
 		consumed: () => consumed.current,
 		handlers: {
@@ -59,7 +81,9 @@ function useRowGesture(onLong: (() => void) | undefined, onSwipe: ((right: boole
 				clearTimer();
 				consumed.current = false;
 				if (e.pointerType === "mouse") return;
-				gesture.current = { x: e.clientX, y: e.clientY, id: e.pointerId, axis: "pending", revealed };
+				trackerRef.current.reset();
+				trackerRef.current.add(e.clientX, e.clientY, e.timeStamp);
+				gesture.current = { x: e.clientX, y: e.clientY, id: e.pointerId, axis: "pending", revealed, offset: offsetRef.current };
 				if (onLong) timer.current = window.setTimeout(() => {
 					timer.current = undefined;
 					gesture.current = null;
@@ -79,36 +103,52 @@ function useRowGesture(onLong: (() => void) | undefined, onSwipe: ((right: boole
 					if (Math.abs(dy) >= Math.abs(dx)) g.axis = "vertical";
 					else if (onSwipe && Math.abs(dx) > Math.abs(dy) * 1.3) {
 						g.axis = "horizontal";
-						setDragging(true);
 						e.currentTarget.setPointerCapture?.(e.pointerId);
 					}
 				}
 				if (g.axis !== "horizontal") return;
 				e.preventDefault();
 				e.stopPropagation();
-				setOffset(Math.max(-ACTION_WIDTH, Math.min(g.revealed ? 0 : ACTION_WIDTH, dx + (g.revealed ? -ACTION_WIDTH : 0))));
+				trackerRef.current.add(e.clientX, e.clientY, e.timeStamp);
+				const raw = dx + (g.revealed ? -ACTION_WIDTH : 0);
+				const maxRight = g.revealed ? 0 : ACTION_WIDTH;
+				const next = raw < -ACTION_WIDTH
+					? -ACTION_WIDTH + rubberBand(raw + ACTION_WIDTH, ACTION_WIDTH, 0.45)
+					: raw > maxRight
+						? maxRight + rubberBand(raw - maxRight, ACTION_WIDTH, 0.45)
+						: raw;
+				g.offset = next;
+				applyOffset(next, false);
 			},
 			onPointerUp: (e: ReactPointerEvent<HTMLButtonElement>) => {
 				clearTimer();
 				const g = gesture.current;
 				gesture.current = null;
-				setDragging(false);
+				const { vx } = trackerRef.current.velocity(e.timeStamp);
+				trackerRef.current.reset();
 				if (!g || g.id !== e.pointerId || g.axis !== "horizontal") return;
 				e.preventDefault();
 				e.stopPropagation();
 				const dx = e.clientX - g.x;
 				if (g.revealed) {
-					if (dx > 0) close();
-					else setOffset(-ACTION_WIDTH);
-				} else if (dx <= -SWIPE_PX) {
+					if (dx > 24 || vx > 0.35) close();
+					else applyOffset(-ACTION_WIDTH, true);
+				} else if (dx <= -SWIPE_PX || (dx <= -48 && vx <= -0.6)) {
 					setRevealed(true);
-					setOffset(-ACTION_WIDTH);
+					applyOffset(-ACTION_WIDTH, true);
 				} else {
-					setOffset(0);
-					if (dx >= SWIPE_PX) onSwipe?.(true);
+					applyOffset(0, true);
+					if (dx >= SWIPE_PX || (dx >= 48 && vx >= 0.6)) onSwipe?.(true);
 				}
 			},
-			onPointerCancel: () => { clearTimer(); const g = gesture.current; gesture.current = null; consumed.current = true; setDragging(false); setOffset(g?.revealed ? -ACTION_WIDTH : 0); },
+			onPointerCancel: () => {
+				clearTimer();
+				const g = gesture.current;
+				gesture.current = null;
+				trackerRef.current.reset();
+				consumed.current = true;
+				applyOffset(g?.revealed ? -ACTION_WIDTH : 0, true);
+			},
 			onContextMenu: (e: { preventDefault: () => void }) => {
 				if (!onLong) return;
 				e.preventDefault();
@@ -174,26 +214,25 @@ export const SessionRow = memo(function SessionRow({ s, depth = 0, current, with
 				<span className={`absolute inset-0 border-l border-(--m-tree-line) ${spineLast ? "rounded-bl-[6px] border-b" : ""}`} />
 				{!spineLast && <span className="absolute left-0 w-2 border-t border-(--m-tree-line)" style={{ top: spineFirst ? "calc(50% + 3px)" : "50%" }} />}
 			</span>}
-			<div className={`relative ml-2 overflow-hidden rounded-[14px] ${gesture.offset ? "bg-m-surface" : ""}`}>
-				{gesture.offset > 0 && <span aria-hidden className="pointer-events-none absolute inset-y-0 left-0 flex items-center gap-1 px-3 text-m-xs whitespace-nowrap text-m-accent">
+			<div ref={gesture.wrapRef} className="relative ml-2 overflow-hidden rounded-[14px]">
+				<span ref={gesture.hintRef} aria-hidden className="pointer-events-none absolute inset-y-0 left-0 flex items-center gap-1 px-3 text-m-xs whitespace-nowrap text-m-accent opacity-0">
 					{s.unread ? <Check size={16} /> : <Mail size={16} />}{s.unread ? "已读" : "未读"}
-				</span>}
-				{gesture.revealed && !gesture.dragging && (
+				</span>
+				{gesture.revealed && (
 					<button type="button" data-action="archive" aria-label={s.archived ? "取消归档" : "归档"} onClick={() => { gesture.close(); void swipe(false); }}
 						className="absolute inset-y-0 right-0 flex min-h-11 w-24 items-center justify-center gap-1 rounded-[14px] bg-m-danger/15 px-2 text-m-xs font-medium whitespace-nowrap text-m-danger">
 						<Archive size={16} className="shrink-0" />{s.archived ? "取消归档" : "归档"}
 					</button>
 				)}
-				<button type="button" title={name} aria-current={current || undefined} aria-busy={pending || undefined}
+				<button ref={gesture.btnRef} type="button" title={name} aria-current={current || undefined} aria-busy={pending || undefined}
 					aria-label={line ? `${name}，${line}` : name}
 					aria-description={[!isDraftId(s.id) ? "左滑显示归档按钮，右滑切换已读状态" : null, onMore ? "长按或按 Shift+F10 查看完整标题和会话操作" : null].filter(Boolean).join("；") || undefined}
 					onKeyDown={(e) => { if (onMore && (e.key === "ContextMenu" || e.shiftKey && e.key === "F10")) { e.preventDefault(); onMore(s); } }}
 					onClick={(e) => { if (e.detail > 0 && gesture.consumed() || busy.current) return; if (gesture.revealed) { gesture.close(); return; } if (onOpen) onOpen(s); else nav.push(paths.chat(s.id)); }}
 					{...gesture.handlers}
-					style={{ touchAction: "pan-y", transform: gesture.offset ? `translateX(${gesture.offset}px)` : undefined }}
-					className={`relative flex min-h-11 w-full items-center gap-2 rounded-[14px] px-3 py-2 text-left select-none transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover ${current ? "border border-m-border bg-m-drawer-active font-semibold" : gesture.offset ? "bg-m-drawer-bg" : ""}`}
+					style={{ touchAction: "pan-y" }}
+					className={`relative flex min-h-11 w-full items-center gap-2 rounded-[14px] px-3 py-2 text-left select-none transition-colors duration-(--m-dur-fast) active:bg-m-surface-hover ${current ? "border border-m-border bg-m-drawer-active font-semibold" : ""}`}
 				>
-					{s.kind === "side" ? <MessageSquare size={14} className="shrink-0 text-m-text-3" aria-label="旁聊" /> : (s.kind === "fork" || s.parentId) ? <GitFork size={14} className="shrink-0 text-m-text-3" aria-label="分支会话" /> : null}
 					{s.pinned && <Pin size={13} className="shrink-0 text-m-text-3" aria-label="已置顶" />}
 					<span className={`min-w-0 flex-1 truncate text-m-sm text-m-text ${s.unread ? "font-semibold" : ""}`}>{highlightedTitle(name, highlightQuery)}</span>
 					{STATUS_DOT[st] && <span aria-hidden className={`size-1.5 shrink-0 rounded-m-pill ${STATUS_DOT[st]}`} />}

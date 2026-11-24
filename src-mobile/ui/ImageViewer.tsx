@@ -1,9 +1,10 @@
 import { ChevronLeft, ChevronRight, ImageOff, RotateCcw, X } from "lucide-react";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
+import { rubberBand, VelocityTracker } from "./gesturePhysics";
+import { prefersReducedMotion } from "./motion";
 import { useOverlay, usePresence } from "./overlay";
-
 export interface ViewerImage {
 	src: string;
 	alt?: string;
@@ -68,6 +69,7 @@ interface Gesture {
 	startY: number;
 	startScale: number;
 	multiTouch: boolean;
+	axis: "x" | "y" | null;
 }
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
@@ -99,7 +101,11 @@ export function ImageViewerHost() {
 	const activeIndex = active ? clamp(active.index, 0, Math.max(0, count - 1)) : 0;
 	const shown = active?.gallery[activeIndex] ?? null;
 
+	const portalRef = useRef<HTMLDivElement>(null);
+	const scrimRef = useRef<HTMLDivElement>(null);
 	const imgRef = useRef<HTMLImageElement>(null);
+	const trackerRef = useRef(new VelocityTracker());
+	const prevOpen = useRef(open);
 	const g = useRef<Gesture>({
 		scale: 1,
 		x: 0,
@@ -113,31 +119,60 @@ export function ImageViewerHost() {
 		startY: 0,
 		startScale: 1,
 		multiTouch: false,
+		axis: null,
 	});
 
 	const apply = (animate: boolean) => {
 		const img = imgRef.current;
 		if (!img) return;
 		const s = g.current;
-		img.style.transition = animate ? "transform 200ms var(--m-ease)" : "none";
-		img.style.transform = `translate3d(${s.x}px,${s.y}px,0) scale(${s.scale})`;
+		img.style.transition = animate && !prefersReducedMotion() ? "transform 200ms var(--m-ease)" : "none";
+		const dismissScale = s.scale === 1 && s.axis === "y" && s.y > 0 ? Math.max(0.86, 1 - s.y / 1400) : s.scale;
+		img.style.transform = `translate3d(${s.x}px,${s.y}px,0) scale(${dismissScale})`;
 	};
 
 	const src = state?.gallery[activeIndex]?.src;
 	useEffect(() => {
+		if (!mounted) {
+			clearTap();
+			setChromeVisible(true);
+			setFailed(false);
+			setRetryKey(0);
+			lastRef.current = null;
+			const s = g.current;
+			s.scale = 1;
+			s.x = 0;
+			s.y = 0;
+			s.axis = null;
+			s.pointers.clear();
+			s.prevMid = null;
+			s.multiTouch = false;
+			trackerRef.current.reset();
+			prevOpen.current = false;
+			return;
+		}
+		const opening = open && !prevOpen.current;
+		prevOpen.current = open;
+		if (!open) return;
+		if (opening) setChromeVisible(true);
 		clearTap();
-		setChromeVisible(true);
-		setFailed(open && !src);
+		setFailed(!src);
 		setRetryKey(0);
 		const s = g.current;
 		s.scale = 1;
 		s.x = 0;
 		s.y = 0;
+		s.axis = null;
 		s.pointers.clear();
 		s.prevMid = null;
 		s.multiTouch = false;
+		trackerRef.current.reset();
+		if (scrimRef.current) {
+			scrimRef.current.style.transition = "";
+			scrimRef.current.style.opacity = "";
+		}
 		apply(false);
-	}, [src, activeIndex, open]);
+	}, [src, activeIndex, open, mounted]);
 
 	useEffect(() => {
 		if (!open || count <= 1) return;
@@ -150,6 +185,14 @@ export function ImageViewerHost() {
 	}, [open, count, activeIndex]);
 
 	useEffect(() => () => window.clearTimeout(tapTimer.current), []);
+	const exiting = mounted && !open;
+	useLayoutEffect(() => {
+		const el = portalRef.current;
+		if (!el) return;
+		el.inert = exiting;
+		if (exiting) el.setAttribute("inert", "");
+		else el.removeAttribute("inert");
+	}, [exiting, mounted]);
 
 	if (!mounted || !shown) return null;
 	const center = () => ({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
@@ -193,8 +236,12 @@ export function ImageViewerHost() {
 			s.startY = e.clientY;
 			s.startScale = s.scale;
 			s.multiTouch = false;
+			s.axis = null;
+			trackerRef.current.reset();
+			trackerRef.current.add(e.clientX, e.clientY, e.timeStamp);
 		} else {
 			s.multiTouch = true;
+			s.axis = null;
 			clearTap();
 			s.moved = TAP_MOVE_PX + 1;
 		}
@@ -213,7 +260,30 @@ export function ImageViewerHost() {
 		p.y = e.clientY;
 		const m = midOf(s);
 		const ratio = s.pointers.size >= 2 && s.prevDist > 0 ? m.dist / s.prevDist : 1;
-		if (s.scale === 1 && ratio === 1) {
+		if (s.scale === 1 && ratio === 1 && s.pointers.size === 1 && !s.multiTouch) {
+			const dx = e.clientX - s.startX;
+			const dy = e.clientY - s.startY;
+			if (s.axis === null && Math.hypot(dx, dy) > TAP_MOVE_PX) {
+				s.axis = count > 1 && Math.abs(dx) > Math.abs(dy) * 1.25 ? "x" : "y";
+			}
+			trackerRef.current.add(e.clientX, e.clientY, e.timeStamp);
+			if (s.axis === "y") {
+				const effY = dy >= 0 ? dy : rubberBand(dy, 180, 0.3);
+				s.x = 0;
+				s.y = effY;
+				apply(false);
+				if (scrimRef.current) {
+					scrimRef.current.style.transition = "none";
+					scrimRef.current.style.opacity = String(Math.max(0.15, 1 - Math.max(0, effY) / 360));
+				}
+			} else if (s.axis === "x") {
+				const atStart = activeIndex === 0 && dx > 0;
+				const atEnd = activeIndex === count - 1 && dx < 0;
+				const effX = atStart || atEnd ? rubberBand(dx, 240, 0.45) : dx;
+				s.x = effX;
+				s.y = 0;
+				apply(false);
+			}
 			s.prevMid = m.mid;
 			s.prevDist = m.dist;
 			return;
@@ -235,16 +305,34 @@ export function ImageViewerHost() {
 		const m = midOf(s);
 		s.prevMid = s.pointers.size > 0 ? m.mid : null;
 		s.prevDist = m.dist;
+		const { vx, vy } = trackerRef.current.velocity(e.timeStamp);
+		if (s.pointers.size === 0) trackerRef.current.reset();
 		if (!wasTap) {
 			clearTap();
-			if (!cancelled && !s.multiTouch && s.pointers.size === 0 && s.startScale === 1 && s.scale === 1) {
-				if (dy > 100 && dy > Math.abs(dx) * 1.5) {
+			if (s.pointers.size === 0 && s.startScale === 1 && s.scale === 1) {
+				if (scrimRef.current) {
+					scrimRef.current.style.transition = "";
+					scrimRef.current.style.opacity = "";
+				}
+				if (!cancelled && !s.multiTouch && s.axis === "y" && (s.y > 100 || vy > 0.55)) {
 					close();
 					return;
 				}
-				if (count > 1 && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-					if (dx < 0 && activeIndex < count - 1) setViewerIndex(activeIndex + 1);
-					else if (dx > 0 && activeIndex > 0) setViewerIndex(activeIndex - 1);
+				if (!cancelled && !s.multiTouch && s.axis === "x" && count > 1) {
+					if ((s.x < -50 || vx < -0.45) && activeIndex < count - 1) {
+						setViewerIndex(activeIndex + 1);
+						return;
+					}
+					if ((s.x > 50 || vx > 0.45) && activeIndex > 0) {
+						setViewerIndex(activeIndex - 1);
+						return;
+					}
+				}
+				if (s.axis !== null) {
+					s.x = 0;
+					s.y = 0;
+					s.axis = null;
+					apply(true);
 				}
 			}
 			return;
@@ -271,16 +359,26 @@ export function ImageViewerHost() {
 
 	return createPortal(
 		<div
+			ref={portalRef}
 			role="dialog"
-			aria-modal={isTopModal ? "true" : undefined}
+			aria-modal={open && isTopModal ? "true" : undefined}
+			aria-hidden={!open || undefined}
 			aria-label={shown.alt ?? "图片预览"}
-			className={`fixed inset-0 z-(--z-modal) flex touch-none select-none items-center justify-center bg-m-scrim transition-opacity duration-200 ease-(--m-ease) ${visible ? "opacity-100" : "opacity-0"}`}
+			className={`fixed inset-0 z-(--z-modal) flex touch-none select-none items-center justify-center transition-opacity duration-200 ease-m motion-reduce:duration-150 ${
+				visible ? "opacity-100" : "opacity-0"
+			} ${open ? "" : "pointer-events-none"}`}
 			onPointerDown={onDown}
 			onPointerMove={onMove}
 			onPointerUp={onUp}
 			onPointerCancel={onUp}
 			onLostPointerCapture={onUp}
 		>
+			<div
+				ref={scrimRef}
+				aria-hidden="true"
+				className="pointer-events-none absolute inset-0 bg-m-scrim transition-opacity duration-200 ease-m"
+			/>
+			<div className="relative z-1 flex h-full w-full items-center justify-center">
 			{failed ? (
 				<div className="flex flex-col items-center gap-3 rounded-m-lg border border-m-border bg-m-bg-elev px-6 py-5 text-center shadow-m-pop">
 					<ImageOff size={28} className="text-m-text-3" aria-hidden />
@@ -309,10 +407,11 @@ export function ImageViewerHost() {
 					className="max-h-full max-w-full object-contain will-change-transform"
 				/>
 			)}
+			</div>
 			{chromeVisible && (
 				<>
 					<div
-						className="pointer-events-none absolute inset-x-0 flex items-center justify-between px-3"
+						className="pointer-events-none absolute inset-x-0 z-2 flex items-center justify-between px-3"
 						style={{ top: "calc(var(--m-safe-top) + 8px)" }}
 					>
 						{count > 1 ? (
@@ -338,7 +437,7 @@ export function ImageViewerHost() {
 								aria-label="上一张"
 								disabled={activeIndex === 0}
 								onClick={() => setViewerIndex(activeIndex - 1)}
-								className="absolute top-1/2 left-2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-m-pill bg-m-bg-elev/85 text-m-text ring-1 ring-m-border transition-[opacity,transform] duration-(--m-dur-press) ease-m active:scale-95 disabled:opacity-35"
+								className="absolute top-1/2 left-2 z-2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-m-pill bg-m-bg-elev/85 text-m-text ring-1 ring-m-border transition-[opacity,transform,scale] duration-(--m-dur-press) ease-m active:scale-95 disabled:opacity-35"
 							>
 								<ChevronLeft size={20} />
 							</button>
@@ -347,13 +446,13 @@ export function ImageViewerHost() {
 								aria-label="下一张"
 								disabled={activeIndex === count - 1}
 								onClick={() => setViewerIndex(activeIndex + 1)}
-								className="absolute top-1/2 right-2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-m-pill bg-m-bg-elev/85 text-m-text ring-1 ring-m-border transition-[opacity,transform] duration-(--m-dur-press) ease-m active:scale-95 disabled:opacity-35"
+								className="absolute top-1/2 right-2 z-2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-m-pill bg-m-bg-elev/85 text-m-text ring-1 ring-m-border transition-[opacity,transform,scale] duration-(--m-dur-press) ease-m active:scale-95 disabled:opacity-35"
 							>
 								<ChevronRight size={20} />
 							</button>
 							<div
 								data-viewer-strip
-								className="m-noscrollbar absolute left-1/2 flex max-w-[calc(100vw-32px)] -translate-x-1/2 items-center gap-1.5 overflow-x-auto rounded-m-lg border border-m-border bg-m-bg-elev/90 p-1.5 shadow-m-pop"
+								className="m-noscrollbar absolute left-1/2 z-2 flex max-w-[calc(100vw-32px)] -translate-x-1/2 touch-pan-x items-center gap-1.5 overflow-x-auto rounded-m-lg border border-m-border bg-m-bg-elev/90 p-1.5 shadow-m-pop"
 								style={{ bottom: "calc(var(--m-safe-bottom) + 12px)" }}
 							>
 								{active?.gallery.map((item, i) => (
@@ -363,7 +462,7 @@ export function ImageViewerHost() {
 										aria-label={`切换到第 ${i + 1} 张`}
 										aria-current={i === activeIndex ? "true" : undefined}
 										onClick={() => setViewerIndex(i)}
-										className={`h-10 w-10 shrink-0 overflow-hidden rounded-m-sm border transition-[border-color,opacity,box-shadow,transform] duration-(--m-dur-press) ease-m active:scale-95 ${
+										className={`h-10 w-10 shrink-0 overflow-hidden rounded-m-sm border transition-[border-color,opacity,box-shadow,transform,scale] duration-(--m-dur-press) ease-m active:scale-95 ${
 											i === activeIndex
 												? "border-m-accent opacity-100 ring-2 ring-m-accent"
 												: "border-m-border opacity-60 hover:opacity-90"

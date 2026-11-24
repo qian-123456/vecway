@@ -27,6 +27,7 @@ import { CopyButton } from "../../../components/CopyButton";
 import { errMsg } from "../../../lib/dialogs";
 import { openHtmlInBrowser } from "./openInBrowser";
 import { useIsDark } from "../../../lib/theme";
+import { scrollBehavior } from "../../../lib/motion";
 import { toast } from "../../../lib/toast";
 import { tNow, useT } from "../../../stores/language";
 import { sendPrompt } from "../send";
@@ -280,9 +281,9 @@ function VisualizeFrame({
 						: (container as HTMLElement).scrollTop;
 				const target = Math.max(0, current + frameTop + top - containerTop - 24);
 				if (container === document.scrollingElement) {
-					window.scrollTo({ top: target, behavior: "smooth" });
+					window.scrollTo({ top: target, behavior: scrollBehavior() });
 				} else {
-					(container as HTMLElement).scrollTo({ top: target, behavior: "smooth" });
+					(container as HTMLElement).scrollTo({ top: target, behavior: scrollBehavior() });
 				}
 				break;
 			}

@@ -142,7 +142,7 @@ async fn save_settings(
     let saved = settings::save(&state, settings).await?;
     notify::refresh_badge(&state).await;
     settings::apply_window_title(&state);
-    schedules::daemon::sync_launch_agent(saved.automation_background_enabled);
+    settings::reconcile_launch_agent(&state).await;
     Ok(saved)
 }
 

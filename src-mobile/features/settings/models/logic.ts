@@ -79,7 +79,7 @@ export function describeRoleValue(v: RoleValue): string {
 	if (v.kind === "alias") return v.raw;
 	const name = v.model?.name || v.modelId;
 	const base = v.provider ? `${v.provider} · ${name}` : name;
-	return `${base}　思考：${v.thinking ?? "自动"}`;
+	return `${base}　思考：${v.thinking ?? "auto"}`;
 }
 
 export interface RoleSetBody {

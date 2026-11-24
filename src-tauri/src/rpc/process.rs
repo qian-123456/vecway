@@ -314,6 +314,9 @@ pub struct SessionHandle {
     /// Last `ompws-plan` status published by the bundled plan extension
     /// (parsed `statusText` JSON); `None` until the extension reports.
     pub plan_status: parking_lot::Mutex<Option<Value>>,
+    /// Last `ompws-automation` status published by the bundled automation extension
+    /// (parsed `statusText` JSON, or idle snapshot when cleared); `None` until reported.
+    pub automation_status: parking_lot::Mutex<Option<Value>>,
     pub pending_frames: parking_lot::Mutex<PendingFrameBuffer>,
     /// Flips to `true` when the stdout reader reached EOF. Pending requests are
     /// only failed after this, so a response printed just before exit still
@@ -363,6 +366,7 @@ impl SessionHandle {
             pending: PendingMap::default(),
             pending_ui: parking_lot::Mutex::new(Vec::new()),
             plan_status: parking_lot::Mutex::new(None),
+            automation_status: parking_lot::Mutex::new(None),
             pending_frames: parking_lot::Mutex::new(PendingFrameBuffer::default()),
             stdout_closed,
             exited,
@@ -527,6 +531,35 @@ pub(crate) fn plan_status_from_frame(frame: &Value) -> Option<Value> {
         .filter(Value::is_object)
 }
 
+/// Parse an `ompws-automation` `setStatus` frame into its JSON object.
+/// Missing/null/empty `statusText` clears active state back to `{ v: 1, mode: "idle", drafts: [] }`.
+pub(crate) fn automation_status_from_frame(frame: &Value) -> Option<Value> {
+    if frame.get("statusKey").and_then(Value::as_str) != Some("ompws-automation") {
+        return None;
+    }
+    match frame.get("statusText") {
+        None | Some(Value::Null) => Some(serde_json::json!({
+            "v": 1,
+            "mode": "idle",
+            "drafts": []
+        })),
+        Some(Value::String(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Some(serde_json::json!({
+                    "v": 1,
+                    "mode": "idle",
+                    "drafts": []
+                }));
+            }
+            serde_json::from_str::<Value>(trimmed)
+                .ok()
+                .filter(Value::is_object)
+        }
+        _ => None,
+    }
+}
+
 /// Apply one inbound logical frame to handle state (no emission).
 /// Testable without a running process.
 pub(crate) fn apply_frame(handle: &SessionHandle, frame: &Value) {
@@ -558,6 +591,9 @@ pub(crate) fn apply_frame(handle: &SessionHandle, frame: &Value) {
             } else if method == "setStatus" {
                 if let Some(plan) = plan_status_from_frame(frame) {
                     *handle.plan_status.lock() = Some(plan);
+                }
+                if let Some(auto) = automation_status_from_frame(frame) {
+                    *handle.automation_status.lock() = Some(auto);
                 }
             } else if method == "cancel" {
                 // Cancels a previously issued request: match targetId or id.
@@ -1417,6 +1453,7 @@ pub async fn spawn_with_sink(
             pending: PendingMap::default(),
             pending_ui: parking_lot::Mutex::new(Vec::new()),
             plan_status: parking_lot::Mutex::new(None),
+            automation_status: parking_lot::Mutex::new(None),
             pending_frames: parking_lot::Mutex::new(PendingFrameBuffer::default()),
             stdout_closed: stdout_closed_tx,
             exited: exited_tx,
@@ -2354,6 +2391,33 @@ mod tests {
         assert_eq!(
             h.plan_status.lock().clone().unwrap()["enabled"],
             json!(false)
+        );
+    }
+
+    #[test]
+    fn automation_status_frames_are_cached_and_cleared() {
+        let h = test_handle();
+        assert!(h.automation_status.lock().is_none());
+        apply_frame(
+            &h,
+            &json!({"type":"extension_ui_request","id":"a","method":"setStatus","statusKey":"ompws-automation","statusText":"invalid-json"}),
+        );
+        assert!(h.automation_status.lock().is_none());
+        apply_frame(
+            &h,
+            &json!({"type":"extension_ui_request","id":"b","method":"setStatus","statusKey":"ompws-automation","statusText":"{\"v\":1,\"mode\":\"active\",\"drafts\":[]}"}),
+        );
+        assert_eq!(
+            h.automation_status.lock().as_ref().unwrap()["mode"],
+            json!("active")
+        );
+        apply_frame(
+            &h,
+            &json!({"type":"extension_ui_request","id":"c","method":"setStatus","statusKey":"ompws-automation"}),
+        );
+        assert_eq!(
+            h.automation_status.lock().as_ref().unwrap()["mode"],
+            json!("idle")
         );
     }
 

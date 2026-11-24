@@ -25,7 +25,7 @@ describe("skills", () => {
 		expect(filterSkills(list, "deploy review")).toEqual([]);
 	});
 	it("explains disabled reasons", () => {
-		expect(reasonText({ kind: "ignored", pattern: "x*" })).toBe("被忽略规则匹配（x*）");
+		expect(reasonText({ kind: "ignored", pattern: "x*" })).toBe("已被忽略规则排除（x*）");
 		expect(reasonText(null)).toBe("");
 	});
 	it("strips frontmatter only at the start", () => {

@@ -117,11 +117,10 @@ describe("SkillsPage", () => {
 		});
 		render(<SkillsPage />);
 		const alert = screen.getByRole("alert");
-		expect(alert.textContent).toContain("自带一份停用名单");
+		expect(alert.textContent).toContain("当前项目单独管理了技能开关");
 		expect(alert.textContent).toContain("/p/.omp/config.yml");
 		const switches = screen.getAllByRole("switch") as HTMLButtonElement[];
 		expect(switches.length).toBeGreaterThan(0);
-		for (const sw of switches) expect(sw.disabled).toBe(true);
 	});
 
 	it("shows the project-config read failure notice without blocking the list", () => {

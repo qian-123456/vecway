@@ -40,6 +40,7 @@ import { useLive } from "../../../stores/live";
 import { useSessions } from "../../../stores/sessions";
 import { useSidebarStore } from "../sidebarStore";
 import { SessionSearchDialog } from "./SessionSearchDialog";
+import { DEFAULT_SEARCH_FILTERS } from "./searchModel";
 import { useSearchDialog } from "./searchStore";
 import { makeHit, makeSession } from "./testFixtures";
 
@@ -70,7 +71,7 @@ beforeEach(() => {
 	useLive.setState({ sessions: {} });
 	useSidebarStore.setState({ activeMode: "code" });
 	seed();
-	useSearchDialog.setState({ open: true, focusSeq: 1 });
+	useSearchDialog.setState({ open: true, focusSeq: 1, query: "", filters: DEFAULT_SEARCH_FILTERS });
 });
 afterEach(() => {
 	cleanup();
@@ -357,5 +358,50 @@ describe("filter funnel popover", () => {
 		fireEvent.click(clearBtn);
 		expect(within(funnel).queryByText("1")).toBeNull();
 		expect(screen.getByText("归档的登录笔记")).toBeTruthy();
+	});
+});
+
+describe("persistence and recovery", () => {
+	it("persists query and filters across dialog reopens", () => {
+		const { rerender } = mount();
+		type("登录");
+		fireEvent.click(screen.getByRole("button", { name: "筛选" }));
+		fireEvent.click(screen.getByRole("button", { name: "今天" }));
+
+		act(() => useSearchDialog.getState().closeDialog());
+		rerender(<SessionSearchDialog />);
+		expect(screen.queryByRole("combobox", { name: "搜索会话" })).toBeNull();
+
+		act(() => useSearchDialog.getState().openDialog());
+		rerender(<SessionSearchDialog />);
+		expect(input().value).toBe("登录");
+		expect(within(screen.getByRole("button", { name: "筛选" })).getByText("1")).toBeTruthy();
+	});
+
+	it("offers one-click clear filters in empty results when filters are active", async () => {
+		mount();
+		const funnel = screen.getByRole("button", { name: "筛选" });
+		fireEvent.click(funnel);
+		fireEvent.click(screen.getByRole("button", { name: "今天" }));
+		fireEvent.click(funnel);
+		type("周报");
+		await screen.findByText("没有符合筛选条件的会话");
+		fireEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+		expect(screen.getByText("整理周报")).toBeTruthy();
+	});
+
+	it("shows fallback notice and retry button when full-text search fails with title matches", async () => {
+		h.searchSessions
+			.mockRejectedValueOnce("sqlite fts error")
+			.mockResolvedValueOnce([makeHit("s-old", { segments: [{ text: "登录", hit: true }] })]);
+		mount();
+		type("登录");
+		await screen.findByRole("alert");
+		expect(screen.getByText("仅显示标题与会话匹配")).toBeTruthy();
+		expect(screen.getByText("今日修复登录")).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: "重试全文检索" }));
+		await waitFor(() => expect(screen.getByText("旧项目复盘")).toBeTruthy());
+		expect(screen.queryByRole("alert")).toBeNull();
 	});
 });

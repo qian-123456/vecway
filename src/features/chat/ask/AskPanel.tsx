@@ -319,6 +319,7 @@ export function AskPanel({
 	busy,
 	onSubmit,
 	onCancel,
+	hasComposerDraft = false,
 }: {
 	spec: AskSpec;
 	/** First question omp still waits for (earlier ones are already answered). */
@@ -326,9 +327,11 @@ export function AskPanel({
 	busy: boolean;
 	onSubmit: (answers: readonly (AskAnswer | undefined)[]) => void;
 	onCancel: () => void;
+	hasComposerDraft?: boolean;
 }) {
 	const { t, locale } = useT();
 	const total = spec.questions.length;
+	const [collapsed, setCollapsed] = useState(false);
 	const [current, setCurrent] = useState(startIndex);
 	// Drafts exist once a question is visited, so an unvisited multi-select
 	// still counts as unanswered.
@@ -478,8 +481,12 @@ export function AskPanel({
 
 		if (e.key === "Escape") {
 			claimEscape(e);
-			if (inTextEntry) panelRef.current?.focus();
-			else onCancel();
+			if (inTextEntry) {
+				target?.blur();
+				panelRef.current?.focus();
+			} else {
+				setCollapsed(true);
+			}
 			return;
 		}
 		if (e.key === "Enter") {
@@ -543,6 +550,27 @@ export function AskPanel({
 			: `${t("ask.hintText")}${total > 1 ? t("ask.hintSwitch") : ""}${t("ask.hintEnter", { action: enterAction })}${t("ask.hintEsc")}`
 		: `${multi ? t("ask.hintMulti") : t("ask.hintSingle")}${total > 1 ? t("ask.hintSwitch") : ""}${t("ask.hintEnter", { action: enterAction })}${t("ask.hintEsc")}`;
 
+	if (collapsed) {
+		return (
+			<div className="my-2 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[var(--line)] bg-[var(--bg-panel)] px-3 py-2 text-[var(--text)]">
+				<div className="min-w-0 flex-1">
+					<div className="truncate text-xs font-medium">{question.question}</div>
+					<div className="text-[11px] text-[var(--text-40)]">
+						{hasComposerDraft ? t("ask.draftPreservedHint") : t("ask.collapsedPrompt")}
+					</div>
+				</div>
+				<div className="flex shrink-0 items-center gap-2">
+					<button type="button" disabled={busy} onClick={onCancel} className={ghostBtn}>
+						{t("ask.skip")}
+					</button>
+					<button type="button" onClick={() => setCollapsed(false)} className={primaryBtn}>
+						{t("ask.expandToAnswer")}
+					</button>
+				</div>
+			</div>
+		);
+	}
+
 	return (
 		<div
 			ref={panelRef}
@@ -557,7 +585,7 @@ export function AskPanel({
 					</span>
 				)}
 				{total > 1 && (
-					<span className="whitespace-nowrap">
+					<span className="whitespace-nowrap tabular-nums">
 						{t("ask.questionProgress", { current: current + 1, total })}
 					</span>
 				)}
@@ -580,8 +608,19 @@ export function AskPanel({
 									aria-label={t("ask.questionAria", { index: i + 1 })}
 									title={t("ask.questionAria", { index: i + 1 })}
 									onClick={() => goTo(i)}
-									className={`h-1.5 rounded-full transition-all ${i === current ? "w-4 bg-[var(--text)]" : `w-1.5 ${done ? "bg-[var(--text-60)]" : "bg-[var(--line)]"}`}`}
-								/>
+									className="flex h-3 w-4 shrink-0 items-center justify-center"
+								>
+									<span
+										style={{ transform: i === current ? "scaleX(1)" : "scaleX(0.375)" }}
+										className={`block h-1.5 w-4 origin-center rounded-full transition-[transform,opacity,background-color] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none ${
+											i === current
+												? "bg-[var(--text)] opacity-100"
+												: done
+													? "bg-[var(--text-60)] opacity-85"
+													: "bg-[var(--line)] opacity-60"
+										}`}
+									/>
+								</button>
 							);
 						})}
 					</span>
@@ -685,8 +724,10 @@ export function AskPanel({
 											{t("ask.addNote")}
 										</button>
 									)}
-									{!multi && on && (
-										<Check size={13} className="mt-1.5 shrink-0 text-[var(--text-60)]" />
+									{!multi && (
+										<span className="mt-1.5 flex w-[13px] shrink-0 items-center justify-center" aria-hidden={!on}>
+											{on && <Check size={13} className="text-[var(--text-60)]" />}
+										</span>
 									)}
 								</div>
 								{showNoteInput && (
@@ -740,6 +781,11 @@ export function AskPanel({
 							/>
 						</div>
 					)}
+				</div>
+			)}
+			{hasComposerDraft && (
+				<div className="mt-2 rounded-lg border border-[var(--line)] bg-[var(--bg)]/50 px-2.5 py-1 text-[11px] text-[var(--text-60)]">
+					{t("ask.draftPreservedHint")}
 				</div>
 			)}
 			<div className="mt-2.5 flex items-center gap-2">

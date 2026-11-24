@@ -55,6 +55,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
 import type { Anchor } from "../../components/FloatingLayer";
 import { FloatingLayer } from "../../components/FloatingLayer";
+import { InfoTip } from "../../components/InfoTip";
 import { openSettingsTarget } from "../settings/settingsTargets";
 import { HoverScrollText } from "../../components/HoverScrollText";
 import type {
@@ -390,20 +391,24 @@ export function SessionSidebar() {
 	// move inbox & search up to the first row so the mode label ("Research") never squeezes.
 	const trafficLightsVisible = useTrafficLightsVisible();
 	const asideRef = useRef<HTMLElement>(null);
-	const [sidebarWidthPx, setSidebarWidthPx] = useState<number>(() => useUi.getState().sidebarWidth);
+	const compactThreshold = trafficLightsVisible ? 236 : 256;
+	const [compactTopbar, setCompactTopbar] = useState<boolean>(
+		() => useUi.getState().sidebarWidth < compactThreshold,
+	);
 	useEffect(() => {
 		const el = asideRef.current;
 		if (!el) return;
 		const measure = () => {
-			if (el.clientWidth > 0) setSidebarWidthPx(el.clientWidth);
+			if (el.clientWidth > 0) {
+				setCompactTopbar(el.clientWidth < compactThreshold);
+			}
 		};
 		measure();
 		if (typeof ResizeObserver === "undefined") return;
 		const ro = new ResizeObserver(measure);
 		ro.observe(el);
 		return () => ro.disconnect();
-	}, []);
-	const compactTopbar = sidebarWidthPx < (trafficLightsVisible ? 236 : 256);
+	}, [compactThreshold]);
 	// Persistent sidebar store state (survives Cmd+B)
 	const activeMode = useSidebarStore((s) => s.activeMode);
 	const modeActivity = useModeActivity();
@@ -2592,24 +2597,31 @@ export function SessionSidebar() {
 					<span className="truncate">{t("common.settings")}</span>
 				</button>
 
-				{/* Qoder-style expandable update button (pure theme adaptive colors, expands on hover) */}
+				{/* Fixed-width update icon button + InfoTip (no hover width reflow) */}
 				{hasUnreadAppUpdate && (
-					<button
-						type="button"
-						onClick={() => {
-							markUpdateSeen();
-							openSettingsTarget("about");
-						}}
-						title={t("sidebar.updateAvailableTooltip", {
-							version: appUpdateInfo?.version ?? "",
-						})}
-						className="group/upd relative flex h-5 w-5 items-center justify-center overflow-hidden rounded-[5px] bg-[var(--accent)] text-[var(--bg)] shadow-xs transition-[width,background-color,transform] duration-200 ease-[var(--ease-spring)] hover:w-[48px] hover:bg-[var(--accent-hover)] active:scale-[0.97] shrink-0 px-1"
-					>
-						<ArrowDownToLine size={11} strokeWidth={2} className="shrink-0" />
-						<span className="max-w-0 overflow-hidden text-[10px] font-semibold leading-none whitespace-nowrap opacity-0 transition-[max-width,opacity,margin] duration-200 ease-[var(--ease-spring)] group-hover/upd:max-w-[28px] group-hover/upd:opacity-100 group-hover/upd:ml-1">
-							{t("sidebar.updateAction")}
-						</span>
-					</button>
+					<div className="flex shrink-0 items-center gap-0.5">
+						<button
+							type="button"
+							onClick={() => {
+								markUpdateSeen();
+								openSettingsTarget("about");
+							}}
+							aria-label={t("sidebar.updateAvailableTooltip", {
+								version: appUpdateInfo?.version ?? "",
+							})}
+							title={t("sidebar.updateAvailableTooltip", {
+								version: appUpdateInfo?.version ?? "",
+							})}
+							className="press-scale flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] bg-[var(--accent)] text-[var(--bg)] shadow-xs transition-[background-color,opacity] duration-150 ease-[var(--ease-out)] hover:bg-[var(--accent-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-active)]"
+						>
+							<ArrowDownToLine size={11} strokeWidth={2} className="shrink-0" />
+						</button>
+						<InfoTip
+							text={t("sidebar.updateAvailableTooltip", {
+								version: appUpdateInfo?.version ?? "",
+							})}
+						/>
+					</div>
 				)}
 
 				<button

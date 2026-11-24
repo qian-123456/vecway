@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SearchIndexStatus, SessionSearchHit } from "../../../lib/contracts";
 import { errMsg } from "../../../lib/dialogs";
 import { onSearchIndexProgress } from "../../../lib/events";
@@ -14,9 +14,10 @@ export interface ContentSearchState {
 	loading: boolean;
 	/** Full IPC error text of the latest request; null otherwise. */
 	error: string | null;
+	retry: () => void;
 }
 
-const IDLE: ContentSearchState = { hits: [], loading: false, error: null };
+const IDLE: Omit<ContentSearchState, "retry"> = { hits: [], loading: false, error: null };
 
 /**
  * Full-text message search for the trimmed `query`: debounced, and every newer
@@ -24,7 +25,8 @@ const IDLE: ContentSearchState = { hits: [], loading: false, error: null };
  */
 export function useContentSearch(query: string): ContentSearchState {
 	const q = query.trim();
-	const [state, setState] = useState<ContentSearchState>(IDLE);
+	const [state, setState] = useState<Omit<ContentSearchState, "retry">>(IDLE);
+	const [retryNonce, setRetryNonce] = useState(0);
 	const seqRef = useRef(0);
 
 	useEffect(() => {
@@ -49,9 +51,13 @@ export function useContentSearch(query: string): ContentSearchState {
 			// Invalidate so a response of the superseded query is ignored.
 			seqRef.current++;
 		};
-	}, [q]);
+	}, [q, retryNonce]);
 
-	return state;
+	const retry = useCallback(() => {
+		setRetryNonce((n) => n + 1);
+	}, []);
+
+	return { ...state, retry };
 }
 
 /** Live full-text index build progress (initial snapshot + `search_index:progress`). */

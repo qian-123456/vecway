@@ -113,6 +113,9 @@ export const getSettings = () => invoke<Settings>("get_settings");
 export const saveSettings = (settings: Settings) =>
 	invoke<Settings>("save_settings", { settings });
 
+export const patchSettings = (patch: Partial<Settings>) =>
+	invoke<Settings>("patch_settings", { patch });
+
 export const appPaths = () => invoke<AppPaths>("app_paths");
 export const appRelaunch = () => invoke<void>("app_relaunch");
 export const currentWorktreeIdentity = () =>

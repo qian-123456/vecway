@@ -105,8 +105,9 @@ export function InfoTip({ text, label, className }: InfoTipProps) {
 			>
 				<Info className="h-3.5 w-3.5" aria-hidden="true" />
 			</button>
-			{open && (
+			{(open || btnRef.current) && (
 				<FloatingLayer
+					open={open}
 					anchor={btnRef.current}
 					placement="top-start"
 					offset={6}

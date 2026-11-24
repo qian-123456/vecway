@@ -5,6 +5,11 @@
  */
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { parsePlanStatus, PLAN_STATUS_KEY, type PlanStatus } from "../../../src/features/chat/plan/planStatus";
+import {
+	AUTOMATION_STATUS_KEY,
+	parseAutomationSessionState,
+	type AutomationSessionState,
+} from "./automation/automationStatus";
 import { api, errorMessage, LONG_TIMEOUT_MS, upload } from "../../core/api";
 import { imageFromBlob, toDataUrl, type PromptImage } from "../../core/lib/images";
 import { nav, paths } from "../../core/nav";
@@ -17,7 +22,7 @@ import { confirm, toast } from "../../ui";
 import { attention } from "./lib/attention";
 import { isFinalReply, matchRequest, resolveRequest, type AskAnswer, type AskDriverState, type AskSpec } from "./lib/askDriver";
 import { isBatchApprovable, showApproveAll } from "./lib/approvals";
-import { createDebounce, DRAFT_ACTIVITY_DEBOUNCE_MS, draftActivityBody, draftBook } from "./lib/drafts";
+import { createDebounce, DRAFT_ACTIVITY_DEBOUNCE_MS, draftActivityBody, draftBook, queueFirstSend } from "./lib/drafts";
 import { attachmentBlocker, buildPrompt, buildPromptBody, buildPromptImages, sendIntent, stripImageMarkers, type StreamBehavior } from "./lib/prompt";
 import {
 	clearLiveMain,
@@ -74,6 +79,7 @@ export interface ComposerState {
 	thinkingLevel?: string | null;
 	planMode?: boolean;
 	planStatus?: PlanStatus | null;
+	automationState?: unknown;
 	goal?: Goal | null;
 	contextTokens?: number | null;
 	contextWindow?: number | null;
@@ -131,6 +137,7 @@ export interface ChatState {
 	/** Restored half answer whose turn ended before persisting (中断前): shown with a marker until removed or deduped. */
 	interrupted: Item | null;
 	working: boolean;
+	stopping: boolean;
 	optimistic: OptimisticMsg[];
 	localOut: LocalOut[];
 	pendings: PendingEntry[];
@@ -147,6 +154,9 @@ export interface ChatState {
 	planSheetOpen: boolean;
 	planSheetMode: PlanSheetMode;
 	planApproving: boolean;
+	automationState: AutomationSessionState | null;
+	automationHydrated: boolean;
+	automationSource: "snapshot" | "live";
 }
 
 // Promise.withResolvers is missing on older iOS Safari, which this bundle targets.
@@ -212,6 +222,7 @@ export class ChatController {
 	private stateSequence = 0;
 	/** Invalidates state reads and failed-send rollbacks when newer session activity arrives. */
 	private activitySequence = 0;
+	private automationSeq = 0;
 	private transcriptRevision = 0;
 	private treeSequence = 0;
 	private treeFetched = false;
@@ -288,6 +299,7 @@ export class ChatController {
 			segments: [],
 			interrupted: null,
 			working,
+			stopping: false,
 			optimistic: opt,
 			localOut: [],
 			pendings: [],
@@ -302,6 +314,9 @@ export class ChatController {
 			planSheetOpen: false,
 			planSheetMode: "half",
 			planApproving: false,
+			automationState: null,
+			automationHydrated: isDraftId(id),
+			automationSource: "snapshot",
 		}));
 		if (this.ownsDraftStash) {
 			this.offs.push(draftBook.subscribe(id, (entry) => {
@@ -468,13 +483,14 @@ export class ChatController {
 			this.state.transcript,
 			fromStart ? { limit: TRANSCRIPT_PAGE_LIMIT } : undefined,
 		);
+		const autoSeq = this.automationSeq;
 		let succeeded = false;
 		let changed = false;
 		try {
 			const page = await api<TranscriptPage>("GET", `/sessions/${this.id}/transcript?${query}`);
 			if (this.disposed || revision !== this.transcriptRevision) return;
 			succeeded = true;
-			changed = this.applyPage(fromStart ? { ...page, reset: true } : page);
+			changed = this.applyPage(fromStart ? { ...page, reset: true } : page, autoSeq === this.automationSeq);
 		} catch (e) {
 			console.warn("[chat] transcript", e);
 			if (!this.state.loaded) this.set({ loaded: true });
@@ -521,7 +537,7 @@ export class ChatController {
 		}
 	}
 
-	private applyPage(page: TranscriptPage): boolean {
+	private applyPage(page: TranscriptPage, acceptAutomation = true): boolean {
 		const prev = this.state;
 		const r = mergePage(prev.transcript, page);
 		const optimistic = reconcileOptimistic(prev.optimistic, r.newUserTexts);
@@ -551,12 +567,17 @@ export class ChatController {
 			clearLiveStale(this.id);
 		}
 		this.stream = { ...this.stream, live };
+		const hasAutomation = acceptAutomation && Object.prototype.hasOwnProperty.call(page, "automationState");
+		const nextAutomation = hasAutomation
+			? parseAutomationSessionState(page.automationState)
+			: prev.automationState;
 		if (
 			!r.changed &&
 			optimistic === prev.optimistic &&
 			live === prev.live &&
 			segments === prev.segments &&
 			!clearInterrupted &&
+			!hasAutomation &&
 			prev.loaded
 		) {
 			return false;
@@ -569,6 +590,7 @@ export class ChatController {
 			live,
 			segments,
 			...(clearInterrupted ? { interrupted: null } : {}),
+			...(hasAutomation ? { automationState: nextAutomation, automationHydrated: true, automationSource: "snapshot" as const } : {}),
 		});
 		return r.changed;
 	}
@@ -715,6 +737,16 @@ export class ChatController {
 				if (this.state.acceptedPlan) this.set({ acceptedPlan: null });
 			}
 		}
+		if (frame.type === "extension_ui_request" && frame.method === "setStatus" && frame.statusKey === AUTOMATION_STATUS_KEY) {
+			++this.automationSeq;
+			const parsed =
+				frame.statusText == null || frame.statusText === ""
+					? { mode: "idle" as const, drafts: [] }
+					: parseAutomationSessionState(frame.statusText);
+			if (parsed) {
+				this.set({ automationState: parsed, automationHydrated: true, automationSource: "live" });
+			}
+		}
 		const step = reduceFrame(this.stream, frame);
 		if (!step.handled) return;
 		++this.activitySequence;
@@ -770,9 +802,9 @@ export class ChatController {
 				this.set({
 					live,
 					working,
+					...(!working && s.stopping ? { stopping: false } : {}),
 					...(clearInterrupted ? { interrupted: null } : {}),
 				});
-				if (clearInterrupted) clearLiveStale(this.id);
 				if (working) this.planOpenSuppressed = false;
 				this.syncPlanSheetLifecycle();
 			}
@@ -811,7 +843,9 @@ export class ChatController {
 
 	private setWorking(working: boolean): void {
 		this.stream = { ...this.stream, working };
-		if (this.state.working !== working) this.set({ working });
+		if (this.state.working !== working || (!working && this.state.stopping)) {
+			this.set({ working, ...(!working ? { stopping: false } : {}) });
+		}
 		if (working) this.planOpenSuppressed = false;
 		this.syncStatePolling();
 		this.syncPlanSheetLifecycle();
@@ -840,6 +874,7 @@ export class ChatController {
 		if (this.disposed) return;
 		const sequence = ++this.stateSequence;
 		const activity = this.activitySequence;
+		const autoSeq = this.automationSeq;
 		const run = (async () => {
 			try {
 				const st = await api<ComposerState>("GET", `/sessions/${this.id}/composer-state`);
@@ -848,7 +883,16 @@ export class ChatController {
 				if (st.thinkingLevel == null && prev?.thinkingLevel) st.thinkingLevel = prev.thinkingLevel;
 				const authoritative = Object.prototype.hasOwnProperty.call(st, "planStatus");
 				if (authoritative) clearTimeout(this.approvalTimer);
-				this.set({ cstate: st, ...(authoritative ? { acceptedPlan: null } : {}) });
+				const hasAuto =
+					Object.prototype.hasOwnProperty.call(st, "automationState") && autoSeq === this.automationSeq;
+				const parsedAuto = hasAuto ? parseAutomationSessionState(st.automationState) : null;
+				this.set({
+					cstate: st,
+					...(authoritative ? { acceptedPlan: null } : {}),
+					...(hasAuto ? { automationState: parsedAuto, automationSource: "snapshot" as const } : {}),
+					automationHydrated: true,
+					...(!st.streaming && !this.stream.working && this.state.stopping ? { stopping: false } : {}),
+				});
 				this.syncPlanSheetLifecycle();
 				if (st.streaming && !this.stream.working) this.setWorking(true);
 				else if (!st.streaming && this.stream.working && !this.stream.live && Date.now() - this.lastSend > 4000) {
@@ -885,6 +929,58 @@ export class ChatController {
 		++this.stateSequence;
 		this.set({ cstate: { ...(this.state.cstate ?? {}), ...p } });
 		this.syncPlanSheetLifecycle();
+	}
+
+	async setAutomationMode(on: boolean, initialGoal?: string): Promise<string> {
+		const autoSeq = this.automationSeq;
+		const r = await api<{ automationState?: unknown; sessionId?: string }>(
+			"POST",
+			`/sessions/${this.id}/automation`,
+			{ action: on ? "enable" : "disable" },
+		);
+		if (this.disposed) return r?.sessionId ?? this.id;
+		const parsed = parseAutomationSessionState(r?.automationState);
+		if (parsed && autoSeq === this.automationSeq) {
+			this.set({ automationState: parsed, automationHydrated: true, automationSource: "snapshot" });
+		}
+		if (r?.sessionId && r.sessionId !== this.id) {
+			const text = initialGoal ? "" : (this.composer?.get() ?? this.lastText);
+			draftBook.stash(r.sessionId, text, this.state.atts);
+			draftBook.forget(this.id);
+			if (text.trim() !== "") saveUnsent(r.sessionId, text);
+			clearUnsent(this.id);
+			if (on && initialGoal?.trim()) {
+				queueFirstSend(r.sessionId, initialGoal.trim());
+			}
+			this.markDraftTransferred(r.sessionId);
+			void useSessions.getState().refresh().catch(() => {});
+			nav.replace(paths.chat(r.sessionId));
+			return r.sessionId;
+		}
+		return this.id;
+	}
+
+	async resolveAutomationDraft(draftId: string, resolution: "saved" | "dismissed"): Promise<void> {
+		const autoSeq = this.automationSeq;
+		const r = await api<{ automationState?: unknown; sessionId?: string }>(
+			"POST",
+			`/sessions/${this.id}/automation`,
+			{ action: "resolve", draftId, resolution },
+		);
+		if (this.disposed) return;
+		const parsed = parseAutomationSessionState(r?.automationState);
+		if (parsed && autoSeq === this.automationSeq) {
+			this.set({ automationState: parsed, automationHydrated: true, automationSource: "snapshot" });
+		} else if (this.state.automationState) {
+			this.set({
+				automationState: {
+					...this.state.automationState,
+					drafts: this.state.automationState.drafts.map((d) =>
+						d.draftId === draftId ? { ...d, status: resolution } : d,
+					),
+				},
+			});
+		}
 	}
 
 	private syncPlanSheetLifecycle(): void {
@@ -1106,6 +1202,8 @@ export class ChatController {
 	/* ------------------------------------------------------------ send / stop / slash */
 
 	async stop(): Promise<void> {
+		if (this.state.stopping) return;
+		this.set({ stopping: true });
 		++this.activitySequence;
 		this.planOpenSuppressed = true;
 		try {
@@ -1113,24 +1211,31 @@ export class ChatController {
 			// withdrawn and handed back instead of running after the abort.
 			const r = await api<{ aborted?: boolean; restoredTexts?: string[] }>("POST", `/sessions/${this.id}/abort`);
 			const restored = (r.restoredTexts ?? []).map((t) => t.trim()).filter(Boolean);
-			const optimistic = reconcileOptimistic(this.state.optimistic, restored);
-			this.releaseOptimisticImages(this.state.optimistic, optimistic);
-			this.set({ optimistic });
+			if (!this.disposed) {
+				const optimistic = reconcileOptimistic(this.state.optimistic, restored);
+				this.releaseOptimisticImages(this.state.optimistic, optimistic);
+				this.set({
+					optimistic,
+					...(r.aborted === false || !this.stream.working ? { stopping: false } : {}),
+				});
+			}
 			if (restored.length) {
-				// Withdrawn texts go back after the existing draft (desktop `restoreTextsToDraft` order).
+				// Withdrawn texts go back after the existing draft (desktop `restoreTextsToDraft` order),
+				// even if the user switched away while abort was in flight.
 				const cur = this.disposed ? loadUnsent(this.id) : this.composer?.get() ?? this.lastText;
 				const text = [...(cur.trim() ? [cur] : []), ...restored].join("\n\n");
 				this.lastText = text;
 				saveUnsent(this.id, text);
 				if (!this.disposed) this.composer?.set(text);
-				toast(`已停止，撤回 ${restored.length} 条排队消息`, { kind: "success" });
-			} else {
-				toast("已发送停止请求");
+				if (!this.disposed) toast(`正在停止当前回复，已撤回 ${restored.length} 条排队消息`, { kind: "info" });
+			} else if (!this.disposed) {
+				toast("正在停止当前回复");
 			}
 		} catch (e) {
-			toast(`停止失败：${errorMessage(e)}`, { kind: "error" });
+			if (!this.disposed) this.set({ stopping: false });
+			if (!this.disposed) toast(`停止失败：${errorMessage(e)}`, { kind: "error" });
 		}
-		setTimeout(() => void this.syncState(), 600);
+		if (!this.disposed) setTimeout(() => void this.syncState(), 600);
 	}
 
 	/** Returns true when the text was consumed (composer should already have been cleared by the caller on true). */
@@ -1397,8 +1502,19 @@ export class ChatController {
 
 	/** Insert a selected passage as a markdown quote (every line prefixed) at the end of the composer. */
 	stageAnnotation(quote: string, comment?: string): void {
-		const block = quoteMarkdown(quote);
-		const formatted = comment?.trim() ? `${block}\n\n${comment.trim()}` : `${block}\n\n`;
+		const trimmedQuote = quote.trim();
+		const trimmedComment = comment?.trim() ?? "";
+		if (!trimmedQuote && !trimmedComment) {
+			this.composer?.focus?.();
+			return;
+		}
+		const block = trimmedQuote ? quoteMarkdown(quote) : "";
+		const formatted =
+			block && trimmedComment
+				? `${block}\n\n${trimmedComment}`
+				: block
+					? `${block}\n\n`
+					: trimmedComment;
 		const cur = this.composer?.get() ?? "";
 		const next = cur ? `${cur.replace(/\s+$/, "")}\n\n${formatted}` : formatted;
 		this.composer?.set(next, true);

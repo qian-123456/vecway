@@ -20,6 +20,7 @@ const GUARD_OWNER: &str = "mobile-draft";
 pub struct Selection {
     pub model: Option<(String, String)>,
     pub thinking: Option<String>,
+    pub automation_mode: bool,
 }
 
 struct Draft {
@@ -28,6 +29,8 @@ struct Draft {
     mode: SpaceMode,
     group_id: Option<String>,
     workspace_id: Option<String>,
+    append_system_prompt: Option<String>,
+    automation_mode: bool,
     created_at: String,
     selection: Selection,
     dirty: bool,
@@ -126,27 +129,48 @@ pub async fn create(
     group_id: Option<String>,
     workspace_id: Option<String>,
 ) -> LiveSessionInfo {
-    let candidates: Vec<Entry> = registry().lock().drafts.values().cloned().collect();
-    for existing in candidates {
-        let (matches, start) = {
-            let d = existing.lock();
-            (
-                !d.dirty
-                    && d.activity.is_none()
-                    && !d.sending
-                    && d.cwd == cwd
-                    && d.mode == mode
-                    && d.group_id == group_id,
-                d.start.clone(),
-            )
-        };
-        if matches && start.lock().await.is_none() {
-            let d = existing.lock();
-            return LiveSessionInfo {
-                session_id: d.id.clone(),
-                cwd: d.cwd.clone(),
-                ..Default::default()
+    create_with_context(cwd, mode, group_id, workspace_id, None, false).await
+}
+
+/// Create a new draft with optional hidden system prompt and automation-mode launch context.
+/// Drafts carrying either never reuse a plain blank draft (nor are reused by one).
+pub async fn create_with_context(
+    cwd: String,
+    mode: SpaceMode,
+    group_id: Option<String>,
+    workspace_id: Option<String>,
+    append_system_prompt: Option<String>,
+    automation_mode: bool,
+) -> LiveSessionInfo {
+    let append_system_prompt = append_system_prompt
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let has_context = append_system_prompt.is_some() || automation_mode;
+    if !has_context {
+        let candidates: Vec<Entry> = registry().lock().drafts.values().cloned().collect();
+        for existing in candidates {
+            let (matches, start) = {
+                let d = existing.lock();
+                (
+                    !d.dirty
+                        && d.activity.is_none()
+                        && !d.sending
+                        && !d.automation_mode
+                        && d.append_system_prompt.is_none()
+                        && d.cwd == cwd
+                        && d.mode == mode
+                        && d.group_id == group_id,
+                    d.start.clone(),
+                )
             };
+            if matches && start.lock().await.is_none() {
+                let d = existing.lock();
+                return LiveSessionInfo {
+                    session_id: d.id.clone(),
+                    cwd: d.cwd.clone(),
+                    ..Default::default()
+                };
+            }
         }
     }
     let id = format!("{DRAFT_PREFIX}{}", uuid::Uuid::new_v4());
@@ -156,8 +180,14 @@ pub async fn create(
         mode,
         group_id,
         workspace_id,
+        append_system_prompt,
+        automation_mode,
         created_at: chrono::Utc::now().to_rfc3339(),
-        selection: Selection::default(),
+        selection: Selection {
+            model: None,
+            thinking: None,
+            automation_mode,
+        },
         dirty: false,
         sending: false,
         activity: None,
@@ -182,6 +212,7 @@ async fn spawn<B: Backend>(ctx: &Ctx<B>, entry: &Entry) -> Result<LiveSessionInf
                 cwd: d.cwd.clone(),
                 mode: Some(d.mode),
                 group_id: d.group_id.clone(),
+                append_system_prompt: d.append_system_prompt.clone(),
                 ..Default::default()
             },
             d.start.clone(),
@@ -284,6 +315,14 @@ pub async fn set_thinking(id: &str, level: String) -> bool {
     let mut d = entry.lock();
     d.selection.thinking = Some(level);
     d.dirty = true;
+    true
+}
+
+pub async fn set_automation_mode(id: &str, enabled: bool) -> bool {
+    let Some(entry) = entry(id) else { return false };
+    let mut d = entry.lock();
+    d.automation_mode = enabled;
+    d.selection.automation_mode = enabled;
     true
 }
 
@@ -417,6 +456,71 @@ mod tests {
             &d.session_id,
             &g.session_id,
             &e.session_id,
+        ] {
+            discard(id).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn context_drafts_do_not_reuse_or_get_reused_by_plain_blank_drafts() {
+        let plain1 = create(
+            "/tmp/draft-ctx-a".into(),
+            SpaceMode::Code,
+            None,
+            None,
+        )
+        .await;
+        let with_prompt = create_with_context(
+            "/tmp/draft-ctx-a".into(),
+            SpaceMode::Code,
+            None,
+            None,
+            Some("hidden instructions".into()),
+            false,
+        )
+        .await;
+        let with_auto = create_with_context(
+            "/tmp/draft-ctx-a".into(),
+            SpaceMode::Code,
+            None,
+            None,
+            None,
+            true,
+        )
+        .await;
+        assert_ne!(with_prompt.session_id, plain1.session_id);
+        assert_ne!(with_auto.session_id, plain1.session_id);
+        assert_ne!(with_auto.session_id, with_prompt.session_id);
+
+        // Another plain blank draft reuses plain1, never with_prompt/with_auto.
+        let plain2 = create(
+            "/tmp/draft-ctx-a".into(),
+            SpaceMode::Code,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(plain2.session_id, plain1.session_id);
+
+        // Even after discarding plain1, a new plain draft never reuses context drafts.
+        discard(&plain1.session_id).await;
+        let plain3 = create(
+            "/tmp/draft-ctx-a".into(),
+            SpaceMode::Code,
+            None,
+            None,
+        )
+        .await;
+        assert_ne!(plain3.session_id, with_prompt.session_id);
+        assert_ne!(plain3.session_id, with_auto.session_id);
+
+        assert!(!selection(&plain3.session_id).await.unwrap().automation_mode);
+        assert!(selection(&with_auto.session_id).await.unwrap().automation_mode);
+
+        for id in [
+            &with_prompt.session_id,
+            &with_auto.session_id,
+            &plain3.session_id,
         ] {
             discard(id).await;
         }

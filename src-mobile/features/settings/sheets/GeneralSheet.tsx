@@ -26,6 +26,7 @@ export function GeneralSheet({
 	onModeChange,
 	automationOverlapPolicy,
 	onAutomationOverlapPolicyChange,
+	onOpenAutomations,
 }: {
 	open: boolean;
 	onClose: () => void;
@@ -35,6 +36,7 @@ export function GeneralSheet({
 	onModeChange: (m: ApprovalMode) => void;
 	automationOverlapPolicy: AutomationOverlapPolicy | null;
 	onAutomationOverlapPolicyChange: (policy: AutomationOverlapPolicy) => void;
+	onOpenAutomations?: () => void;
 }) {
 	const [busy, setBusy] = useState(false);
 	const overlapSaving = useRef(false);
@@ -104,31 +106,46 @@ export function GeneralSheet({
 					onChange={(v) => void choose(v)}
 				/>
 			</ListGroup>
-			<ListGroup title="自动化" note="对所有自动化的后续触发立即生效，不中断当前运行；已接收的排队任务会保留并依次执行。">
-				<SelectRow
-					title="运行重合策略"
-					subtitle={AUTOMATION_OVERLAP_POLICIES.find((policy) => policy.value === automationOverlapPolicy)?.effect}
-					presentation="menu"
-					value={automationOverlapPolicy}
-					disabled={overlapBusy || automationOverlapPolicy == null}
-					options={overlapOptions}
-					onChange={(value) => void chooseOverlapPolicy(value)}
-					error={
-						<>
-							{automationOverlapPolicy == null && (
-								<div role="alert" className="m-selectable text-m-sm text-m-danger">
-									无法读取自动化重合策略，请返回设置后下拉刷新。
-								</div>
-							)}
-							{overlapError && (
-								<div role="alert" className="m-selectable whitespace-pre-wrap break-words text-m-sm text-m-danger">
-									保存失败：{overlapError}
-								</div>
-							)}
-						</>
-					}
-				/>
-			</ListGroup>
+			{onOpenAutomations ? (
+				<ListGroup title="自动化" note="管理后台常驻运行、运行重合策略、默认汇报方式、默认模型与测试提示词模板。">
+					<ListRow
+						title="自动化设置"
+						subtitle={
+							automationOverlapPolicy
+								? `重合策略：${AUTOMATION_OVERLAP_POLICIES.find((p) => p.value === automationOverlapPolicy)?.label ?? automationOverlapPolicy}`
+								: "前往自动化专属设置"
+						}
+						chevron
+						onClick={onOpenAutomations}
+					/>
+				</ListGroup>
+			) : (
+				<ListGroup title="自动化" note="对所有自动化的后续触发立即生效，不中断当前运行；已接收的排队任务会保留并依次执行。">
+					<SelectRow
+						title="运行重合策略"
+						subtitle={AUTOMATION_OVERLAP_POLICIES.find((policy) => policy.value === automationOverlapPolicy)?.effect}
+						presentation="menu"
+						value={automationOverlapPolicy}
+						disabled={overlapBusy || automationOverlapPolicy == null}
+						options={overlapOptions}
+						onChange={(value) => void chooseOverlapPolicy(value)}
+						error={
+							<>
+								{automationOverlapPolicy == null && (
+									<div role="alert" className="m-selectable text-m-sm text-m-danger">
+										无法读取自动化重合策略，请返回设置后下拉刷新。
+									</div>
+								)}
+								{overlapError && (
+									<div role="alert" className="m-selectable whitespace-pre-wrap break-words text-m-sm text-m-danger">
+										保存失败：{overlapError}
+									</div>
+								)}
+							</>
+						}
+					/>
+				</ListGroup>
+			)}
 			<ListGroup title="新会话" note="要换默认模型，去「模型角色」里修改「全局默认」。">
 				<ListRow
 					icon={<Cpu size={22} strokeWidth={1.75} />}

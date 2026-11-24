@@ -63,4 +63,16 @@ describe("SettingsOverlay Esc", () => {
 		fireEvent.keyDown(document.body, { key: "Escape" });
 		expect(useUi.getState().centerView).not.toBe("settings");
 	});
+
+	it("preserves opening instant flag through close when open transitions true -> false (L1)", () => {
+		withNested = false;
+		useUi.setState({ centerView: "settings", settingsInstant: true });
+		const { rerender, queryByRole } = render(<SettingsOverlay open={true} />);
+		expect(queryByRole("dialog")).not.toBeNull();
+
+		// Simulate closeSettings() clearing settingsInstant in store while open flips false
+		useUi.setState({ centerView: "home", settingsInstant: false });
+		rerender(<SettingsOverlay open={false} />);
+		expect(queryByRole("dialog")).toBeNull();
+	});
 });

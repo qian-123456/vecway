@@ -3,6 +3,7 @@
  * it was found so callers can fall back to highlighting the whole message. */
 
 import { collectTextSegments, locateQuote, messageQuoteRoot, segmentRange } from "./annotationAnchor";
+import { scrollBehavior } from "../../lib/motion";
 
 const LOCATE_HIGHLIGHT = "annotation-locate";
 const POLL_MS = 80;
@@ -59,7 +60,7 @@ export function flashQuote(itemId: string, quote: string, ms: number): Promise<b
 		const range = findQuoteRange(itemId, quote);
 		if (range) {
 			range.startContainer.parentElement?.scrollIntoView({
-				behavior: "smooth",
+				behavior: scrollBehavior(),
 				block: "center",
 			});
 			CSS.highlights.set(LOCATE_HIGHLIGHT, new Highlight(range));

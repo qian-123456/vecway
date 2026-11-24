@@ -67,6 +67,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
+use axum::response::{IntoResponse as _, Response};
 use axum::{Json, Router};
 use base64::Engine as _;
 use serde::Deserialize;
@@ -126,6 +127,7 @@ pub fn routes<B: Backend>() -> Router<Arc<Ctx<B>>> {
             "/sessions/{id}/plan-mode",
             get(plan_get::<B>).post(plan_set::<B>),
         )
+        .route("/sessions/{id}/automation", post(automation_set::<B>))
 }
 
 // ---------------------------------------------------------------- helpers
@@ -275,7 +277,11 @@ pub(crate) async fn deliver_prompt(
     id: &str,
     d: PromptDelivery,
 ) -> Result<bool, ApiError> {
+    let automation_mode = d.selection.automation_mode;
     apply_selection(state, id, d.selection).await?;
+    if automation_mode && !d.message.trim().starts_with("/automation-action") {
+        ensure_automation_enabled(state, id).await?;
+    }
     send_prompt_live(state, id, &d.message, d.images, d.behavior.as_deref()).await
 }
 
@@ -646,6 +652,186 @@ pub(super) async fn plan_status(id: &str, file: &str) -> Result<Option<Value>, A
         };
         restore_plan_body(&mut raw, persisted, &file, &id);
         Ok(normalize_plan_status(&raw, persisted))
+    })
+    .await
+    .map_err(|e| bad_gateway(e.to_string()))?
+    .map_err(|e: std::io::Error| bad_gateway(e.to_string()))
+}
+
+fn session_streaming(id: &str) -> bool {
+    crate::rpc::get_handle(id)
+        .is_some_and(|h| h.streaming.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+fn automation_mode_active(id: &str) -> bool {
+    crate::rpc::get_handle(id)
+        .and_then(|h| {
+            h.automation_status
+                .lock()
+                .as_ref()
+                .and_then(|s| s.get("mode"))
+                .and_then(Value::as_str)
+                .map(|m| m == "active")
+        })
+        .unwrap_or(false)
+}
+
+async fn wait_for_automation_enabled(
+    id: &str,
+    poll_interval: std::time::Duration,
+    max_polls: usize,
+) -> Result<(), ApiError> {
+    for _ in 0..max_polls {
+        if automation_mode_active(id) && !session_streaming(id) {
+            return Ok(());
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+    if automation_mode_active(id) {
+        return Ok(());
+    }
+    Err(err(
+        StatusCode::GATEWAY_TIMEOUT,
+        "自动化定制模式启用超时，请重试",
+    ))
+}
+
+async fn ensure_automation_enabled(state: &AppState, id: &str) -> Result<(), ApiError> {
+    if automation_mode_active(id) {
+        return Ok(());
+    }
+    send_prompt_live(state, id, "/automation-action enable", Vec::new(), None).await?;
+    wait_for_automation_enabled(id, std::time::Duration::from_millis(50), 60).await
+}
+
+fn normalize_automation_draft_item(obj: &Value) -> Option<Value> {
+    let draft_id = obj
+        .get("draftId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let draft = obj.get("draft").filter(|d| d.is_object())?;
+    let status = match obj.get("status").and_then(Value::as_str) {
+        Some("saved") => "saved",
+        Some("dismissed") => "dismissed",
+        _ => "pending",
+    };
+    Some(json!({
+        "v": 1,
+        "draftId": draft_id,
+        "status": status,
+        "draft": draft,
+    }))
+}
+
+fn normalize_automation_state(raw: &Value, persisted: bool) -> Option<Value> {
+    if !raw.is_object() {
+        return None;
+    }
+    let version = raw.get("v").and_then(Value::as_u64);
+    let valid_version = if persisted {
+        matches!(version, Some(1 | 2))
+    } else {
+        version == Some(1)
+    };
+    if !valid_version {
+        return None;
+    }
+    if let Some(arr) = raw.get("drafts").and_then(Value::as_array) {
+        let drafts: Vec<Value> = arr
+            .iter()
+            .filter_map(normalize_automation_draft_item)
+            .collect();
+        let mode = if raw.get("mode").and_then(Value::as_str) == Some("active") {
+            "active"
+        } else {
+            "idle"
+        };
+        return Some(json!({
+            "v": 1,
+            "mode": mode,
+            "drafts": drafts,
+        }));
+    }
+    if let Some(single) = normalize_automation_draft_item(raw) {
+        let mode = if raw.get("mode").and_then(Value::as_str) == Some("active")
+            || single.get("status").and_then(Value::as_str) == Some("pending")
+        {
+            "active"
+        } else {
+            "idle"
+        };
+        return Some(json!({
+            "v": 1,
+            "mode": mode,
+            "drafts": [single],
+        }));
+    }
+    match raw.get("mode").and_then(Value::as_str) {
+        Some(mode @ ("active" | "idle")) => Some(json!({
+            "v": 1,
+            "mode": mode,
+            "drafts": [],
+        })),
+        _ => None,
+    }
+}
+
+fn read_saved_automation(file: &FsPath) -> std::io::Result<Option<Value>> {
+    use std::io::{BufRead, BufReader};
+    if file.as_os_str().is_empty() {
+        return Ok(None);
+    }
+    let file = match std::fs::File::open(file) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut latest = None;
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 || line.last() != Some(&b'\n') {
+            break;
+        }
+        let maybe_auto = line
+            .windows(b"ompws-automation-state".len())
+            .any(|w| w == b"ompws-automation-state")
+            || line
+                .windows(b"ompws-automation-draft".len())
+                .any(|w| w == b"ompws-automation-draft");
+        if !maybe_auto {
+            continue;
+        }
+        let Ok(mut entry) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        if entry.get("type").and_then(Value::as_str) == Some("custom")
+            && matches!(
+                entry.get("customType").and_then(Value::as_str),
+                Some("ompws-automation-state" | "ompws-automation-draft")
+            )
+            && entry.get("data").is_some_and(Value::is_object)
+        {
+            latest = Some(entry["data"].take());
+        }
+    }
+    Ok(latest)
+}
+
+pub(super) async fn automation_status(id: &str, file: &str) -> Result<Option<Value>, ApiError> {
+    let live = crate::rpc::get_handle(id).and_then(|h| h.automation_status.lock().clone());
+    let file = PathBuf::from(file);
+    tokio::task::spawn_blocking(move || {
+        let persisted = live.is_none();
+        let Some(raw) = (match live {
+            Some(raw) => Some(raw),
+            None => read_saved_automation(&file)?,
+        }) else {
+            return Ok(None);
+        };
+        Ok(normalize_automation_state(&raw, persisted))
     })
     .await
     .map_err(|e| bad_gateway(e.to_string()))?
@@ -2035,6 +2221,14 @@ async fn composer_state<B: Backend>(
     } else {
         plan_status(&id, &meta.file).await?
     };
+    let automation_state = if is_draft {
+        selection
+            .as_ref()
+            .filter(|s| s.automation_mode)
+            .map(|_| json!({ "v": 1, "mode": "active", "drafts": [] }))
+    } else {
+        automation_status(&id, &meta.file).await?
+    };
     Ok(Json(json!({
         "live": st.is_some(),
         "streaming": streaming,
@@ -2045,6 +2239,7 @@ async fn composer_state<B: Backend>(
         "thinkingLevel": draft_thinking.or_else(|| st.as_ref().and_then(|s| s.get("thinkingLevel")).cloned()),
         "planMode": plan_status.as_ref().and_then(|s| s.get("enabled")).and_then(Value::as_bool).unwrap_or(false),
         "planStatus": plan_status,
+        "automationState": automation_state,
         "goal": st.as_ref().map_or(Value::Null, goal_json),
         "fastMode": st.as_ref().and_then(|s| s.get("fastModeEnabled")).and_then(Value::as_bool).unwrap_or(false),
         "slowMode": st.as_ref().and_then(|s| s.get("slowModeEnabled")).and_then(Value::as_bool).unwrap_or(false),
@@ -2309,6 +2504,180 @@ async fn plan_set<B: Backend>(
         out["sessionId"] = json!(real);
     }
     Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutomationBody {
+    action: String,
+    draft_id: Option<String>,
+    resolution: Option<String>,
+}
+
+fn current_automation_mode(id: &str) -> Option<String> {
+    crate::rpc::get_handle(id).and_then(|h| {
+        h.automation_status
+            .lock()
+            .as_ref()
+            .and_then(|s| s.get("mode"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+fn automation_action_settled(
+    id: &str,
+    action: &str,
+    draft_id: Option<&str>,
+    resolution: Option<&str>,
+) -> bool {
+    let Some(handle) = crate::rpc::get_handle(id) else {
+        return false;
+    };
+    let guard = handle.automation_status.lock();
+    let Some(raw) = guard.as_ref() else {
+        return false;
+    };
+    match action {
+        "enable" => raw.get("mode").and_then(Value::as_str) == Some("active"),
+        "disable" => raw.get("mode").and_then(Value::as_str) == Some("idle"),
+        "resolve" => {
+            let (Some(did), Some(res)) = (draft_id, resolution) else {
+                return true;
+            };
+            let Some(drafts) = raw.get("drafts").and_then(Value::as_array) else {
+                return res == "dismissed";
+            };
+            let found = drafts
+                .iter()
+                .find(|d| d.get("draftId").and_then(Value::as_str) == Some(did));
+            match (res, found) {
+                ("dismissed", None) => true,
+                ("dismissed", Some(d)) => {
+                    d.get("status").and_then(Value::as_str) == Some("dismissed")
+                }
+                ("saved", Some(d)) => d.get("status").and_then(Value::as_str) == Some("saved"),
+                _ => false,
+            }
+        }
+        _ => true,
+    }
+}
+
+/// Automation mode & draft card control via `/automation-action ...`.
+async fn wait_until_automation_settled(
+    target: &str,
+    action: &str,
+    draft_id: Option<&str>,
+    resolution: Option<&str>,
+    poll_interval: std::time::Duration,
+    max_polls: usize,
+) -> bool {
+    for _ in 0..max_polls {
+        if automation_action_settled(target, action, draft_id, resolution) {
+            return true;
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+    automation_action_settled(target, action, draft_id, resolution)
+}
+
+/// Automation mode & draft card control via `/automation-action ...`.
+async fn automation_set<B: Backend>(
+    State(ctx): State<Arc<Ctx<B>>>,
+    Path(id): Path<String>,
+    Json(body): Json<AutomationBody>,
+) -> Result<Response, ApiError> {
+    let meta = load_session(&ctx, &id).await?;
+    let action = body.action.trim();
+    let (want_mode, draft_id, resolution, cmd) = match action {
+        "enable" => (
+            Some("active"),
+            None,
+            None,
+            "/automation-action enable".to_string(),
+        ),
+        "disable" => (
+            Some("idle"),
+            None,
+            None,
+            "/automation-action disable".to_string(),
+        ),
+        "resolve" => {
+            let did = body
+                .draft_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| bad_request("缺少 draftId"))?;
+            check_id(did)?;
+            let res = match body.resolution.as_deref().map(str::trim) {
+                Some(r @ ("saved" | "dismissed")) => r,
+                _ => return Err(bad_request("resolution 必须是 saved 或 dismissed")),
+            };
+            (
+                None,
+                Some(did.to_string()),
+                Some(res.to_string()),
+                format!("/automation-action resolve {did} {res}"),
+            )
+        }
+        _ => return Err(bad_request("action 必须是 enable、disable 或 resolve")),
+    };
+
+    let is_draft = super::draft::is_draft(&id);
+    if action == "disable" && is_draft && !meta.live {
+        super::draft::set_automation_mode(&id, false).await;
+        return Ok(Json(json!({
+            "automationState": { "v": 1, "mode": "idle", "drafts": [] }
+        }))
+        .into_response());
+    }
+    if let Some(want) = want_mode {
+        if !is_draft && current_automation_mode(&id).as_deref() == Some(want) {
+            let state = automation_status(&id, &meta.file).await?;
+            return Ok(Json(json!({ "automationState": state })).into_response());
+        }
+    }
+
+    let (real, _) = send_prompt_ex(&ctx, &id, &cmd, Vec::new(), None).await?;
+    let target = real.as_deref().unwrap_or(&id);
+    if crate::rpc::get_handle(target).is_some() {
+        let settled = wait_until_automation_settled(
+            target,
+            action,
+            draft_id.as_deref(),
+            resolution.as_deref(),
+            std::time::Duration::from_millis(50),
+            60,
+        )
+        .await;
+        if !settled {
+            let mut payload = json!({
+                "error": "操作等待超时，当前会话可能正忙，请稍后刷新查看结果"
+            });
+            if let Some(sid) = real {
+                payload["sessionId"] = json!(sid);
+            }
+            return Ok((StatusCode::GATEWAY_TIMEOUT, Json(payload)).into_response());
+        }
+    }
+
+    let target_file = if real.is_some() {
+        ctx.backend
+            .session(target)
+            .await
+            .map(|m| m.file)
+            .unwrap_or_default()
+    } else {
+        meta.file
+    };
+    let automation_state = automation_status(target, &target_file).await?;
+    let mut out = json!({ "automationState": automation_state });
+    if let Some(real) = real {
+        out["sessionId"] = json!(real);
+    }
+    Ok(Json(out).into_response())
 }
 
 #[cfg(test)]
@@ -2810,5 +3179,100 @@ mod tests {
             queue_json(Some(&odd)),
             json!({"steering": ["a"], "followUp": [], "liveSteered": 0})
         );
+    }
+
+    #[tokio::test]
+    async fn automation_status_reads_live_handle_and_falls_back_to_transcript() {
+        let dir = std::env::temp_dir().join(format!("omp-chat-auto-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sess.jsonl");
+        let v1 = json!({
+            "type": "custom",
+            "customType": "ompws-automation-draft",
+            "data": {
+                "v": 1,
+                "draftId": "d-legacy",
+                "status": "pending",
+                "draft": { "name": "Legacy", "prompt": "p", "cwd": "." }
+            }
+        });
+        let v2 = json!({
+            "type": "custom",
+            "customType": "ompws-automation-state",
+            "data": {
+                "v": 2,
+                "mode": "active",
+                "drafts": [{
+                    "v": 1,
+                    "draftId": "d-v2",
+                    "status": "saved",
+                    "draft": { "name": "V2", "prompt": "p2", "cwd": "." }
+                }]
+            }
+        });
+        std::fs::write(&file, format!("{v1}\n{v2}\n")).unwrap();
+
+        let id = format!("auto-status-{}", uuid::Uuid::new_v4());
+        let restored = automation_status(&id, &file.to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored["mode"], "active");
+        assert_eq!(restored["drafts"][0]["draftId"], "d-v2");
+        assert_eq!(restored["drafts"][0]["status"], "saved");
+
+        // Live SessionHandle status takes precedence over transcript.
+        let handle = Arc::new(crate::rpc::SessionHandle {
+            session_id: parking_lot::RwLock::new(id.clone()),
+            ..crate::rpc::SessionHandle::for_test()
+        });
+        *handle.automation_status.lock() = Some(json!({
+            "v": 1,
+            "mode": "idle",
+            "drafts": []
+        }));
+        crate::rpc::registry().write().insert(id.clone(), handle);
+        let live = automation_status(&id, &file.to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(live["mode"], "idle");
+        assert_eq!(live["drafts"], json!([]));
+
+        crate::rpc::registry().write().remove(&id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[tokio::test]
+    async fn unsettled_automation_waiters_return_gateway_timeout() {
+        let id = format!("auto-timeout-{}", uuid::Uuid::new_v4());
+        let handle = Arc::new(crate::rpc::SessionHandle {
+            session_id: parking_lot::RwLock::new(id.clone()),
+            ..crate::rpc::SessionHandle::for_test()
+        });
+        *handle.automation_status.lock() = Some(json!({
+            "v": 1,
+            "mode": "idle",
+            "drafts": []
+        }));
+        crate::rpc::registry().write().insert(id.clone(), handle);
+
+        let err = wait_for_automation_enabled(&id, std::time::Duration::from_millis(1), 2)
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(err.1, "自动化定制模式启用超时，请重试");
+
+        let settled = wait_until_automation_settled(
+            &id,
+            "enable",
+            None,
+            None,
+            std::time::Duration::from_millis(1),
+            2,
+        )
+        .await;
+        assert!(!settled);
+
+        crate::rpc::registry().write().remove(&id);
     }
 }

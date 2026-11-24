@@ -48,24 +48,44 @@ export async function discardDraft(s: Pick<TreeSession, "id">): Promise<void> {
 	}
 }
 
-/** Archive every non-archived session of a group; drafts are discarded instead (they cannot be archived). */
+/** Archive every non-archived real session of a group; drafts are kept intact so unsent work is never lost. */
 export async function batchArchive(title: string, sessions: readonly TreeSession[]): Promise<void> {
-	const list = sessions.filter((s) => !s.archived);
-	if (!list.length) {
-		toast("该分组下无需要归档的会话");
+	const active = sessions.filter((s) => !s.archived);
+	const realSessions = active.filter((s) => !isDraftId(s.id));
+	const skippedDrafts = active.length - realSessions.length;
+	if (!realSessions.length) {
+		toast(skippedDrafts > 0 ? `该分组仅包含 ${skippedDrafts} 个未发送草稿，已保留` : "该分组下无需要归档的会话");
 		return;
 	}
-	if (!(await confirm({ message: `确定批量归档「${title}」下的 ${list.length} 个会话？`, confirmText: "归档", danger: true }))) return;
+	const confirmMsg =
+		skippedDrafts > 0
+			? `确定批量归档「${title}」下的 ${realSessions.length} 个会话？（将保留 ${skippedDrafts} 个未发送草稿）`
+			: `确定批量归档「${title}」下的 ${realSessions.length} 个会话？`;
+	if (!(await confirm({ message: confirmMsg, confirmText: "归档", danger: true }))) return;
 	const rs = await Promise.allSettled(
-		list.map((s) =>
-			isDraftId(s.id)
-				? api("POST", `/left/drafts/${enc(s.id)}/discard`)
-				: api("PATCH", `/left/sessions/${enc(s.id)}`, { archived: true }),
-		),
+		realSessions.map((s) => api("PATCH", `/left/sessions/${enc(s.id)}`, { archived: true })),
 	);
-	const fail = rs.filter((r) => r.status === "rejected").length;
-	toast(fail ? `已归档 ${list.length - fail} 个，${fail} 个失败` : `已归档 ${list.length} 个会话`, {
+	const succeeded = realSessions.filter((_, idx) => rs[idx]?.status === "fulfilled");
+	const fail = realSessions.length - succeeded.length;
+	const keptSuffix = skippedDrafts > 0 ? `（已保留 ${skippedDrafts} 个草稿）` : "";
+	const msg = fail
+		? `已归档 ${succeeded.length} 个，${fail} 个失败${keptSuffix}`
+		: `已归档 ${succeeded.length} 个会话${keptSuffix}`;
+	toast(msg, {
 		kind: fail ? "error" : "success",
+		ms: succeeded.length > 0 ? 5000 : undefined,
+		action:
+			succeeded.length > 0
+				? {
+						label: "撤销",
+						onClick: async () => {
+							await Promise.allSettled(
+								succeeded.map((s) => api("PATCH", `/left/sessions/${enc(s.id)}`, { archived: false })),
+							);
+							await refreshAll();
+						},
+					}
+				: undefined,
 	});
 	await refreshAll();
 }

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { FloatingLayer } from "./FloatingLayer";
 
@@ -38,5 +38,24 @@ describe("FloatingLayer placement is immune to caller position classes", () => {
 		const el = document.querySelector<HTMLElement>('[data-layer="modal"]')!;
 		expect(el.style.position).toBe("fixed");
 		expect(el.style.zIndex).toBe("400");
+	});
+
+	it("immediately unmounts an open hovercard when a blocking modal appears (M21)", async () => {
+		render(
+			<FloatingLayer anchor={{ x: 10, y: 10 }} layer="hovercard">
+				<span data-testid="hover-body">hovercard</span>
+			</FloatingLayer>,
+		);
+		expect(document.querySelector('[data-layer="hovercard"]')).not.toBeNull();
+
+		const modal = document.createElement("div");
+		modal.setAttribute("data-layer", "modal");
+		act(() => {
+			document.body.appendChild(modal);
+		});
+
+		await waitFor(() => {
+			expect(document.body.textContent).not.toContain("hovercard");
+		});
 	});
 });

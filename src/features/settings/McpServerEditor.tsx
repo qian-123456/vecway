@@ -19,6 +19,7 @@ import {
 	splitDraftCommand,
 	TRANSPORT_LABELS,
 	validateDraft,
+	type DraftErrors,
 	type KvRow,
 	type ServerDraft,
 } from "./mcpDraft";
@@ -52,6 +53,7 @@ function KvEditor({
 	addLabel,
 	onRemoveExisting,
 	onChangeAdds,
+	onBlurField,
 }: {
 	label: string;
 	hint: string;
@@ -63,6 +65,7 @@ function KvEditor({
 	addLabel: string;
 	onRemoveExisting: (key: string) => void;
 	onChangeAdds: (rows: KvRow[]) => void;
+	onBlurField?: () => void;
 }) {
 	const { t } = useT();
 	const kept = existing.filter((kv) => !removed.has(kv.key));
@@ -93,6 +96,7 @@ function KvEditor({
 							onChange={(e) =>
 								onChangeAdds(adds.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))
 							}
+							onBlur={() => onBlurField?.()}
 							placeholder={keyPlaceholder}
 							aria-label={t("mcp.kvNameAria")}
 							className="w-40 shrink-0 rounded-lg hairline bg-[var(--well-bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none"
@@ -104,6 +108,7 @@ function KvEditor({
 							onChange={(e) =>
 								onChangeAdds(adds.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))
 							}
+							onBlur={() => onBlurField?.()}
 							placeholder={t("mcp.kvValuePlaceholder")}
 							aria-label={t("mcp.kvValueAria")}
 							className="min-w-0 flex-1 rounded-lg hairline bg-[var(--well-bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none"
@@ -159,6 +164,7 @@ export function McpServerEditor({
 	);
 	const [scope, setScope] = useState<McpScope>(initialScope);
 	const [showErrors, setShowErrors] = useState(false);
+	const [touched, setTouched] = useState<Partial<Record<keyof DraftErrors, boolean>>>({});
 	const [saving, setSaving] = useState(false);
 	const savingRef = useRef(false);
 	const [error, setError] = useState<string | null>(null);
@@ -168,7 +174,16 @@ export function McpServerEditor({
 	);
 
 	const errors = useMemo(() => validateDraft(draft, existingNames), [draft, existingNames]);
-	const visible = showErrors ? errors : {};
+	const touch = (field: keyof DraftErrors) =>
+		setTouched((prev) => (prev[field] ? prev : { ...prev, [field]: true }));
+	const visible = useMemo(() => {
+		if (showErrors) return errors;
+		const out: DraftErrors = {};
+		for (const k of Object.keys(errors) as (keyof DraftErrors)[]) {
+			if (touched[k]) out[k] = errors[k];
+		}
+		return out;
+	}, [showErrors, errors, touched]);
 	const scopeInvalid = scopeError(scope) !== null;
 	const secrets = original ? hasMaskedSecrets(original.definition) : false;
 	const adding = !original;
@@ -247,6 +262,8 @@ export function McpServerEditor({
 							autoFocus
 							value={draft.name}
 							onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+							onBlur={() => touch("name")}
+							aria-invalid={Boolean(visible.name)}
 							placeholder={t("mcp.namePlaceholder")}
 							className={FIELD_CLASS}
 						/>
@@ -285,6 +302,7 @@ export function McpServerEditor({
 								onBlur={() => {
 									const next = applySplit(draft);
 									if (next) setDraft(next);
+									touch("command");
 								}}
 								placeholder={t("mcp.commandPlaceholder")}
 								className={`${FIELD_CLASS} font-mono`}
@@ -328,6 +346,7 @@ export function McpServerEditor({
 								setDraft({ ...draft, envRemoves: new Set([...draft.envRemoves, k]) })
 							}
 							onChangeAdds={(rows) => setDraft({ ...draft, envAdds: rows })}
+							onBlurField={() => touch("env")}
 						/>
 					</>
 				) : (
@@ -337,6 +356,8 @@ export function McpServerEditor({
 							<input
 								value={draft.url}
 								onChange={(e) => setDraft({ ...draft, url: e.target.value })}
+								onBlur={() => touch("url")}
+								aria-invalid={Boolean(visible.url)}
 								placeholder="https://example.com/mcp"
 								className={`${FIELD_CLASS} font-mono`}
 							/>
@@ -355,6 +376,7 @@ export function McpServerEditor({
 								setDraft({ ...draft, headerRemoves: new Set([...draft.headerRemoves, k]) })
 							}
 							onChangeAdds={(rows) => setDraft({ ...draft, headerAdds: rows })}
+							onBlurField={() => touch("headers")}
 						/>
 					</>
 				)}
@@ -402,6 +424,8 @@ export function McpServerEditor({
 										inputMode="numeric"
 										value={draft.timeout}
 										onChange={(e) => setDraft({ ...draft, timeout: e.target.value })}
+										onBlur={() => touch("timeout")}
+										aria-invalid={Boolean(visible.timeout)}
 										placeholder={t("mcp.timeoutPlaceholder")}
 										className="w-24 rounded-lg hairline bg-[var(--well-bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none"
 									/>

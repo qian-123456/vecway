@@ -91,6 +91,7 @@
 //! toggles, schedule run-detail/transcripts.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
@@ -133,6 +134,11 @@ pub fn routes<B: Backend>() -> Router<Arc<Ctx<B>>> {
             "/left/schedules",
             get(schedules_list::<B>).post(schedules_create::<B>),
         )
+        .route("/left/schedules/probe-test", post(schedules_probe_test::<B>))
+        .route(
+            "/left/schedules/generate-draft",
+            post(schedules_generate_draft::<B>),
+        )
         .route(
             "/left/schedules/{id}",
             axum::routing::put(schedules_update::<B>).delete(schedules_delete::<B>),
@@ -140,6 +146,18 @@ pub fn routes<B: Backend>() -> Router<Arc<Ctx<B>>> {
         .route("/left/schedules/{id}/enabled", post(schedules_enabled::<B>))
         .route("/left/schedules/{id}/run", post(schedules_run::<B>))
         .route("/left/schedules/{id}/runs", get(schedules_runs::<B>))
+        .route(
+            "/left/schedules/{id}/worktree",
+            get(schedules_worktree::<B>),
+        )
+        .route(
+            "/left/schedules/{id}/worktree/merge",
+            post(schedules_worktree_merge::<B>),
+        )
+        .route(
+            "/left/schedules/{id}/worktree/discard",
+            post(schedules_worktree_discard::<B>),
+        )
         .route(
             "/left/schedules/{id}/runs/{run_id}/release-awaiting",
             post(schedules_release_awaiting::<B>),
@@ -160,6 +178,7 @@ pub fn routes<B: Backend>() -> Router<Arc<Ctx<B>>> {
         .route("/left/settings/set", post(setting_set::<B>))
         .route("/left/settings/desktop", get(desktop_settings::<B>))
         .route("/left/settings/approval-mode", post(approval_mode_set::<B>))
+        .route("/left/settings/automation", post(automation_settings_set::<B>))
         .route("/left/roles", get(roles_get::<B>))
         .route("/left/roles/set", post(roles_set::<B>))
         .route("/left/providers", get(providers_get::<B>))
@@ -176,6 +195,9 @@ pub fn routes<B: Backend>() -> Router<Arc<Ctx<B>>> {
 
 fn bad_request(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
+}
+fn conflict(msg: impl Into<String>) -> ApiError {
+    ApiError(StatusCode::CONFLICT, msg.into())
 }
 fn not_found(msg: &str) -> ApiError {
     ApiError(StatusCode::NOT_FOUND, msg.to_string())
@@ -865,9 +887,11 @@ struct DirEntry {
 
 /// Registered workspaces plus their live worktrees (deduplicated by path).
 /// Uses lightweight `git worktree list` entries without enumerating sessions or git status.
-async fn allowed_dirs(st: &AppState) -> Result<Vec<DirEntry>, ApiError> {
+async fn allowed_dirs_db(
+    db: &parking_lot::Mutex<rusqlite::Connection>,
+) -> Result<Vec<DirEntry>, ApiError> {
     let workspaces = {
-        let db = st.db.lock();
+        let db = db.lock();
         store::list_workspaces(&db).map_err(internal)?
     };
     let mut handles = Vec::new();
@@ -924,6 +948,10 @@ async fn allowed_dirs(st: &AppState) -> Result<Vec<DirEntry>, ApiError> {
         }
     }
     Ok(out)
+}
+
+async fn allowed_dirs(st: &AppState) -> Result<Vec<DirEntry>, ApiError> {
+    allowed_dirs_db(&st.db).await
 }
 
 /// Deepest allowed directory containing `cwd` (both canonical).
@@ -994,12 +1022,17 @@ async fn list_dirs<B: Backend>(State(ctx): State<Arc<Ctx<B>>>) -> ApiResult<Valu
 
 // ---------- session actions ----------
 
+const MAX_APPEND_SYSTEM_PROMPT_BYTES: usize = 32 * 1024;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NewSessionBody {
     cwd: String,
     model: Option<NewSessionModel>,
     thinking: Option<String>,
+    append_system_prompt: Option<String>,
+    #[serde(default)]
+    automation_mode: bool,
 }
 
 #[derive(Deserialize)]
@@ -1053,12 +1086,29 @@ fn parse_new_selection(body: &NewSessionBody) -> Result<NewSelection, ApiError> 
     Ok((model, thinking))
 }
 
+fn parse_append_system_prompt(raw: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.contains('\0') {
+        return Err(bad_request("系统提示词不能包含空字符"));
+    }
+    if raw.len() > MAX_APPEND_SYSTEM_PROMPT_BYTES {
+        return Err(bad_request("系统提示词不能超过 32 KiB"));
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
 async fn new_session<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Json(body): Json<NewSessionBody>,
 ) -> ApiResult<Value> {
-    let st = app(&ctx)?;
-    let dirs = allowed_dirs(st).await?;
+    let dirs = allowed_dirs_db(&ctx.db).await?;
     let (entry, cwd) = confine_cwd(&body.cwd, &dirs).await?;
     let mode = if entry.kind == "global" {
         SpaceMode::Chat
@@ -1066,7 +1116,16 @@ async fn new_session<B: Backend>(
         entry.mode
     };
     let (model, thinking) = parse_new_selection(&body)?;
-    let info = super::draft::create(cwd, mode, None, Some(entry.workspace_id.clone())).await;
+    let append_system_prompt = parse_append_system_prompt(body.append_system_prompt.as_deref())?;
+    let info = super::draft::create_with_context(
+        cwd,
+        mode,
+        None,
+        Some(entry.workspace_id.clone()),
+        append_system_prompt,
+        body.automation_mode,
+    )
+    .await;
     if let Some((provider, model_id)) = model {
         super::draft::set_model(&info.session_id, provider, model_id).await;
     }
@@ -1402,6 +1461,21 @@ async fn search<B: Backend>(
 
 // ---------- schedules ----------
 
+fn validate_schedule_id(id: &str) -> Result<(), ApiError> {
+    if id.is_empty()
+        || id.len() > 128
+        || id.contains("..")
+        || id.starts_with('.')
+        || id.ends_with('.')
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(bad_request("非法标识符"));
+    }
+    Ok(())
+}
+
 fn schedule_exists(st: &AppState, id: &str) -> Result<(), ApiError> {
     let found = {
         let db = st.db.lock();
@@ -1410,13 +1484,19 @@ fn schedule_exists(st: &AppState, id: &str) -> Result<(), ApiError> {
     found.map(|_| ()).ok_or_else(|| not_found("自动化不存在"))
 }
 
-async fn validate_draft<B: Backend>(
-    _ctx: &Ctx<B>,
-    st: &AppState,
-    draft: &ScheduleDraft,
+async fn validate_draft(
+    db: &parking_lot::Mutex<rusqlite::Connection>,
+    draft: &mut ScheduleDraft,
 ) -> Result<(), ApiError> {
     if draft.name.trim().is_empty() {
         return Err(bad_request("请填写自动化名称"));
+    }
+    if let Some(raw_mode) = draft.approval_mode.take() {
+        let trimmed = raw_mode.trim();
+        if !trimmed.is_empty() {
+            check_approval_mode(trimmed).map_err(bad_request)?;
+            draft.approval_mode = Some(trimmed.to_string());
+        }
     }
     let has_probe = draft
         .probe_command
@@ -1431,7 +1511,7 @@ async fn validate_draft<B: Backend>(
     if draft.agent_trigger != crate::contracts::ScheduleAgentTrigger::Always && !has_probe {
         return Err(bad_request("请填写本地脚本"));
     }
-    let dirs = allowed_dirs(st).await?;
+    let dirs = allowed_dirs_db(db).await?;
     confine_cwd(&draft.cwd, &dirs).await.map(|_| ())
 }
 
@@ -1450,12 +1530,24 @@ async fn schedules_create<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Json(mut draft): Json<ScheduleDraft>,
 ) -> ApiResult<crate::contracts::Schedule> {
+    let requested_id = draft
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(id) = &requested_id {
+        validate_schedule_id(id)?;
+    }
+    draft.id = requested_id;
+    validate_draft(&ctx.db, &mut draft).await?;
     let st = app(&ctx)?;
-    draft.id = None;
-    validate_draft(&ctx, st, &draft).await?;
-    let saved = crate::schedules::commands::schedules_save(st.app.state::<AppState>(), draft)
+    let saved = crate::schedules::commands::schedules_create_unique(st, draft)
         .await
-        .map_err(bad_request)?;
+        .map_err(|e| match e {
+            crate::schedules::store::CreateScheduleError::Conflict(msg) => conflict(msg),
+            crate::schedules::store::CreateScheduleError::Invalid(msg) => bad_request(msg),
+        })?;
     Ok(Json(saved))
 }
 
@@ -1464,16 +1556,16 @@ async fn schedules_update<B: Backend>(
     Path(id): Path<String>,
     Json(mut draft): Json<ScheduleDraft>,
 ) -> ApiResult<crate::contracts::Schedule> {
+    validate_schedule_id(&id)?;
     let st = app(&ctx)?;
     schedule_exists(st, &id)?;
     draft.id = Some(id);
-    validate_draft(&ctx, st, &draft).await?;
+    validate_draft(&ctx.db, &mut draft).await?;
     let saved = crate::schedules::commands::schedules_save(st.app.state::<AppState>(), draft)
         .await
         .map_err(bad_request)?;
     Ok(Json(saved))
 }
-
 async fn schedules_delete<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Path(id): Path<String>,
@@ -1572,6 +1664,486 @@ async fn schedules_runs<B: Backend>(
         sched_store::list_runs(&db, &id, q.limit.unwrap_or(20).clamp(1, 100)).map_err(internal)?
     };
     Ok(Json(runs))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProbeTestBody {
+    cwd: String,
+    probe_command: String,
+    #[serde(default)]
+    agent_trigger: crate::contracts::ScheduleAgentTrigger,
+    schedule_id: Option<String>,
+}
+
+async fn schedules_probe_test<B: Backend>(
+    State(ctx): State<Arc<Ctx<B>>>,
+    Json(body): Json<ProbeTestBody>,
+) -> ApiResult<crate::contracts::ProbeTestResult> {
+    let dirs = allowed_dirs_db(&ctx.db).await?;
+    let (_, cwd) = confine_cwd(&body.cwd, &dirs).await?;
+    if body.probe_command.trim().is_empty() {
+        return Err(bad_request("请填写本地脚本或命令"));
+    }
+    let schedule_id = match body
+        .schedule_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(id) => {
+            validate_schedule_id(id)?;
+            Some(id.to_string())
+        }
+        None => None,
+    };
+    let result = crate::schedules::commands::schedules_test_probe(
+        cwd,
+        body.probe_command,
+        body.agent_trigger,
+        schedule_id,
+    )
+    .await
+    .map_err(bad_request)?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateDraftBody {
+    request: String,
+    cwd: String,
+    current: Option<ScheduleDraft>,
+    #[serde(default)]
+    preview: bool,
+}
+
+async fn schedules_generate_draft<B: Backend>(
+    State(ctx): State<Arc<Ctx<B>>>,
+    Json(body): Json<GenerateDraftBody>,
+) -> ApiResult<crate::contracts::AutomationAuthorResult> {
+    if body.request.trim().is_empty() {
+        return Err(bad_request("请先输入想让 AI 生成的自动化描述"));
+    }
+    let dirs = allowed_dirs_db(&ctx.db).await?;
+    let (_, cwd) = confine_cwd(&body.cwd, &dirs).await?;
+    if let Some(id) = body
+        .current
+        .as_ref()
+        .and_then(|c| c.id.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        validate_schedule_id(id)?;
+    }
+    let st = app(&ctx)?;
+    let result = crate::schedules::commands::schedules_generate_draft_with_options(
+        st,
+        body.request,
+        cwd,
+        body.current,
+        body.preview,
+    )
+    .await
+    .map_err(bad_gateway)?;
+    Ok(Json(result))
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct AutomationWorktreeState {
+    repo_root: String,
+    worktree_path: String,
+    branch: String,
+    ahead: u32,
+    dirty: u32,
+    committed_diff: String,
+    uncommitted_diff: String,
+    combined_diff: String,
+    added_lines: u32,
+    removed_lines: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+}
+
+fn count_diff_lines(diff: &str) -> (u32, u32) {
+    let mut added = 0u32;
+    let mut removed = 0u32;
+    for line in diff.lines() {
+        if line.starts_with('+') && !line.starts_with("+++ ") {
+            added += 1;
+        } else if line.starts_with('-') && !line.starts_with("--- ") {
+            removed += 1;
+        }
+    }
+    (added, removed)
+}
+
+static WORKTREE_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeActionBody {
+    run_id: Option<String>,
+    branch: Option<String>,
+    worktree_path: Option<String>,
+}
+
+impl WorktreeActionBody {
+    fn has_target_fields(&self) -> bool {
+        [&self.run_id, &self.branch, &self.worktree_path]
+            .into_iter()
+            .any(|v| v.as_deref().map(str::trim).is_some_and(|s| !s.is_empty()))
+    }
+}
+
+fn worktree_matches_run(
+    wt: &crate::contracts::WorktreeInfo,
+    run: &crate::contracts::ScheduleRun,
+) -> bool {
+    let run_prefix: String = run.id.chars().take(8).collect();
+    if run_prefix.chars().count() < 6 {
+        return false;
+    }
+    wt.branch.as_deref().is_some_and(|b| {
+        let b = b.trim();
+        let tail = b.strip_prefix("omp/").unwrap_or(b);
+        tail.starts_with("sched-") && tail.ends_with(&run_prefix)
+    })
+}
+
+fn find_automation_worktree<'a, 'b>(
+    repo_root: &str,
+    run_mode: crate::contracts::ScheduleRunMode,
+    worktrees: &'a [crate::contracts::WorktreeInfo],
+    runs: &'b [crate::contracts::ScheduleRun],
+) -> Option<(&'a crate::contracts::WorktreeInfo, &'b crate::contracts::ScheduleRun)> {
+    if run_mode != crate::contracts::ScheduleRunMode::Worktree {
+        return None;
+    }
+    let main_path = norm_path(repo_root);
+    let candidates: Vec<&crate::contracts::WorktreeInfo> = worktrees
+        .iter()
+        .filter(|wt| norm_path(&wt.path) != main_path)
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut fallback: Option<(&crate::contracts::WorktreeInfo, &crate::contracts::ScheduleRun)> =
+        None;
+    for run in runs {
+        let Some(wt) = candidates
+            .iter()
+            .copied()
+            .find(|wt| worktree_matches_run(wt, run))
+        else {
+            continue;
+        };
+        if wt.ahead > 0 || wt.dirty > 0 {
+            return Some((wt, run));
+        }
+        if fallback.is_none() {
+            fallback = Some((wt, run));
+        }
+    }
+    fallback
+}
+
+struct InspectedWorktree {
+    state: AutomationWorktreeState,
+    wt_session_ids: Vec<String>,
+}
+
+async fn inspect_schedule_worktree_detail<B: Backend>(
+    ctx: &Ctx<B>,
+    id: &str,
+) -> Result<
+    (
+        crate::contracts::Schedule,
+        Option<InspectedWorktree>,
+        Vec<crate::contracts::ScheduleRun>,
+        Vec<SessionMeta>,
+    ),
+    ApiError,
+> {
+    validate_schedule_id(id)?;
+    let (schedule, runs) = {
+        let db = ctx.db.lock();
+        let schedule = sched_store::get(&db, id)
+            .map_err(internal)?
+            .ok_or_else(|| not_found("自动化不存在"))?;
+        let runs = sched_store::list_runs(&db, id, 30).map_err(internal)?;
+        (schedule, runs)
+    };
+    if schedule.run_mode != crate::contracts::ScheduleRunMode::Worktree {
+        return Ok((schedule, None, runs, Vec::new()));
+    }
+    let cwd = schedule.cwd.trim();
+    if cwd.is_empty() {
+        return Ok((schedule, None, runs, Vec::new()));
+    }
+    let Ok(Some(repo_root)) = crate::git::commands::repo_root_for_cwd(cwd.to_string()).await else {
+        return Ok((schedule, None, runs, Vec::new()));
+    };
+    let session_list = ctx.backend.sessions().await;
+    let worktrees = match ctx.backend.app_state() {
+        Some(st) => crate::git::commands::list_worktrees_for_app(st, repo_root.clone())
+            .await
+            .unwrap_or_default(),
+        None => {
+            let pairs: Vec<(String, String)> = session_list
+                .iter()
+                .map(|s| (s.id.clone(), s.cwd.clone()))
+                .collect();
+            let root = PathBuf::from(&repo_root);
+            tokio::task::spawn_blocking(move || crate::git::worktree::list(&root, &pairs))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default()
+        }
+    };
+    let Some((wt, run)) =
+        find_automation_worktree(&repo_root, schedule.run_mode, &worktrees, &runs)
+    else {
+        return Ok((schedule, None, runs, session_list));
+    };
+    let Some(branch) = wt
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+    else {
+        return Ok((schedule, None, runs, session_list));
+    };
+
+    let (committed_diff, uncommitted_diff) = tokio::join!(
+        async {
+            if wt.ahead > 0 {
+                crate::git::commands::diff_base_for_cwd(wt.path.clone())
+                    .await
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
+        },
+        async {
+            if wt.dirty > 0 {
+                crate::git::commands::diff_for_cwd(wt.path.clone(), None, None)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
+        },
+    );
+    let combined_diff = [committed_diff.trim(), uncommitted_diff.trim()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let (added_lines, removed_lines) = count_diff_lines(&combined_diff);
+
+    Ok((
+        schedule,
+        Some(InspectedWorktree {
+            state: AutomationWorktreeState {
+                repo_root,
+                worktree_path: wt.path.clone(),
+                branch,
+                ahead: wt.ahead,
+                dirty: wt.dirty,
+                committed_diff,
+                uncommitted_diff,
+                combined_diff,
+                added_lines,
+                removed_lines,
+                run_id: Some(run.id.clone()),
+                session_id: run.session_id.clone(),
+            },
+            wt_session_ids: wt.session_ids.clone(),
+        }),
+        runs,
+        session_list,
+    ))
+}
+
+async fn inspect_schedule_worktree<B: Backend>(
+    ctx: &Ctx<B>,
+    id: &str,
+) -> Result<(crate::contracts::Schedule, Option<AutomationWorktreeState>), ApiError> {
+    let (schedule, inspected, _, _) = inspect_schedule_worktree_detail(ctx, id).await?;
+    Ok((schedule, inspected.map(|i| i.state)))
+}
+
+fn verify_worktree_target(
+    wt: &AutomationWorktreeState,
+    target: &WorktreeActionBody,
+) -> Result<(), ApiError> {
+    if let Some(expected_run) = target
+        .run_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if wt.run_id.as_deref() != Some(expected_run) {
+            return Err(conflict("工作树已变化，请刷新后再确认"));
+        }
+    }
+    if let Some(expected_branch) = target
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if wt.branch != expected_branch {
+            return Err(conflict("工作树已变化，请刷新后再确认"));
+        }
+    }
+    if let Some(expected_path) = target
+        .worktree_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if norm_path(&wt.worktree_path) != norm_path(expected_path) {
+            return Err(conflict("工作树已变化，请刷新后再确认"));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_worktree_idle(
+    wt: &AutomationWorktreeState,
+    wt_session_ids: &[String],
+    runs: &[crate::contracts::ScheduleRun],
+    session_list: &[SessionMeta],
+) -> Result<(), ApiError> {
+    let has_running_run = runs
+        .iter()
+        .any(|r| r.status == crate::contracts::ScheduleRunStatus::Running);
+    if has_running_run {
+        return Err(conflict(
+            "该工作树仍有正在运行的任务或活跃会话，请等待结束后再操作",
+        ));
+    }
+    let wt_norm = norm_path(&wt.worktree_path);
+    let live_ids: HashSet<&str> = session_list
+        .iter()
+        .filter(|s| s.live)
+        .map(|s| s.id.as_str())
+        .collect();
+    let has_live_session = session_list
+        .iter()
+        .any(|s| s.live && norm_path(&s.cwd) == wt_norm)
+        || wt_session_ids
+            .iter()
+            .any(|sid| live_ids.contains(sid.as_str()));
+    if has_live_session {
+        return Err(conflict(
+            "该工作树仍有正在运行的任务或活跃会话，请等待结束后再操作",
+        ));
+    }
+    Ok(())
+}
+
+async fn prepare_worktree_mutation<B: Backend>(
+    ctx: &Ctx<B>,
+    id: &str,
+    target: Option<WorktreeActionBody>,
+) -> Result<(crate::contracts::Schedule, AutomationWorktreeState), ApiError> {
+    let (schedule, inspected_opt, runs, session_list) =
+        inspect_schedule_worktree_detail(ctx, id).await?;
+    let Some(inspected) = inspected_opt else {
+        if target.as_ref().is_some_and(WorktreeActionBody::has_target_fields) {
+            return Err(conflict("工作树已变化，请刷新后再确认"));
+        }
+        return Err(not_found("未找到该自动化关联的隔离工作树"));
+    };
+    if let Some(target) = target.as_ref() {
+        verify_worktree_target(&inspected.state, target)?;
+    }
+    ensure_worktree_idle(
+        &inspected.state,
+        &inspected.wt_session_ids,
+        &runs,
+        &session_list,
+    )?;
+    Ok((schedule, inspected.state))
+}
+
+async fn schedules_worktree<B: Backend>(
+    State(ctx): State<Arc<Ctx<B>>>,
+    Path(id): Path<String>,
+) -> ApiResult<Option<AutomationWorktreeState>> {
+    let (_schedule, state) = inspect_schedule_worktree(&ctx, &id).await?;
+    Ok(Json(state))
+}
+
+async fn merge_automation_worktree_step<F, Fut>(
+    schedule_name: &str,
+    wt: AutomationWorktreeState,
+    remove_wt: F,
+) -> Result<(), ApiError>
+where
+    F: FnOnce(String, String) -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    if wt.dirty > 0 {
+        crate::git::commands::commit_all_for_cwd(
+            wt.worktree_path.clone(),
+            format!("chore(automation): {schedule_name}"),
+        )
+        .await
+        .map_err(bad_request)?;
+    }
+    crate::git::commands::merge_branch_for_repo(wt.repo_root.clone(), wt.branch.clone())
+        .await
+        .map_err(bad_request)?;
+    remove_wt(wt.repo_root, wt.worktree_path)
+        .await
+        .map_err(bad_request)?;
+    Ok(())
+}
+
+async fn schedules_worktree_merge<B: Backend>(
+    State(ctx): State<Arc<Ctx<B>>>,
+    Path(id): Path<String>,
+    body: Option<Json<WorktreeActionBody>>,
+) -> ApiResult<Value> {
+    let _guard = WORKTREE_MUTATION_LOCK.lock().await;
+    let (schedule, wt) = prepare_worktree_mutation(&ctx, &id, body.map(|Json(b)| b)).await?;
+    let st = app(&ctx)?;
+    merge_automation_worktree_step(&schedule.name, wt, |repo, path| async move {
+        crate::git::commands::remove_worktree_for_app(st, repo, path, true, false, Some(false))
+            .await
+    })
+    .await?;
+    Ok(ok_json())
+}
+
+async fn schedules_worktree_discard<B: Backend>(
+    State(ctx): State<Arc<Ctx<B>>>,
+    Path(id): Path<String>,
+    body: Option<Json<WorktreeActionBody>>,
+) -> ApiResult<Value> {
+    let _guard = WORKTREE_MUTATION_LOCK.lock().await;
+    let (_schedule, wt) = prepare_worktree_mutation(&ctx, &id, body.map(|Json(b)| b)).await?;
+    let st = app(&ctx)?;
+    crate::git::commands::remove_worktree_for_app(
+        st,
+        wt.repo_root,
+        wt.worktree_path,
+        true,
+        true,
+        Some(false),
+    )
+    .await
+    .map_err(bad_request)?;
+    Ok(ok_json())
 }
 
 // ---------- skills ----------
@@ -1927,7 +2499,15 @@ async fn settings_summary<B: Backend>(State(ctx): State<Arc<Ctx<B>>>) -> ApiResu
         Ok(m) => (Value::Object(m), None),
         Err(e) => (json!({}), Some(e)),
     };
-    Ok(Json(json!({
+    let auto_snap = {
+        let s = st.settings.read();
+        automation_settings_snapshot(&s)
+    };
+    let (default_approval_mode, capsule_visible) = {
+        let s = st.settings.read();
+        (s.default_approval_mode.clone(), s.capsule_visible)
+    };
+    let mut out = json!({
         "appVersion": st.app.package_info().version.to_string(),
         "mobile": {
             "running": status.running,
@@ -1943,12 +2523,17 @@ async fn settings_summary<B: Backend>(State(ctx): State<Arc<Ctx<B>>>) -> ApiResu
         },
         "defaultModel": model,
         "defaultModelSource": source,
-        "defaultApprovalMode": st.settings.read().default_approval_mode,
-        "capsuleVisible": st.settings.read().capsule_visible,
-        "automationOverlapPolicy": st.settings.read().automation_overlap_policy,
+        "defaultApprovalMode": default_approval_mode,
+        "capsuleVisible": capsule_visible,
         "omp": omp,
         "ompError": omp_error,
-    })))
+    });
+    if let (Some(obj), Some(auto_obj)) = (out.as_object_mut(), auto_snap.as_object()) {
+        for (k, v) in auto_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(Json(out))
 }
 
 /// Approval modes the phone may select for new omp processes (`--approval-mode`).
@@ -1962,20 +2547,128 @@ fn check_approval_mode(mode: &str) -> Result<(), String> {
     }
 }
 
-fn desktop_settings_json(st: &AppState) -> Value {
-    let s = st.settings.read();
+fn automation_settings_snapshot(s: &crate::contracts::Settings) -> Value {
     json!({
-        "defaultApprovalMode": s.default_approval_mode,
-        "capsuleVisible": s.capsule_visible,
+        "automationBackgroundEnabled": s.automation_background_enabled,
         "automationOverlapPolicy": s.automation_overlap_policy,
+        "automationDefaultResultMode": s.automation_default_result_mode,
+        "automationDefaultModel": s.automation_default_model,
+        "automationDefaultThinking": s.automation_default_thinking,
+        "automationPromptMockTest": s.automation_prompt_mock_test,
+        "automationPromptRealOnceTest": s.automation_prompt_real_once_test,
+        "automationPromptRealLoopTest": s.automation_prompt_real_loop_test,
+        "automationPromptAdjust": s.automation_prompt_adjust,
     })
 }
 
-/// `GET /left/settings/desktop` → `{defaultApprovalMode, capsuleVisible, automationOverlapPolicy}`.
+fn desktop_settings_json(st: &AppState) -> Value {
+    let s = st.settings.read();
+    let mut out = json!({
+        "defaultApprovalMode": s.default_approval_mode,
+        "capsuleVisible": s.capsule_visible,
+    });
+    if let (Some(obj), Some(auto_obj)) = (
+        out.as_object_mut(),
+        automation_settings_snapshot(&s).as_object(),
+    ) {
+        for (k, v) in auto_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+/// `GET /left/settings/desktop` → `{defaultApprovalMode, capsuleVisible, ...9 automation settings}`.
 async fn desktop_settings<B: Backend>(State(ctx): State<Arc<Ctx<B>>>) -> ApiResult<Value> {
     Ok(Json(desktop_settings_json(app(&ctx)?)))
 }
 
+fn parse_automation_result_mode(
+    value: &Value,
+) -> Result<crate::contracts::ScheduleResultMode, String> {
+    match value.as_str() {
+        Some("structured") => Ok(crate::contracts::ScheduleResultMode::Structured),
+        Some("llm_summary") => Ok(crate::contracts::ScheduleResultMode::LlmSummary),
+        _ => Err("automationDefaultResultMode 的取值必须是：structured / llm_summary".into()),
+    }
+}
+
+fn parse_optional_string_patch(key: &str, value: &Value) -> Result<Option<String>, String> {
+    match value {
+        Value::Null => Ok(None),
+        Value::String(s) => Ok(Some(s.clone())),
+        _ => Err(format!("{key} 必须是字符串或 null")),
+    }
+}
+
+fn parse_automation_settings_patch(
+    raw: Value,
+) -> Result<crate::settings::AutomationSettingsPatch, String> {
+    let obj = raw
+        .as_object()
+        .ok_or_else(|| "请求体必须是 JSON 对象".to_string())?;
+    let mut patch = crate::settings::AutomationSettingsPatch::default();
+    for (key, value) in obj {
+        match key.as_str() {
+            "automationBackgroundEnabled" => {
+                patch.automation_background_enabled = Some(
+                    value
+                        .as_bool()
+                        .ok_or_else(|| "automationBackgroundEnabled 必须是布尔值".to_string())?,
+                );
+            }
+            "automationOverlapPolicy" => {
+                patch.automation_overlap_policy = Some(automation_overlap_policy(value)?);
+            }
+            "automationDefaultResultMode" => {
+                patch.automation_default_result_mode = Some(parse_automation_result_mode(value)?);
+            }
+            "automationDefaultModel" => {
+                patch.automation_default_model = Some(parse_optional_string_patch(key, value)?);
+            }
+            "automationDefaultThinking" => {
+                patch.automation_default_thinking = Some(parse_optional_string_patch(key, value)?);
+            }
+            "automationPromptMockTest" => {
+                patch.automation_prompt_mock_test = Some(parse_optional_string_patch(key, value)?);
+            }
+            "automationPromptRealOnceTest" => {
+                patch.automation_prompt_real_once_test =
+                    Some(parse_optional_string_patch(key, value)?);
+            }
+            "automationPromptRealLoopTest" => {
+                patch.automation_prompt_real_loop_test =
+                    Some(parse_optional_string_patch(key, value)?);
+            }
+            "automationPromptAdjust" => {
+                patch.automation_prompt_adjust = Some(parse_optional_string_patch(key, value)?);
+            }
+            other => {
+                return Err(format!("未知的自动化设置字段：{other}"));
+            }
+        }
+    }
+    Ok(patch)
+}
+
+fn emit_settings_changed(st: &AppState) {
+    use tauri::Emitter as _;
+    let _ = st.app.emit("settings:changed", ());
+}
+
+async fn automation_settings_set<B: Backend>(
+    State(ctx): State<Arc<Ctx<B>>>,
+    Json(raw): Json<Value>,
+) -> ApiResult<Value> {
+    let st = app(&ctx)?;
+    let patch = parse_automation_settings_patch(raw).map_err(bad_request)?;
+    let saved = crate::settings::update_automation_settings(st, patch)
+        .await
+        .map_err(bad_request)?;
+    crate::state::emit_schedules_changed(st);
+    emit_settings_changed(st);
+    Ok(Json(automation_settings_snapshot(&saved)))
+}
 #[derive(Deserialize)]
 struct ApprovalModeBody {
     mode: String,
@@ -1992,6 +2685,7 @@ async fn approval_mode_set<B: Backend>(
     crate::settings::set_default_approval_mode(st, &body.mode)
         .await
         .map_err(bad_request)?;
+    emit_settings_changed(st);
     let mut out = desktop_settings_json(st);
     out["ok"] = json!(true);
     Ok(Json(out))
@@ -2118,6 +2812,8 @@ async fn setting_set<B: Backend>(
         crate::settings::set_automation_overlap_policy(st, policy)
             .await
             .map_err(bad_request)?;
+        crate::state::emit_schedules_changed(st);
+        emit_settings_changed(st);
         return Ok(Json(
             json!({ "ok": true, "key": body.key, "value": policy }),
         ));
@@ -2126,6 +2822,7 @@ async fn setting_set<B: Backend>(
     crate::settings::omp_config_set(st.app.state::<AppState>(), body.key.clone(), value)
         .await
         .map_err(bad_gateway)?;
+    emit_settings_changed(st);
     let fresh = read_mobile_settings(st)
         .await
         .ok()
@@ -2847,5 +3544,284 @@ mod tests {
         assert_eq!(steps[1][0].before, None);
         assert_eq!(steps[2][0].key, "m1");
         assert_eq!(steps[2][0].after, None);
+    }
+
+    #[test]
+    fn automation_settings_patch_parser_validates_all_9_fields() {
+        let ok = parse_automation_settings_patch(json!({
+            "automationBackgroundEnabled": false,
+            "automationOverlapPolicy": "coalesce",
+            "automationDefaultResultMode": "llm_summary",
+            "automationDefaultModel": "openai/gpt-5",
+            "automationDefaultThinking": "medium",
+            "automationPromptMockTest": "m",
+            "automationPromptRealOnceTest": "o",
+            "automationPromptRealLoopTest": "l",
+            "automationPromptAdjust": null,
+        }))
+        .unwrap();
+        assert_eq!(ok.automation_background_enabled, Some(false));
+        assert_eq!(ok.automation_prompt_adjust, Some(None));
+
+        assert!(parse_automation_settings_patch(json!({
+            "automationDefaultResultMode": "invalid"
+        }))
+        .is_err());
+        assert!(parse_automation_settings_patch(json!({
+            "automationBackgroundEnabled": "true"
+        }))
+        .is_err());
+        assert!(parse_automation_settings_patch(json!({
+            "unknownField": 1
+        }))
+        .is_err());
+
+        let mut s = crate::contracts::Settings::default();
+        crate::settings::apply_automation_patch(&mut s, ok);
+        let snap = automation_settings_snapshot(&s);
+        assert_eq!(snap["automationBackgroundEnabled"], false);
+        assert_eq!(snap["automationOverlapPolicy"], "coalesce");
+        assert_eq!(snap["automationDefaultResultMode"], "llm_summary");
+        assert_eq!(snap["automationDefaultModel"], "openai/gpt-5");
+        assert_eq!(snap["automationDefaultThinking"], "medium");
+        assert_eq!(snap["automationPromptMockTest"], "m");
+        assert_eq!(snap["automationPromptRealOnceTest"], "o");
+        assert_eq!(snap["automationPromptRealLoopTest"], "l");
+        assert_eq!(snap["automationPromptAdjust"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn validate_draft_checks_approval_mode_and_preserves_full_fields() {
+        let base = std::env::temp_dir().join(format!("omp-left-sched-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at)
+             VALUES('w1', ?1, 'ws', 'project', 0, 'code', '2026-01-01T00:00:00Z')",
+            rusqlite::params![base.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        let db = parking_lot::Mutex::new(conn);
+
+        let mut bad_draft = ScheduleDraft {
+            id: Some("staged-1".into()),
+            name: "Probe".into(),
+            prompt: "".into(),
+            cwd: base.to_string_lossy().into_owned(),
+            mode: SpaceMode::Code,
+            run_mode: crate::contracts::ScheduleRunMode::Local,
+            cadence: crate::contracts::ScheduleCadence::Interval { minutes: 5 },
+            model: None,
+            thinking: None,
+            approval_mode: Some("invalid-mode".into()),
+            notify: crate::contracts::ScheduleNotify::All,
+            new_chat_each_run: true,
+            end_at: None,
+            max_runs: None,
+            enabled: true,
+            probe_command: Some("echo ok".into()),
+            probe_description: Some("desc".into()),
+            agent_trigger: crate::contracts::ScheduleAgentTrigger::Never,
+            result_mode: crate::contracts::ScheduleResultMode::LlmSummary,
+            invokes_external_model: true,
+        };
+        assert!(validate_draft(&db, &mut bad_draft).await.is_err());
+
+        bad_draft.approval_mode = Some("write".into());
+        validate_draft(&db, &mut bad_draft).await.unwrap();
+        assert_eq!(bad_draft.approval_mode.as_deref(), Some("write"));
+
+        // Empty approval mode normalizes to None.
+        bad_draft.approval_mode = Some("  ".into());
+        validate_draft(&db, &mut bad_draft).await.unwrap();
+        assert!(bad_draft.approval_mode.is_none());
+
+        assert!(validate_schedule_id("../escape").is_err());
+        assert!(validate_schedule_id("auto-123_ok").is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn automation_worktree_merge_commits_merges_and_aborts_cleanly_on_conflict() {
+        let base = std::env::temp_dir().join(format!("omp-left-wt-merge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let git = |dir: &FsPath, args: &[&str]| -> bool {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !git(&base, &["init", "-q", "-b", "main"]) {
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+        assert!(git(&base, &["config", "user.name", "t"]));
+        assert!(git(&base, &["config", "user.email", "t@example.com"]));
+        assert!(git(&base, &["config", "commit.gpgsign", "false"]));
+        std::fs::write(base.join("shared.txt"), "base\n").unwrap();
+        assert!(git(&base, &["add", "-A"]));
+        assert!(git(&base, &["commit", "-q", "-m", "init"]));
+
+        // 1. Clean merge commits dirty worktree changes and removes the worktree.
+        let wt1 = crate::git::worktree::create(&base, "sched-demo-run12345", None, None).unwrap();
+        std::fs::write(FsPath::new(&wt1.path).join("new.txt"), "from-auto\n").unwrap();
+        let state1 = AutomationWorktreeState {
+            repo_root: base.to_string_lossy().into_owned(),
+            worktree_path: wt1.path.clone(),
+            branch: wt1.branch.clone().unwrap(),
+            ahead: 0,
+            dirty: 1,
+            committed_diff: String::new(),
+            uncommitted_diff: String::new(),
+            combined_diff: String::new(),
+            added_lines: 1,
+            removed_lines: 0,
+            run_id: Some("run12345-0000".into()),
+            session_id: None,
+        };
+        merge_automation_worktree_step("Nightly Check", state1, |repo, path| async move {
+            crate::git::worktree::remove(FsPath::new(&repo), FsPath::new(&path), true, false)
+        })
+        .await
+        .unwrap();
+        assert!(!FsPath::new(&wt1.path).exists());
+        assert_eq!(std::fs::read_to_string(base.join("new.txt")).unwrap(), "from-auto\n");
+
+        // 2. Conflicting merge must abort BEFORE removing the worktree.
+        let wt2 = crate::git::worktree::create(&base, "sched-demo-run67890", None, None).unwrap();
+        std::fs::write(FsPath::new(&wt2.path).join("shared.txt"), "worktree-side\n").unwrap();
+        std::fs::write(base.join("shared.txt"), "main-side\n").unwrap();
+        assert!(git(&base, &["add", "shared.txt"]));
+        assert!(git(&base, &["commit", "-q", "-m", "main edit"]));
+
+        let removed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let removed_flag = removed.clone();
+        let state2 = AutomationWorktreeState {
+            repo_root: base.to_string_lossy().into_owned(),
+            worktree_path: wt2.path.clone(),
+            branch: wt2.branch.clone().unwrap(),
+            ahead: 0,
+            dirty: 1,
+            committed_diff: String::new(),
+            uncommitted_diff: String::new(),
+            combined_diff: String::new(),
+            added_lines: 1,
+            removed_lines: 1,
+            run_id: Some("run67890-0000".into()),
+            session_id: None,
+        };
+        let err = merge_automation_worktree_step("Conflict Check", state2, move |repo, path| {
+            let flag = removed_flag.clone();
+            async move {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                crate::git::worktree::remove(FsPath::new(&repo), FsPath::new(&path), true, false)
+            }
+        })
+        .await
+        .unwrap_err();
+        assert!(!err.1.is_empty());
+        assert!(!removed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(FsPath::new(&wt2.path).exists());
+
+        let _ = git(&base, &["merge", "--abort"]);
+        // 3. Discard force-removes dirty unmerged worktree and deletes its branch.
+        crate::git::worktree::remove(&base, FsPath::new(&wt2.path), true, true).unwrap();
+        assert!(!FsPath::new(&wt2.path).exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+    #[test]
+    fn find_automation_worktree_requires_worktree_mode_sched_branch_and_prefers_actionable() {
+        use crate::contracts::{
+            ScheduleRun, ScheduleRunMode, ScheduleRunPhase, ScheduleRunStatus, WorktreeInfo,
+        };
+        let mk_run = |id: &str| ScheduleRun {
+            id: id.into(),
+            schedule_id: "s1".into(),
+            session_id: Some(format!("sess-{id}")),
+            status: ScheduleRunStatus::Ok,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: None,
+            summary: None,
+            phase: ScheduleRunPhase::Agent,
+            probe_output: None,
+        };
+        let runs = vec![mk_run("runnewer-000"), mk_run("runolder-000")];
+        let worktrees = vec![
+            WorktreeInfo {
+                path: "/repo".into(),
+                branch: Some("main".into()),
+                head: "h0".into(),
+                dirty: 0,
+                session_ids: vec![],
+                ahead: 0,
+                behind: 0,
+            },
+            // Ordinary linked checkout NOT created by automation: must NEVER be claimed even if session_ids match.
+            WorktreeInfo {
+                path: "/repo/.worktrees/feature-x".into(),
+                branch: Some("omp/feature-x".into()),
+                head: "h1".into(),
+                dirty: 3,
+                session_ids: vec!["sess-runnewer-000".into()],
+                ahead: 2,
+                behind: 0,
+            },
+            // Newer clean automation worktree.
+            WorktreeInfo {
+                path: "/repo/.worktrees/sched-a-runnewer".into(),
+                branch: Some("omp/sched-a-runnewer".into()),
+                head: "h2".into(),
+                dirty: 0,
+                session_ids: vec![],
+                ahead: 0,
+                behind: 0,
+            },
+            // Older dirty/ahead automation worktree: must NOT be hidden by newer clean worktree.
+            WorktreeInfo {
+                path: "/repo/.worktrees/sched-a-runolder".into(),
+                branch: Some("omp/sched-a-runolder".into()),
+                head: "h3".into(),
+                dirty: 1,
+                session_ids: vec![],
+                ahead: 1,
+                behind: 0,
+            },
+        ];
+
+        // H1: Local mode never claims any worktree.
+        assert!(
+            find_automation_worktree("/repo", ScheduleRunMode::Local, &worktrees, &runs)
+                .is_none()
+        );
+
+        // M9: Worktree mode picks older actionable worktree over newer clean worktree.
+        let (picked, picked_run) =
+            find_automation_worktree("/repo", ScheduleRunMode::Worktree, &worktrees, &runs)
+                .unwrap();
+        assert_eq!(picked.path, "/repo/.worktrees/sched-a-runolder");
+        assert_eq!(picked_run.id, "runolder-000");
+
+        // H1: Without sched-<run_prefix> branch proof, ordinary linked checkout is never claimed.
+        let non_sched_only = &worktrees[..2];
+        assert!(
+            find_automation_worktree("/repo", ScheduleRunMode::Worktree, non_sched_only, &runs)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn generate_draft_body_defaults_preview_to_false_and_parses_true() {
+        let plain: GenerateDraftBody =
+            serde_json::from_value(json!({ "request": "check", "cwd": "/repo" })).unwrap();
+        assert!(!plain.preview);
+        let preview: GenerateDraftBody = serde_json::from_value(
+            json!({ "request": "check", "cwd": "/repo", "preview": true }),
+        )
+        .unwrap();
+        assert!(preview.preview);
     }
 }

@@ -271,4 +271,33 @@ describe("mobile UI overhaul behaviors", () => {
 		fireEvent.click(wtRow);
 		expect(await screen.findByRole("button", { name: /样式调整/ })).toBeTruthy();
 	});
+
+	it("PlanSheet toggles data-dragging CSS class without mutating inline style.transition", () => {
+		Object.defineProperty(HTMLElement.prototype, "setPointerCapture", { configurable: true, value: () => {} });
+		Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", { configurable: true, value: () => {} });
+		Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", { configurable: true, value: () => true });
+
+		render(
+			<PlanSheet
+				open
+				status="review"
+				title="测试方案"
+				text={"# 测试方案\n## 步骤\n内容"}
+				sessionId="s1"
+				onClose={() => {}}
+			/>,
+		);
+		const dialog = screen.getByRole("dialog", { name: "测试方案" });
+		expect(dialog.className).toContain("m-plan-sheet-surface");
+		expect(dialog.style.transition).toBe("");
+
+		const heading = screen.getAllByRole("heading", { name: "测试方案" })[0];
+		fireEvent.pointerDown(heading, { pointerId: 1, clientX: 100, clientY: 50 });
+		expect(dialog.dataset.dragging).toBe("true");
+		expect(dialog.style.transition).toBe("");
+
+		fireEvent.pointerUp(heading, { pointerId: 1, clientX: 100, clientY: 60 });
+		expect(dialog.dataset.dragging).toBeUndefined();
+		expect(dialog.style.transition).toBe("");
+	});
 });

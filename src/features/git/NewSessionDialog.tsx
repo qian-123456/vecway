@@ -117,12 +117,16 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 	const [prompt, setPrompt] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [isRepo, setIsRepo] = useState<boolean | null>(null);
-	/** Linked-worktree name when `cwd` already is one (null = main checkout). */
-	const [linkedWt, setLinkedWt] = useState<string | null>(null);
+	const [repoProbe, setRepoProbe] = useState<{ cwd: string; isRepo: boolean } | null>(null);
+	const /** Linked-worktree name when `cwd` already is one (null = main checkout). */
+		[linkedWt, setLinkedWt] = useState<string | null>(null);
+	const [retrySessionId, setRetrySessionId] = useState<string | null>(null);
 	const repoCheck = useRef(0);
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: fetch models once per dialog open (sessions read via getState)
+	const probePromiseRef = useRef<{ cwd: string; promise: Promise<boolean> } | null>(null);
+	const backgroundRef = useRef(false);
+	const createdWorktreeRef = useRef<{ key: string; path: string } | null>(null);
+	const createdSessionRef = useRef<string | null>(null);
+	const lastSavedFailureDraftRef = useRef<string | null>(null);
 	useEffect(() => {
 		appPaths()
 			.then((p) => setGlobalDir(p.globalDir))
@@ -192,22 +196,29 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 		return w.kind === "global" ? globalDir : w.path;
 	}, [wsSel, modeWorkspaces, customCwd, globalDir]);
 
+	const isRepo = repoProbe && repoProbe.cwd === cwd ? repoProbe.isRepo : null;
 	// Detect whether the chosen cwd is inside a git repo (gates the worktree option).
 	useEffect(() => {
 		setLinkedWt(null);
+		setBaseBranch("");
 		if (!cwd) {
-			setIsRepo(null);
+			setRepoProbe(null);
+			probePromiseRef.current = null;
 			return;
 		}
+		const targetCwd = cwd;
 		const seq = ++repoCheck.current;
-		gitSummary(cwd)
+		const promise = gitSummary(targetCwd)
 			.then((s) => {
-				if (seq === repoCheck.current) setIsRepo(s.isRepo);
+				if (seq === repoCheck.current) setRepoProbe({ cwd: targetCwd, isRepo: s.isRepo });
+				return s.isRepo;
 			})
 			.catch(() => {
-				if (seq === repoCheck.current) setIsRepo(false);
+				if (seq === repoCheck.current) setRepoProbe({ cwd: targetCwd, isRepo: false });
+				return false;
 			});
-		gitBadge(cwd)
+		probePromiseRef.current = { cwd: targetCwd, promise };
+		gitBadge(targetCwd)
 			.then((b) => {
 				if (seq === repoCheck.current) setLinkedWt(b?.worktree ?? null);
 			})
@@ -246,13 +257,12 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 
 	// Never derive the name from the cwd path: that yields slugs like
 	// `users-<name>-documents-<repo>`. Timestamp fallback when nothing typed.
+	const effectiveUseWorktree = useWorktree && isRepo === true;
 	const slug = defaultSlug(wtName || prompt);
 	const canSubmit =
 		!!cwd &&
 		!busy &&
-		(wsSel !== CUSTOM || !customCwdError) &&
-		(!useWorktree || isRepo === true);
-
+		(wsSel !== CUSTOM || !customCwdError);
 	const handleBrowse = async () => {
 		try {
 			const selected = await open({
@@ -270,20 +280,99 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 		}
 	};
 
+	const handleClose = () => {
+		if (busy) backgroundRef.current = true;
+		closeModal();
+	};
+
+	const retrySendFirstPrompt = async (sessionId: string, text: string) => {
+		backgroundRef.current = false;
+		setBusy(true);
+		setError(null);
+		try {
+			await sendFirstPrompt(sessionId, text);
+			const currentDraft = useComposer.getState().drafts[sessionId];
+			if (
+				currentDraft === text ||
+				(lastSavedFailureDraftRef.current !== null &&
+					currentDraft === lastSavedFailureDraftRef.current)
+			) {
+				useComposer.getState().clearDraft(sessionId);
+			}
+			lastSavedFailureDraftRef.current = null;
+			createdSessionRef.current = null;
+			createdWorktreeRef.current = null;
+			setRetrySessionId(null);
+			if (backgroundRef.current) {
+				toast.success(t("git.newSession.createdInBackgroundToast"), 6000, {
+					label: t("git.newSession.openSession"),
+					onClick: () => selectSession(sessionId),
+				});
+			} else {
+				selectSession(sessionId);
+				closeModal();
+			}
+		} catch (promptErr) {
+			if (text.trim()) {
+				useComposer.getState().setDraft(sessionId, text);
+				lastSavedFailureDraftRef.current = text;
+			}
+			const msg = t("git.newSession.sessionCreatedSendFailed", { error: errMsg(promptErr) });
+			if (backgroundRef.current) {
+				toast.error(msg, 8000, {
+					label: t("git.newSession.openSession"),
+					onClick: () => selectSession(sessionId),
+				});
+			} else {
+				setError(msg);
+			}
+		} finally {
+			setBusy(false);
+		}
+	};
+
 	const submit = async () => {
 		if (!cwd || !canSubmit) return;
+		if (createdSessionRef.current) {
+			await retrySendFirstPrompt(createdSessionRef.current, prompt);
+			return;
+		}
+		const targetCwd = cwd;
+		backgroundRef.current = false;
 		setBusy(true);
 		setError(null);
 		let createdSessionId: string | null = null;
 		try {
-			let target = cwd;
-			if (useWorktree) {
-				const wt = await gitCreateWorktree(cwd, wtName.trim() || slug, {
-					branch: `${branchPrefix}${wtName.trim() || slug}`,
-					base: baseBranch || undefined,
-				});
-				await useWorktrees.getState().refresh().catch(() => {});
-				target = wt.path;
+			let resolvedIsRepo = repoProbe?.cwd === targetCwd ? repoProbe.isRepo : null;
+			if (useWorktree && resolvedIsRepo === null) {
+				if (probePromiseRef.current?.cwd === targetCwd) {
+					resolvedIsRepo = await probePromiseRef.current.promise;
+				} else {
+					resolvedIsRepo = await gitSummary(targetCwd)
+						.then((s) => s.isRepo)
+						.catch(() => false);
+				}
+				if (probePromiseRef.current?.cwd === targetCwd) {
+					setRepoProbe({ cwd: targetCwd, isRepo: resolvedIsRepo });
+				}
+			}
+			const submitUseWorktree = useWorktree && resolvedIsRepo === true;
+			let target = targetCwd;
+			if (submitUseWorktree) {
+				const resolvedName = wtName.trim() || slug;
+				const resolvedBranch = `${branchPrefix}${resolvedName}`;
+				const wtKey = JSON.stringify([targetCwd, resolvedName, resolvedBranch, baseBranch || ""]);
+				if (createdWorktreeRef.current?.key === wtKey) {
+					target = createdWorktreeRef.current.path;
+				} else {
+					const wt = await gitCreateWorktree(targetCwd, resolvedName, {
+						branch: resolvedBranch,
+						base: baseBranch || undefined,
+					});
+					createdWorktreeRef.current = { key: wtKey, path: wt.path };
+					await useWorktrees.getState().refresh().catch(() => {});
+					target = wt.path;
+				}
 			}
 			const { sessionId, stub } = await createSession({
 				cwd: target,
@@ -308,25 +397,79 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 				}
 
 				if (isLive) {
-					selectSession(sessionId);
-					closeModal();
-					toast.error(t("git.newSession.sessionCreatedSendFailed", { error: errMsg(promptErr) }));
+					if (prompt.trim()) {
+						useComposer.getState().setDraft(sessionId, prompt);
+						lastSavedFailureDraftRef.current = prompt;
+					}
+					createdSessionRef.current = sessionId;
+					setRetrySessionId(sessionId);
+					const msg = t("git.newSession.sessionCreatedSendFailed", { error: errMsg(promptErr) });
+					if (backgroundRef.current) {
+						const savedPrompt = prompt;
+						toast.error(msg, 8000, {
+							label: t("git.newSession.retrySend"),
+							onClick: () => {
+								void sendFirstPrompt(sessionId, savedPrompt)
+									.then(() => {
+										if (useComposer.getState().drafts[sessionId] === savedPrompt) {
+											useComposer.getState().clearDraft(sessionId);
+										}
+										toast.success(t("git.newSession.createdInBackgroundToast"), 6000, {
+											label: t("git.newSession.openSession"),
+											onClick: () => selectSession(sessionId),
+										});
+									})
+									.catch((retryErr) => {
+										toast.error(
+											t("git.newSession.sessionCreatedSendFailed", { error: errMsg(retryErr) }),
+											8000,
+											{
+												label: t("git.newSession.openSession"),
+												onClick: () => selectSession(sessionId),
+											},
+										);
+									});
+							},
+						});
+					} else {
+						setError(msg);
+					}
 					return;
 				}
 
 				useSessions.getState().remove([sessionId]);
 				await deleteSession(sessionId).catch(() => {});
-				setError(t("git.newSession.sendInitialFailed", { error: errMsg(promptErr) }));
+				const failMsg = t("git.newSession.sendInitialFailed", { error: errMsg(promptErr) });
+				if (backgroundRef.current) {
+					toast.error(failMsg);
+				} else {
+					setError(failMsg);
+				}
 				return;
 			}
-			selectSession(sessionId);
-			closeModal();
+			createdWorktreeRef.current = null;
+			createdSessionRef.current = null;
+			setRetrySessionId(null);
+			if (backgroundRef.current) {
+				toast.success(t("git.newSession.createdInBackgroundToast"), 6000, {
+					label: t("git.newSession.openSession"),
+					onClick: () => selectSession(sessionId),
+				});
+			} else {
+				selectSession(sessionId);
+				closeModal();
+			}
 		} catch (e) {
 			if (createdSessionId) {
 				useSessions.getState().remove([createdSessionId]);
 				await deleteSession(createdSessionId).catch(() => {});
 			}
-			setError(errMsg(e));
+			const msg = errMsg(e);
+			if (backgroundRef.current) {
+				toast.error(msg);
+			} else {
+				setError(msg);
+			}
 		} finally {
 			setBusy(false);
 		}
@@ -336,7 +479,7 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 
 	return (
 		<Modal
-			onClose={closeModal}
+			onClose={handleClose}
 			title={t("git.newSession.title")}
 			size="none"
 			className="w-[500px] max-w-[calc(100vw-2rem)]"
@@ -451,47 +594,43 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 					<span className="text-[10px] text-neutral-400">{t("git.newSession.planModeDesc")}</span>
 				</label>
 
-				<label
-					className={clsx(
-						"mb-2 flex items-center gap-2 text-xs",
-						isRepo === false ? "text-neutral-600" : "text-neutral-300",
-					)}
-				>
-					<input
-						type="checkbox"
-						checked={useWorktree}
-						disabled={isRepo !== true}
-						onChange={(e) => setUseWorktree(e.target.checked)}
-					/>
-					{linkedWt ? t("git.newSession.createAnotherWorktree") : t("git.newSession.runInIsolatedWorktree")}
-					<span className="text-[10px] text-neutral-500">{t("git.newSession.isolatedFolderDesc")}</span>
-					{isRepo === false && <span className="text-[10px]">{t("git.newSession.notGitRepo")}</span>}
-				</label>
-				{linkedWt && !useWorktree && (
-					<div className="mb-2 text-[11px] text-emerald-300/90">
-						{t("git.newSession.alreadyLinkedWorktreeDesc", { worktree: linkedWt })}
-					</div>
-				)}
-				{useWorktree && (
-					<div className="mb-2.5 rounded-xl hairline bg-[var(--bg)]/60 p-3">
-						<WorktreeFields
-							branches={branches}
-							baseBranch={baseBranch}
-							setBaseBranch={setBaseBranch}
-							branchPrefix={branchPrefix}
-							setBranchPrefix={setBranchPrefix}
-							wtName={wtName}
-							setWtName={setWtName}
-							slug={slug}
-						/>
-					</div>
-				)}
-
-				{running.length > 0 && !useWorktree && isRepo === true && (
-					<div className="mb-2 flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
-						<AlertTriangle size={12} className="shrink-0" />
-						{t("git.newSession.runningSessionsWarning", { count: running.length })}
-					</div>
+				{isRepo === true && (
+					<>
+						<label className="mb-2 flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={effectiveUseWorktree}
+								onChange={(e) => setUseWorktree(e.target.checked)}
+							/>
+							{linkedWt ? t("git.newSession.createAnotherWorktree") : t("git.newSession.runInIsolatedWorktree")}
+							<span className="text-[10px] text-neutral-500">{t("git.newSession.isolatedFolderDesc")}</span>
+						</label>
+						{linkedWt && !effectiveUseWorktree && (
+							<div className="mb-2 text-[11px] text-emerald-300/90">
+								{t("git.newSession.alreadyLinkedWorktreeDesc", { worktree: linkedWt })}
+							</div>
+						)}
+						{effectiveUseWorktree && (
+							<div className="mb-2.5 rounded-xl hairline bg-[var(--bg)]/60 p-3">
+								<WorktreeFields
+									branches={branches}
+									baseBranch={baseBranch}
+									setBaseBranch={setBaseBranch}
+									branchPrefix={branchPrefix}
+									setBranchPrefix={setBranchPrefix}
+									wtName={wtName}
+									setWtName={setWtName}
+									slug={slug}
+								/>
+							</div>
+						)}
+						{running.length > 0 && !effectiveUseWorktree && (
+							<div className="mb-2 flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+								<AlertTriangle size={12} className="shrink-0" />
+								{t("git.newSession.runningSessionsWarning", { count: running.length })}
+							</div>
+						)}
+					</>
 				)}
 
 				<label className="mb-1 block text-[11px] text-neutral-400">{t("git.newSession.firstMessageOptional")}</label>
@@ -503,7 +642,41 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 					className={clsx(input, "mb-3 resize-none")}
 				/>
 
-				{error && <div className="mb-2 text-xs text-rose-400">{error}</div>}
+				{error && (
+					<div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-2.5 py-2 text-xs text-rose-300">
+						<span className="min-w-0 flex-1 break-words">{error}</span>
+						{retrySessionId && (
+							<div className="flex shrink-0 items-center gap-1.5">
+								<button
+									type="button"
+									disabled={busy}
+									onClick={() => void retrySendFirstPrompt(retrySessionId, prompt)}
+									className="whitespace-nowrap rounded-md border border-rose-400/30 bg-rose-500/15 px-2 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/25 disabled:opacity-40"
+								>
+									{t("git.newSession.retrySend")}
+								</button>
+								<button
+									type="button"
+									onClick={() => {
+										const sid = retrySessionId;
+										if (prompt.trim()) {
+											useComposer.getState().setDraft(sid, prompt);
+										} else {
+											useComposer.getState().clearDraft(sid);
+										}
+										lastSavedFailureDraftRef.current = null;
+										createdSessionRef.current = null;
+										setRetrySessionId(null);
+										selectSession(sid);
+										closeModal();
+									}}
+								>
+									{t("git.newSession.openSession")}
+								</button>
+							</div>
+						)}
+					</div>
+				)}
 
 				</div>
 
@@ -512,10 +685,10 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 					<div className="flex gap-2">
 						<button
 							type="button"
-							onClick={closeModal}
-							className="press-scale rounded-lg px-3 py-1.5 text-xs text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200 transition-colors"
+							onClick={handleClose}
+							className="press-scale whitespace-nowrap rounded-lg px-3 py-1.5 text-xs text-neutral-400 hover:bg-[var(--bg-hover)] hover:text-neutral-200 transition-colors"
 						>
-							{t("common.cancel")}
+							{busy ? t("git.newSession.continueInBackground") : t("common.cancel")}
 						</button>
 						<button
 							type="button"
@@ -523,7 +696,11 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 							onClick={submit}
 							className="press-scale whitespace-nowrap rounded-lg bg-[var(--accent)] px-4 py-1.5 text-xs font-medium text-[var(--accent-fg)] hover:opacity-90 disabled:opacity-40 transition-colors"
 						>
-							{busy ? t("git.newSession.creating") : t("git.newSession.createSession")}
+							{busy
+								? t("git.newSession.creating")
+								: retrySessionId
+									? t("git.newSession.retrySend")
+									: t("git.newSession.createSession")}
 						</button>
 					</div>
 				</div>

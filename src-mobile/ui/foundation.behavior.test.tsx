@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BottomSheet } from "./BottomSheet";
 import { ImageViewerHost, openImage } from "./ImageViewer";
 import { CodeBlock } from "./CodeBlock";
+import { invertPullDistance, pullDistance, PullToRefresh } from "./PullToRefresh";
 import { SelectRow } from "./SelectRow";
 import { TitleSwitcher } from "./TitleSwitcher";
 
@@ -209,5 +210,61 @@ describe("SelectRow presentations", () => {
   fireEvent.change(screen.getByRole("searchbox", { name: "搜索目录选择" }), { target: { value: "Mobile" } });
   fireEvent.click(screen.getByRole("radio", { name: /Mobile/ }));
   expect(onListChange).toHaveBeenCalledWith("d2");
+ });
+});
+
+describe("mobile gesture physics and exiting inertness fixes", () => {
+ it("freezes BottomSheet transform before disabling transition on re-grab", () => {
+  render(<BottomSheet open title="重抓测试" onClose={() => {}}><p>内容</p></BottomSheet>);
+  act(() => vi.advanceTimersByTime(40));
+  const dialog = screen.getByRole("dialog");
+  const origGetComputedStyle = window.getComputedStyle;
+  vi.spyOn(window, "getComputedStyle").mockImplementation((el, pseudo) => {
+   if (el === dialog) {
+    return { transform: "matrix(1, 0, 0, 1, 0, 88)" } as CSSStyleDeclaration;
+   }
+   return origGetComputedStyle(el, pseudo);
+  });
+  const heading = screen.getByRole("heading", { name: "重抓测试" });
+  pointer(heading, "pointerdown", 1000, 120, 40);
+  expect(dialog.style.transform).toBe("translate3d(0,88px,0)");
+  expect(dialog.dataset.dragging).toBe("true");
+  expect(dialog.style.transition).toBe("none");
+ });
+
+ it("inverts PullToRefresh visual offset to raw displacement on re-grab without double-damping", () => {
+  const raw = 90;
+  const offset = pullDistance(raw);
+  expect(invertPullDistance(offset)).toBeCloseTo(raw, 6);
+
+  const { container } = render(<PullToRefresh onRefresh={() => {}}><div>列表</div></PullToRefresh>);
+  const scroller = container.firstElementChild as HTMLElement;
+  const body = scroller.lastElementChild as HTMLElement;
+  const origGetComputedStyle = window.getComputedStyle;
+  vi.spyOn(window, "getComputedStyle").mockImplementation((el, pseudo) => {
+   if (el === body) {
+    return { transform: `matrix(1, 0, 0, 1, 0, ${offset})` } as CSSStyleDeclaration;
+   }
+   return origGetComputedStyle(el, pseudo);
+  });
+  touch(scroller, "touchstart", 100, 100);
+  touch(scroller, "touchmove", 100, 110);
+  const expected = pullDistance(raw + 10);
+  const match = /translate3d\(0,\s*([0-9.]+)px,\s*0\)/.exec(body.style.transform);
+  expect(Number(match?.[1])).toBeCloseTo(expected, 4);
+ });
+
+ it("applies inert to the entire exiting ImageViewer portal container", () => {
+  render(<ImageViewerHost />);
+  act(() => openImage({ src: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>", alt: "大图" }));
+  act(() => vi.advanceTimersByTime(40));
+  const dialog = screen.getByRole("dialog", { name: "大图" });
+  expect(dialog.hasAttribute("inert")).toBe(false);
+
+  fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+  expect(dialog.hasAttribute("inert")).toBe(true);
+  expect(dialog.inert).toBe(true);
+  act(() => vi.advanceTimersByTime(250));
+  expect(screen.queryByRole("dialog", { name: "大图", hidden: true })).toBeNull();
  });
 });

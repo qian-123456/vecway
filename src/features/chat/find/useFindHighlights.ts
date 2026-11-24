@@ -1,4 +1,5 @@
 import { useEffect, type RefObject } from "react";
+import { scrollBehavior } from "../../../lib/motion";
 import { useTurnNav } from "../../../stores/turnNav";
 import { collectRanges, resolveAnchor } from "./findCore";
 import { useThreadFind } from "./threadFindStore";
@@ -52,7 +53,7 @@ export function useFindHighlights(
 			if (revealed !== st.navNonce) {
 				revealed = st.navNonce;
 				const el = range.startContainer.parentElement;
-				el?.scrollIntoView({ block: "center", behavior: "smooth" });
+				el?.scrollIntoView({ block: "center", behavior: scrollBehavior() });
 			}
 		};
 		const schedule = () => {

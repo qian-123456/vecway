@@ -27,6 +27,9 @@ struct Mock {
     voice_calls: Mutex<Vec<super::api::voice::AudioPayload>>,
     cwd_override: Mutex<Option<String>>,
     repo_root_override: Mutex<Option<String>>,
+    started_opts: Mutex<Vec<crate::contracts::StartOpts>>,
+    delivered_prompts: Mutex<Vec<(String, String, bool)>>,
+    extra_sessions: Mutex<Vec<SessionMeta>>,
     voice_result: Mutex<Result<Value, (StatusCode, Value)>>,
 }
 
@@ -51,11 +54,13 @@ impl Backend for Mock {
             repo_root: self.repo_root_override.lock().clone(),
             ..Default::default()
         };
-        vec![
+        let mut out = vec![
             mk("a", "2026-01-01T00:00:00Z", false),
             mk("b", "2026-02-01T00:00:00Z", false),
             mk("z", "2026-03-01T00:00:00Z", true),
-        ]
+        ];
+        out.extend(self.extra_sessions.lock().iter().cloned());
+        out
     }
     async fn session(&self, id: &str) -> Option<SessionMeta> {
         self.sessions().await.into_iter().find(|s| s.id == id)
@@ -107,6 +112,7 @@ impl Backend for Mock {
         &self,
         opts: &crate::contracts::StartOpts,
     ) -> Result<crate::contracts::LiveSessionInfo, String> {
+        self.started_opts.lock().push(opts.clone());
         self.calls.lock().push(format!("start {}", opts.cwd));
         Ok(crate::contracts::LiveSessionInfo {
             session_id: "mock-real-1".into(),
@@ -124,6 +130,11 @@ impl Backend for Mock {
             .model
             .map(|(p, m)| format!(" {p}/{m}"))
             .unwrap_or_default();
+        self.delivered_prompts.lock().push((
+            id.to_string(),
+            d.message.clone(),
+            d.selection.automation_mode,
+        ));
         self.calls
             .lock()
             .push(format!("deliver {id} {}{model}", d.message));
@@ -177,6 +188,9 @@ fn harness() -> Harness {
             voice_result: Mutex::new(Ok(json!({ "text": "受控转写" }))),
             cwd_override: Mutex::new(None),
             repo_root_override: Mutex::new(None),
+            started_opts: Mutex::new(Vec::new()),
+            delivered_prompts: Mutex::new(Vec::new()),
+            extra_sessions: Mutex::new(Vec::new()),
         },
         db: Arc::new(parking_lot::Mutex::new(auth::test_db())),
         shutdown: rx,
@@ -3079,4 +3093,625 @@ async fn git_actions_work_for_session_rooted_in_repo_subdirectory() {
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+fn migrated_harness() -> Harness {
+    let dir = std::env::temp_dir().join(format!("ompws-mobile-mig-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("s.jsonl");
+    std::fs::write(
+        &file,
+        r#"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"full last answer"}]}}"#,
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrate(&db).unwrap();
+    let (bus, _) = broadcast::channel(16);
+    let (tx, rx) = watch::channel(false);
+    let ctx = Arc::new(Ctx {
+        backend: Mock {
+            calls: Mutex::new(Vec::new()),
+            bus,
+            file: file.to_string_lossy().to_string(),
+            extra_pending: Mutex::new(Vec::new()),
+            push_status: Mutex::new(201),
+            voice_calls: Mutex::new(Vec::new()),
+            voice_result: Mutex::new(Ok(json!({ "text": "受控转写" }))),
+            cwd_override: Mutex::new(None),
+            repo_root_override: Mutex::new(None),
+            started_opts: Mutex::new(Vec::new()),
+            delivered_prompts: Mutex::new(Vec::new()),
+            extra_sessions: Mutex::new(Vec::new()),
+        },
+        db: Arc::new(parking_lot::Mutex::new(db)),
+        shutdown: rx,
+    });
+    Harness {
+        ctx,
+        shutdown: tx,
+        dir,
+    }
+}
+
+#[tokio::test]
+async fn transcript_preserves_automation_tool_details_and_caps_long_ids() {
+    let h = harness();
+    let cookie = pair(&h).await;
+    let long_id = "d".repeat(320);
+    let lines = [
+        json!({
+            "type": "message",
+            "id": "tr1",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "role": "user",
+                "toolCallId": "tc1",
+                "toolName": "vecway_automation",
+                "content": [{"type": "text", "text": "Staged draft"}],
+                "details": {
+                    "draftId": "draft-123",
+                    "action": "propose",
+                    "scheduleId": "sched-456",
+                    "diff": "+added",
+                    "extraNoise": "must-be-dropped"
+                }
+            }
+        })
+        .to_string(),
+        json!({
+            "type": "message",
+            "id": "tr2",
+            "parentId": "tr1",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {
+                "role": "user",
+                "toolCallId": "tc2",
+                "toolName": "vecway_automation",
+                "content": [{"type": "text", "text": "Long id"}],
+                "details": { "draftId": long_id }
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n")
+        + "\n";
+    std::fs::write(&h.ctx.backend.file, lines).unwrap();
+
+    let (s, _, body) = call(&h, get("/api/sessions/a/transcript", Some(&cookie))).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    let d0 = &items[0]["toolResult"]["details"];
+    assert_eq!(d0["draftId"], "draft-123");
+    assert_eq!(d0["action"], "propose");
+    assert_eq!(d0["scheduleId"], "sched-456");
+    assert_eq!(d0["diff"], "+added");
+    assert!(d0.get("extraNoise").is_none());
+
+    let d1_id = items[1]["toolResult"]["details"]["draftId"]
+        .as_str()
+        .unwrap();
+    assert!(d1_id.chars().count() < 320);
+    assert!(d1_id.ends_with("…"));
+}
+
+#[tokio::test]
+async fn sse_forwards_schedules_and_automation_plan_set_status_only() {
+    assert!(server::sse_event(&AppEvent::SchedulesChanged).is_some());
+
+    let allow_auto = AppEvent::RpcFrame {
+        session_id: "a".into(),
+        frame: Arc::new(json!({
+            "type": "extension_ui_request",
+            "method": "setStatus",
+            "statusKey": "ompws-automation",
+            "statusText": "{\"v\":1,\"mode\":\"active\",\"drafts\":[]}"
+        })),
+    };
+    assert!(server::sse_event(&allow_auto).is_some());
+
+    let allow_plan = AppEvent::RpcFrame {
+        session_id: "a".into(),
+        frame: Arc::new(json!({
+            "type": "extension_ui_request",
+            "method": "setStatus",
+            "statusKey": "ompws-plan",
+            "statusText": "{\"v\":1,\"enabled\":true}"
+        })),
+    };
+    assert!(server::sse_event(&allow_plan).is_some());
+
+    for blocked in [
+        json!({
+            "type": "extension_ui_request",
+            "method": "setStatus",
+            "statusKey": "other-ext",
+            "statusText": "{}"
+        }),
+        json!({
+            "type": "extension_ui_request",
+            "method": "select",
+            "statusKey": "ompws-automation",
+            "options": ["a"]
+        }),
+    ] {
+        let ev = AppEvent::RpcFrame {
+            session_id: "a".into(),
+            frame: Arc::new(blocked),
+        };
+        assert!(server::sse_event(&ev).is_none());
+    }
+
+    // Verify live SSE stream delivery.
+    let h = harness();
+    let cookie = pair(&h).await;
+    let res = server::router(h.ctx.clone())
+        .oneshot(get("/api/events", Some(&cookie)))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let mut body = res.into_body();
+    let bus = h.ctx.backend.bus.clone();
+    let _ = bus.send(AppEvent::SchedulesChanged);
+    let _ = bus.send(allow_auto);
+
+    let mut text = String::new();
+    while !text.contains("ompws-automation") {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+            .await
+            .expect("sse frame")
+            .unwrap()
+            .unwrap();
+        if let Ok(data) = frame.into_data() {
+            text.push_str(&String::from_utf8_lossy(&data));
+        }
+    }
+    assert!(text.contains("event: schedules"));
+    assert!(text.contains("event: rpc"));
+    assert!(text.contains("ompws-automation"));
+    h.shutdown.send(true).unwrap();
+}
+
+#[tokio::test]
+async fn new_session_automation_context_and_automation_action_route() {
+    let h = migrated_harness();
+    let cookie = pair(&h).await;
+    let ws = h.dir.join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    h.ctx.db.lock().execute(
+        "INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at)
+         VALUES('w1', ?1, 'ws', 'project', 0, 'code', '2026-01-01T00:00:00Z')",
+        rusqlite::params![ws.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+
+    // Oversized or NUL appendSystemPrompt is rejected.
+    let (s, _, _) = call(
+        &h,
+        post(
+            "/api/left/sessions",
+            &cookie,
+            json!({
+                "cwd": ws.to_string_lossy(),
+                "appendSystemPrompt": "x".repeat(32 * 1024 + 1)
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let (s, _, _) = call(
+        &h,
+        post(
+            "/api/left/sessions",
+            &cookie,
+            json!({
+                "cwd": ws.to_string_lossy(),
+                "appendSystemPrompt": "bad\0prompt"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // Plain blank draft vs automation-context draft never share IDs.
+    let (s, _, body) = call(
+        &h,
+        post(
+            "/api/left/sessions",
+            &cookie,
+            json!({ "cwd": ws.to_string_lossy() }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let plain_id = serde_json::from_str::<Value>(&body).unwrap()["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (s, _, body) = call(
+        &h,
+        post(
+            "/api/left/sessions",
+            &cookie,
+            json!({
+                "cwd": ws.to_string_lossy(),
+                "appendSystemPrompt": "Hidden automation guidelines",
+                "automationMode": true
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let auto_id = serde_json::from_str::<Value>(&body).unwrap()["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(plain_id, auto_id);
+
+    // composer-state reflects active automationMode before first prompt.
+    let (s, _, body) = call(
+        &h,
+        get(&format!("/api/sessions/{auto_id}/composer-state"), Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let cs: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(cs["automationState"]["mode"], "active");
+
+    // Invalid POST /sessions/{id}/automation payloads fail with 400.
+    let (s, _, _) = call(
+        &h,
+        post(
+            &format!("/api/sessions/{auto_id}/automation"),
+            &cookie,
+            json!({ "action": "bogus" }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let (s, _, _) = call(
+        &h,
+        post(
+            &format!("/api/sessions/{auto_id}/automation"),
+            &cookie,
+            json!({ "action": "resolve", "resolution": "saved" }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // First prompt materializes draft and forwards appendSystemPrompt + automationMode.
+    let (s, _, body) = call(
+        &h,
+        post(
+            &format!("/api/sessions/{auto_id}/prompt-ex"),
+            &cookie,
+            json!({ "text": "create daily check", "images": [] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["sessionId"],
+        "mock-real-1"
+    );
+    let started = h.ctx.backend.started_opts.lock();
+    assert_eq!(
+        started.last().unwrap().append_system_prompt.as_deref(),
+        Some("Hidden automation guidelines")
+    );
+    let delivered = h.ctx.backend.delivered_prompts.lock();
+    let last_deliv = delivered.last().unwrap();
+    assert_eq!(last_deliv.1, "create daily check");
+    assert!(last_deliv.2);
+
+    super::api::draft::discard(&plain_id).await;
+}
+
+#[tokio::test]
+async fn probe_test_and_generate_draft_enforce_dir_confinement() {
+    let h = migrated_harness();
+    let cookie = pair(&h).await;
+    let ws = h.dir.join("ws");
+    let outside = h.dir.join("outside");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    h.ctx.db.lock().execute(
+        "INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at)
+         VALUES('w1', ?1, 'ws', 'project', 0, 'code', '2026-01-01T00:00:00Z')",
+        rusqlite::params![ws.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+
+    // Unauthenticated probe-test is rejected.
+    let (s, _, _) = call(
+        &h,
+        Request::post("/api/left/schedules/probe-test")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({ "cwd": ws.to_string_lossy(), "probeCommand": "echo hi", "agentTrigger": "on_signal" }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+
+    // Outside directory rejected for both probe-test and generate-draft.
+    let (s, _, _) = call(
+        &h,
+        post(
+            "/api/left/schedules/probe-test",
+            &cookie,
+            json!({ "cwd": outside.to_string_lossy(), "probeCommand": "echo hi", "agentTrigger": "on_signal" }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let (s, _, _) = call(
+        &h,
+        post(
+            "/api/left/schedules/generate-draft",
+            &cookie,
+            json!({ "cwd": outside.to_string_lossy(), "request": "check logs" }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let (s, _, _) = call(
+        &h,
+        post(
+            "/api/left/schedules/generate-draft",
+            &cookie,
+            json!({ "cwd": ws.to_string_lossy(), "request": "   " }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // Inside registered workspace runs probeCommand and returns ProbeTestResult.
+    let (s, _, body) = call(
+        &h,
+        post(
+            "/api/left/schedules/probe-test",
+            &cookie,
+            json!({
+                "cwd": ws.to_string_lossy(),
+                "probeCommand": "echo ok-probe",
+                "agentTrigger": "on_signal"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let res: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(res["outcome"], "signal");
+    assert!(res["output"].as_str().unwrap().contains("ok-probe"));
+}
+
+#[tokio::test]
+async fn schedule_worktree_inspect_is_scoped_by_schedule_id() {
+    let h = migrated_harness();
+    let cookie = pair(&h).await;
+    let repo = h.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&repo, &["init", "-q", "-b", "main"]) {
+        return;
+    }
+    assert!(git(&repo, &["config", "user.name", "t"]));
+    assert!(git(&repo, &["config", "user.email", "t@example.com"]));
+    assert!(git(&repo, &["config", "commit.gpgsign", "false"]));
+    std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+    assert!(git(&repo, &["add", "-A"]));
+    assert!(git(&repo, &["commit", "-q", "-m", "init"]));
+
+    let wt = crate::git::worktree::create(&repo, "sched-demo-run12345", None, None).unwrap();
+    let wt_path = std::path::Path::new(&wt.path);
+    std::fs::write(wt_path.join("committed.txt"), "c1\n").unwrap();
+    assert!(git(wt_path, &["add", "-A"]));
+    assert!(git(wt_path, &["commit", "-q", "-m", "auto commit"]));
+    std::fs::write(wt_path.join("dirty.txt"), "d1\n").unwrap();
+
+    {
+        let db = h.ctx.db.lock();
+        let insert_sched = |id: &str| {
+            db.execute(
+                "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, enabled, created_at, updated_at)
+                 VALUES(?1, ?1, 'p', ?2, 'worktree', '{\"kind\":\"interval\",\"minutes\":10}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                rusqlite::params![id, repo.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        };
+        insert_sched("sched-owner");
+        insert_sched("sched-other");
+        db.execute(
+            "INSERT INTO schedule_runs(id, schedule_id, session_id, status, started_at)
+             VALUES('run12345-aaaa', 'sched-owner', NULL, 'ok', '2026-01-01T00:01:00Z')",
+            [],
+        )
+        .unwrap();
+    }
+
+    // Unknown schedule returns 404.
+    let (s, _, _) = call(
+        &h,
+        get("/api/left/schedules/does-not-exist/worktree", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Unrelated schedule cannot inspect sched-owner's worktree.
+    let (s, _, body) = call(
+        &h,
+        get("/api/left/schedules/sched-other/worktree", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), Value::Null);
+
+    // Owning schedule receives full worktree state & diffs.
+    let (s, _, body) = call(
+        &h,
+        get("/api/left/schedules/sched-owner/worktree", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let wt_state: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(wt_state["branch"], wt.branch.unwrap());
+    assert_eq!(wt_state["ahead"], 1);
+    assert_eq!(wt_state["dirty"], 1);
+    assert_eq!(wt_state["runId"], "run12345-aaaa");
+    assert!(wt_state["committedDiff"].as_str().unwrap().contains("+c1"));
+    assert!(wt_state["uncommittedDiff"].as_str().unwrap().contains("+d1"));
+    assert_eq!(wt_state["addedLines"], 2);
+
+    // H1: A local-mode schedule whose run ran inside an ordinary linked worktree must NOT claim it.
+    let linked = crate::git::worktree::create(&repo, "ordinary-feature", None, None).unwrap();
+    let linked_path = std::path::Path::new(&linked.path);
+    std::fs::write(linked_path.join("local-work.txt"), "hi\n").unwrap();
+    h.ctx.backend.extra_sessions.lock().push(SessionMeta {
+        id: "sess-local-1".into(),
+        cwd: linked.path.clone(),
+        live: false,
+        ..Default::default()
+    });
+    {
+        let db = h.ctx.db.lock();
+        db.execute(
+            "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, enabled, created_at, updated_at)
+             VALUES('sched-local', 'local', 'p', ?1, 'local', '{\"kind\":\"interval\",\"minutes\":10}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            rusqlite::params![repo.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO schedule_runs(id, schedule_id, session_id, status, started_at)
+             VALUES('runlocal-1111', 'sched-local', 'sess-local-1', 'ok', '2026-01-01T00:02:00Z')",
+            [],
+        )
+        .unwrap();
+    }
+    let (s, _, body) = call(
+        &h,
+        get("/api/left/schedules/sched-local/worktree", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), Value::Null);
+
+    // H2: Mismatched target fields on merge/discard must fail with 409 Conflict before any git mutation.
+    for endpoint in [
+        "/api/left/schedules/sched-owner/worktree/merge",
+        "/api/left/schedules/sched-owner/worktree/discard",
+    ] {
+        let (s, _, body) = call(
+            &h,
+            post(
+                endpoint,
+                &cookie,
+                json!({
+                    "runId": "wrong-run-id",
+                    "branch": wt_state["branch"],
+                    "worktreePath": wt_state["worktreePath"]
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{endpoint}: {body}");
+        assert!(body.contains("工作树已变化"), "{body}");
+    }
+
+    // H3: Running schedule run must reject merge/discard with 409 BEFORE git commit/merge/remove.
+    {
+        let db = h.ctx.db.lock();
+        db.execute(
+            "UPDATE schedule_runs SET status = 'running' WHERE id = 'run12345-aaaa'",
+            [],
+        )
+        .unwrap();
+    }
+    for endpoint in [
+        "/api/left/schedules/sched-owner/worktree/merge",
+        "/api/left/schedules/sched-owner/worktree/discard",
+    ] {
+        let (s, _, body) = call(
+            &h,
+            post(
+                endpoint,
+                &cookie,
+                json!({
+                    "runId": "run12345-aaaa",
+                    "branch": wt_state["branch"],
+                    "worktreePath": wt_state["worktreePath"]
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{endpoint}: {body}");
+        assert!(body.contains("正在运行的任务或活跃会话"), "{body}");
+    }
+    assert!(wt_path.join("dirty.txt").exists());
+    assert!(wt_path.exists());
+
+    // H3: Even after the run finishes, a live session owning the worktree must reject merge/discard with 409.
+    {
+        let db = h.ctx.db.lock();
+        db.execute(
+            "UPDATE schedule_runs SET status = 'ok' WHERE id = 'run12345-aaaa'",
+            [],
+        )
+        .unwrap();
+    }
+    h.ctx.backend.extra_sessions.lock().push(SessionMeta {
+        id: "sess-live-wt".into(),
+        cwd: wt_path.to_string_lossy().into_owned(),
+        live: true,
+        ..Default::default()
+    });
+    let (s, _, body) = call(
+        &h,
+        post(
+            "/api/left/schedules/sched-owner/worktree/merge",
+            &cookie,
+            json!({
+                "runId": "run12345-aaaa",
+                "branch": wt_state["branch"],
+                "worktreePath": wt_state["worktreePath"]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("正在运行的任务或活跃会话"), "{body}");
+    assert!(wt_path.join("dirty.txt").exists());
+    assert!(wt_path.exists());
+
+    // Also verify empty POST body parses cleanly via Option<Json<WorktreeActionBody>>.
+    let (s, _, body) = call(
+        &h,
+        Request::post("/api/left/schedules/sched-owner/worktree/discard")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("正在运行的任务或活跃会话"), "{body}");
+
+    let _ = crate::git::worktree::remove(&repo, linked_path, true, true);
+    let _ = crate::git::worktree::remove(&repo, wt_path, true, true);
 }

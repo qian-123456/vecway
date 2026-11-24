@@ -8,9 +8,9 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::contracts::Settings;
+use crate::contracts::{AutomationOverlapPolicy, ScheduleResultMode, Settings};
 use crate::db;
 use crate::state::AppState;
 use tauri::Manager as _;
@@ -19,6 +19,9 @@ use tauri_plugin_global_shortcut::Shortcut;
 /// Process-local async lock serializing full validate -> persist -> memory-update cycles.
 /// Avoids holding parking_lot synchronization guards across asynchronous await points.
 static SAVE_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// Single-flight async lock serializing LaunchAgent reconciliation through completion.
+static LAUNCH_AGENT_SYNC_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Validates settings and persists them atomically to both the database and in-memory state.
 ///
@@ -75,6 +78,130 @@ pub async fn set_automation_overlap_policy(
     settings.automation_overlap_policy = policy;
     apply_locked(state, settings)?;
     Ok(())
+}
+
+/// Deserialize an optional patch field distinguishing absent (`None`) from explicit `null` (`Some(None)`).
+fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Ok(Some(Option::<T>::deserialize(deserializer)?))
+}
+
+fn normalize_optional_trimmed(raw: Option<String>) -> Option<String> {
+    raw.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn normalize_optional_template(raw: Option<String>) -> Option<String> {
+    raw.filter(|s| !s.trim().is_empty())
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationSettingsPatch {
+    pub automation_background_enabled: Option<bool>,
+    pub automation_overlap_policy: Option<AutomationOverlapPolicy>,
+    pub automation_default_result_mode: Option<ScheduleResultMode>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub automation_default_model: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub automation_default_thinking: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub automation_prompt_mock_test: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub automation_prompt_real_once_test: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub automation_prompt_real_loop_test: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub automation_prompt_adjust: Option<Option<String>>,
+}
+
+/// Apply a partial automation settings patch in memory; returns whether
+/// `automation_background_enabled` changed.
+pub fn apply_automation_patch(settings: &mut Settings, patch: AutomationSettingsPatch) -> bool {
+    let prev_bg = settings.automation_background_enabled;
+    if let Some(bg) = patch.automation_background_enabled {
+        settings.automation_background_enabled = bg;
+    }
+    if let Some(policy) = patch.automation_overlap_policy {
+        settings.automation_overlap_policy = policy;
+    }
+    if let Some(mode) = patch.automation_default_result_mode {
+        settings.automation_default_result_mode = mode;
+    }
+    if let Some(model) = patch.automation_default_model {
+        settings.automation_default_model = normalize_optional_trimmed(model);
+    }
+    if let Some(thinking) = patch.automation_default_thinking {
+        settings.automation_default_thinking =
+            normalize_optional_trimmed(thinking).map(|t| t.to_ascii_lowercase());
+    }
+    if let Some(v) = patch.automation_prompt_mock_test {
+        settings.automation_prompt_mock_test = normalize_optional_template(v);
+    }
+    if let Some(v) = patch.automation_prompt_real_once_test {
+        settings.automation_prompt_real_once_test = normalize_optional_template(v);
+    }
+    if let Some(v) = patch.automation_prompt_real_loop_test {
+        settings.automation_prompt_real_loop_test = normalize_optional_template(v);
+    }
+    if let Some(v) = patch.automation_prompt_adjust {
+        settings.automation_prompt_adjust = normalize_optional_template(v);
+    }
+    settings.automation_background_enabled != prev_bg
+}
+
+/// Atomically update any subset of the 9 global automation settings using `SAVE_LOCK`,
+/// then serialize LaunchAgent reconciliation through completion when `automation_background_enabled` changed.
+pub async fn update_automation_settings(
+    state: &AppState,
+    patch: AutomationSettingsPatch,
+) -> Result<Settings, String> {
+    let (saved, bg_changed) = {
+        let _guard = SAVE_LOCK.lock().await;
+        let mut settings = state.settings.read().clone();
+        let bg_changed = apply_automation_patch(&mut settings, patch);
+        let saved = apply_locked(state, settings)?;
+        (saved, bg_changed)
+    };
+    if bg_changed {
+        reconcile_launch_agent(state).await;
+    }
+    Ok(saved)
+}
+
+/// Serializes LaunchAgent reconciliation, re-reading the latest persisted value
+/// inside the lock so rapid enable -> disable updates never land out of order.
+pub async fn reconcile_launch_agent_with<R, S>(read_latest: R, sync_fn: S) -> Result<bool, String>
+where
+    R: FnOnce() -> bool + Send + 'static,
+    S: FnOnce(bool) -> Result<bool, String> + Send + 'static,
+{
+    let _guard = LAUNCH_AGENT_SYNC_LOCK.lock().await;
+    let enabled = read_latest();
+    tokio::task::spawn_blocking(move || sync_fn(enabled))
+        .await
+        .map_err(|e| format!("sync launch agent join error: {e}"))?
+}
+
+pub async fn reconcile_launch_agent(state: &AppState) {
+    let settings = state.settings.clone();
+    if let Err(e) = reconcile_launch_agent_with(
+        move || settings.read().automation_background_enabled,
+        crate::schedules::daemon::sync_launch_agent_blocking,
+    )
+    .await
+    {
+        tracing::warn!("sync launch agent failed: {e}");
+    }
 }
 
 /// Validates, persists, and updates memory while the caller holds `SAVE_LOCK`.
@@ -301,6 +428,49 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
             return Err(format!(
                 "不支持的任务进行中发送方式 \"{other}\"，仅支持 steer、queue 或 interrupt"
             ));
+        }
+    }
+
+    // 14. Global automation defaults and prompt templates.
+    if let Some(model) = &settings.automation_default_model {
+        let trimmed = model.trim();
+        if has_nul_or_newline(model) {
+            return Err("自动化默认模型不能包含空字符 (NUL) 或换行符".to_string());
+        }
+        if trimmed.len() > 400 {
+            return Err("自动化默认模型名称过长（上限 400 字符）".to_string());
+        }
+        if !trimmed.is_empty() && trimmed.starts_with('-') {
+            return Err("自动化默认模型不能以 '-' 开头（防止选项参数注入）".to_string());
+        }
+    }
+    if let Some(thinking) = &settings.automation_default_thinking {
+        let trimmed = thinking.trim();
+        if has_nul_or_newline(thinking) {
+            return Err("自动化默认思考等级不能包含空字符 (NUL) 或换行符".to_string());
+        }
+        if !trimmed.is_empty()
+            && (trimmed.len() > 32
+                || !trimmed
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        {
+            return Err("自动化默认思考等级无效".to_string());
+        }
+    }
+    for (label, value) in [
+        ("模拟测试提示词模板", &settings.automation_prompt_mock_test),
+        ("单次真测提示词模板", &settings.automation_prompt_real_once_test),
+        ("迭代调试提示词模板", &settings.automation_prompt_real_loop_test),
+        ("AI 调整提示词模板", &settings.automation_prompt_adjust),
+    ] {
+        if let Some(text) = value {
+            if text.bytes().any(|b| b == 0) {
+                return Err(format!("{label}不能包含空字符 (NUL)"));
+            }
+            if text.len() > 16 * 1024 {
+                return Err(format!("{label}长度不能超过 16 KiB"));
+            }
         }
     }
 
@@ -1439,6 +1609,190 @@ mod tests {
         let tabs = parse_omp_config_tabs(human);
         assert_eq!(tabs.len(), 1);
         assert!(tabs.contains_key("temperature"));
+    }
+
+    #[test]
+    fn automation_settings_patch_persists_all_9_fields_and_validates() {
+        use crate::contracts::{AutomationOverlapPolicy, ScheduleResultMode};
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+
+        let mut settings = Settings::default();
+        let patch: AutomationSettingsPatch = serde_json::from_value(serde_json::json!({
+            "automationBackgroundEnabled": false,
+            "automationOverlapPolicy": "queue",
+            "automationDefaultResultMode": "llm_summary",
+            "automationDefaultModel": " anthropic/claude-sonnet-4 ",
+            "automationDefaultThinking": "HIGH",
+            "automationPromptMockTest": "mock {{name}}",
+            "automationPromptRealOnceTest": "once {{name}}",
+            "automationPromptRealLoopTest": "loop {{name}}",
+            "automationPromptAdjust": "adjust {{name}}",
+        }))
+        .unwrap();
+
+        let bg_changed = apply_automation_patch(&mut settings, patch);
+        assert!(bg_changed);
+        assert!(!settings.automation_background_enabled);
+        assert_eq!(
+            settings.automation_overlap_policy,
+            AutomationOverlapPolicy::Queue
+        );
+        assert_eq!(
+            settings.automation_default_result_mode,
+            ScheduleResultMode::LlmSummary
+        );
+        assert_eq!(
+            settings.automation_default_model.as_deref(),
+            Some("anthropic/claude-sonnet-4")
+        );
+        assert_eq!(
+            settings.automation_default_thinking.as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            settings.automation_prompt_mock_test.as_deref(),
+            Some("mock {{name}}")
+        );
+        assert_eq!(
+            settings.automation_prompt_real_once_test.as_deref(),
+            Some("once {{name}}")
+        );
+        assert_eq!(
+            settings.automation_prompt_real_loop_test.as_deref(),
+            Some("loop {{name}}")
+        );
+        assert_eq!(
+            settings.automation_prompt_adjust.as_deref(),
+            Some("adjust {{name}}")
+        );
+
+        validate(&settings).unwrap();
+        db::save_settings(&conn, &settings).unwrap();
+        let loaded = db::load_settings(&conn);
+        assert!(!loaded.automation_background_enabled);
+        assert_eq!(loaded.automation_overlap_policy, AutomationOverlapPolicy::Queue);
+        assert_eq!(
+            loaded.automation_default_result_mode,
+            ScheduleResultMode::LlmSummary
+        );
+        assert_eq!(
+            loaded.automation_default_model.as_deref(),
+            Some("anthropic/claude-sonnet-4")
+        );
+        assert_eq!(loaded.automation_default_thinking.as_deref(), Some("high"));
+        assert_eq!(
+            loaded.automation_prompt_adjust.as_deref(),
+            Some("adjust {{name}}")
+        );
+
+        // Partial patch leaves omitted fields intact and clears explicit nulls.
+        let clear_patch: AutomationSettingsPatch = serde_json::from_value(serde_json::json!({
+            "automationDefaultModel": null,
+            "automationPromptMockTest": "   ",
+        }))
+        .unwrap();
+        assert!(!apply_automation_patch(&mut settings, clear_patch));
+        assert!(settings.automation_default_model.is_none());
+        assert!(settings.automation_prompt_mock_test.is_none());
+        assert_eq!(
+            settings.automation_prompt_adjust.as_deref(),
+            Some("adjust {{name}}")
+        );
+
+        // Invalid model / thinking / oversized template fail validation.
+        let mut bad = settings.clone();
+        bad.automation_default_model = Some("--flag".into());
+        assert!(validate(&bad).is_err());
+
+        let mut bad_thinking = settings.clone();
+        bad_thinking.automation_default_thinking = Some("high level".into());
+        assert!(validate(&bad_thinking).is_err());
+
+        let mut bad_prompt = settings;
+        bad_prompt.automation_prompt_adjust = Some("x".repeat(16 * 1024 + 1));
+        assert!(validate(&bad_prompt).is_err());
+    }
+    #[tokio::test]
+    async fn reconcile_launch_agent_serializes_rapid_enable_then_disable() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let dir = project_test_dir("reconcile-launch-agent");
+        let agents = dir.join("LaunchAgents");
+        let exe = dir.join("vecway");
+        let log = dir.join("daemon.log");
+
+        let latest = Arc::new(AtomicBool::new(true));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::<bool>::new()));
+
+        let l1 = latest.clone();
+        let inf1 = in_flight.clone();
+        let max1 = max_concurrent.clone();
+        let obs1 = observed.clone();
+        let a1 = agents.clone();
+        let e1 = exe.clone();
+        let log1 = log.clone();
+        let t1 = tokio::spawn(async move {
+            reconcile_launch_agent_with(
+                move || l1.load(Ordering::SeqCst),
+                move |enabled| {
+                    let cur = inf1.fetch_add(1, Ordering::SeqCst) + 1;
+                    max1.fetch_max(cur, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(40));
+                    obs1.lock().push(enabled);
+                    let res = crate::schedules::daemon::sync_launch_agent_in(
+                        &a1, &e1, &log1, enabled, false,
+                    );
+                    inf1.fetch_sub(1, Ordering::SeqCst);
+                    res
+                },
+            )
+            .await
+        });
+
+        // Flip to disabled shortly after the first reconciliation starts.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        latest.store(false, Ordering::SeqCst);
+        let l2 = latest.clone();
+        let inf2 = in_flight.clone();
+        let max2 = max_concurrent.clone();
+        let obs2 = observed.clone();
+        let a2 = agents.clone();
+        let e2 = exe.clone();
+        let log2 = log.clone();
+        let t2 = tokio::spawn(async move {
+            reconcile_launch_agent_with(
+                move || l2.load(Ordering::SeqCst),
+                move |enabled| {
+                    let cur = inf2.fetch_add(1, Ordering::SeqCst) + 1;
+                    max2.fetch_max(cur, Ordering::SeqCst);
+                    obs2.lock().push(enabled);
+                    let res = crate::schedules::daemon::sync_launch_agent_in(
+                        &a2, &e2, &log2, enabled, false,
+                    );
+                    inf2.fetch_sub(1, Ordering::SeqCst);
+                    res
+                },
+            )
+            .await
+        });
+
+        t1.await.unwrap().unwrap();
+        t2.await.unwrap().unwrap();
+
+        assert_eq!(max_concurrent.load(Ordering::SeqCst), 1);
+        let calls = observed.lock().clone();
+        assert_eq!(calls.last().copied(), Some(false));
+        assert!(
+            !agents
+                .join(format!("{}.plist", crate::schedules::daemon::LAUNCH_AGENT_LABEL))
+                .exists(),
+            "final plist must be removed after enable -> disable"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

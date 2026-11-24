@@ -36,7 +36,7 @@ input[type="number"] {
 	--ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
 	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 	--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
-	--ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+	--ease-drawer: var(--ease-sheet);
 }
 
 /*
@@ -242,12 +242,17 @@ input[type="number"] {
 	--ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
 	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 	--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
-	--ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
-	--dur-press: 140ms;
+	--ease-drawer: var(--ease-sheet);
+	--dur-press: 130ms;
 	--dur-tip: 125ms;
 	--dur-popover: 180ms;
+	--dur-popover-exit: 135ms;
 	--dur-modal: 220ms;
+	--dur-modal-exit: 165ms;
+	--dur-sheet: 260ms;
+	--dur-sheet-exit: 200ms;
 	--dur-toast: 360ms;
+	--dur-toast-exit: 180ms;
 	/* Chat typography, controlled by the font-size setting (data-font-size).
 	 * Tailwind v4 operates without @tailwindcss/typography; markdown styling is handled
 	 * via [&_*] child selectors in src/components/Markdown.tsx.
@@ -936,7 +941,9 @@ html[data-mode="light"] {
 html,
 body,
 #root {
+	width: 100%;
 	height: 100%;
+	background-color: var(--bg);
 }
 
 /* The app is a fixed-viewport shell: never let the document itself scroll or
@@ -1330,7 +1337,15 @@ html[data-ui-scale="large"] {
 	z-index: var(--z-local-raised);
 }
 
-/* Reduced transparency accessibility fallback */
+/* Reduced transparency accessibility fallback and live window resize fast-path */
+html.is-window-resizing .vibrancy-chrome,
+html.is-window-resizing .vibrancy-popover,
+html.is-window-resizing .apple-modal-surface {
+	background-color: var(--bg-panel) !important;
+	backdrop-filter: none !important;
+	-webkit-backdrop-filter: none !important;
+}
+
 @media (prefers-reduced-transparency: reduce) {
 	.vibrancy-chrome {
 		background-color: var(--bg-panel) !important;
@@ -1451,26 +1466,68 @@ html[data-mode="light"] .liquid-glass {
 		0 10px 28px rgba(0, 0, 0, 0.10),
 		inset 0 0.5px 0 rgba(255, 255, 255, 0.85);
 }
-@keyframes sa-sheet-in {
-	from {
+.apple-sheet-backdrop {
+	opacity: 1;
+	transition: opacity var(--dur-sheet) var(--ease-out);
+}
+@starting-style {
+	.apple-sheet-backdrop {
+		opacity: 0;
+	}
+}
+.apple-sheet-backdrop[data-exiting="true"] {
+	opacity: 0;
+	transition: opacity var(--dur-sheet-exit) var(--ease-out);
+}
+.sa-sheet-in,
+.apple-sheet-surface {
+	opacity: 1;
+	transform: translateX(0);
+	transition:
+		opacity var(--dur-sheet) var(--ease-sheet),
+		transform var(--dur-sheet) var(--ease-sheet);
+}
+.sa-sheet-in {
+	background-color: color-mix(in oklab, var(--bg-panel) 62%, transparent);
+}
+@starting-style {
+	.sa-sheet-in,
+	.apple-sheet-surface {
 		opacity: 0;
 		transform: translateX(28px);
 	}
-	to {
-		opacity: 1;
-		transform: none;
-	}
 }
-.sa-sheet-in {
-	animation: sa-sheet-in 220ms var(--ease-out);
-	background-color: color-mix(in oklab, var(--bg-panel) 62%, transparent);
+.sa-sheet-in[data-exiting="true"],
+.apple-sheet-surface[data-exiting="true"] {
+	opacity: 0;
+	transform: translateX(28px);
+	transition:
+		opacity var(--dur-sheet-exit) var(--ease-out),
+		transform var(--dur-sheet-exit) var(--ease-sheet);
 }
 .sa-seg-thumb {
 	transition: transform 200ms var(--ease-out);
 }
 @media (prefers-reduced-motion: reduce) {
-	.sa-sheet-in {
-		animation: none;
+	.sa-sheet-in,
+	.apple-sheet-surface {
+		transform: none !important;
+		transition: opacity 150ms ease;
+	}
+	@starting-style {
+		.sa-sheet-in,
+		.apple-sheet-surface {
+			transform: none;
+		}
+	}
+	.sa-sheet-in[data-exiting="true"],
+	.apple-sheet-surface[data-exiting="true"],
+	.apple-sheet-backdrop[data-exiting="true"] {
+		transform: none !important;
+		transition: opacity 150ms ease;
+	}
+	.apple-sheet-backdrop {
+		transition: opacity 150ms ease;
 	}
 	.sa-seg-thumb {
 		transition: none;
@@ -1479,10 +1536,12 @@ html[data-mode="light"] .liquid-glass {
 /* Text-on-glass row states: a soft lighter fill, never an outlined box. */
 .glass-row {
 	border: 1px solid transparent;
-	transition: background-color 0.12s;
+	transition: background-color 120ms var(--ease-out);
 }
-.glass-row:hover {
-	background-color: color-mix(in oklab, var(--text) 8%, transparent);
+@media (hover: hover) and (pointer: fine) {
+	.glass-row:hover {
+		background-color: color-mix(in oklab, var(--text) 8%, transparent);
+	}
 }
 .glass-row[data-selected="true"] {
 	background-color: color-mix(in oklab, var(--text) 13%, transparent);
@@ -1646,10 +1705,18 @@ html[data-wallpaper="true"] .fixed.inset-0.bg-\[var\(--overlay\)\] {
 
 /* Interactive press-scale */
 .press-scale {
+	transition:
+		background-color 120ms var(--ease-out),
+		opacity 120ms var(--ease-out);
+}
+.press-scale:active:not(:disabled) {
+	opacity: 0.82;
+}
+.press-scale .press-scale-inner {
 	transition: transform var(--dur-press) var(--ease-out);
 }
-.press-scale:active {
-	transform: scale(0.97);
+.press-scale:active:not(:disabled) .press-scale-inner {
+	transform: scale(0.96);
 }
 
 /* Apple fluid surface transitions (origin-aware popovers, centered modals, interruptible toasts, tactile switches) */
@@ -1675,6 +1742,13 @@ html[data-wallpaper="true"] .fixed.inset-0.bg-\[var\(--overlay\)\] {
 .apple-popover-surface[data-instant="true"] {
 	transition-duration: 0ms;
 }
+.apple-popover-surface[data-exiting="true"] {
+	opacity: 0;
+	transform: scale(0.96);
+	transition:
+		opacity var(--dur-popover-exit) var(--ease-out),
+		transform var(--dur-popover-exit) var(--ease-out);
+}
 
 .apple-tooltip-surface {
 	transform-origin: var(--popover-origin, bottom left);
@@ -1698,6 +1772,13 @@ html[data-wallpaper="true"] .fixed.inset-0.bg-\[var\(--overlay\)\] {
 .apple-tooltip-surface[data-instant="true"] {
 	transition-duration: 0ms;
 }
+.apple-tooltip-surface[data-exiting="true"] {
+	opacity: 0;
+	transform: scale(0.97);
+	transition:
+		opacity var(--dur-tip) var(--ease-out),
+		transform var(--dur-tip) var(--ease-out);
+}
 
 .apple-modal-backdrop {
 	opacity: 1;
@@ -1710,6 +1791,10 @@ html[data-wallpaper="true"] .fixed.inset-0.bg-\[var\(--overlay\)\] {
 }
 .apple-modal-backdrop[data-instant="true"] {
 	transition-duration: 0ms;
+}
+.apple-modal-backdrop[data-exiting="true"] {
+	opacity: 0;
+	transition: opacity var(--dur-modal-exit) var(--ease-out);
 }
 
 .apple-modal-panel {
@@ -1729,6 +1814,22 @@ html[data-wallpaper="true"] .fixed.inset-0.bg-\[var\(--overlay\)\] {
 .apple-modal-panel[data-instant="true"] {
 	transition-duration: 0ms;
 }
+.apple-modal-panel[data-exiting="true"] {
+	opacity: 0;
+	transform: scale(0.97) translateY(4px);
+	transition:
+		opacity var(--dur-modal-exit) var(--ease-out),
+		transform var(--dur-modal-exit) var(--ease-out);
+}
+.apple-lightbox-img {
+	opacity: 1;
+	transition: opacity 140ms var(--ease-out);
+}
+@starting-style {
+	.apple-lightbox-img {
+		opacity: 0;
+	}
+}
 
 .apple-toast {
 	opacity: 1;
@@ -1747,8 +1848,8 @@ html[data-wallpaper="true"] .fixed.inset-0.bg-\[var\(--overlay\)\] {
 	opacity: 0;
 	transform: translateY(8px) scale(0.97);
 	transition:
-		opacity 180ms var(--ease-out),
-		transform 180ms var(--ease-out);
+		opacity var(--dur-toast-exit) var(--ease-out),
+		transform var(--dur-toast-exit) var(--ease-out);
 }
 
 .apple-seg-thumb {
@@ -2125,8 +2226,8 @@ button:active,
 	padding: 2px 2px;
 }
 .es-root {
-	--es-dur: 0.3s;
-	--es-ease: cubic-bezier(0.23, 1, 0.32, 1);
+	--es-dur: 240ms;
+	--es-ease: var(--ease-out);
 	--es-fill: var(--accent);
 	--es-normal-start: #6377df;
 	--es-normal-end: #9a70d6;
@@ -2148,7 +2249,7 @@ button:active,
 	transition: --es-p var(--es-dur) var(--es-ease);
 }
 .es-root[data-dragging="true"] {
-	--es-dur: 0.15s;
+	--es-dur: 0s;
 	cursor: grabbing;
 }
 .es-track {
@@ -2242,13 +2343,14 @@ button:active,
 }
 .es-particle {
 	position: absolute;
+	top: 0;
 	width: 3px;
 	height: 3px;
 	border-radius: 999px;
 	background: #ffffffb8;
 	box-shadow: 0 0 5px #ffffff57;
-	will-change: left, top;
-	transition-property: left, top;
+	will-change: transform;
+	transition-property: transform;
 	transition-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
 }
 @keyframes es-fade-in {
@@ -2285,9 +2387,11 @@ button:active,
 	position: absolute;
 	inset: -6px;
 }
-.es-tick:hover {
-	filter: brightness(0.85);
-	transform: translate(-50%, -50%) scale(2);
+@media (hover: hover) and (pointer: fine) {
+	.es-tick:hover {
+		filter: brightness(0.85);
+		transform: translate(-50%, -50%) scale(2);
+	}
 }
 .es-tick[data-selected="true"] {
 	color: #ffffff4d;
@@ -2360,7 +2464,7 @@ button:active,
 }
 @keyframes es-fast-tick-return-translate {
 	from {
-		translate: 10px;
+		translate: -85px;
 	}
 	to {
 		translate: 0;
@@ -2543,14 +2647,47 @@ button:active,
 	}
 }
 
+.copy-feedback-pill {
+	opacity: 1;
+	transform: translateY(0) scale(1);
+	transition:
+		opacity 140ms var(--ease-out),
+		transform 140ms var(--ease-out);
+}
+@starting-style {
+	.copy-feedback-pill {
+		opacity: 0;
+		transform: translateY(6px) scale(0.96);
+	}
+}
+.copy-feedback-pill[data-exiting="true"] {
+	opacity: 0;
+	transform: translateY(4px) scale(0.97);
+	transition:
+		opacity 150ms var(--ease-out),
+		transform 150ms var(--ease-out);
+}
+
+.settings-deeplink-flash {
+	transition: background-color 320ms var(--ease-out);
+}
+.settings-deeplink-flash-active {
+	background-color: var(--ghost-hover, color-mix(in oklab, currentColor 6%, transparent));
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.press-scale,
+	.press-scale .press-scale-inner,
 	.apple-seg-thumb,
 	.apple-switch-knob,
-	.apple-hover-lift {
+	.apple-hover-lift,
+	.settings-deeplink-flash {
 		transition: none;
 	}
-	.press-scale:active,
+	.press-scale:active:not(:disabled) {
+		opacity: 1;
+	}
+	.press-scale:active:not(:disabled) .press-scale-inner,
 	.apple-hover-lift:hover,
 	.apple-hover-lift:active {
 		transform: none;
@@ -2558,10 +2695,19 @@ button:active,
 	button[role="switch"]:active:not(:disabled) .apple-switch-knob {
 		width: 16px;
 	}
+	button[role="switch"][aria-checked="true"]:active:not(:disabled) .apple-switch-knob {
+		transform: translateX(18px);
+	}
 	.apple-popover-surface,
+	.apple-popover-surface[data-exiting="true"],
 	.apple-tooltip-surface,
+	.apple-tooltip-surface[data-exiting="true"],
 	.apple-modal-panel,
-	.apple-toast {
+	.apple-modal-panel[data-exiting="true"],
+	.apple-toast,
+	.apple-toast[data-exiting="true"],
+	.copy-feedback-pill,
+	.copy-feedback-pill[data-exiting="true"] {
 		transform: none !important;
 		transition: opacity 150ms ease;
 	}
@@ -2569,12 +2715,30 @@ button:active,
 		.apple-popover-surface,
 		.apple-tooltip-surface,
 		.apple-modal-panel,
-		.apple-toast {
+		.apple-toast,
+		.copy-feedback-pill {
 			transform: none;
 		}
 	}
-	.apple-modal-backdrop {
+	.apple-modal-backdrop,
+	.apple-modal-backdrop[data-exiting="true"] {
 		transition: opacity 150ms ease;
+	}
+	.apple-lightbox-img {
+		transition: none;
+	}
+	@keyframes copy-pill-in {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+	.animate-pulse,
+	.animate-bounce,
+	.animate-ping {
+		animation: none !important;
 	}
 	#app-wallpaper-background,
 	#app-wallpaper-veil {

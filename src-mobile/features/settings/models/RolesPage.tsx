@@ -221,7 +221,7 @@ export function SettingsRolesPage({ route }: PageProps) {
 									</span>
 									{(v.kind === "model" || cwd) && (
 										<span className="flex flex-wrap gap-1.5">
-											{v.kind === "model" && <Chip>思考 {v.thinking ?? "自动"}</Chip>}
+											{v.kind === "model" && <Chip>思考 {v.thinking ?? "auto"}</Chip>}
 											{cwd && <Chip tone={isProject ? "accent" : "neutral"}>{isProject ? "项目专属" : "继承全局"}</Chip>}
 										</span>
 									)}

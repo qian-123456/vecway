@@ -107,25 +107,9 @@ export function BottomBar() {
 		[transcriptItems, live],
 	);
 
-	const contextPct = useMemo(() => {
-		const raw = live?.state?.contextUsage;
-		if (!raw || typeof raw !== "object") return null;
-		const rec = raw as Record<string, unknown>;
-		if (typeof rec.percent === "number" && Number.isFinite(rec.percent)) {
-			return Math.max(0, Math.round(rec.percent));
-		}
-		if (
-			typeof rec.tokens === "number" &&
-			typeof rec.contextWindow === "number" &&
-			rec.contextWindow > 0
-		) {
-			return Math.max(0, Math.round((rec.tokens / rec.contextWindow) * 100));
-		}
-		return null;
-	}, [live?.state?.contextUsage]);
-
 	const [memoryInfo, setMemoryInfo] = useState<Pick<ProcessMemoryInfo, "formatted" | "processes"> | null>(null);
 	const [perfData, setPerfData] = useState<PerfBreakdown | null>(null);
+	const [sampleStatus, setSampleStatus] = useState<"loading" | "ready" | "unavailable">("loading");
 	const [perfOpen, setPerfOpen] = useState(false);
 	const statsBtnRef = useRef<HTMLButtonElement>(null);
 	const perfBtnRef = useRef<HTMLButtonElement>(null);
@@ -151,20 +135,30 @@ export function BottomBar() {
 			try {
 				if (perfOpen) {
 					const perf = await perfBreakdown();
-					if (!cancelled && perf) {
-						setPerfData(perf);
-						setMemoryInfo({ formatted: formatMemoryBytes(perf.app.bytes), processes: perf.app.processes });
+					if (!cancelled) {
+						if (perf) {
+							setPerfData(perf);
+							setMemoryInfo({ formatted: formatMemoryBytes(perf.app.bytes), processes: perf.app.processes });
+							setSampleStatus("ready");
+						} else {
+							setSampleStatus("unavailable");
+						}
 					}
 				} else {
 					const mem = await getAppMemoryUsage();
-					if (!cancelled && mem) {
-						setMemoryInfo((prev) =>
-							prev?.formatted === mem.formatted && prev.processes === mem.processes ? prev : mem,
-						);
+					if (!cancelled) {
+						if (mem && typeof mem.formatted === "string" && mem.formatted.length > 0) {
+							setMemoryInfo((prev) =>
+								prev?.formatted === mem.formatted && prev.processes === mem.processes ? prev : mem,
+							);
+							setSampleStatus("ready");
+						} else {
+							setSampleStatus("unavailable");
+						}
 					}
 				}
 			} catch {
-				/* ignore */
+				if (!cancelled) setSampleStatus("unavailable");
 			} finally {
 				inFlight = false;
 				if (!cancelled && (document.visibilityState as string) !== "hidden") {
@@ -198,7 +192,9 @@ export function BottomBar() {
 		};
 	}, [bottomBarVisible, perfOpen]);
 
-	const realMemoryStr = memoryInfo?.formatted ?? "—";
+	const realMemoryStr =
+		memoryInfo?.formatted ??
+		(sampleStatus === "loading" ? t("bottomBar.samplingLoading") : t("bottomBar.samplingUnavailable"));
 
 	const gitInfo = selectedSessionId ? activeSession?.git : draftGit;
 	const branch = gitInfo?.branch;
@@ -206,7 +202,6 @@ export function BottomBar() {
 	const showSessionTelemetry = Boolean(selectedSessionId) && (stats.hasData || streaming);
 	const telemetryLabel = [
 		t("bottomBar.statsTip"),
-		contextPct !== null ? t("bottomBar.contextPercent", { pct: contextPct }) : null,
 		t("bottomBar.roundsAndSteps", { rounds: stats.rounds, steps: stats.steps }),
 		stats.tps != null ? `${stats.tps.toFixed(1)} tok/s` : null,
 		stats.totalTokens == null ? "—" : formatTokens(stats.totalTokens),
@@ -246,14 +241,6 @@ export function BottomBar() {
 									: "text-[var(--text-dim)] group-hover:text-indigo-400",
 							)}
 						/>
-						{contextPct !== null && (
-							<BarPart id="context" priority={2} collapsed={collapsed}>
-								<span className="whitespace-nowrap font-mono tabular-nums">
-									{t("bottomBar.contextPercent", { pct: contextPct })}
-								</span>
-								<span className="text-[var(--text-dim)]">·</span>
-							</BarPart>
-						)}
 						<BarPart id="rounds" priority={1} collapsed={collapsed}>
 							<span className="font-mono tabular-nums">
 								{t("bottomBar.roundsAndSteps", { rounds: stats.rounds, steps: stats.steps })}
@@ -303,17 +290,29 @@ export function BottomBar() {
 					onClick={() => setPerfOpen((v) => !v)}
 					aria-label={t("bottomBar.performance", { memory: realMemoryStr })}
 					aria-expanded={perfOpen}
-					title={t("bottomBar.memoryTooltip", {
-						processes: memoryInfo?.processes
-							? t("bottomBar.processesCount", { count: memoryInfo.processes })
-							: "",
-					})}
+					title={
+						sampleStatus === "unavailable" && !memoryInfo
+							? t("bottomBar.memoryUnavailableTooltip")
+							: t("bottomBar.memoryTooltip", {
+									processes: memoryInfo?.processes
+										? t("bottomBar.processesCount", { count: memoryInfo.processes })
+										: "",
+								})
+					}
 					className={clsx(
 						"flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] px-1.5 py-0.5 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-active-fill)] hover:text-[var(--text)] active:scale-[0.97] cursor-pointer",
 						perfOpen && "bg-[var(--bg-hover)] text-[var(--text)]",
 					)}
 				>
-					<Activity size={11} className="shrink-0 text-emerald-500" />
+					<Activity
+						size={11}
+						className={clsx(
+							"shrink-0 transition-colors",
+							sampleStatus === "ready" && memoryInfo != null
+								? "text-emerald-500"
+								: "text-[var(--text-dim)]",
+						)}
+					/>
 					<BarPart id="memory" priority={3} collapsed={collapsed}>
 						<span className="font-mono text-[10.5px] tabular-nums">
 							{t("bottomBar.performance", { memory: realMemoryStr })}

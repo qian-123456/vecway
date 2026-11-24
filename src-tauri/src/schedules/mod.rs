@@ -17,6 +17,9 @@ pub fn init(state: AppState) {
         let db = state.db.lock();
         store::write_catalog_snapshot(&db);
     }
-    daemon::sync_launch_agent(state.settings.read().automation_background_enabled);
+    let state_for_sync = state.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::settings::reconcile_launch_agent(&state_for_sync).await;
+    });
     scheduler::start(state);
 }
