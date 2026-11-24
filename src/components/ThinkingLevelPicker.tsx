@@ -44,6 +44,7 @@ export function ThinkingLevelPicker({
 	onOpenChange,
 	onSelect,
 	accessory,
+	accessoryFooter,
 	onConfigure = () => openSettingsTarget("providers"),
 	tight = false,
 	variant = "ghost",
@@ -60,6 +61,8 @@ export function ThinkingLevelPicker({
 	onSelect: (level: string) => void;
 	/** An independent action in the card's top-left corner. */
 	accessory?: ReactNode;
+	/** Optional inline status footer rendered at the bottom of the card. */
+	accessoryFooter?: ReactNode;
 	/** Opens model settings from the 「未配置思考等级」 chip; defaults to Settings ▸ API 供应商. */
 	onConfigure?: () => void;
 	/** Tighter horizontal padding for a crowded toolbar. */
@@ -142,7 +145,7 @@ export function ThinkingLevelPicker({
 					onDismiss={() => onOpenChange(false)}
 					className="w-[280px] max-w-[calc(100vw-16px)] rounded-[20px] border border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] shadow-apple-modal"
 				>
-					<ThinkingLevelControl levels={levels} value={value} onSelect={onSelect} accessory={accessory} />
+					<ThinkingLevelControl levels={levels} value={value} onSelect={onSelect} accessory={accessory} accessoryFooter={accessoryFooter} />
 				</FloatingLayer>
 			)}
 		</div>
@@ -178,11 +181,13 @@ function ThinkingLevelControl({
 	value,
 	onSelect,
 	accessory,
+	accessoryFooter,
 }: {
 	levels: string[];
 	value: string;
 	onSelect: (level: string) => void;
 	accessory?: ReactNode;
+	accessoryFooter?: ReactNode;
 }) {
 	const { t } = useT();
 	// Level the slider shows ahead of `value`: while dragging, and after a commit
@@ -258,6 +263,7 @@ function ThinkingLevelControl({
 					/>
 				</div>
 			)}
+			{accessoryFooter}
 			{listOpen && (
 				<FloatingLayer
 					anchor={buttonRef.current}

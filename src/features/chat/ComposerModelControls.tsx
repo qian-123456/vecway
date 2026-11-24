@@ -27,6 +27,7 @@ export function ComposerModelControls({
 	thinkingOpen,
 	fastModeIndicator,
 	thinkingAccessory,
+	thinkingFooter,
 	onThinkingOpenChange,
 	onEnsureModels,
 	onSelectModel,
@@ -51,6 +52,7 @@ export function ComposerModelControls({
 	onThinkingOpenChange: (open: boolean) => void;
 	fastModeIndicator?: ReactNode;
 	thinkingAccessory?: ReactNode;
+	thinkingFooter?: ReactNode;
 	onEnsureModels?: () => void;
 	onSelectModel: (key: string) => void | Promise<void>;
 	onSelectThinking: (level: string) => void | Promise<void>;
@@ -118,6 +120,7 @@ export function ComposerModelControls({
 					open={thinkingOpen}
 					onOpenChange={onThinkingOpenChange}
 					accessory={thinkingAccessory}
+					accessoryFooter={thinkingFooter}
 					onSelect={(level) => void onSelectThinking(level)}
 					tight={toolbarTier >= TIER_TIGHT}
 				/>

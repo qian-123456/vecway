@@ -7,7 +7,13 @@ import type { ProviderRow } from "../../lib/contracts";
 import { emptySessionLive, useLive } from "../../stores/live";
 import { useProviders } from "../providers/store";
 import { usePendingSession } from "../sessions/pendingSession";
-import { ComposerFastMode, ComposerFastModeIndicator, fastModeChannel, offlineFastModeChannel } from "./ComposerFastMode";
+import {
+	ComposerFastMode,
+	ComposerFastModeIndicator,
+	ComposerFastModeStatus,
+	fastModeChannel,
+	offlineFastModeChannel,
+} from "./ComposerFastMode";
 const SID = "s1";
 
 const h = vi.hoisted(() => ({
@@ -98,6 +104,7 @@ function renderInThinkingPicker(modelKey: string, sessionId = SID) {
 				onOpenChange={setOpen}
 				onSelect={() => {}}
 				accessory={<ComposerFastMode sessionId={sessionId} modelKey={modelKey} />}
+				accessoryFooter={<ComposerFastModeStatus sessionId={sessionId} modelKey={modelKey} />}
 			/>
 		);
 	}
@@ -229,7 +236,8 @@ describe("ComposerFastMode", () => {
 		await waitFor(() =>
 			expect(h.rpcSend).toHaveBeenCalledWith(SID, { type: "set_fast_mode", enabled: true }),
 		);
-		expect(h.toastInfo).toHaveBeenCalledTimes(1);
+		expect(h.toastInfo).not.toHaveBeenCalled();
+		expect((await screen.findByRole("status")).textContent).toMatch(/已开启快速模式|Fast mode on/);
 
 		const activeBtn = await screen.findByRole("button", {
 			name: /响应速度：快速|Response speed: Fast/,
@@ -242,6 +250,7 @@ describe("ComposerFastMode", () => {
 		await waitFor(() =>
 			expect(h.rpcSend).toHaveBeenCalledWith(SID, { type: "set_fast_mode", enabled: false }),
 		);
+		expect((await screen.findByRole("status")).textContent).toMatch(/已切回标准速度|Switched to standard speed/);
 	});
 
 	it("renders colored toolbar indicator only when fast mode is active and allows one-click turn off", async () => {
@@ -339,7 +348,8 @@ describe("ComposerFastMode", () => {
 		expect(usePendingSession.getState().drafts[draftId].fastMode).toBe(true);
 		expect(h.ensureLive).not.toHaveBeenCalled();
 		expect(h.rpcSend).not.toHaveBeenCalled();
-		expect(h.toastInfo).toHaveBeenCalledTimes(1);
+		expect(h.toastInfo).not.toHaveBeenCalled();
+		expect((await screen.findByRole("status")).textContent).toMatch(/已开启快速模式|Fast mode on/);
 
 		const activeBtn = await screen.findByRole("button", { name: /响应速度：快速|Response speed: Fast/ });
 		expect(activeBtn.getAttribute("aria-pressed")).toBe("true");
