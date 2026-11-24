@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
-import type { SubagentSummary } from "../../../lib/contracts";
+// @vitest-environment jsdom
+import { act, renderHook } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import type { SessionMeta, SubagentSummary } from "../../../lib/contracts";
+import * as ipc from "../../../lib/ipc";
+import { useLive } from "../../../stores/live";
+import { useSessions } from "../../../stores/sessions";
 import { subagentCounts } from "./counts";
-import { mergeDiskAndLive } from "./useSessionSubagents";
+import { DISK_POLL_MS, mergeDiskAndLive, useSessionSubagents } from "./useSessionSubagents";
 
 const disk = (over: Partial<SubagentSummary>): SubagentSummary => ({
 	id: "0-Explore",
@@ -38,6 +43,14 @@ describe("mergeDiskAndLive", () => {
 		expect(rows["0-Explore"].status).toBe("completed");
 		expect(rows["0-Explore"].agent).toBe("explore");
 		expect(rows["0-Explore"].filePath).toBe("/s/p/parent/0-Explore.jsonl");
+	});
+
+	it("uses a newer disk run when the last live status is from a previous run", () => {
+		const newRun = { startedAt: "2026-01-01T00:01:00Z", endedAt: "2026-01-01T00:01:01Z" };
+		const live = { "0-Explore": { status: "completed" as const, label: "x", lastUpdate: Date.parse("2026-01-01T00:00:05Z") } };
+		const current = { endedAt: newRun.endedAt, runSegments: [newRun] };
+		expect(mergeDiskAndLive([disk({ ...current, status: "running" })], live).rows["0-Explore"].status).toBe("running");
+		expect(mergeDiskAndLive([disk({ ...current, status: "failed" })], live).rows["0-Explore"].status).toBe("failed");
 	});
 
 	it("live running status wins over disk pending status", () => {
@@ -108,6 +121,46 @@ describe("mergeDiskAndLive", () => {
 		const after = mergeDiskAndLive([], {}, started, streaming);
 		expect(subagentCounts(after.subagents).queued).toBe(2);
 	});
+});
+
+it("shows the same subagent running after it wakes under an idle parent, until it finishes", async () => {
+	const id = "0-Explore";
+	const sessionId = "parent";
+	const sessions = useSessions.getState().sessions;
+	const live = useLive.getState().sessions;
+	vi.useFakeTimers();
+	const list = vi.spyOn(ipc, "subagentList").mockResolvedValue([disk({ status: "completed" })]);
+	useSessions.setState({ sessions: { [sessionId]: { id: sessionId, file: "/s/p.jsonl", status: "idle" } as SessionMeta } });
+	const { result, unmount } = renderHook(() => useSessionSubagents(sessionId));
+	const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+	const lifecycle = (status: "started" | "completed") => act(() => {
+		useLive.getState().reduceFrame({ sessionId, frame: { type: "subagent_lifecycle", payload: { id, status } } });
+	});
+	try {
+		await advance(DISK_POLL_MS);
+		expect(result.current.rows[id].status).toBe("completed");
+		expect(list).toHaveBeenCalledTimes(1);
+
+		vi.setSystemTime(new Date("2026-01-01T00:01:00Z"));
+		lifecycle("started");
+		await advance(DISK_POLL_MS);
+		expect(result.current.rows[id].status).toBe("running");
+		expect(subagentCounts(result.current.subagents).running).toBe(1);
+		expect(list).toHaveBeenCalledTimes(3);
+
+		list.mockResolvedValue([disk({ status: "completed", endedAt: "2026-01-01T00:01:03Z" })]);
+		lifecycle("completed");
+		await advance(DISK_POLL_MS);
+		expect(result.current.rows[id].status).toBe("completed");
+		expect(subagentCounts(result.current.subagents).running).toBe(0);
+		expect(list).toHaveBeenCalledTimes(4);
+	} finally {
+		unmount();
+		list.mockRestore();
+		vi.useRealTimers();
+		useSessions.setState({ sessions });
+		useLive.setState({ sessions: live });
+	}
 });
 
 describe("mergeDiskAndLive context + status", () => {

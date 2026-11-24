@@ -1392,8 +1392,9 @@ containment, and sessions in deleted worktree dirs group under a default-collaps
   omp-TUI-style tree (continuous CSS rails with a final elbow, status icon, id, agent badge, current tool, model·thinking·tools·tokens·duration·cost).
   Clicking a row opens `SubagentSheet` (right slide-over, `Z_LAYER.modal`): 概览 / 提示词 / 过程 / 输出, tailing
   `subagent_transcript` every 1.5 s while running.
-  `TopCapsule` uses `useSessionSubagents(sessionId)`: on-disk `subagent_list` summaries (re-polled every 3 s while the session is `external`/`working`) merged with live RPC subagents (live wins per id), so sessions driven by an external `omp` CLI show their subagents in the capsule popover, with a 「查看详情」 button opening `SubagentSheet`. `TaskToolBlock` polls the same way for unfinished calls of external sessions. No IPC change.
-  Named jobs appear as the capsule's primary label, with the task description wrapping below and the agent role as a non-wrapping secondary badge. Terminal row statuses cannot be revived by stale non-terminal data. Errored dispatches do not borrow unrelated file summaries from a re-dispatch; only a matching live `parentToolCallId` keeps a child running.
+  Disk status treats an output artifact older than the latest session start as a previous result, not as completion of the current run.
+  `TopCapsule` uses `useSessionSubagents(sessionId)`: the disk summaries share a 3 s poll while the parent is active or a child is running. A live wake restarts it even when the parent is idle. A newer live running update or a newer on-disk run segment can reopen an older terminal row; stale snapshots cannot. The capsule's 「查看详情」 opens `SubagentSheet`. No IPC change.
+  Named jobs appear as the capsule's primary label, with the task description wrapping below and the agent role as a non-wrapping secondary badge. Errored dispatches do not borrow unrelated file summaries from a re-dispatch; only a matching live `parentToolCallId` keeps a child running.
 - Answer footer (`AnswerFooter.tsx`): one quiet row — ghost icon buttons left (changed-files list toggle, saved commit jumping to
   git timeline via `useTurnNav.showCommit`, "撤回这一轮" rollback with cascade conflict detection, copy, side-chat fork) and the
   answer time on hover at the right end (opacity-reserved, never shifts); hover-only on older turns, always visible on the latest.

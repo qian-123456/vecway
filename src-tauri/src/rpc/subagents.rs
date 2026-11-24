@@ -100,6 +100,7 @@ struct AgentMeta {
     tokens: Option<u64>,
     cost: Option<f64>,
     last_assistant_text: Option<String>,
+    run_started_at: Option<SystemTime>,
     last_stop_reason: Option<String>,
     has_assistant: bool,
 }
@@ -122,6 +123,10 @@ fn accumulate(meta: &mut AgentMeta, v: &Value) {
                 .map(str::to_string);
         }
         Some("session_init") => {
+            meta.run_started_at = ts
+                .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                .map(SystemTime::from);
+            meta.last_stop_reason = None;
             if meta.system_prompt.is_none() {
                 meta.system_prompt = v
                     .get("systemPrompt")
@@ -191,7 +196,6 @@ fn accumulate(meta: &mut AgentMeta, v: &Value) {
         }
         _ => {}
     }
-    let _ = ts;
 }
 
 /// Parsed metadata + timing segments + complete-line cursor of a subagent jsonl
@@ -291,37 +295,50 @@ fn infer_status(
     file_mtime: Option<SystemTime>,
 ) -> (SubagentStatus, Option<PathBuf>) {
     let (_jsonl, lock, out_md, out_json) = agent_paths(dir, id);
-    let output = [out_md, out_json].into_iter().find(|p| p.is_file());
-    if output.is_some() {
-        return (SubagentStatus::Completed, output);
-    }
+    let artifact = [out_md, out_json].into_iter().find_map(|path| {
+        let metadata = fs::metadata(&path).ok()?;
+        metadata.is_file().then_some((path, metadata))
+    });
+    let output = if let Some((path, metadata)) = artifact {
+        // A resumed child can leave its previous result on disk while working.
+        let stale = meta
+            .run_started_at
+            .zip(metadata.modified().ok())
+            .is_some_and(|(started, modified)| modified < started);
+        if !stale {
+            return (SubagentStatus::Completed, Some(path));
+        }
+        Some(path)
+    } else {
+        None
+    };
     // omp keeps the lock file while the child is alive; only an existing,
     // recently touched lock proves a live child. A hot transcript alone does
     // not: a finished child's final write is also "fresh" for minutes.
     let stop = meta.last_stop_reason.as_deref().unwrap_or("");
     let lock_alive = lock.exists() && fresh_enough(mtime(&lock));
     if lock_alive {
-        return (SubagentStatus::Running, None);
+        return (SubagentStatus::Running, output);
     }
     // Only stop reasons with known terminal semantics end a run. Anything else
     // ("toolUse", "length", unknown/future reasons) falls through to the
     // freshness / has-assistant heuristics below.
     match stop {
-        "stop" | "end_turn" => return (SubagentStatus::Completed, None),
-        "error" => return (SubagentStatus::Failed, None),
-        "aborted" | "abort" | "cancelled" | "canceled" => return (SubagentStatus::Aborted, None),
+        "stop" | "end_turn" => return (SubagentStatus::Completed, output),
+        "error" => return (SubagentStatus::Failed, output),
+        "aborted" | "abort" | "cancelled" | "canceled" => return (SubagentStatus::Aborted, output),
         _ => {}
     }
     if fresh_enough(file_mtime) {
         // No terminal marker yet and the transcript is still being written.
-        return (SubagentStatus::Running, None);
+        return (SubagentStatus::Running, output);
     }
     if meta.has_assistant {
         // Idle, produced a final text, no output file.
-        return (SubagentStatus::Completed, None);
+        return (SubagentStatus::Completed, output);
     }
     // Stale file that never got past the prompt.
-    (SubagentStatus::Pending, None)
+    (SubagentStatus::Pending, output)
 }
 
 fn summary_from(
@@ -1374,6 +1391,55 @@ mod tests {
         assert_eq!(st, SubagentStatus::Completed);
         assert!(out.is_some());
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn resumed_subagent_ignores_previous_runs_output_for_status() {
+        use std::io::Write;
+
+        let (root, parent, dir) = setup();
+        let output = dir.join("A.md");
+        fs::write(&output, "Previous result").unwrap();
+        fs::File::open(&output)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(3))
+            .unwrap();
+        let mut transcript = fs::File::options()
+            .create_new(true)
+            .append(true)
+            .open(dir.join("A.jsonl"))
+            .unwrap();
+        let mut append = |entry: &str| writeln!(transcript, "{entry}").unwrap();
+        append(concat!(
+            r#"{"type":"session","id":"A","timestamp":"1970-01-01T00:00:00Z"}"#,
+            "\n",
+            r#"{"type":"session_init","timestamp":"1970-01-01T00:00:01Z"}"#,
+            "\n",
+            r#"{"type":"message","timestamp":"1970-01-01T00:00:02Z","message":{"role":"assistant","stopReason":"stop"}}"#,
+            "\n",
+            r#"{"type":"custom","customType":"session_exit","timestamp":"1970-01-01T00:00:04Z"}"#,
+        ));
+        let mut cache = ScanCache::default();
+        let mut summary = || {
+            list_with(parent.to_str().unwrap(), &root, &mut cache)
+                .unwrap()
+                .remove(0)
+        };
+        assert_eq!(summary().status, SubagentStatus::Completed);
+
+        append(r#"{"type":"session_init","timestamp":"1970-01-01T00:00:05Z"}"#);
+        let running = summary();
+        assert_eq!(running.status, SubagentStatus::Running);
+        assert_eq!(
+            fs::read_to_string(running.output_path.unwrap()).unwrap(),
+            "Previous result"
+        );
+
+        append(
+            r#"{"type":"message","timestamp":"1970-01-01T00:00:06Z","message":{"role":"assistant","stopReason":"stop"}}"#,
+        );
+        assert_eq!(summary().status, SubagentStatus::Completed);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

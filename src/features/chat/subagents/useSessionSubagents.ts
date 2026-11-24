@@ -3,8 +3,8 @@
  * - live RPC frames (`useLive`), only present for app-owned sessions;
  * - the parent session's on-disk subagent files (`subagent_list`), which is
  *   all there is for sessions driven by an external `omp` CLI process.
- * Live data wins per id. External/running sessions are re-polled so the CLI's
- * subagents stay observable while they run.
+ * New activity can reopen a completed row. Poll while the parent or a
+ * subagent is active, including after the parent finishes its turn.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -76,23 +76,28 @@ export function mergeDiskAndLive(
 		};
 	});
 	Object.entries(live).forEach(([id, info]) => {
-		const diskStatus = subagents[id]?.status;
-		const isDiskTerminal = isTerminalStatus(diskStatus);
-		// Terminal row statuses cannot be revived by stale non-terminal data.
-		// Terminal status always wins: live terminal beats stale disk "running",
-		// and a terminal disk status is not revived by non-terminal live data.
-		const nextStatus = isTerminalStatus(info.status)
-			? info.status
-			: isDiskTerminal
-				? diskStatus!
-				: info.status;
+		const prevRow = rows[id];
+		const diskStatus = prevRow?.status;
+		const diskTerminal = isTerminalStatus(diskStatus);
+		const liveUpdated = info.lastUpdate;
+		const diskEnded = prevRow?.endedAt ? Date.parse(prevRow.endedAt) : NaN;
+		const segments = prevRow?.runSegments;
+		const diskStart = segments?.[segments.length - 1]?.startedAt;
+		// A result is terminal for its run, not for the subagent's entire lifetime.
+		const liveReopened = info.status === "running" && liveUpdated !== undefined &&
+			liveUpdated > diskEnded;
+		const newerDiskRun = liveUpdated !== undefined && diskStart !== undefined &&
+			Date.parse(diskStart) > liveUpdated;
+		const useDiskTerminal = diskTerminal && !liveReopened;
+		const nextStatus = newerDiskRun || (!isTerminalStatus(info.status) && useDiskTerminal)
+			? diskStatus ?? info.status
+			: info.status;
 		subagents[id] = {
 			...subagents[id],
 			...info,
 			status: nextStatus,
 			agent: info.agent ?? subagents[id]?.agent,
 		};
-		const prevRow = rows[id];
 		const p = info.progress;
 		rows[id] = {
 			...(prevRow ?? { id, index: info.index ?? Object.keys(rows).length }),
@@ -112,7 +117,7 @@ export function mergeDiskAndLive(
 			cost: prevRow?.cost ?? (p?.cost && p.cost > 0 ? p.cost : undefined),
 			durationMs: (() => {
 				const liveDur = p?.durationMs && p.durationMs > 0 ? p.durationMs : undefined;
-				if (isDiskTerminal) return prevRow?.durationMs ?? liveDur;
+				if (useDiskTerminal) return prevRow?.durationMs ?? liveDur;
 				if (isTerminalStatus(nextStatus) && liveDur !== undefined) {
 					if (prevRow?.runSegments && prevRow.runSegments.length > 1) {
 						const prior = segmentsDurationMs(prevRow.runSegments.slice(0, -1)) ?? 0;
@@ -192,9 +197,17 @@ export function useSessionSubagents(sessionId: string | null): {
 	const meta = useSessions((s) => (sessionId ? s.sessions[sessionId] : undefined));
 	const live = useLive((s) => (sessionId ? s.sessions[sessionId] : undefined));
 	const parentFile = meta?.file;
-	const poll = meta?.status === "external" || meta?.status === "working";
 	const [disk, setDisk] = useState<SubagentSummary[]>([]);
 	const sub = useRef<DiskSubscription | null>(null);
+	const liveSubagents = live?.subagents;
+	const liveTools = live?.tools;
+	const streamingMessage = live?.streamingMessage;
+	const merged = useMemo(
+		() => mergeDiskAndLive(disk, liveSubagents ?? {}, liveTools, streamingMessage),
+		[disk, liveSubagents, liveTools, streamingMessage],
+	);
+	const poll = meta?.status === "external" || meta?.status === "working" ||
+		Object.values(merged.subagents).some((agent) => agent.status === "running");
 	// Latest turn-activity flag for the subscription effect (which only re-runs
 	// per parent file) and for pushing changes into the shared poller.
 	const pollRef = useRef(poll);
@@ -215,12 +228,5 @@ export function useSessionSubagents(sessionId: string | null): {
 		sub.current?.setParentActive(poll);
 	}, [poll]);
 
-	const liveSubagents = live?.subagents;
-	const liveTools = live?.tools;
-	const streamingMessage = live?.streamingMessage;
-	const merged = useMemo(
-		() => mergeDiskAndLive(disk, liveSubagents ?? {}, liveTools, streamingMessage),
-		[disk, liveSubagents, liveTools, streamingMessage],
-	);
 	return { parentFile, ...merged };
 }
