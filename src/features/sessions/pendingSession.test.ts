@@ -43,13 +43,15 @@ describe("usePendingSession.open", () => {
 });
 
 describe("isBlankLocalDraft", () => {
-	it("treats whitespace as blank but a chosen model or thinking level as input", () => {
+	it("treats whitespace as blank but a chosen model, thinking level, or fastMode as input", () => {
 		const id = usePendingSession.getState().open({ cwd: "/repo" });
 		useComposer.getState().setDraft(id, "  \n ");
 		expect(isBlankLocalDraft(usePendingSession.getState().drafts[id])).toBe(true);
 		usePendingSession.getState().update(id, { thinking: "high" });
 		expect(isBlankLocalDraft(usePendingSession.getState().drafts[id])).toBe(false);
-		usePendingSession.getState().update(id, { thinking: null, model: "p/m" });
+		usePendingSession.getState().update(id, { thinking: null, fastMode: true });
+		expect(isBlankLocalDraft(usePendingSession.getState().drafts[id])).toBe(false);
+		usePendingSession.getState().update(id, { fastMode: null, model: "p/m" });
 		expect(isBlankLocalDraft(usePendingSession.getState().drafts[id])).toBe(false);
 	});
 });

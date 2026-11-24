@@ -24,6 +24,8 @@ export interface LocalDraft {
 	model: string | null;
 	/** User-chosen thinking level; null leaves the process default untouched. */
 	thinking: string | null;
+	/** User-chosen fast mode; null/undefined leaves the process default untouched. */
+	fastMode?: boolean | null;
 	/** Prewarmed omp session owned by this draft (retained while set). */
 	sessionId: string | null;
 	startError: string | null;
@@ -36,7 +38,7 @@ interface PendingState {
 	/** Select (or create) the draft for `opts`, reusing a blank one in the same place. */
 	open(opts: CreateSessionOpts): string;
 	select(id: string | null): void;
-	update(id: string, patch: Partial<Pick<LocalDraft, "model" | "thinking" | "startError">>): void;
+	update(id: string, patch: Partial<Pick<LocalDraft, "model" | "thinking" | "fastMode" | "startError">>): void;
 	attach(id: string, sessionId: string | null): void;
 	discard(id: string): void;
 }
@@ -53,9 +55,9 @@ function hasComposerContent(id: string): boolean {
 	);
 }
 
-/** Model/thinking differ from what a fresh draft would start with. */
+/** Model/thinking/fastMode differ from what a fresh draft would start with. */
 function hasChangedSettings(d: LocalDraft): boolean {
-	return d.thinking !== null || d.model !== (d.opts.model ?? null);
+	return d.thinking !== null || (d.fastMode ?? null) !== null || d.model !== (d.opts.model ?? null);
 }
 
 /** A draft holding no user input at all (safe to reuse or release). */
@@ -76,7 +78,12 @@ function loadPersisted(): Record<string, LocalDraft> {
 			const n = Number(d.id.slice(DRAFT_PREFIX.length));
 			if (Number.isFinite(n)) nextDraft = Math.max(nextDraft, n + 1);
 			// The process died with the previous run; only the input survives.
-			const draft: LocalDraft = { ...d, sessionId: null, startError: null };
+			const draft: LocalDraft = {
+				...d,
+				fastMode: typeof d.fastMode === "boolean" ? d.fastMode : null,
+				sessionId: null,
+				startError: null,
+			};
 			if (!isBlankLocalDraft(draft)) out[d.id] = draft;
 		}
 		return out;
@@ -126,7 +133,7 @@ export const usePendingSession = create<PendingState>((set) => ({
 			id = `${DRAFT_PREFIX}${nextDraft++}`;
 			const draft: LocalDraft = {
 				id, cwd: opts.cwd, mode, groupId, opts: { ...opts, mode, groupId },
-				model: opts.model ?? null, thinking: null, sessionId: null, startError: null,
+				model: opts.model ?? null, thinking: null, fastMode: null, sessionId: null, startError: null,
 			};
 			const created = id;
 			set((s) => ({ drafts: { ...s.drafts, [created]: draft } }));

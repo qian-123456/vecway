@@ -34,6 +34,7 @@ import { applyArgName, buildArgItems, type ArgCandidate } from "./slash/argCompl
 import { findArgProvider } from "./slash/argProviders";
 import { AtFileMenu, useAtFileMenu } from "./AtFileMenu";
 import { ComposerAttachmentStrip } from "./ComposerAttachmentStrip";
+import { ComposerFastMode } from "./ComposerFastMode";
 import { ComposerModelControls } from "./ComposerModelControls";
 import {
 	COMPOSER_TEXT_METRICS_CLASS,
@@ -455,7 +456,7 @@ export function Composer({
 	}, [isLocalDraft, sessionId]);
 	useEffect(() => {
 		if (isLocalDraft) warmDraft(sessionId);
-	}, [isLocalDraft, sessionId, chip, localDraft?.model, localDraft?.thinking, localDraft?.startError]);
+	}, [isLocalDraft, sessionId, chip, localDraft?.model, localDraft?.thinking, localDraft?.fastMode, localDraft?.startError]);
 	// Annotation move ⇄: main composer → side chat; a side chat's own composer (embedded
 	// in the right panel) → its parent's main composer. Depth-capped parents cannot fork.
 	const annotationMove = useMemo(() => {
@@ -3053,6 +3054,9 @@ export function Composer({
 							onModelOpenChange={setModelOpen}
 							thinkingOpen={thinkingOpen}
 							onThinkingOpenChange={setThinkingOpen}
+							thinkingAccessory={(!planPreview || planMode) && current.value ? (
+								<ComposerFastMode key={`${sessionId}:${current.value}`} sessionId={sessionId} modelKey={current.value} />
+							) : undefined}
 							onEnsureModels={() => void loadModels()}
 							onSelectModel={async (key) => {
 								if (compacting) {

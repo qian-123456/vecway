@@ -1504,6 +1504,20 @@ function reduce(
 					const noted = noteModelSwitch(live, data);
 					return noted === live ? live : { ...noted, state: { ...(noted.state ?? {}), model: data } };
 				}
+				case "set_fast_mode": {
+					const prev = live.state ?? {};
+					const fastModeEnabled = typeof data.enabled === "boolean" ? data.enabled : prev.fastModeEnabled;
+					const fastModeActive = typeof data.active === "boolean" ? data.active : prev.fastModeActive;
+					if (fastModeEnabled === prev.fastModeEnabled && fastModeActive === prev.fastModeActive) return live;
+					return {
+						...live,
+						state: {
+							...prev,
+							...(fastModeEnabled !== undefined ? { fastModeEnabled } : {}),
+							...(fastModeActive !== undefined ? { fastModeActive } : {}),
+						},
+					};
+				}
 				case "get_subagents": {
 					// Only running agents are listed; finished ones stay client-side.
 					if (!Array.isArray(data.subagents)) return live;

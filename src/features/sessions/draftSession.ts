@@ -10,6 +10,7 @@ import { useComposer } from "../../stores/composer";
 import { useModelCatalog } from "../../stores/modelCatalog";
 import { useSessions } from "../../stores/sessions";
 import { useUi } from "../../stores/ui";
+import { isFirstPartyFastModel } from "../chat/fastMode";
 import { loadChip, saveChip } from "../chat/slash/chip";
 import { isBlankLocalDraft, usePendingSession, type LocalDraft } from "./pendingSession";
 
@@ -83,23 +84,28 @@ export function setDraftModel(id: string, model: string): void {
 	if (!draft) return;
 	// Keep an explicit thinking choice unless the new model cannot honour it.
 	let thinking = draft.thinking;
+	const selector = parseSelection(model).selector;
 	if (thinking) {
-		const selector = parseSelection(model).selector;
 		const option = parseModels(useModelCatalog.getState().models ?? [])
 			.find((m) => toModelKey(m.provider, m.id) === selector);
 		if (!resolveThinkingLevels(null, option?.thinking).includes(thinking)) thinking = null;
 	}
-	usePendingSession.getState().update(id, { model, thinking, startError: null });
+	const fastMode = (draft.fastMode ?? null) !== null && !isFirstPartyFastModel(selector) ? null : (draft.fastMode ?? null);
+	usePendingSession.getState().update(id, { model, thinking, fastMode, startError: null });
 }
 
 export function setDraftThinking(id: string, thinking: string): void {
 	usePendingSession.getState().update(id, { thinking, startError: null });
 }
 
-/** Apply the user's model, then thinking level, to the freshly started process. */
+export function setDraftFastMode(id: string, fastMode: boolean | null): void {
+	usePendingSession.getState().update(id, { fastMode, startError: null });
+}
+
+/** Apply the user's model, thinking level, and fast mode to the freshly started process. */
 async function applyLatestSettings(draft: LocalDraft, sessionId: string): Promise<void> {
 	const modelChanged = draft.model !== (draft.opts.model ?? null);
-	if (!modelChanged && draft.thinking === null) return;
+	if (!modelChanged && draft.thinking === null && (draft.fastMode ?? null) === null) return;
 	const parsed = parseSelection(draft.model);
 	if (modelChanged && parsed.selector) {
 		let models = parseModels(useModelCatalog.getState().models ?? []);
@@ -113,9 +119,12 @@ async function applyLatestSettings(draft: LocalDraft, sessionId: string): Promis
 	}
 	const thinking = draft.thinking ?? (modelChanged ? parsed.level : null);
 	if (thinking) await rpcSend(sessionId, { type: "set_thinking_level", level: thinking });
+	if (draft.fastMode != null) {
+		await rpcSend(sessionId, { type: "set_fast_mode", enabled: draft.fastMode });
+	}
 	await rpcSend(sessionId, { type: "get_state" });
-}
 
+}
 /** Move all persisted composer state before the new view mounts. */
 export function transferDraft(id: string, sessionId: string): void {
 	const c = useComposer.getState();

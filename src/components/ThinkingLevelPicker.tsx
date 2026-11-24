@@ -6,7 +6,7 @@
 
 import clsx from "clsx";
 import { Check, ChevronDown, ChevronRight } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { openSettingsTarget } from "../features/settings/settingsTargets";
 import { thinkingChipState } from "../lib/models";
 import { EffortSlider } from "./EffortSlider";
@@ -43,6 +43,7 @@ export function ThinkingLevelPicker({
 	open,
 	onOpenChange,
 	onSelect,
+	accessory,
 	onConfigure = () => openSettingsTarget("providers"),
 	tight = false,
 	variant = "ghost",
@@ -57,6 +58,8 @@ export function ThinkingLevelPicker({
 	/** A level was picked (list or slider). The popover stays open; the list
 	 * closes itself. Callers must not close it here. */
 	onSelect: (level: string) => void;
+	/** An independent action in the card's top-left corner. */
+	accessory?: ReactNode;
 	/** Opens model settings from the 「未配置思考等级」 chip; defaults to Settings ▸ API 供应商. */
 	onConfigure?: () => void;
 	/** Tighter horizontal padding for a crowded toolbar. */
@@ -139,7 +142,7 @@ export function ThinkingLevelPicker({
 					onDismiss={() => onOpenChange(false)}
 					className="w-[280px] max-w-[calc(100vw-16px)] rounded-[20px] border border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] shadow-apple-modal"
 				>
-					<ThinkingLevelControl levels={levels} value={value} onSelect={onSelect} />
+					<ThinkingLevelControl levels={levels} value={value} onSelect={onSelect} accessory={accessory} />
 				</FloatingLayer>
 			)}
 		</div>
@@ -174,10 +177,12 @@ function ThinkingLevelControl({
 	levels,
 	value,
 	onSelect,
+	accessory,
 }: {
 	levels: string[];
 	value: string;
 	onSelect: (level: string) => void;
+	accessory?: ReactNode;
 }) {
 	const { t } = useT();
 	// Level the slider shows ahead of `value`: while dragging, and after a commit
@@ -206,7 +211,8 @@ function ThinkingLevelControl({
 		itemRefs.current[(i + n) % n]?.focus();
 	};
 	return (
-		<div className="p-4">
+		<div className="relative p-4">
+			{accessory && <div className="absolute left-4 top-4">{accessory}</div>}
 			<div className="flex flex-col items-center text-center">
 				<button
 					ref={buttonRef}

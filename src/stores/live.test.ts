@@ -1342,4 +1342,15 @@ describe("live reducer — no-op identity preservation and normalized streaming 
 			{ type: "text", text: "answer" },
 		]);
 	});
+
+	it("updates fastModeEnabled and fastModeActive on set_fast_mode response", () => {
+		frame({ type: "response", command: "get_state", success: true, data: { fastModeEnabled: false, fastModeActive: false } });
+		frame({ type: "response", command: "set_fast_mode", success: true, data: { enabled: true, active: true } });
+		expect(live().state?.fastModeEnabled).toBe(true);
+		expect(live().state?.fastModeActive).toBe(true);
+
+		const sessionsBefore = useLive.getState().sessions;
+		frame({ type: "response", command: "set_fast_mode", success: true, data: { enabled: true, active: true } });
+		expect(useLive.getState().sessions).toBe(sessionsBefore);
+	});
 });

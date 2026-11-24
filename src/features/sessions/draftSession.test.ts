@@ -10,6 +10,7 @@ import {
 	prewarmDraft,
 	releaseBlankDraft,
 	sendFromDraft,
+	setDraftFastMode,
 	setDraftModel,
 	setDraftThinking,
 } from "./draftSession";
@@ -143,6 +144,43 @@ describe("sendFromDraft", () => {
 		expect(usePendingSession.getState().drafts[id]).toBeUndefined();
 		expect(useUi.getState().selectedSessionId).toBe("real-1");
 		expect(rpcRelease).toHaveBeenCalledWith("real-1");
+	});
+
+	it("applies draft fastMode before get_state and clears it when switching to an unsupported model", async () => {
+		const d = deferred<Created>();
+		createSession.mockReturnValue(d.promise);
+		useModelCatalog.setState({
+			models: [
+				{ provider: "openai-codex", id: "gpt-6.1-sol", name: "GPT-6.1 Sol", thinking: ["medium", "high"] },
+				{ provider: "a", id: "m1", name: "m1", thinking: ["low", "high"] },
+			],
+		});
+		const id = open();
+		setDraftModel(id, "openai-codex/gpt-6.1-sol");
+		setDraftFastMode(id, true);
+		expect(usePendingSession.getState().drafts[id].fastMode).toBe(true);
+
+		setDraftModel(id, "a/m1");
+		expect(usePendingSession.getState().drafts[id].fastMode).toBeNull();
+
+		setDraftModel(id, "openai-codex/gpt-6.1-sol");
+		setDraftThinking(id, "high");
+		setDraftFastMode(id, true);
+
+		const order: string[] = [];
+		rpcSend.mockImplementation(async (_sid: string, cmd: { type: string }) => {
+			order.push(cmd.type);
+			return {};
+		});
+		const send = vi.fn(async () => {
+			order.push("send");
+		});
+		const sending = sendFromDraft(id, send);
+		d.resolve({ sessionId: "real-1", stub });
+		await sending;
+
+		expect(order).toEqual(["set_model", "set_thinking_level", "set_fast_mode", "get_state", "send"]);
+		expect(rpcSend).toHaveBeenCalledWith("real-1", { type: "set_fast_mode", enabled: true });
 	});
 
 	it("73: first-send handoff keeps settings open and returns to the created session", async () => {

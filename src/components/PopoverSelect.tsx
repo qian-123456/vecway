@@ -9,6 +9,7 @@ import {
 	useRef,
 	useState,
 	type KeyboardEvent,
+	type ReactNode,
 } from "react";
 import { claimEscape } from "../lib/escapeClaim";
 import { isComposing } from "../lib/hooks";
@@ -34,6 +35,7 @@ export interface PopoverSelectProps {
 	"aria-label"?: string;
 	id?: string;
 	className?: string;
+	iconTrigger?: { icon: ReactNode; title: string };
 	containerClassName?: string;
 	menuClassName?: string;
 	allowCustom?: boolean;
@@ -65,6 +67,7 @@ export function PopoverSelect({
 	"aria-label": ariaLabel,
 	id,
 	className,
+	iconTrigger,
 	containerClassName,
 	menuClassName,
 	allowCustom = false,
@@ -415,6 +418,7 @@ export function PopoverSelect({
 				aria-controls={open ? listboxId : undefined}
 				aria-activedescendant={activeOptionId}
 				aria-label={ariaLabel}
+				title={iconTrigger?.title}
 				disabled={disabled}
 				onClick={() => {
 					if (open) setOpen(false);
@@ -422,28 +426,37 @@ export function PopoverSelect({
 				}}
 				onKeyDown={handleTriggerKeyDown}
 				className={clsx(
-					"inline-flex min-w-0 flex-1 items-center justify-between gap-2 rounded-lg hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] text-xs text-[var(--text)] whitespace-nowrap cursor-pointer transition-[background-color,color,border-color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]",
-					size === "sm" ? "px-2.5 py-1" : "px-3 py-1.5",
+					"inline-flex shrink-0 items-center whitespace-nowrap cursor-pointer transition-[background-color,color,border-color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.985]",
+					iconTrigger
+						? "size-7 justify-center rounded-md border border-transparent hover:border-[var(--border-divider)] hover:bg-[var(--bg-hover)]"
+						: clsx(
+								"min-w-0 flex-1 justify-between gap-2 rounded-lg hairline bg-[var(--well-bg)] hover:bg-[var(--bg-hover)] text-xs text-[var(--text)]",
+								size === "sm" ? "px-2.5 py-1" : "px-3 py-1.5",
+							),
 					"focus:ring-1 focus:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] focus:outline-none",
 					"disabled:cursor-not-allowed disabled:opacity-50",
 					className,
 				)}
 			>
-				{selectedOption ? (
-					<span className="truncate">{selectedOption.label}</span>
-				) : isCustomActive ? (
-					<span className="inline-flex min-w-0 items-center gap-1.5">
-						<span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-[color-mix(in_srgb,var(--accent)_16%,transparent)] text-[var(--accent)] whitespace-nowrap">
-							{customBadgeText}
-						</span>
-						<span className="truncate font-mono">{value}</span>
-					</span>
-				) : (
-					<span className="truncate text-[var(--text-muted)]">{placeholderText}</span>
+				{iconTrigger ? iconTrigger.icon : (
+					<>
+						{selectedOption ? (
+							<span className="truncate">{selectedOption.label}</span>
+						) : isCustomActive ? (
+							<span className="inline-flex min-w-0 items-center gap-1.5">
+								<span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-[color-mix(in_srgb,var(--accent)_16%,transparent)] text-[var(--accent)] whitespace-nowrap">
+									{customBadgeText}
+								</span>
+								<span className="truncate font-mono text-[var(--text)]">{value}</span>
+							</span>
+						) : (
+							<span className="truncate text-[var(--text-muted)]">{placeholderText}</span>
+						)}
+						<ChevronDown
+							className={clsx("size-3.5 shrink-0 text-[var(--text-muted)] transition-transform duration-150 ease-[var(--ease-out)]", open && "rotate-180")}
+						/>
+					</>
 				)}
-				<ChevronDown
-					className={clsx("size-3.5 shrink-0 text-[var(--text-muted)] transition-transform duration-150 ease-[var(--ease-out)]", open && "rotate-180")}
-				/>
 			</button>
 
 			{isCustomActive && (
@@ -466,7 +479,7 @@ export function PopoverSelect({
 			<FloatingLayer
 				anchor={open ? triggerRef.current : null}
 				layer="popover"
-				placement={align === "end" ? "bottom-end" : "bottom-start"}
+				placement={iconTrigger ? "top-start" : align === "end" ? "bottom-end" : "bottom-start"}
 				offset={4}
 				ignoreRefs={[triggerRef]}
 				onDismiss={handleDismiss}

@@ -1,7 +1,7 @@
 /** Shared Model + Thinking-level toolbar controls for Composer and PromptComposer. */
 import clsx from "clsx";
 import { ChevronDown } from "lucide-react";
-import { useRef } from "react";
+import { type ReactNode, useRef } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
 import { ModelMenuContent } from "../../components/ModelSelect";
 import { ThinkingLevelPicker } from "../../components/ThinkingLevelPicker";
@@ -25,6 +25,7 @@ export function ComposerModelControls({
 	modelOpen,
 	onModelOpenChange,
 	thinkingOpen,
+	thinkingAccessory,
 	onThinkingOpenChange,
 	onEnsureModels,
 	onSelectModel,
@@ -47,6 +48,7 @@ export function ComposerModelControls({
 	onModelOpenChange: (open: boolean) => void;
 	thinkingOpen: boolean;
 	onThinkingOpenChange: (open: boolean) => void;
+	thinkingAccessory?: ReactNode;
 	onEnsureModels?: () => void;
 	onSelectModel: (key: string) => void | Promise<void>;
 	onSelectThinking: (level: string) => void | Promise<void>;
@@ -112,6 +114,7 @@ export function ComposerModelControls({
 					value={currentThinking}
 					open={thinkingOpen}
 					onOpenChange={onThinkingOpenChange}
+					accessory={thinkingAccessory}
 					onSelect={(level) => void onSelectThinking(level)}
 					tight={toolbarTier >= TIER_TIGHT}
 				/>
