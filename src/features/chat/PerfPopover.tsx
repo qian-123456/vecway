@@ -47,7 +47,6 @@ export function PerfPopover({
 		[liveSessions],
 	);
 	const bd = breakdown;
-
 	// Disjoint physical-footprint segments. Do not turn an unknown probe into a
 	// zero-width segment: that would make the total and the details disagree.
 	const segments = useMemo(() => {
@@ -79,15 +78,15 @@ export function PerfPopover({
 			)}
 		>
 			{/* Header */}
-			<div className="mb-3 flex items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
+			<div className="relative mb-3 flex items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
 				<div className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-[var(--text)]">
 					<Activity size={14} className="shrink-0 text-[var(--text-60)]" />
 					<span>{t("chatView.perf.title")}</span>
-					<span
-						title={t("chatView.perf.description")}
-						className="inline-flex shrink-0 cursor-help items-center text-[var(--text-40)] hover:text-[var(--text-60)] transition-colors"
-					>
+					<span className="group/tip inline-flex shrink-0 cursor-help items-center text-[var(--text-40)] hover:text-[var(--text-60)] transition-colors">
 						<Info size={12} />
+						<span className="pointer-events-none absolute top-full left-0 right-0 z-10 mt-1.5 hidden rounded-md bg-[var(--bg-panel)] px-2.5 py-1.5 text-[11px] font-normal leading-relaxed text-[var(--text-dim)] shadow-lg ring-1 ring-[var(--line)] group-hover/tip:block">
+							{t("chatView.perf.description")}
+						</span>
 					</span>
 				</div>
 				<div className="flex shrink-0 items-center gap-1.5">
