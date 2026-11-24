@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::LazyLock;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -16,14 +17,25 @@ use serde_json::Value;
 
 use crate::contracts::{ActivityDayUsage, ActivityUsage};
 
-type FileSignatures = HashMap<String, (u64, String)>;
+// Watch the same recursive session tree as the catalog, including subagents.
+// Without a working watcher, callers revalidate against the on-disk index.
+static WATCHING: AtomicBool = AtomicBool::new(false);
+static REVISION: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone)]
+pub(super) fn set_watching(watching: bool) {
+    invalidate();
+    WATCHING.store(watching, Ordering::Release);
+}
+
+pub(super) fn invalidate() {
+    REVISION.fetch_add(1, Ordering::AcqRel);
+}
+
 struct CachedScan {
     root: PathBuf,
     cache: PathBuf,
     local_day: String,
-    signatures: FileSignatures,
+    revision: Option<u64>,
     usage: ActivityUsage,
 }
 
@@ -34,57 +46,47 @@ pub(crate) fn load() -> Result<ActivityUsage, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let root = crate::paths::omp_sessions_dir();
     let cache = dir.join("activity-cache.sqlite");
-    let local_day = Local::now().format("%Y-%m-%d").to_string();
+    let local_day = Local::now().format("%Y-%m-%d %z").to_string();
+    // Capture before reading: an event during the scan dirties the next read.
+    let revision = WATCHING
+        .load(Ordering::Acquire)
+        .then(|| REVISION.load(Ordering::Acquire));
+    load_cached(&mut guard, root, cache, local_day, revision)
+}
 
-    if let Some(prev) = guard.as_ref() {
-        if prev.root == root && prev.cache == cache && prev.local_day == local_day && cache.exists()
+fn load_cached(
+    previous: &mut Option<CachedScan>,
+    root: PathBuf,
+    cache: PathBuf,
+    local_day: String,
+    revision: Option<u64>,
+) -> Result<ActivityUsage, String> {
+    if let Some(prev) = previous.as_ref() {
+        if revision.is_some()
+            && prev.revision == revision
+            && prev.root == root
+            && prev.cache == cache
+            && prev.local_day == local_day
+            && cache.is_file()
         {
-            if let Ok(current) = collect_signatures(&root) {
-                if current == prev.signatures {
-                    return Ok(prev.usage.clone());
-                }
-            }
+            return Ok(prev.usage.clone());
         }
     }
 
-    let (usage, signatures) = load_from_with_signatures(&root, &cache)
-        .map_err(|e| format!("read activity usage: {e}"))?;
-    *guard = Some(CachedScan {
+    let usage = load_from(&root, &cache).map_err(|e| format!("read activity usage: {e}"))?;
+    *previous = Some(CachedScan {
         root,
         cache,
         local_day,
-        signatures,
+        revision,
         usage: usage.clone(),
     });
     Ok(usage)
 }
 
-fn collect_signatures(root: &Path) -> anyhow::Result<FileSignatures> {
-    let mut out = HashMap::new();
-    for path in session_files(root)? {
-        let metadata = std::fs::metadata(&path)?;
-        let size = metadata.len();
-        let modified = metadata
-            .modified()?
-            .duration_since(UNIX_EPOCH)?
-            .as_nanos()
-            .to_string();
-        out.insert(path.to_string_lossy().into_owned(), (size, modified));
-    }
-    Ok(out)
-}
-
 /// File signatures persist across launches. Only added/changed files are parsed;
 /// deleted files are removed. A rewrite replaces its rows rather than adding them.
-#[cfg(test)]
 pub(crate) fn load_from(root: &Path, cache: &Path) -> anyhow::Result<ActivityUsage> {
-    load_from_with_signatures(root, cache).map(|(usage, _)| usage)
-}
-
-fn load_from_with_signatures(
-    root: &Path,
-    cache: &Path,
-) -> anyhow::Result<(ActivityUsage, FileSignatures)> {
     let mut db = Connection::open(cache)?;
     db.busy_timeout(Duration::from_secs(5))?;
     let version: u32 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -133,7 +135,6 @@ fn load_from_with_signatures(
         let rows = stmt.query_map([], |r| Ok((r.get(1)?, r.get(0)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    let mut signatures: HashMap<String, (u64, String)> = HashMap::new();
     let mut present = HashSet::new();
     let mut changed = false;
     let tx = db.transaction()?;
@@ -147,7 +148,6 @@ fn load_from_with_signatures(
             .to_string();
         let name = path.to_string_lossy().into_owned();
         present.insert(name.clone());
-        signatures.insert(name.clone(), (size, modified.clone()));
         let existing_id = match previous.get(&name) {
             Some(&(_id, s, ref m)) if s == size && *m == modified => continue,
             Some(&(id, _, _)) => Some(id),
@@ -270,27 +270,23 @@ fn load_from_with_signatures(
             }
         }
     }
-    Ok((
-        ActivityUsage {
-            days: days
-                .into_iter()
-                .map(|(date, day)| ActivityDayUsage {
-                    date,
-                    tokens: (day.known_requests > 0 || day.missing_requests == 0)
-                        .then_some(day.tokens),
-                    missing_requests: day.missing_requests,
-                    sessions: day.sessions.len() as u64,
-                    turns: day.turns,
-                    top_model: day
-                        .models
-                        .into_iter()
-                        .max_by(|(ma, a), (mb, b)| a.cmp(b).then_with(|| mb.cmp(ma)))
-                        .map(|(m, _)| m),
-                })
-                .collect(),
-        },
-        signatures,
-    ))
+    Ok(ActivityUsage {
+        days: days
+            .into_iter()
+            .map(|(date, day)| ActivityDayUsage {
+                date,
+                tokens: (day.known_requests > 0 || day.missing_requests == 0).then_some(day.tokens),
+                missing_requests: day.missing_requests,
+                sessions: day.sessions.len() as u64,
+                turns: day.turns,
+                top_model: day
+                    .models
+                    .into_iter()
+                    .max_by(|(ma, a), (mb, b)| a.cmp(b).then_with(|| mb.cmp(ma)))
+                    .map(|(m, _)| m),
+            })
+            .collect(),
+    })
 }
 
 #[derive(Default)]
@@ -552,6 +548,42 @@ mod tests {
     }
     fn request(id: &str, ts: &str, usage: Value) -> Value {
         json!({"type":"message","id":id,"timestamp":ts,"message":{"role":"assistant","provider":"test","model":"model","usage":usage}})
+    }
+    #[test]
+    fn unchanged_watch_revision_skips_disk_and_invalidations_see_external_writes() {
+        let (dir, root, cache) = fixture();
+        let path = root.join("repo/external.jsonl");
+        let ts = "2026-10-01T12:00:00Z";
+        let mut previous = None;
+        let mut read = |revision| {
+            load_cached(
+                &mut previous,
+                root.clone(),
+                cache.clone(),
+                "today".into(),
+                revision,
+            )
+            .unwrap()
+        };
+        write(
+            &path,
+            "s",
+            ts,
+            &[request("one", ts, json!({"totalTokens":10}))],
+        );
+        assert_eq!(read(Some(1)).days[0].tokens, Some(10));
+        std::fs::remove_file(&path).unwrap();
+        // Without a new watcher revision, even removal isn't probed.
+        assert_eq!(read(Some(1)).days[0].tokens, Some(10));
+        assert!(read(Some(2)).days.is_empty());
+        write(
+            &path,
+            "s",
+            ts,
+            &[request("two", ts, json!({"totalTokens":25}))],
+        );
+        assert_eq!(read(None).days[0].tokens, Some(25));
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn normalizes_totals_cache_and_unknown_usage() {

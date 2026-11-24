@@ -568,18 +568,30 @@ export function SessionSidebar() {
 
 	// Worktree status sync
 	const worktrees = useWorktrees((s) => s.byWorkspace);
+	const visibleProjects = useMemo(
+		() => workspaces.filter((ws) => ws.kind !== "global" && ws.mode === activeMode),
+		[workspaces, activeMode],
+	);
+	const visibleProjectIds = useMemo(() => new Set(visibleProjects.map((ws) => ws.id)), [visibleProjects]);
 	useEffect(() => {
-		void useWorktrees.getState().refresh(workspaces);
-	}, [workspaces]);
+		void useWorktrees.getState().refresh(visibleProjects);
+	}, [visibleProjects]);
 
 	useEffect(() => {
-		const onFocus = () => {
-			void useSessions.getState().refreshWorkspaces();
-			void useWorktrees.getState().refresh();
+		let mounted = true;
+		const onFocus = async () => {
+			await useSessions.getState().refreshWorkspaces();
+			// A changed list triggers the effect above; don't query the old list too.
+			if (mounted && useSessions.getState().workspaces === workspaces) {
+				void useWorktrees.getState().refresh(visibleProjects);
+			}
 		};
 		window.addEventListener("focus", onFocus);
-		return () => window.removeEventListener("focus", onFocus);
-	}, []);
+		return () => {
+			mounted = false;
+			window.removeEventListener("focus", onFocus);
+		};
+	}, [workspaces, visibleProjects]);
 
 	// Background worktree mismatch sync (C12: ref-based debounce independent of sessions identity)
 	const worktreeRefreshTimer = useRef<number | null>(null);
@@ -589,6 +601,7 @@ export function SessionSidebar() {
 			.filter(
 				(s) =>
 					s.workspaceId &&
+					visibleProjectIds.has(s.workspaceId) &&
 					inferWorktreeName(s.cwd) !== null &&
 					!(worktrees[s.workspaceId] ?? []).some((w) => isInside(s.cwd, w.path)),
 			)
@@ -613,9 +626,9 @@ export function SessionSidebar() {
 		clearTimeout(worktreeRefreshTimer.current ?? undefined);
 		worktreeRefreshTimer.current = window.setTimeout(() => {
 			worktreeRefreshTimer.current = null;
-			void useWorktrees.getState().refresh(useSessions.getState().workspaces);
+			void useWorktrees.getState().refresh(visibleProjects);
 		}, 500);
-	}, [sessions, worktrees, workspaces]);
+	}, [sessions, worktrees, visibleProjects, visibleProjectIds]);
 
 	useEffect(() => {
 		return () => {
@@ -1069,7 +1082,7 @@ export function SessionSidebar() {
 			suppressRelocationToast(ws.id);
 			const updated = await relocateWorkspace(ws.id, selectedPath);
 			await loadSessions();
-			void useWorktrees.getState().refresh();
+			void useWorktrees.getState().refresh([updated]);
 			toast.success(
 				t("sidebar.workspaceRelocated", {
 					oldName: ws.name,

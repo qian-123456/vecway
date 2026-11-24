@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { openSettingsTarget } from "../features/settings/settingsTargets";
 import type { ActivityUsage } from "../lib/contracts";
 import { activityUsage } from "../lib/ipc";
 import { useIsDark } from "../lib/theme";
 import { useT } from "../stores/language";
-import { useSessions } from "../stores/sessions";
 
 const WINDOW_DAYS = 24;
 
@@ -43,16 +42,13 @@ export function TopUsageStrip({ hasRightBadge = false }: { hasRightBadge?: boole
 	const { t } = useT();
 	const isDark = useIsDark();
 	const ramp = isDark ? DARK_RAMP : LIGHT_RAMP;
-	const sessions = useSessions((s) => s.sessions);
 	const [usage, setUsage] = useState<ActivityUsage | null>(null);
-	const refreshRef = useRef<() => void>(() => {});
-	const didInitRef = useRef(false);
 
 	useEffect(() => {
 		let mounted = true;
 		let inFlight = false;
 		const refresh = () => {
-			if (inFlight) return;
+			if (inFlight || document.visibilityState === "hidden") return;
 			inFlight = true;
 			void activityUsage()
 				.then((res) => {
@@ -63,21 +59,15 @@ export function TopUsageStrip({ hasRightBadge = false }: { hasRightBadge?: boole
 					inFlight = false;
 				});
 		};
-		refreshRef.current = refresh;
+		refresh();
+		document.addEventListener("visibilitychange", refresh);
 		const timer = window.setInterval(refresh, 60_000);
 		return () => {
 			mounted = false;
-			refreshRef.current = () => {};
+			document.removeEventListener("visibilitychange", refresh);
 			window.clearInterval(timer);
 		};
 	}, []);
-
-	useEffect(() => {
-		const anyWorking = Object.values(sessions).some((s) => s.status === "working");
-		if (didInitRef.current && anyWorking) return;
-		didInitRef.current = true;
-		refreshRef.current();
-	}, [sessions]);
 
 	const summary = useMemo(() => {
 		if (!usage) return null;

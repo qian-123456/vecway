@@ -12,6 +12,7 @@ import { SessionStatsPopover } from "../features/chat/SessionStatsPopover";
 import { computeSessionStats, formatTokens } from "../features/chat/sessionStats";
 import { usePendingSession } from "../features/sessions/pendingSession";
 import type { GitBadge, PerfBreakdown } from "../lib/contracts";
+import { formatMemoryBytes } from "../lib/format";
 import { getAppMemoryUsage, gitBadge, perfBreakdown, type ProcessMemoryInfo } from "../lib/ipc";
 import { useZoom } from "../lib/zoom";
 import { useDisplayPrefs } from "../stores/displayPrefs";
@@ -123,7 +124,7 @@ export function BottomBar() {
 		return null;
 	}, [live?.state?.contextUsage]);
 
-	const [memoryInfo, setMemoryInfo] = useState<ProcessMemoryInfo | null>(null);
+	const [memoryInfo, setMemoryInfo] = useState<Pick<ProcessMemoryInfo, "formatted" | "processes"> | null>(null);
 	const [perfData, setPerfData] = useState<PerfBreakdown | null>(null);
 	const [perfOpen, setPerfOpen] = useState(false);
 	const statsBtnRef = useRef<HTMLButtonElement>(null);
@@ -136,6 +137,7 @@ export function BottomBar() {
 	}, [bottomBarVisible, setStatsOpen]);
 
 	useEffect(() => {
+		if (!bottomBarVisible) return;
 		let cancelled = false;
 		let timer: number | null = null;
 		let inFlight = false;
@@ -147,18 +149,19 @@ export function BottomBar() {
 			inFlight = true;
 
 			try {
-				const memPromise = getAppMemoryUsage();
-				const perfPromise = perfOpen ? perfBreakdown() : null;
-				const [mem, perf] = await Promise.all([memPromise, perfPromise]);
-				if (!cancelled) {
-					if (mem?.formatted) {
+				if (perfOpen) {
+					const perf = await perfBreakdown();
+					if (!cancelled && perf) {
+						setPerfData(perf);
+						setMemoryInfo({ formatted: formatMemoryBytes(perf.app.bytes), processes: perf.app.processes });
+					}
+				} else {
+					const mem = await getAppMemoryUsage();
+					if (!cancelled && mem) {
 						setMemoryInfo((prev) =>
-							prev && prev.formatted === mem.formatted && prev.processes === mem.processes
-								? prev
-								: mem,
+							prev?.formatted === mem.formatted && prev.processes === mem.processes ? prev : mem,
 						);
 					}
-					if (perf !== null) setPerfData(perf);
 				}
 			} catch {
 				/* ignore */
@@ -193,14 +196,9 @@ export function BottomBar() {
 			if (timer !== null) window.clearTimeout(timer);
 			document.removeEventListener("visibilitychange", onVisibilityChange);
 		};
-	}, [perfOpen]);
+	}, [bottomBarVisible, perfOpen]);
 
-	const realMemoryStr = memoryInfo?.formatted ?? null;
-	const memEstimate = useMemo(() => {
-		const baseMb = 75;
-		const itemMb = transcriptItems.length * 0.15;
-		return `${Math.round(baseMb + itemMb)} MB`;
-	}, [transcriptItems.length]);
+	const realMemoryStr = memoryInfo?.formatted ?? "—";
 
 	const gitInfo = selectedSessionId ? activeSession?.git : draftGit;
 	const branch = gitInfo?.branch;
@@ -303,7 +301,7 @@ export function BottomBar() {
 					ref={perfBtnRef}
 					type="button"
 					onClick={() => setPerfOpen((v) => !v)}
-					aria-label={t("bottomBar.performance", { memory: realMemoryStr ?? memEstimate })}
+					aria-label={t("bottomBar.performance", { memory: realMemoryStr })}
 					aria-expanded={perfOpen}
 					title={t("bottomBar.memoryTooltip", {
 						processes: memoryInfo?.processes
@@ -318,19 +316,19 @@ export function BottomBar() {
 					<Activity size={11} className="shrink-0 text-emerald-500" />
 					<BarPart id="memory" priority={3} collapsed={collapsed}>
 						<span className="font-mono text-[10.5px] tabular-nums">
-							{t("bottomBar.performance", { memory: realMemoryStr ?? memEstimate })}
+							{t("bottomBar.performance", { memory: realMemoryStr })}
 						</span>
 					</BarPart>
 				</button>
-				<PerfPopover
-					anchor={bottomBarVisible && perfOpen ? perfBtnRef.current : null}
+				{bottomBarVisible && perfOpen && <PerfPopover
+					anchor={perfBtnRef.current}
 					appMemory={realMemoryStr}
 					processes={memoryInfo?.processes}
 					breakdown={perfData}
-					open={bottomBarVisible && perfOpen}
+					open
 					onClose={() => setPerfOpen(false)}
 					ignoreRefs={[perfBtnRef]}
-				/>
+				/>}
 
 				{branch && (
 					<>

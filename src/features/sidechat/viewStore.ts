@@ -10,7 +10,6 @@
 import { create } from "zustand";
 import type { ImageAttachment } from "../../lib/contracts";
 import { useUi } from "../../stores/ui";
-import { holdTranscript } from "../../stores/live";
 
 const STORAGE_KEY = "omp_sidechat_open_child";
 const TABS_STORAGE_KEY = "omp_sidechat_open_tabs";
@@ -310,8 +309,6 @@ export const useSideChatView = create<SideChatViewState>((set) => ({
 			emptied = r.tabs.length === 0;
 			return persist({ openChild, openTabs, usedAt: s.usedAt }, parentId);
 		});
-		// The closed conversation's transcript becomes evictable (LRU) instead of pinned forever.
-		if (!isBlankTab(id)) holdTranscript(id)();
 		// Last side-chat tab closed: leave the right panel normal.
 		if (emptied) useUi.getState().closeRightTab("sidechat");
 	},

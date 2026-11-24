@@ -1832,7 +1832,7 @@ export const useLive = create<LiveState>((set) => ({
 			return { sessions: { ...s.sessions, [sessionId]: next } };
 		});
 		if (!running) {
-			void evictLeftTranscripts();
+			evictLeftTranscripts();
 		}
 	},
 	dismissUi: (sessionId, reqId) =>
@@ -1862,7 +1862,7 @@ export const useLive = create<LiveState>((set) => ({
 				},
 			};
 		}),
-	setItems: (sessionId, items, nextOffset, tailId) =>
+	setItems: (sessionId, items, nextOffset, tailId) => {
 		set((s) => {
 			const live = s.sessions[sessionId] ?? emptySessionLive();
 			const confirmation = echoConfirmationItems(sessionId, items, live.sideChatInheritedIds);
@@ -1882,8 +1882,10 @@ export const useLive = create<LiveState>((set) => ({
 					},
 				},
 			};
-		}),
-	appendItems: (sessionId, items, nextOffset, tailId) =>
+		});
+		trackHiddenTranscript(sessionId);
+	},
+	appendItems: (sessionId, items, nextOffset, tailId) => {
 		set((s) => {
 			const live = s.sessions[sessionId] ?? emptySessionLive();
 			const known = new Set(live.items.map((i) => i.id));
@@ -1906,7 +1908,9 @@ export const useLive = create<LiveState>((set) => ({
 					},
 				},
 			};
-		}),
+		});
+		trackHiddenTranscript(sessionId);
+	},
 	addUserEcho: (sessionId, text, images, steer) => {
 		const trimmed = text.trim();
 		if (!trimmed) return null;
@@ -2341,7 +2345,7 @@ useLive.subscribe((s, prev) => {
 			snapshotTimers.delete(sid);
 			if (live.processExited && live.restoredUnfinished) saveSnapshot(sid, live.restoredUnfinished);
 			if (!live.processExited) clearSnapshot(sid);
-			void evictLeftTranscripts();
+			evictLeftTranscripts();
 		}
 	}
 });
@@ -2355,14 +2359,37 @@ useLive.subscribe((s, prev) => {
 // most recently left ones stay so switching back is instant.
 
 const RETAINED_IDLE_TRANSCRIPTS = 3;
+const IDLE_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+const transcriptWeights = new WeakMap<TranscriptItem[], number>();
+
+// Estimate the normalized JSON held by WebKit without serializing/copying it.
+// Only measure hidden histories; stop at the limit and memoize immutable pages.
+function transcriptWeight(items: TranscriptItem[]): number {
+	const cached = transcriptWeights.get(items);
+	if (cached !== undefined) return cached;
+	let bytes = 0;
+	function count(value: unknown): void {
+		if (typeof value === "string") bytes += 16 + 2 * value.length;
+		else if (value && typeof value === "object") {
+			bytes += 32;
+			for (const key in value) {
+				bytes += 8;
+				count((value as Record<string, unknown>)[key]);
+				if (bytes > IDLE_TRANSCRIPT_BYTES) break;
+			}
+		} else bytes += 8;
+	}
+	count(items);
+	transcriptWeights.set(items, bytes);
+	return bytes;
+}
 const shownTranscripts = new Map<string, number>();
 /** Least recently left first. */
 let leftTranscripts: string[] = [];
 
 /**
- * Mark a session's transcript as on screen; call the returned function when the
- * view goes away. Only sessions with an on-disk transcript that are not
- * running are ever evicted (drafts/echoes have no file to reload from).
+ * Mark a session's transcript as on screen; release when the reader goes away.
+ * Multiple views of the same session share the hold.
  */
 export function holdTranscript(sessionId: string): () => void {
 	shownTranscripts.set(sessionId, (shownTranscripts.get(sessionId) ?? 0) + 1);
@@ -2374,55 +2401,53 @@ export function holdTranscript(sessionId: string): () => void {
 			return;
 		}
 		shownTranscripts.delete(sessionId);
-		leftTranscripts = leftTranscripts.filter((id) => id !== sessionId);
-		leftTranscripts.push(sessionId);
-		void evictLeftTranscripts();
+		trackHiddenTranscript(sessionId);
 	};
 }
 
-async function evictLeftTranscripts(): Promise<void> {
-	if (leftTranscripts.length <= RETAINED_IDLE_TRANSCRIPTS) return;
-	// Dynamic: ./sessions imports this module (cycle), as in reduceFrame above.
-	const { useSessions } = await import("./sessions");
+function trackHiddenTranscript(id: string): void {
+	if (shownTranscripts.has(id)) return;
+	leftTranscripts = leftTranscripts.filter((left) => left !== id);
+	leftTranscripts.push(id);
+	evictLeftTranscripts();
+}
+
+function evictLeftTranscripts(): void {
+	if (!leftTranscripts.length) return;
 	useLive.setState((s) => {
 		let sessions = s.sessions;
-		const busy: string[] = [];
-		const idle: string[] = [];
-		for (const id of leftTranscripts) {
+		let kept = 0;
+		let bytes = 0;
+		const remaining: string[] = [];
+		for (let i = leftTranscripts.length - 1; i >= 0; i--) {
+			const id = leftTranscripts[i];
 			if (shownTranscripts.has(id)) continue;
 			const live = sessions[id];
-			if (live?.alive || live?.streaming) {
-				busy.push(id);
-			} else {
-				idle.push(id);
+			if (!live || (!live.items.length && !Object.keys(live.subagents).length)) continue;
+			if (!useSessions.getState().sessions[id]?.file || live.streaming || (live.alive && isFlowBusy(live))) {
+				remaining.push(id);
+				continue;
 			}
-		}
-		const stale =
-			idle.length > RETAINED_IDLE_TRANSCRIPTS
-				? idle.slice(0, -RETAINED_IDLE_TRANSCRIPTS)
-				: [];
-		const keptIdle =
-			idle.length > RETAINED_IDLE_TRANSCRIPTS
-				? idle.slice(-RETAINED_IDLE_TRANSCRIPTS)
-				: idle;
-		leftTranscripts = [...busy, ...keptIdle];
-		for (const id of stale) {
-			const live = sessions[id];
-			if (!live || (live.items.length === 0 && Object.keys(live.subagents).length === 0)) continue;
-			if (!useSessions.getState().sessions[id]?.file) continue;
+			const weight = transcriptWeight(live.items);
+			if (kept < RETAINED_IDLE_TRANSCRIPTS && weight + bytes <= IDLE_TRANSCRIPT_BYTES) {
+				bytes += weight;
+				kept++;
+				remaining.push(id);
+				continue;
+			}
+			invalidateTranscriptCache([id]);
 			if (sessions === s.sessions) sessions = { ...sessions };
 			sessions[id] = {
 				...live,
 				items: [],
 				nextOffset: 0,
 				tailId: null,
-				streamingMessage: null,
-				tools: {},
-				liveRequests: [],
-				subagents: {},
-				thinkingDurations: {},
+				...(!live.alive && {
+					streamingMessage: null, tools: {}, liveRequests: [], subagents: {}, thinkingDurations: {},
+				}),
 			};
 		}
+		leftTranscripts = remaining.reverse();
 		return sessions === s.sessions ? s : { sessions };
 	});
 }

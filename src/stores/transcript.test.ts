@@ -9,7 +9,7 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
 	localRowsGet: h.localRowsGet,
 }));
 
-import { emptySessionLive, pruneRemovedSessions, useLive } from "./live";
+import { emptySessionLive, holdTranscript, pruneRemovedSessions, useLive } from "./live";
 import { prepareSideChatFirstPrompt, refreshTranscriptCache } from "./transcript";
 import { useSessions } from "./sessions";
 
@@ -34,6 +34,45 @@ beforeEach(() => {
 	h.localRowsGet.mockReset();
 	useLive.setState({ sessions: {} });
 	useSessions.setState({ sessions: {} });
+});
+
+describe("idle history budget", () => {
+	it("releases a large history only after its last reader leaves and reloads it from the beginning", async () => {
+		const sid = "large-history";
+		useSessions.setState({ sessions: { [sid]: { id: sid, file: "/history.jsonl" } as never } });
+		const closeMain = holdTranscript(sid);
+		const closeSide = holdTranscript(sid);
+		const history = page(sid, [item("first"), item("output", "x".repeat(9 * 1024 * 1024)), item("last")]);
+		h.getTranscript.mockResolvedValueOnce(history);
+		await refreshTranscriptCache(sid);
+		closeMain();
+		expect(useLive.getState().sessions[sid].items).toBe(history.items);
+		const pending = deferred<TranscriptPage>();
+		h.getTranscript.mockReturnValueOnce(pending.promise);
+		const late = refreshTranscriptCache(sid, true);
+		closeSide();
+		expect(useLive.getState().sessions[sid]).toMatchObject({ items: [], nextOffset: 0, tailId: null });
+		pending.resolve(page(sid, [item("stale-tail")]));
+		expect(await late).toBe(false);
+		const leave = holdTranscript(sid);
+		h.getTranscript.mockResolvedValueOnce(history);
+		await refreshTranscriptCache(sid, true);
+		expect(h.getTranscript).toHaveBeenLastCalledWith(sid, 0, null);
+		expect(useLive.getState().sessions[sid].items).toEqual(history.items);
+		leave();
+	});
+
+	it("enforces a shared byte budget even when fewer than three idle histories are cached", () => {
+		const ids = ["older-history", "newer-history"];
+		useSessions.setState({ sessions: Object.fromEntries(ids.map(id => [id, { file: `${id}.jsonl` } as never])) });
+		for (const id of ids) {
+			const leave = holdTranscript(id);
+			useLive.getState().setItems(id, [item(id, "x".repeat(5 * 1024 * 1024))], 1);
+			leave();
+		}
+		expect(useLive.getState().sessions[ids[0]].items).toEqual([]);
+		expect(useLive.getState().sessions[ids[1]].items[0].id).toBe(ids[1]);
+	});
 });
 
 describe("transcript cache read ordering", () => {

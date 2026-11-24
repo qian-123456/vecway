@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, isInaccessible, render, screen } from "@testin
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as IpcModule from "../lib/ipc";
 import type * as StatsModule from "../features/chat/sessionStats";
+import { getAppMemoryUsage, perfBreakdown } from "../lib/ipc";
 
 const H = vi.hoisted(() => ({
 	stats: {
@@ -126,6 +127,24 @@ afterEach(() => {
 });
 
 describe("BottomBar content fitting", () => {
+	it("does not sample the hidden bar and uses the panel's sample for the visible memory badge", async () => {
+		useDisplayPrefs.setState({ bottomBar: false });
+		vi.mocked(getAppMemoryUsage).mockClear();
+		vi.mocked(perfBreakdown).mockResolvedValueOnce({
+			app: { bytes: 1536 * 1024 * 1024, processes: 7 },
+			ompSpawned: { bytes: 0, processes: 0 }, ompExternal: { bytes: 0, processes: 0 },
+			totalBytes: null, usedBytes: null, freeBytes: null, otherBytes: null,
+			barOmpBytes: 0, instances: [], generatedAt: 1,
+		});
+		render(<BottomBar />);
+		expect(getAppMemoryUsage).not.toHaveBeenCalled();
+		await act(async () => { useDisplayPrefs.setState({ bottomBar: true }); });
+		const button = screen.getByRole("button", { name: "性能 512 MB" });
+		await act(async () => { fireEvent.click(button); });
+		expect(button.getAttribute("aria-label")).toBe("性能 1.5 GB");
+		expect(getAppMemoryUsage).toHaveBeenCalledTimes(1);
+	});
+
 	it("shows every metric below the old 640px breakpoint when the actual content fits", () => {
 		render(<BottomBar />);
 		expectVisible("3.5k tok");

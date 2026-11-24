@@ -372,6 +372,7 @@ describe("retention lifecycle", () => {
 				"evict-busy": {
 					...empty(),
 					alive: true,
+					streaming: true,
 					items: [item("m0", "busy transcript")],
 					subagents: {
 						sub1: {
@@ -401,7 +402,7 @@ describe("retention lifecycle", () => {
 			release();
 		}
 		await new Promise((r) => setTimeout(r, 10));
-		// While evict-busy is still alive, its items are kept.
+		// An in-progress turn stays resident even after the view closes.
 		expect(useLive.getState().sessions["evict-busy"].items).toHaveLength(1);
 		// Once its process exits and a 4th idle transcript accumulates, it is evicted.
 		useLive.getState().reduceProcess({ sessionId: "evict-busy", running: false, exitCode: 0 });

@@ -110,3 +110,11 @@ export function formatBytes(bytes: number | null | undefined): string {
 	}
 	return `${value.toFixed(1)} ${units[i]}`;
 }
+
+/** Memory buckets use MiB/GiB precision throughout the performance panel. */
+export function formatMemoryBytes(bytes: number | null | undefined): string {
+	if (bytes == null) return "—";
+	const mb = bytes / (1024 * 1024);
+	if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+	return mb < 10 ? `${mb.toFixed(1)} MB` : `${Math.round(mb)} MB`;
+}

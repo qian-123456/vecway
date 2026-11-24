@@ -1,6 +1,6 @@
 //! [C] Tauri commands: git + time machine (docs/ARCHITECTURE.md §7).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -143,14 +143,15 @@ pub async fn git_list_worktrees(
     state: tauri::State<'_, AppState>,
     repo: String,
 ) -> Result<Vec<WorktreeInfo>, String> {
-    let sessions = session_cwds(&state).await;
-    blocking(move || {
-        let root = super::repo_info_cached(&PathBuf::from(&repo))
-            .map(|i| i.main_root())
-            .ok_or("不是 git 仓库")?;
-        worktree::list(&root, &sessions)
+    let root = blocking(move || {
+        super::repo_info_cached_result(Path::new(&repo)).map(|info| info.map(|i| i.main_root()))
     })
-    .await
+    .await?;
+    let Some(root) = root else {
+        return Ok(Vec::new());
+    };
+    let sessions = session_cwds(&state).await;
+    blocking(move || worktree::list(&root, &sessions)).await
 }
 
 #[tauri::command]

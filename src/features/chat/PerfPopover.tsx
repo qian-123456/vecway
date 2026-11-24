@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { Activity, AppWindow, HardDrive, Info, X } from "lucide-react";
 import { type RefObject, useMemo } from "react";
 import type { PerfBreakdown } from "../../lib/contracts";
+import { formatMemoryBytes as formatBytes } from "../../lib/format";
 import { useLive } from "../../stores/live";
 import { useUi } from "../../stores/ui";
 import { type Anchor, FloatingLayer } from "../../components/FloatingLayer";
@@ -19,13 +20,6 @@ export interface PerfPopoverProps {
 	breakdown: PerfBreakdown | null;
 	ignoreRefs?: RefObject<HTMLElement | null>[];
 	className?: string;
-}
-
-function formatBytes(bytes: number | null | undefined): string {
-	if (bytes == null) return "—";
-	const mb = bytes / (1024 * 1024);
-	if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-	return mb < 10 ? `${mb.toFixed(1)} MB` : `${Math.round(mb)} MB`;
 }
 
 /** Stacked-bar segment colors: quiet neutrals, omp gets the agent accent. */

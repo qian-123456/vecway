@@ -129,9 +129,8 @@ export function SessionView({
 		};
 	}, [loadTurns]);
 
-	// Let the live store drop this transcript once the view is gone (compact
-	// side chats are read by hand-back after they close, so they stay).
-	useEffect(() => (compact ? undefined : holdTranscript(sessionId)), [sessionId, compact]);
+	// Both full and compact readers release their hold; hand-back reads persisted history.
+	useEffect(() => holdTranscript(sessionId), [sessionId]);
 
 	const [isLoadingTranscript, setIsLoadingTranscript] = useState(true);
 	const [emptyState, setEmptyState] = useState(false);

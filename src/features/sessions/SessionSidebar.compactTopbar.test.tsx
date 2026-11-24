@@ -136,6 +136,23 @@ describe("SessionSidebar compact topbar", () => {
 		vi.unstubAllGlobals();
 	});
 
+	it("only queries projects in the visible mode, including after focus refresh changes the list", async () => {
+		const code = { id: "code", name: "Code", path: "/code", kind: "project", mode: "code", sort: 0 } as const;
+		const research = { ...code, id: "research", path: "/research", mode: "research" } as const;
+		const global = { ...research, id: "global", kind: "global" } as const;
+		useSessions.setState({ workspaces: [code, research, global] });
+		const refresh = vi.mocked(useWorktrees.getState().refresh);
+		render(<SessionSidebar />);
+		expect(refresh.mock.calls).toEqual([[[research]]]);
+		act(() => useSidebarStore.setState({ activeMode: "code" }));
+		expect(refresh).toHaveBeenLastCalledWith([code]);
+		const moved = { ...code, path: "/moved" };
+		vi.spyOn(ipc, "listWorkspaces").mockResolvedValue([moved, research, global]);
+		refresh.mockClear();
+		await act(async () => { window.dispatchEvent(new Event("focus")); });
+		expect(refresh.mock.calls).toEqual([[[moved]]]);
+	});
+
 	it("keeps inbox and search in row 2 when wide with macOS traffic lights, and moves them into row 1 when narrow (<236px) without duplicating buttons", () => {
 		const inboxLabel = tNow("sidebar.inbox");
 		const searchLabel = tNow("common.search");
