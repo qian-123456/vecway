@@ -66,10 +66,10 @@ describe("Top Bar (Change 1)", () => {
 		const modelBtn = screen.getByRole("button", { name: /当前模型/ });
 		expect(modelBtn).toBeTruthy();
 
-		// Tapping the model button in composer opens the model/thinking bottom sheet picker
+		// Tapping the model button in composer opens the compact model picker; thinking has its own trigger
 		await act(async () => { fireEvent.click(modelBtn); });
 		expect(screen.getByRole("dialog", { name: "模型" })).toBeTruthy();
-		expect(screen.getByRole("radiogroup", { name: "思考强度" })).toBeTruthy();
+		expect(screen.queryByRole("radiogroup", { name: "思考强度" })).toBeNull();
 		expect(screen.getAllByText("gpt-test").length).toBeGreaterThan(0);
 	});
 
@@ -132,7 +132,7 @@ describe("Toolbar below composer (Change 2)", () => {
 
 		// Tapping context opens ContextSheet with compaction action
 		fireEvent.click(ctxBtn);
-		expect(screen.getByText("上下文用量")).toBeTruthy();
+		expect(screen.getByText("上下文窗口")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "压缩上下文" })).toBeTruthy();
 	});
 
@@ -166,8 +166,8 @@ describe("Composer attachment actions", () => {
 		fireEvent.click(plusBtn);
 
 		expect(screen.getByText("文件")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "电脑端选中项" })).toBeTruthy();
-		expect(screen.getByText("在项目中工作")).toBeTruthy();
+		expect(screen.getByRole("button", { name: /电脑端文件/ })).toBeTruthy();
+		expect(screen.getByText("切换工作目录")).toBeTruthy();
 		expect(screen.getByText("目标")).toBeTruthy();
 		expect(screen.getByText(/规划模式/)).toBeTruthy();
 		expect(screen.getByText("草图")).toBeTruthy();

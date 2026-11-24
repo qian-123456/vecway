@@ -324,7 +324,7 @@ export function MessageList({ sessionId, onPickDirectory }: { sessionId: string;
 					</div>
 				</section>
 			)}
-			<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]">
+			<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
 				<div ref={contentRef} className={`m-kb-pad pt-1 ${empty && !syntheticLive ? "flex min-h-full flex-col" : ""}`}>
 					{showLoadOlder && (
 						<div className="flex justify-center py-3">

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../core/api";
-import { ListGroup, Segmented, Stepper, Switch, toast } from "../../ui";
+import { ListGroup, SelectRow, Stepper, Switch, toast } from "../../ui";
 import { SettingRow } from "./rows";
 import { clampInt, SETTING_GROUPS, type OmpValue, type SettingDef } from "./settingsMap";
 
@@ -10,16 +10,7 @@ const DEFS: ReadonlyMap<string, SettingDef> = new Map(SETTING_GROUPS.flatMap((g)
 
 function SettingControl({ def, value, onSave }: { def: SettingDef; value: OmpValue; onSave: (v: boolean | number | string) => void }) {
 	if (def.type === "bool") return <Switch label={def.name} checked={value === true} onChange={onSave} />;
-	if (def.type === "enum") {
-		return (
-			<Segmented
-				label={def.name}
-				value={typeof value === "string" ? value : null}
-				options={def.options.map(([v, l]) => ({ value: v, label: l }))}
-				onChange={onSave}
-			/>
-		);
-	}
+	if (def.type !== "int") return null;
 	return (
 		<Stepper
 			label={def.name}
@@ -137,12 +128,33 @@ export function OmpSettingsGroup({
 			if (event.target instanceof HTMLInputElement || !event.currentTarget.contains(event.relatedTarget as Node | null)) flush();
 		}}>
 			<ListGroup title={title}>
-				{defs.map((def) => (
-					<SettingRow key={def.key} name={def.name} hint={def.hint} stacked={def.type !== "bool"}>
-						<SettingControl def={def} value={omp?.[def.key]} onSave={(v) => save(def, v)} />
-						{errors[def.key] && <div role="alert" className="m-selectable mt-2 whitespace-pre-wrap break-words text-m-sm text-m-danger">保存失败：{errors[def.key]}</div>}
-					</SettingRow>
-				))}
+				{defs.map((def) => {
+					const val = omp?.[def.key];
+					const errNode = errors[def.key] ? (
+						<div role="alert" className="m-selectable mt-1 whitespace-pre-wrap break-words text-m-sm text-m-danger">
+							保存失败：{errors[def.key]}
+						</div>
+					) : undefined;
+					if (def.type === "enum") {
+						return (
+							<SelectRow
+								key={def.key}
+								title={def.name}
+								subtitle={def.hint}
+								value={typeof val === "string" ? val : null}
+								options={def.options.map(([v, l]) => ({ value: v, label: l }))}
+								onChange={(v) => save(def, v)}
+								error={errNode}
+							/>
+						);
+					}
+					return (
+						<SettingRow key={def.key} name={def.name} hint={def.hint} stacked={def.type !== "bool"}>
+							<SettingControl def={def} value={val} onSave={(v) => save(def, v)} />
+							{errNode}
+						</SettingRow>
+					);
+				})}
 			</ListGroup>
 		</div>
 	);

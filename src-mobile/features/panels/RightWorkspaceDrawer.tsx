@@ -11,7 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { errorMessage } from "../../core/api";
-import { AnchoredPopover, MenuRow, toast } from "../../ui";
+import { AnchoredPopover, MenuRow, TitleSwitcher, toast } from "../../ui";
 import { hasBlockingOverlay, useOverlay } from "../../ui/overlay";
 import { FilesPanel } from "./FilesPage";
 import { GitPanel } from "./GitPage";
@@ -234,9 +234,12 @@ export function RightWorkspaceDrawer({
 
 	const tabHeader = useRightDrawer((s) => (effectiveId ? s.tabHeaders?.[tabHeaderKey(effectiveId, activeTab)] : undefined));
 	const moreActions = tabHeader?.moreActions ?? [];
+	const titleSwitcher = tabHeader?.titleSwitcher;
+	const rightAction = tabHeader?.rightAction;
 	const sidechatSwitcher = activeTab === "sidechat" ? tabHeader?.sidechatSwitcher : undefined;
 	const activeTabMeta = tabs.find((t) => t.id === activeTab);
 	const headerTitle = tabHeader?.title?.trim() || activeTabMeta?.label || "工作区";
+	const headerSubtitle = tabHeader?.subtitle?.trim() || "";
 
 	const [moreOpen, setMoreOpen] = useState(false);
 	const moreBtnRef = useRef<HTMLButtonElement>(null);
@@ -440,16 +443,33 @@ export function RightWorkspaceDrawer({
 				}}
 			>
 				<header className="shrink-0 px-3 pt-1.5 pb-2.5">
-					<div className="grid grid-cols-[44px_minmax(0,1fr)_44px] items-center gap-1 pb-1.5">
-						<button
-							type="button"
-							aria-label="返回对话"
-							onClick={closeDrawer}
-							className="m-press inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-m-text active:bg-m-surface-hover"
-						>
-							<ChevronLeft size={21} strokeWidth={1.85} aria-hidden />
-						</button>
-						{sidechatSwitcher ? (
+					<div className="grid grid-cols-[minmax(44px,auto)_minmax(0,1fr)_minmax(44px,auto)] items-center gap-1 pb-1.5">
+						<div className="flex items-center justify-start">
+							<button
+								type="button"
+								aria-label="返回对话"
+								onClick={closeDrawer}
+								className="m-press inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-m-text active:bg-m-surface-hover"
+							>
+								<ChevronLeft size={21} strokeWidth={1.85} aria-hidden />
+							</button>
+						</div>
+						{titleSwitcher ? (
+							<TitleSwitcher
+								label={titleSwitcher.label}
+								subtitle={titleSwitcher.subtitle}
+								ariaLabel={titleSwitcher.ariaLabel}
+								items={titleSwitcher.items}
+								activeId={titleSwitcher.activeId}
+								onSelect={titleSwitcher.onSelect}
+								onStep={titleSwitcher.onStep}
+								onRemove={titleSwitcher.onRemove}
+								create={titleSwitcher.create}
+								popoverTitle={titleSwitcher.popoverTitle}
+								emptyText={titleSwitcher.emptyText}
+								disabled={!open}
+							/>
+						) : sidechatSwitcher ? (
 							<button
 								type="button"
 								aria-label={`切换辅助对话，当前：${headerTitle}`}
@@ -468,25 +488,33 @@ export function RightWorkspaceDrawer({
 								/>
 							</button>
 						) : (
-							<span className="truncate text-center text-[15px] font-semibold text-m-text">
-								{headerTitle}
-							</span>
+							<div className="min-w-0 text-center">
+								<div className="truncate text-[15px] font-semibold text-m-text">
+									{headerTitle}
+								</div>
+								{headerSubtitle && (
+									<div className="truncate text-[11px] text-m-text-3">{headerSubtitle}</div>
+								)}
+							</div>
 						)}
-						{moreActions.length > 0 ? (
-							<button
-								ref={moreBtnRef}
-								type="button"
-								aria-label="更多操作"
-								aria-expanded={moreOpen}
-								aria-haspopup="menu"
-								onClick={() => setMoreOpen((v) => !v)}
-								className="m-press inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-m-text active:bg-m-surface-hover"
-							>
-								<MoreHorizontal size={20} strokeWidth={1.85} aria-hidden />
-							</button>
-						) : (
-							<span aria-hidden className="h-11 w-11" />
-						)}
+						<div className="flex items-center justify-end gap-0.5">
+							{rightAction}
+							{moreActions.length > 0 ? (
+								<button
+									ref={moreBtnRef}
+									type="button"
+									aria-label="更多操作"
+									aria-expanded={moreOpen}
+									aria-haspopup="menu"
+									onClick={() => setMoreOpen((v) => !v)}
+									className="m-press inline-flex h-11 w-11 items-center justify-center rounded-[10px] text-m-text active:bg-m-surface-hover"
+								>
+									<MoreHorizontal size={20} strokeWidth={1.85} aria-hidden />
+								</button>
+							) : (
+								!rightAction && <span aria-hidden className="h-11 w-11" />
+							)}
+						</div>
 					</div>
 
 					<nav

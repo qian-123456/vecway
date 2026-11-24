@@ -18,7 +18,7 @@ import {
 import { reconnectEvents, stopEvents } from "../../../core/sse";
 import { useConnection } from "../../../core/stores/connection";
 import { useSessions } from "../../../core/stores/sessions";
-import { Button, Chip, IconButton, ListGroup, ListRow, confirm, toast } from "../../../ui";
+import { Button, Chip, IconButton, ListGroup, ListRow, SelectRow, confirm, toast } from "../../../ui";
 import { GroupBlock, SettingsSheet } from "../rows";
 
 type ChannelChoice = "auto" | NativeChannel;
@@ -409,69 +409,66 @@ export function ConnectionSheet({
 					>
 						<ListRow
 							title="当前通道"
-							right={<Chip tone={nativeStatus?.activeChannel ? "success" : "warn"}>{channelLabel}</Chip>}
+							right={
+								<span className="inline-flex items-center gap-1.5 text-m-sm text-m-text-2">
+									<span
+										aria-hidden
+										className={`h-2 w-2 rounded-full ${nativeStatus?.activeChannel ? "bg-m-success" : "bg-m-warn"}`}
+									/>
+									<span>{channelLabel}</span>
+								</span>
+							}
 						/>
 						{nativeStatus?.paired && (
-							<GroupBlock className="space-y-3">
-								<div
-									role="radiogroup"
-									aria-label="连接方式"
-									className="flex flex-wrap gap-1.5 rounded-m-md bg-m-surface p-1"
-								>
-									{channelOptions.map((opt) => {
-										const selected = preferredMode === opt.value;
-										return (
-											<button
-												key={opt.value}
-												type="button"
-												role="radio"
-												aria-checked={selected}
-												disabled={switchingChannel || (opt.disabled && !selected)}
-												onClick={() => void handleSwitchChannel(opt.value)}
-												className={`min-h-10 min-w-[72px] flex-1 rounded-m-sm px-2.5 text-m-xs whitespace-nowrap transition-colors duration-(--m-dur-fast) disabled:opacity-40 ${
-													selected
-														? "bg-m-segment-on font-semibold text-m-text shadow-xs"
-														: "text-m-text-2 active:bg-m-surface-hover"
-												}`}
-											>
-												{opt.label}
-											</button>
-										);
-									})}
-								</div>
+							<>
+								<SelectRow
+									title="首选通道"
+									label="连接方式"
+									presentation="menu"
+									value={preferredMode}
+									disabled={switchingChannel}
+									options={channelOptions.map((opt) => ({
+										value: opt.value,
+										label: opt.label,
+										disabled: opt.disabled && preferredMode !== opt.value,
+									}))}
+									onChange={(v) => void handleSwitchChannel(v as ChannelChoice)}
+								/>
 
 								{canAdoptLan && effectiveMobile.lanTlsUrl && effectiveMobile.certSha256 && (
-									<div className="space-y-2.5 rounded-m-md border border-m-border bg-m-accent-soft/45 p-3.5">
-										<div className="flex items-start gap-2.5">
-											<Wifi size={18} strokeWidth={1.85} className="mt-0.5 shrink-0 text-m-accent" aria-hidden />
-											<div className="min-w-0 flex-1 space-y-1">
-												<div className="text-m-sm font-medium text-m-text">检测到电脑局域网加密服务</div>
-												<div className="m-selectable break-all font-m-mono text-m-xs text-m-text-2">
-													{effectiveMobile.lanTlsUrl}
-												</div>
-												<div className="space-y-0.5 text-[11px] text-m-text-3">
-													<div className="flex items-center gap-1.5">
-														<ShieldCheck size={13} className="shrink-0" aria-hidden />
-														<span>证书指纹 (SHA-256)</span>
+									<GroupBlock className="space-y-3">
+										<div className="space-y-2.5 rounded-m-md border border-m-border bg-m-accent-soft/45 p-3.5">
+											<div className="flex items-start gap-2.5">
+												<Wifi size={18} strokeWidth={1.85} className="mt-0.5 shrink-0 text-m-accent" aria-hidden />
+												<div className="min-w-0 flex-1 space-y-1">
+													<div className="text-m-sm font-medium text-m-text">检测到电脑局域网加密服务</div>
+													<div className="m-selectable break-all font-m-mono text-m-xs text-m-text-2">
+														{effectiveMobile.lanTlsUrl}
 													</div>
-													<div className="m-selectable break-all font-m-mono leading-relaxed text-m-text-2">
-														{effectiveMobile.certSha256}
+													<div className="space-y-0.5 text-[11px] text-m-text-3">
+														<div className="flex items-center gap-1.5">
+															<ShieldCheck size={13} className="shrink-0" aria-hidden />
+															<span>证书指纹 (SHA-256)</span>
+														</div>
+														<div className="m-selectable break-all font-m-mono leading-relaxed text-m-text-2">
+															{effectiveMobile.certSha256}
+														</div>
 													</div>
 												</div>
 											</div>
+											<Button
+												variant="primary"
+												size="sm"
+												block
+												busy={adoptingLan}
+												onClick={() => void handleAdoptLan()}
+											>
+												信任并切换至局域网直连
+											</Button>
 										</div>
-										<Button
-											variant="primary"
-											size="sm"
-											block
-											busy={adoptingLan}
-											onClick={() => void handleAdoptLan()}
-										>
-											信任并切换至局域网直连
-										</Button>
-									</div>
+									</GroupBlock>
 								)}
-							</GroupBlock>
+							</>
 						)}
 						{nativeStatus?.activeUrl && <UrlRow label="当前连接地址" url={nativeStatus.activeUrl} />}
 						{nativeStatus?.certSha256 && <UrlRow label="锁定证书指纹 (SHA-256)" url={nativeStatus.certSha256} small />}

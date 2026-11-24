@@ -59,14 +59,15 @@ describe("current model", () => {
 });
 
 describe("resolveThinkingLevels", () => {
-	it("auto first, off last, from catalog", () => {
-		expect(resolveThinkingLevels(ms[0], [], "auto")).toEqual(["auto", "low", "high", "off"]);
+	it("auto, off, then ascending effort from catalog", () => {
+		expect(resolveThinkingLevels(ms[0], [], "auto")).toEqual(["auto", "off", "low", "high"]);
 	});
 	it("live levels win", () => {
-		expect(resolveThinkingLevels(ms[0], ["medium", "off", "auto"], null)).toEqual(["auto", "medium", "off"]);
+		expect(resolveThinkingLevels(ms[0], ["medium", "off", "auto"], null)).toEqual(["auto", "off", "medium"]);
 	});
-	it("appends missing current level", () => {
-		expect(resolveThinkingLevels(ms[0], [], "max")).toEqual(["auto", "low", "high", "off", "max"]);
+	it("sorts known levels and keeps unknown current level at end", () => {
+		expect(resolveThinkingLevels(ms[0], [], "custom-level")).toEqual(["auto", "off", "low", "high", "custom-level"]);
+		expect(resolveThinkingLevels(ms[0], [], "max")).toEqual(["auto", "off", "low", "high", "max"]);
 	});
 	it("empty cases", () => {
 		expect(resolveThinkingLevels(null, [], null)).toEqual([]);

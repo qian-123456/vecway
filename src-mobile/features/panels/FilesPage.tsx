@@ -1,6 +1,6 @@
 import {
 	ArrowLeft,
-	ArrowUp,
+	ChevronRight,
 	Code2,
 	Eye,
 	File as FileIcon,
@@ -10,13 +10,12 @@ import {
 	Sparkles,
 	X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, apiUrl } from "../../core/api";
 import { nav, paths, type PageProps } from "../../core/nav";
 import { isDraftId } from "../../core/types";
 import {
 	Button,
-	Chip,
 	CodeBlock,
 	EmptyState,
 	IconButton,
@@ -24,13 +23,14 @@ import {
 	ListRow,
 	PageHeader,
 	PullToRefresh,
-	Segmented,
+	TitleSwitcher,
 	openImage,
 } from "../../ui";
 import { Markdown } from "../../ui/Markdown";
+import { abbreviateHomePath } from "../sessions/NewSessionSheet";
 import { LoadGate } from "./PanelState";
 import { useLayer, useLoad } from "./hooks";
-import { breadcrumbs, fmtSize, langFromPath, splitPath, statusTone, type GitFile } from "./pure";
+import { breadcrumbs, fmtSize, langFromPath, type GitFile } from "./pure";
 import { useRightDrawer } from "./rightDrawerStore";
 
 interface DirEntry {
@@ -58,32 +58,20 @@ interface GitStatus {
 	files?: GitFile[];
 }
 
-type FileScope = "changed" | "all";
-
-const SCOPE_OPTIONS: ReadonlyArray<{ value: FileScope; label: string }> = [
-	{ value: "changed", label: "本次改动" },
-	{ value: "all", label: "全部文件" },
-];
-
-const STATUS_LABEL: Record<string, string> = {
-	M: "修改",
-	A: "新增",
-	D: "删除",
-	R: "重命名",
-	"??": "新文件",
-};
-
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|ico|bmp)$/i;
 const RASTER_IMAGE_RE = /\.(png|jpe?g|gif|webp|ico|bmp)$/i;
 const q = encodeURIComponent;
 const ICON = { size: 20, strokeWidth: 1.75 } as const;
 
+const EMPTY_ROOTS: string[] = [];
+const EMPTY_GIT_FILES: GitFile[] = [];
+
 export function FilesPanel({ sessionId, embedded = false, active = true }: { sessionId: string; embedded?: boolean; active?: boolean }) {
 	const draft = isDraftId(sessionId);
 	const [dir, setDir] = useState<string | null>(null);
 	const [file, setFile] = useState<{ entry: DirEntry; deleted?: boolean; repoRelative?: boolean } | null>(null);
+	const [searchOpen, setSearchOpen] = useState(false);
 	const [query, setQuery] = useState("");
-	const [manualScope, setManualScope] = useState<FileScope | null>(null);
 
 	const gitState = useLoad(
 		(signal) =>
@@ -102,41 +90,101 @@ export function FilesPanel({ sessionId, embedded = false, active = true }: { ses
 	);
 
 	const gitFiles = useMemo(
-		() => (gitState.data?.isRepo && Array.isArray(gitState.data.files) ? gitState.data.files : []),
+		() => (gitState.data?.isRepo && Array.isArray(gitState.data.files) ? gitState.data.files : EMPTY_GIT_FILES),
 		[gitState.data],
 	);
 	const hasChanges = gitFiles.length > 0;
-	const scope: FileScope = manualScope ?? (hasChanges ? "changed" : "all");
 
-	const openDir = (p: string) => {
+	const openDir = useCallback((p: string) => {
 		setDir(p);
 		setQuery("");
-	};
+	}, []);
 
 	const closeFile = () => setFile(null);
 	const parentDir = dirState.data?.parent ?? null;
-	// Back gesture closes file preview first, or climbs directory levels in "全部文件" mode.
-	useLayer(active && (file !== null || (scope === "all" && parentDir !== null)), () => {
+	useLayer(active && (file !== null || parentDir !== null), () => {
 		if (file) {
 			closeFile();
-		} else if (scope === "all" && parentDir) {
+		} else if (parentDir) {
 			openDir(parentDir);
 		}
 	});
 
 	const data = dirState.data;
+	const segs = useMemo(
+		() => (data?.path ? breadcrumbs(data.path, data.roots ?? EMPTY_ROOTS) : []),
+		[data?.path, data?.roots],
+	);
+	const activeSeg = segs[segs.length - 1] ?? null;
+	const switcherItems = useMemo(
+		() =>
+			segs.map((s) => ({
+				id: s.path,
+				label: s.name,
+				subtitle: abbreviateHomePath(s.path),
+			})),
+		[segs],
+	);
+
+	const toggleSearch = useCallback(() => {
+		setSearchOpen((prev) => {
+			if (prev) setQuery("");
+			return !prev;
+		});
+	}, []);
+
+	const searchButton = useMemo(
+		() => (
+			<IconButton
+				variant={searchOpen ? "tinted" : "plain"}
+				size={embedded ? "sm" : "md"}
+				icon={<Search size={18} strokeWidth={1.75} />}
+				label="搜索文件"
+				pressed={searchOpen}
+				onClick={toggleSearch}
+			/>
+		),
+		[searchOpen, embedded, toggleSearch],
+	);
+
+	useEffect(() => {
+		if (!embedded) return;
+		if (file) {
+			useRightDrawer.getState().setTabHeader(sessionId, "files", {
+				title: file.entry.name,
+			});
+			return;
+		}
+		useRightDrawer.getState().setTabHeader(sessionId, "files", {
+			title: activeSeg?.name || "文件",
+			titleSwitcher:
+				segs.length > 0 && activeSeg
+					? {
+							label: activeSeg.name,
+							ariaLabel: "切换目录层级",
+							popoverTitle: "目录层级",
+							items: switcherItems,
+							activeId: activeSeg.path,
+							onSelect: openDir,
+						}
+					: undefined,
+			rightAction: searchButton,
+		});
+	}, [embedded, sessionId, file, activeSeg, segs.length, switcherItems, openDir, searchButton]);
+
+	useEffect(() => {
+		if (!embedded) return;
+		return () => {
+			useRightDrawer.getState().clearTabHeader(sessionId, "files");
+		};
+	}, [embedded, sessionId]);
+
 	const entries = useMemo(() => {
 		if (!data || !Array.isArray(data.entries)) return [];
 		const needle = query.trim().toLowerCase();
 		if (!needle) return data.entries;
 		return data.entries.filter((e) => e.name.toLowerCase().includes(needle) || e.path.toLowerCase().includes(needle));
 	}, [data, query]);
-
-	const filteredGitFiles = useMemo(() => {
-		const needle = query.trim().toLowerCase();
-		if (!needle) return gitFiles;
-		return gitFiles.filter((f) => f.path.toLowerCase().includes(needle));
-	}, [gitFiles, query]);
 
 	if (file) {
 		return (
@@ -152,133 +200,99 @@ export function FilesPanel({ sessionId, embedded = false, active = true }: { ses
 	}
 
 	const refresh = () => Promise.all([dirState.reload(true), gitState.reload(true)]).then(() => {});
+	const goToGit = () => {
+		if (embedded) useRightDrawer.getState().setTab(sessionId, "git");
+		else nav.push(paths.git(sessionId));
+	};
 
 	const body = (
 		<>
-			<div className="shrink-0 space-y-2 border-b border-m-border px-4 pt-2 pb-2.5">
-				<Segmented label="文件范围" value={scope} options={SCOPE_OPTIONS} onChange={setManualScope} />
-				{scope === "all" && data && <Crumbs data={data} onOpen={openDir} />}
-				<label className="flex min-h-10 items-center gap-2 rounded-m-pill bg-m-surface px-3.5">
-					<Search size={16} strokeWidth={1.75} className="shrink-0 text-m-text-3" />
-					<input
-						type="search"
-						value={query}
-						onChange={(e) => setQuery(e.target.value)}
-						placeholder={scope === "changed" ? "筛选改动文件" : "在当前目录中查找"}
-						aria-label={scope === "changed" ? "筛选改动文件" : "在当前目录中查找"}
-						className="min-h-10 min-w-0 flex-1 bg-transparent text-[16px] text-m-text outline-none placeholder:text-m-text-3 [&::-webkit-search-cancel-button]:hidden"
-					/>
-					{query && (
-						<button
-							type="button"
-							aria-label="清空"
-							onClick={() => setQuery("")}
-							className="-mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-m-pill text-m-text-3 active:bg-m-surface-hover"
-						>
-							<X size={16} />
-						</button>
-					)}
-				</label>
-			</div>
+			{searchOpen && (
+				<div className="shrink-0 border-b border-m-border bg-m-bg px-4 py-2">
+					<label className="flex min-h-10 items-center gap-2 rounded-[10px] border border-m-border bg-m-surface px-3">
+						<Search size={15} strokeWidth={1.75} className="shrink-0 text-m-text-3" aria-hidden />
+						<input
+							autoFocus
+							type="search"
+							value={query}
+							onChange={(e) => setQuery(e.target.value)}
+							placeholder="在当前目录中查找"
+							aria-label="在当前目录中查找"
+							className="min-h-9 min-w-0 flex-1 bg-transparent text-[15px] text-m-text outline-none placeholder:text-m-text-3 [&::-webkit-search-cancel-button]:hidden"
+						/>
+						{query && (
+							<button
+								type="button"
+								aria-label="清空"
+								onClick={() => setQuery("")}
+								className="-mr-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-m-text-3 active:bg-m-surface-hover"
+							>
+								<X size={15} />
+							</button>
+						)}
+					</label>
+				</div>
+			)}
+
+			{hasChanges && (
+				<button
+					type="button"
+					onClick={goToGit}
+					className="flex min-h-9 w-full shrink-0 items-center justify-between gap-2 border-b border-m-border bg-m-surface/55 px-4 py-1.5 text-left text-m-xs active:bg-m-surface-hover"
+				>
+					<span className="flex min-w-0 items-center gap-2 text-m-text-2">
+						<span className="h-1.5 w-1.5 shrink-0 rounded-full bg-m-warn" aria-hidden />
+						<span className="truncate">{gitFiles.length} 个文件还没提交</span>
+					</span>
+					<span className="flex shrink-0 items-center gap-0.5 font-medium whitespace-nowrap text-m-accent">
+						<span>去 Git 查看</span>
+						<ChevronRight size={14} strokeWidth={2} aria-hidden />
+					</span>
+				</button>
+			)}
 
 			<PullToRefresh onRefresh={refresh}>
-				{scope === "changed" ? (
-					<LoadGate state={gitState}>
-						{() =>
-							filteredGitFiles.length === 0 ? (
-								<EmptyState
-									icon={<FileIcon {...ICON} />}
-									title={query ? "没有匹配的改动文件" : "当前没有改动文件"}
-									hint={query ? undefined : "可以切换到「全部文件」浏览完整目录"}
-									action={
-										!query ? (
-											<Button variant="tonal" onClick={() => setManualScope("all")}>
-												浏览全部文件
-											</Button>
-										) : undefined
-									}
-								/>
-							) : (
-								<div className="pt-2" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 24px)" }}>
-									<ListGroup>
-										{filteredGitFiles.map((f) => {
-											const { name, dir: relDir } = splitPath(f.path);
-											return (
-												<ListRow
-													key={f.path}
-													icon={
-														<Chip tone={statusTone(f.status)} className="min-w-11 justify-center">
-															{STATUS_LABEL[f.status] ?? f.status}
-														</Chip>
-													}
-													title={<span className="break-all">{name}</span>}
-													subtitle={relDir ? <span className="break-all">{relDir}</span> : undefined}
-													onClick={() =>
-														setFile({
-															entry: { name, path: f.path, kind: "file", size: 0 },
-															deleted: f.status === "D",
-															repoRelative: true,
-														})
-													}
-												/>
-											);
-										})}
-									</ListGroup>
-								</div>
-							)
-						}
-					</LoadGate>
-				) : (
-					<LoadGate state={dirState}>
-						{(d) =>
-							entries.length === 0 ? (
-								<EmptyState
-									icon={<Folder {...ICON} />}
-									title={query ? "没有找到匹配的文件" : "这个目录是空的"}
-									action={
-										d.parent && !query ? (
-											<Button variant="tonal" icon={<ArrowUp size={17} />} onClick={() => openDir(d.parent as string)}>
-												返回上一级
-											</Button>
-										) : undefined
-									}
-								/>
-							) : (
-								<div className="pt-2" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 24px)" }}>
-									<ListGroup>
-										{d.parent && !query && (
+				<LoadGate state={dirState}>
+					{(d) =>
+						entries.length === 0 ? (
+							<EmptyState
+								icon={<Folder {...ICON} />}
+								title={query ? "没有找到匹配的文件" : "这个目录是空的"}
+								action={
+									d.parent && !query ? (
+										<Button variant="tonal" onClick={() => openDir(d.parent as string)}>
+											返回上一级
+										</Button>
+									) : undefined
+								}
+							/>
+						) : (
+							<div className="pt-2" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 24px)" }}>
+								<ListGroup>
+									{entries.map((e) =>
+										e.kind === "dir" ? (
 											<ListRow
-												icon={<ArrowUp {...ICON} />}
-												title="上一级"
-												onClick={() => openDir(d.parent as string)}
+												key={e.path}
+												icon={<Folder {...ICON} />}
+												title={<span className="break-all">{e.name}</span>}
+												onClick={() => openDir(e.path)}
+											/>
+										) : (
+											<ListRow
+												key={e.path}
+												icon={IMAGE_EXT_RE.test(e.path) ? <ImageIcon {...ICON} /> : <FileIcon {...ICON} />}
+												title={<span className="break-all">{e.name}</span>}
+												right={fmtSize(e.size)}
+												onClick={() => setFile({ entry: e })}
 												chevron={false}
 											/>
-										)}
-										{entries.map((e) =>
-											e.kind === "dir" ? (
-												<ListRow
-													key={e.path}
-													icon={<Folder {...ICON} />}
-													title={<span className="break-all">{e.name}</span>}
-													onClick={() => openDir(e.path)}
-												/>
-											) : (
-												<ListRow
-													key={e.path}
-													icon={IMAGE_EXT_RE.test(e.path) ? <ImageIcon {...ICON} /> : <FileIcon {...ICON} />}
-													title={<span className="break-all">{e.name}</span>}
-													right={fmtSize(e.size)}
-													onClick={() => setFile({ entry: e })}
-													chevron={false}
-												/>
-											),
-										)}
-									</ListGroup>
-								</div>
-							)
-						}
-					</LoadGate>
-				)}
+										),
+									)}
+								</ListGroup>
+							</div>
+						)
+					}
+				</LoadGate>
 			</PullToRefresh>
 		</>
 	);
@@ -287,7 +301,24 @@ export function FilesPanel({ sessionId, embedded = false, active = true }: { ses
 
 	return (
 		<div className="flex h-full flex-col bg-m-bg">
-			<PageHeader title="文件" subtitle="只读浏览" onBack={() => (parentDir && scope === "all" ? openDir(parentDir) : nav.back())} />
+			<PageHeader
+				title={
+					segs.length > 0 && activeSeg ? (
+						<TitleSwitcher
+							label={activeSeg.name}
+							ariaLabel="切换目录层级"
+							popoverTitle="目录层级"
+							items={switcherItems}
+							activeId={activeSeg.path}
+							onSelect={openDir}
+						/>
+					) : (
+						"文件"
+					)
+				}
+				onBack={() => (parentDir ? openDir(parentDir) : nav.back())}
+				right={searchButton}
+			/>
 			{body}
 		</div>
 	);
@@ -295,53 +326,6 @@ export function FilesPanel({ sessionId, embedded = false, active = true }: { ses
 
 export function FilesPage({ route }: PageProps) {
 	return <FilesPanel sessionId={route.params.id} />;
-}
-
-/** Horizontally scrollable capsule breadcrumb; scrolled to the deepest segment. */
-function Crumbs({ data, onOpen }: { data: DirData; onOpen: (path: string) => void }) {
-	const dirPath = data.path ?? "";
-	const roots = Array.isArray(data.roots) ? data.roots : [];
-	const segs = useMemo(() => breadcrumbs(dirPath, roots), [dirPath, roots]);
-	const ref = useRef<HTMLDivElement>(null);
-	useEffect(() => {
-		const el = ref.current;
-		if (el) el.scrollLeft = el.scrollWidth;
-	}, [dirPath]);
-	return (
-		<div className="flex items-center gap-1">
-			{data.parent && (
-				<IconButton
-					variant="plain"
-					size="sm"
-					icon={<ArrowUp size={17} strokeWidth={1.85} />}
-					label="返回上一级"
-					onClick={() => onOpen(data.parent as string)}
-				/>
-			)}
-			<nav aria-label="路径" ref={ref} className="m-noscrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5">
-				{segs.map((s, i) => {
-					const last = i === segs.length - 1;
-					return (
-						<button
-							key={s.path}
-							type="button"
-							aria-current={last ? "location" : undefined}
-							onClick={() => !last && onOpen(s.path)}
-							className="flex min-h-9 shrink-0 items-center justify-center"
-						>
-							<span
-								className={`flex h-8 items-center rounded-m-pill px-3 text-m-xs whitespace-nowrap ${
-									last ? "bg-m-accent-soft font-medium text-m-accent-soft-text" : "bg-m-surface text-m-text-2 active:bg-m-surface-2"
-								}`}
-							>
-								{s.name}
-							</span>
-						</button>
-					);
-				})}
-			</nav>
-		</div>
-	);
 }
 
 function FileViewer({

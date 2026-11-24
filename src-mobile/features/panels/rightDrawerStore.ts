@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { create } from "zustand";
+import type { TitleSwitcherCreate, TitleSwitcherItem } from "../../ui/TitleSwitcher";
 
 export type WorkspaceTab = "sidechat" | "git" | "files" | "terminal" | "services";
 
@@ -29,8 +30,25 @@ export interface DrawerSidechatSwitcher {
 	toggle: () => void;
 }
 
+export interface DrawerTitleSwitcher {
+	label: string;
+	subtitle?: string;
+	ariaLabel?: string;
+	items: readonly TitleSwitcherItem[];
+	activeId: string;
+	onSelect: (id: string) => void;
+	onStep?: (dir: -1 | 1) => void;
+	onRemove?: (id: string) => void;
+	create?: TitleSwitcherCreate;
+	popoverTitle?: string;
+	emptyText?: string;
+}
+
 export interface DrawerTabHeader {
 	title?: string;
+	subtitle?: string;
+	titleSwitcher?: DrawerTitleSwitcher;
+	rightAction?: ReactNode;
 	moreActions?: readonly DrawerMoreAction[];
 	sidechatSwitcher?: DrawerSidechatSwitcher;
 }

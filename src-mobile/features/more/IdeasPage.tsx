@@ -12,7 +12,6 @@ import {
 	Chip,
 	confirm,
 	EmptyState,
-	Field,
 	IconButton,
 	inputCls,
 	ListGroup,
@@ -20,10 +19,11 @@ import {
 	openImage,
 	PageHeader,
 	PullToRefresh,
-	Segmented,
+	SelectRow,
+	TitleSwitcher,
 	toast,
 } from "../../ui";
-import { LoadState, Select, useLoad } from "./controls";
+import { LoadState, useLoad } from "./controls";
 import {
 	buildCreatePayload,
 	buildDispatch,
@@ -186,7 +186,26 @@ function CaptureSheet({
 							setError(null);
 						}}
 					/>
-					<Segmented label="类型" value={kind} options={KIND_OPTIONS} onChange={setKind} />
+					<ListGroup className="!mx-0">
+						<SelectRow
+							title="类型"
+							presentation="menu"
+							value={kind}
+							options={KIND_OPTIONS}
+							onChange={(v) => setKind(v as IdeaKind)}
+						/>
+						<SelectRow
+							title="所属项目"
+							subtitle={dir || undefined}
+							presentation="list"
+							value={dir}
+							options={[
+								{ value: "", label: "全局（不属于项目）" },
+								...dirs.map((d) => ({ value: d, label: baseName(d), hint: d })),
+							]}
+							onChange={setDir}
+						/>
+					</ListGroup>
 					<div className="grid grid-cols-3 gap-2">
 						<Tile icon={<ImageIcon {...ICON} />} label="相册" onClick={() => album.current?.click()} />
 						<Tile icon={<Camera {...ICON} />} label="拍照" onClick={() => camera.current?.click()} />
@@ -213,16 +232,6 @@ function CaptureSheet({
 							))}
 						</div>
 					)}
-					<Field label="所属项目" hint={dir || undefined}>
-						<Select value={dir} onChange={setDir} className="bg-m-card!">
-							<option value="">全局（不属于项目）</option>
-							{dirs.map((d) => (
-								<option key={d} value={d}>
-									{baseName(d)}
-								</option>
-							))}
-						</Select>
-					</Field>
 					{error && <ErrorText>{error}</ErrorText>}
 				</div>
 			</BottomSheet>
@@ -328,7 +337,15 @@ function EditSheet({
 								setError(null);
 							}}
 						/>
-						<Segmented label="类型" value={kind} options={KIND_OPTIONS} onChange={setKind} />
+						<ListGroup className="!mx-0">
+							<SelectRow
+								title="类型"
+								presentation="menu"
+								value={kind}
+								options={KIND_OPTIONS}
+								onChange={(v) => setKind(v as IdeaKind)}
+							/>
+						</ListGroup>
 					</div>
 					<Thumbs paths={imageRefs(idea).map((r) => r.path as string)} />
 					{sess.length > 0 && (
@@ -568,11 +585,21 @@ export function IdeasPage() {
 		{ value: "done", label: `已完成 ${counts.done}` },
 		{ value: "all", label: `全部 ${counts.all}` },
 	] as const;
+	const activeTabLabel = tabs.find((t) => t.value === tab)?.label ?? "进行中";
 
 	return (
 		<div className="relative flex h-full min-h-0 flex-col bg-m-bg-elev text-m-text">
 			<PageHeader
-				title="想法"
+				title={
+					<TitleSwitcher
+						label={`想法 · ${activeTabLabel}`}
+						ariaLabel="筛选想法列表"
+						popoverTitle="筛选范围"
+						items={tabs.map((t) => ({ id: t.value, label: t.label }))}
+						activeId={tab}
+						onSelect={(v) => changeTab(v as IdeaTab)}
+					/>
+				}
 				className="bg-m-bg-elev!"
 				right={
 					<>
@@ -588,11 +615,7 @@ export function IdeasPage() {
 						<IconButton variant="filled" icon={<Plus {...ICON} />} label="添加想法" onClick={() => setCapture(true)} />
 					</>
 				}
-			>
-				<div className="px-4 pt-1 pb-3">
-					<Segmented label="筛选" value={tab} options={tabs} onChange={changeTab} />
-				</div>
-			</PageHeader>
+			/>
 			<PullToRefresh onRefresh={reload}>
 				{data === null ? (
 					<LoadState loading={loading} error={error} onRetry={reload} />

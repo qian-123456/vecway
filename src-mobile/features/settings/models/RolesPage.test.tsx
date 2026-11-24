@@ -23,7 +23,7 @@ describe("role inverse persistence", () => {
   const role = await screen.findByRole<HTMLButtonElement>("button", { name: /全局默认（主力模型）/ });
   await waitFor(() => expect(role.disabled).toBe(false));
   fireEvent.click(role);
-  fireEvent.click(await screen.findByRole("option", { name: /Second/ }));
+  fireEvent.click(await screen.findByRole("option", { name: /second/ }));
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存" })));
   const target = cwd ? project : global;
   expect(target.default).toBe("fixture/second:low");
@@ -41,7 +41,7 @@ it.each(["compound", "inherit"])("requires explicit confirmation before %s role 
  await waitFor(() => expect(role.disabled).toBe(false));
  fireEvent.click(role);
  if(kind==="inherit")fireEvent.click(screen.getByRole("button",{name:"恢复继承"}));
- else{fireEvent.click(await screen.findByRole("option",{name:/Second/}));fireEvent.click(screen.getByRole("radio",{name:"高"}));fireEvent.click(screen.getByRole("button",{name:"保存"}));}
+ else{fireEvent.click(await screen.findByRole("option",{name:/second/}));fireEvent.click(screen.getByRole("button",{name:/思考强度/}));fireEvent.click(screen.getByRole("button",{name:"Low"}));fireEvent.click(screen.getByRole("option",{name:/High/}));fireEvent.click(screen.getByRole("button",{name:"保存"}));}
  expect(request.mock.calls.filter(([method])=>method==="POST")).toHaveLength(0);
  await act(async()=>fireEvent.click(screen.getByRole("button",{name:"确认保存"})));
  expect(request).toHaveBeenCalledWith("POST","/left/roles/set",{cwd:"/confirm/project",scope:"project",table:"roles",name:"default",value:kind==="inherit"?null:"fixture/second:high"});

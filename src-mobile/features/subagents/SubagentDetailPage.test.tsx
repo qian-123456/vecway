@@ -26,9 +26,8 @@ describe("SubagentDetailPage", () => {
 	});
 	afterEach(cleanup);
 
-	it("keeps the full agent name in the scrollable overview, not the fixed header", () => {
+	it("keeps the full agent name in the header and full model name in overview", () => {
 		render(<SubagentDetailPage route={route} />);
-		expect(screen.getByText("子代理详情")).toBeTruthy();
 		expect(screen.getByText("完整可读的子代理任务名称")).toBeTruthy();
 		expect(screen.getByText("provider/long-model-name")).toBeTruthy();
 	});
@@ -36,14 +35,14 @@ describe("SubagentDetailPage", () => {
 	it("progressively discloses thinking, steps, and full tool parameters and results", () => {
 		render(<SubagentDetailPage route={route} />);
 		expect(screen.queryByText("完整思考内容")).toBeNull();
-		expect(screen.queryByText("read")).toBeNull();
-		fireEvent.click(screen.getByRole("button", { name: "思考过程" }));
+		expect(screen.queryByText(/读取.*config\.json/)).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "已处理" }));
+		fireEvent.click(screen.getByRole("button", { name: "已思考" }));
 		expect(screen.getByText("完整思考内容")).toBeTruthy();
-		fireEvent.click(screen.getByRole("button", { name: "已运行 1 个步骤" }));
-		fireEvent.click(screen.getByRole("button", { name: /read.*读取配置文件.*已完成/ }));
-		expect(screen.getByText((text) => text.includes("/project/config.json"))).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: /读取.*完成/ }));
+		expect(screen.getAllByText((text) => text.includes("/project/config.json")).length).toBeGreaterThan(0);
 		expect(screen.getByText("完整工具结果")).toBeTruthy();
-		expect(screen.getByRole("button", { name: "复制参数" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "复制完整输出" })).toBeTruthy();
 	});
 
 	it("uses a full-height action to expand long task requirements", () => {
@@ -88,13 +87,14 @@ describe("SubagentDetailPage", () => {
 		const { rerender } = render(<SubagentDetailPage route={route} />);
 		const thinking = screen.getByRole("button", { name: "思考中" });
 		expect(screen.getByText("思考中").className).toContain("m-shimmer");
-		expect(screen.getByRole("button", { name: "思考过程" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "已处理" }));
+		expect(screen.getByRole("button", { name: "已思考" })).toBeTruthy();
 		fireEvent.click(thinking);
 		expect(screen.getByText("正在继续分析")).toBeTruthy();
 		state.view.info!.summary.status = "completed";
 		rerender(<SubagentDetailPage route={route} />);
 		expect(screen.queryByRole("button", { name: "思考中" })).toBeNull();
-		expect(screen.getAllByRole("button", { name: "思考过程" })).toHaveLength(2);
+		expect(screen.getAllByRole("button", { name: "已思考" })).toHaveLength(2);
 	});
 
 	it("shows the complete failure in a visible danger block without clipping long tokens", () => {
@@ -111,15 +111,15 @@ describe("SubagentDetailPage", () => {
 
 	it("keeps tool failures complete and readable when their step is expanded", () => {
 		const tool = state.messages[0].tools[0];
+		tool.id = "tool-error-read";
 		tool.status = "error";
 		tool.result = `完整工具错误\n${"long-error".repeat(50)}`;
 		render(<SubagentDetailPage route={route} />);
-		fireEvent.click(screen.getByRole("button", { name: /已运行 1 个步骤\s*· 有失败/ }));
-		fireEvent.click(screen.getByRole("button", { name: /read.*读取配置文件.*失败/ }));
+		fireEvent.click(screen.getByRole("button", { name: /读取.*失败/ }));
 		const result = screen.getByText((_, element) => element?.tagName === "PRE" && element.textContent === tool.result);
 		expect(result.className).toContain("text-m-danger");
 		expect(result.className).toContain("[overflow-wrap:anywhere]");
-		expect(screen.getByRole("button", { name: "复制错误" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "复制完整输出" })).toBeTruthy();
 	});
 
 	it("requires parent-turn confirmation and displays a stop conflict without claiming success", async () => {

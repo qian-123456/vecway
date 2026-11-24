@@ -75,10 +75,8 @@ describe("SubagentCapsule", () => {
 		expect(capsule.className).toContain("min-w-0");
 		expect(capsule.className).not.toContain("shrink-0");
 		fireEvent.click(capsule);
-		for (const count of ["1 运行", "1 排队", "1 完成", "1 失败"]) {
-			expect(await screen.findByText(count)).toBeTruthy();
-		}
-		fireEvent.click(screen.getByRole("button", { name: "查看全部子代理" }));
+		expect(await screen.findAllByRole("button", { name: /task/ })).toHaveLength(4);
+		fireEvent.click(screen.getByRole("button", { name: "查看全部子代理（4）" }));
 		expect(nav.push).toHaveBeenCalledWith(paths.subagents(sessionId));
 	});
 });

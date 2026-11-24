@@ -67,8 +67,14 @@ describe("ScheduleFormPage", () => {
 		check('input[type="time"]');
 		check('input[type="datetime-local"]');
 		const choose = async (label: string) => {
-			const button = [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) => b.textContent === label)!;
-			await act(async () => button.click());
+			const rowBtn = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+				b.getAttribute("aria-label")?.startsWith("重复方式"),
+			)!;
+			await act(async () => rowBtn.click());
+			const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find((b) =>
+				b.textContent?.includes(label),
+			)!;
+			await act(async () => item.click());
 		};
 		await choose("仅一次");
 		check('input[type="datetime-local"]');

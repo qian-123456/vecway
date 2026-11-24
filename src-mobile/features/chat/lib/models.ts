@@ -128,7 +128,21 @@ export function currentModelOpt(models: ModelOpt[], current: ModelFacts["current
 	return models.find((m) => isCurrentModel(m, current)) ?? models.find((m) => m.id === current.id) ?? null;
 }
 
-/** Live levels else catalog; `auto` first, `off` last, current level kept even if unlisted. */
+const THINKING_ORDER = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** `levels` reordered as `auto`, `off`, then weakest → strongest effort. */
+function sortThinkingLevels(levels: readonly string[]): string[] {
+	const rank = (level: string) => {
+		const i = THINKING_ORDER.indexOf(level);
+		return i === -1 ? THINKING_ORDER.length : i;
+	};
+	return levels
+		.map((level, i) => ({ level, i }))
+		.sort((a, b) => rank(a.level) - rank(b.level) || a.i - b.i)
+		.map((x) => x.level);
+}
+
+/** Live levels else catalog; `auto`, `off`, then ascending effort; current level kept even if unlisted. */
 export function resolveThinkingLevels(
 	opt: ModelOpt | null | undefined,
 	liveThinking: string[] | null | undefined,
@@ -137,10 +151,10 @@ export function resolveThinkingLevels(
 	const sup = liveThinking && liveThinking.length ? liveThinking : (opt?.thinking ?? []);
 	const cur = currentLevel || "";
 	if (!sup.length) return cur ? [cur] : [];
-	const levels = ["auto", ...sup.filter((l) => l !== "auto" && l !== "off")];
-	levels.push("off");
+	const levels = ["auto", ...sup.filter((l) => l !== "auto")];
+	if (!levels.includes("off")) levels.push("off");
 	if (cur && !levels.includes(cur)) levels.push(cur);
-	return levels;
+	return sortThinkingLevels(levels);
 }
 
 /** Display name: the catalog name when it adds information, else the id. */

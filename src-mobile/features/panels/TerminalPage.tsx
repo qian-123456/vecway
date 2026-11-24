@@ -8,17 +8,17 @@ import {
 	Plus,
 	RefreshCw,
 	Sparkles,
-	X,
+	Trash2,
 } from "lucide-react";
 import type { FitAddon as Fit } from "@xterm/addon-fit";
 import type { Terminal as XTerm } from "@xterm/xterm";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ApiError, api, apiUrl, errorMessage } from "../../core/api";
 import { createEventSource } from "../../core/nativeBridge";
 import { nav, paths, type PageProps } from "../../core/nav";
 import { events, type EventSourceLike } from "../../core/sse";
 import { isUnauthorized, useConnection } from "../../core/stores/connection";
-import { Button, EmptyState, IconButton, PageHeader, confirm, inputCls, toast } from "../../ui";
+import { Button, EmptyState, IconButton, PageHeader, TitleSwitcher, confirm, inputCls, toast } from "../../ui";
 import { useKeyboardOpen } from "../chat/components/ComposerToolbar";
 import { abbreviateHomePath } from "../sessions/NewSessionSheet";
 import { SIDECHAT_DRAFT_PREFIX } from "./SidechatPage";
@@ -72,6 +72,19 @@ function statusDisplay(phase: Phase, hasOutput: boolean): { label: string; tone:
 	return { label: "输出流断开 · 重连", tone: "bad" };
 }
 
+interface PaneMeta {
+	cwd: string | null;
+	statusLabel: string;
+	tone: "ok" | "wait" | "bad";
+}
+
+interface PaneActions {
+	reconnect: () => Promise<void>;
+	clear: () => void;
+	openBlockSelect: () => void;
+	close: () => Promise<void>;
+}
+
 export function TerminalPanel({
 	sessionId,
 	embedded = false,
@@ -88,8 +101,10 @@ export function TerminalPanel({
 	const [tabs, setTabs] = useState([1]);
 	const tabsRef = useRef(tabs);
 	const [active, setActive] = useState(1);
+	const [metaByTab, setMetaByTab] = useState<Record<number, PaneMeta>>({});
+	const paneActionsRef = useRef<Record<number, PaneActions | null>>({});
 
-	const addTab = () => {
+	const addTab = useCallback(() => {
 		if (tabsRef.current.length >= 4) {
 			toast("最多同时打开 4 个终端，请先关闭一个终端", { kind: "error" });
 			return;
@@ -98,44 +113,123 @@ export function TerminalPanel({
 		tabsRef.current = [...tabsRef.current, id];
 		setTabs(tabsRef.current);
 		setActive(id);
-	};
+	}, []);
 
-	const removeTab = (id: number) => {
+	const removeTab = useCallback((id: number) => {
 		const remaining = tabsRef.current.filter((tab) => tab !== id);
 		tabsRef.current = remaining;
 		setTabs(remaining);
 		setActive((current) => (current === id ? remaining[remaining.length - 1] ?? 0 : current));
-	};
+		setMetaByTab((prev) => {
+			if (!(id in prev)) return prev;
+			const next = { ...prev };
+			delete next[id];
+			return next;
+		});
+	}, []);
 
-	const tabBar = (
-		<div className="flex shrink-0 items-center justify-between gap-2 border-b border-m-border px-3 py-1.5">
-			<div role="tablist" aria-label="终端实例" className="m-noscrollbar flex min-w-0 flex-1 gap-1.5 overflow-x-auto">
-				{tabs.map((id) => (
-					<button
-						key={id}
-						id={`terminal-tab-${id}`}
-						type="button"
-						role="tab"
-						aria-selected={active === id}
-						aria-controls={`terminal-pane-${id}`}
-						onClick={() => setActive(id)}
-						className={`min-h-8 shrink-0 rounded-m-pill px-3 text-m-xs font-medium whitespace-nowrap ${
-							active === id ? "bg-m-accent-soft text-m-accent-soft-text" : "bg-m-surface text-m-text-2"
-						}`}
-					>
-						终端 {id}
-					</button>
-				))}
-			</div>
-			{embedded && (
-				<IconButton variant="filled" size="sm" icon={<Plus size={17} strokeWidth={2} />} label="新终端" onClick={addTab} />
-			)}
-		</div>
+	const updateMeta = useCallback((id: number, meta: PaneMeta) => {
+		setMetaByTab((prev) => {
+			const cur = prev[id];
+			if (cur && cur.cwd === meta.cwd && cur.statusLabel === meta.statusLabel && cur.tone === meta.tone) {
+				return prev;
+			}
+			return { ...prev, [id]: meta };
+		});
+	}, []);
+
+	const stepTab = useCallback(
+		(dir: -1 | 1) => {
+			if (tabs.length < 2) return;
+			const idx = tabs.indexOf(active);
+			const nextIdx = (idx + dir + tabs.length) % tabs.length;
+			if (tabs[nextIdx] !== undefined) setActive(tabs[nextIdx]);
+		},
+		[tabs, active],
 	);
+
+	const switcherItems = useMemo(
+		() =>
+			tabs.map((id) => {
+				const meta = metaByTab[id];
+				return {
+					id: String(id),
+					label: `终端 ${id}`,
+					subtitle: meta?.cwd ? abbreviateHomePath(meta.cwd) : meta?.statusLabel || "连接中",
+					badge:
+						meta?.tone === "ok"
+							? "var(--m-success)"
+							: meta?.tone === "bad"
+								? "var(--m-danger)"
+								: "var(--m-accent)",
+					removable: tabs.length > 1,
+				};
+			}),
+		[tabs, metaByTab],
+	);
+
+	const moreActions = useMemo(() => {
+		if (!active || !tabs.includes(active)) return [];
+		return [
+			{
+				id: "reconnect",
+				label: "重连当前终端",
+				icon: <RefreshCw size={17} strokeWidth={1.75} />,
+				onSelect: () => void paneActionsRef.current[active]?.reconnect(),
+			},
+			{
+				id: "clear",
+				label: "清屏",
+				icon: <Eraser size={17} strokeWidth={1.75} />,
+				onSelect: () => paneActionsRef.current[active]?.clear(),
+			},
+			{
+				id: "send-ai",
+				label: "选取输出发给 AI",
+				icon: <Sparkles size={17} strokeWidth={1.75} />,
+				onSelect: () => paneActionsRef.current[active]?.openBlockSelect(),
+			},
+			{
+				id: "close",
+				label: "关闭当前终端",
+				icon: <Trash2 size={17} strokeWidth={1.75} />,
+				danger: true,
+				onSelect: () => void paneActionsRef.current[active]?.close(),
+			},
+		];
+	}, [active, tabs]);
+
+	useEffect(() => {
+		if (!embedded) return;
+		useRightDrawer.getState().setTabHeader(sessionId, "terminal", {
+			title: tabs.length > 0 ? `终端 ${active}` : "终端",
+			titleSwitcher:
+				tabs.length > 0
+					? {
+							label: `终端 ${active}`,
+							ariaLabel: "切换终端",
+							popoverTitle: "全部终端",
+							items: switcherItems,
+							activeId: String(active),
+							onSelect: (id) => setActive(Number(id)),
+							onStep: tabs.length > 1 ? stepTab : undefined,
+							onRemove: (id) => void paneActionsRef.current[Number(id)]?.close(),
+							create: tabs.length < 4 ? { label: "新终端", onClick: addTab } : undefined,
+						}
+					: undefined,
+			moreActions,
+		});
+	}, [embedded, sessionId, tabs.length, active, switcherItems, stepTab, addTab, moreActions]);
+
+	useEffect(() => {
+		if (!embedded) return;
+		return () => {
+			useRightDrawer.getState().clearTabHeader(sessionId, "terminal");
+		};
+	}, [embedded, sessionId]);
 
 	const body = (
 		<div className="flex min-h-0 flex-1 flex-col bg-m-bg">
-			{tabBar}
 			{tabs.map((id) => (
 				<TerminalPane
 					key={id}
@@ -143,6 +237,8 @@ export function TerminalPanel({
 					tabId={id}
 					active={active === id && isPanelActive}
 					embedded={embedded}
+					actionsRef={paneActionsRef}
+					onMetaChange={updateMeta}
 					onClosed={() => removeTab(id)}
 				/>
 			))}
@@ -161,9 +257,25 @@ export function TerminalPanel({
 	return (
 		<div className="flex h-full flex-col bg-m-bg">
 			<PageHeader
-				title="终端"
+				title={
+					tabs.length > 0 ? (
+						<TitleSwitcher
+							label={`终端 ${active}`}
+							ariaLabel="切换终端"
+							popoverTitle="全部终端"
+							items={switcherItems}
+							activeId={String(active)}
+							onSelect={(id) => setActive(Number(id))}
+							onStep={tabs.length > 1 ? stepTab : undefined}
+							onRemove={(id) => void paneActionsRef.current[Number(id)]?.close()}
+							create={tabs.length < 4 ? { label: "新终端", onClick: addTab } : undefined}
+						/>
+					) : (
+						"终端"
+					)
+				}
 				onBack={() => nav.back()}
-				right={<IconButton variant="filled" icon={<Plus size={22} strokeWidth={1.75} />} label="新终端" onClick={addTab} />}
+				right={<IconButton variant="plain" icon={<Plus size={22} strokeWidth={1.75} />} label="新终端" onClick={addTab} />}
 			/>
 			{body}
 		</div>
@@ -180,12 +292,16 @@ function TerminalPane({
 	tabId,
 	active,
 	embedded,
+	actionsRef,
+	onMetaChange,
 	onClosed,
 }: {
 	sessionId: string;
 	tabId: number;
 	active: boolean;
 	embedded: boolean;
+	actionsRef: RefObject<Record<number, PaneActions | null>>;
+	onMetaChange: (id: number, meta: PaneMeta) => void;
 	onClosed: () => void;
 }) {
 	const activeRef = useRef(active);
@@ -637,6 +753,22 @@ function TerminalPane({
 	const inputActive = kbOpen || focused;
 	const disconnected = !streamOpen && (phase === "dropped" || phase === "reconnecting" || phase === "error" || phase === "exited");
 
+	useEffect(() => {
+		onMetaChange(tabId, { cwd, statusLabel: status.label, tone: status.tone });
+	}, [tabId, cwd, status.label, status.tone, onMetaChange]);
+
+	useEffect(() => {
+		actionsRef.current[tabId] = {
+			reconnect,
+			clear: () => term.current?.clear(),
+			openBlockSelect,
+			close: handleClose,
+		};
+		return () => {
+			if (actionsRef.current) delete actionsRef.current[tabId];
+		};
+	}, [actionsRef, tabId, reconnect, openBlockSelect, handleClose]);
+
 	return (
 		<div
 			id={`terminal-pane-${tabId}`}
@@ -760,10 +892,12 @@ function TerminalPane({
 			<div className="flex shrink-0 items-center justify-between gap-2 px-3 pt-1.5 pb-1">
 				<div className="flex min-w-0 flex-1 items-center gap-2">
 					{cwd && (
-						<span className="min-w-0 truncate rounded-m-pill bg-m-surface px-2.5 py-0.5 font-m-mono text-m-xs text-m-text-2">
+						<span className="min-w-0 truncate font-m-mono text-m-xs text-m-text-3">
 							{abbreviateHomePath(cwd)}
 						</span>
 					)}
+				</div>
+				<div className="flex shrink-0 items-center gap-2">
 					<div role="status" className={`flex shrink-0 items-center gap-1.5 text-m-xs whitespace-nowrap ${bad ? "text-m-danger" : "text-m-text-3"}`}>
 						<span
 							aria-hidden
@@ -773,12 +907,9 @@ function TerminalPane({
 						/>
 						<span>{status.label}</span>
 					</div>
-				</div>
-				<div className="flex shrink-0 items-center gap-0.5">
 					{bad && (
-						<IconButton variant="plain" size="sm" icon={<RefreshCw size={17} strokeWidth={1.75} />} label="重连终端" onClick={() => void reconnect()} />
+						<IconButton variant="plain" size="sm" icon={<RefreshCw size={16} strokeWidth={1.75} />} label="重连终端" onClick={() => void reconnect()} />
 					)}
-					<IconButton variant="plain" size="sm" icon={<X size={17} strokeWidth={1.75} />} label={`关闭终端 ${tabId}`} onClick={() => void handleClose()} />
 				</div>
 			</div>
 

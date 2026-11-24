@@ -84,7 +84,7 @@ function Pre({ text, err }: { text: string; err?: boolean }) {
 	return (
 		<>
 			<pre
-				className={`m-selectable m-0 whitespace-pre-wrap break-words font-m-mono text-m-xs leading-5 ${err ? "text-m-danger" : "text-m-text-2"}`}
+				className={`m-selectable m-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] font-m-mono text-m-xs leading-5 ${err ? "text-m-danger" : "text-m-text-2"}`}
 			>
 				{cut ? text.slice(0, RESULT_CAP) : text}
 			</pre>
@@ -112,6 +112,7 @@ const CODE_LANGUAGES: Record<string, string> = {
 /** Only structured or explicitly identified code uses CodeBlock; prose stays intact and bounded. */
 function Result({ text, tool }: { text: string; tool: ToolItem }) {
 	const [all, setAll] = useState(false);
+	if (tool.status === "error") return <Pre text={text} err />;
 	let lang = "";
 	const trimmed = text.trimStart();
 	if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
@@ -128,7 +129,7 @@ function Result({ text, tool }: { text: string; tool: ToolItem }) {
 		const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase();
 		if (ext) lang = CODE_LANGUAGES[ext] ?? "";
 	}
-	if (!lang) return <Pre text={text} err={tool.status === "error"} />;
+	if (!lang) return <Pre text={text} />;
 	const cut = !all && text.length > RESULT_CAP;
 	const shown = cut ? text.slice(0, RESULT_CAP) : text;
 	return (

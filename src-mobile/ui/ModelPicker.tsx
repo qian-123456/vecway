@@ -1,7 +1,7 @@
-import { Check, ChevronLeft, ChevronRight, Search } from "lucide-react";
-import { useMemo, useState } from "react";
-import { Segmented } from "./controls";
-import { thinkLabel } from "../features/chat/lib/models";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { ThinkingLevelPopover } from "../features/chat/components/ThinkingLevelPopover";
+import { desktopThinkingLabel, resolveThinkingLevels, thinkLabel } from "../features/chat/lib/models";
 
 /** Minimal catalog model shape (mirrors the backend `Model` contract). */
 export interface PickerModel {
@@ -97,16 +97,49 @@ export function ModelPicker({
 	const shown = useMemo(() => (searching ? filterModels(models, query) : (paneModels ?? [])), [searching, models, query, paneModels]);
 	const selected = value ? models.find((m) => m.provider === value.provider && m.id === value.modelId) : undefined;
 	const options = thinking ? thinkingOptions(selected) : [];
+	const levels = useMemo(() => {
+		if (!thinking || options.length === 0) return [];
+		const modelOpt = selected
+			? {
+					...selected,
+					contextWindow: selected.contextWindow ?? undefined,
+					reasoning: selected.reasoning ?? undefined,
+				}
+			: undefined;
+		return resolveThinkingLevels(modelOpt, selected?.thinking, thinking.value ?? THINKING_AUTO);
+	}, [thinking, options.length, selected]);
+	const [thinkOpen, setThinkOpen] = useState(false);
+	const thinkBtnRef = useRef<HTMLButtonElement>(null);
 	const listing = searching || paneModels != null;
 
 	return (
 		<div className={`flex min-h-0 flex-col gap-3 ${className}`}>
 			<div role="status" className="px-1 text-m-xs text-m-text-3">OMP 未提供完整性证明；列表可能不完整，模型可用性尚未验证。</div>
 			{thinking && options.length > 0 && (
-				<section className="flex shrink-0 flex-col gap-2">
-					<div className="px-1 text-m-xs text-m-text-3">思考强度</div>
-					<Segmented label="思考强度" value={thinking.value ?? THINKING_AUTO} options={options.map((o) => ({ value: o.value ?? THINKING_AUTO, label: o.label }))} onChange={(level) => thinking.onChange(level === THINKING_AUTO ? null : level)} className="m-noscrollbar overflow-x-auto" />
-				</section>
+				<div className="flex shrink-0 items-center justify-between gap-3 rounded-m-lg bg-m-surface px-4 py-2.5">
+					<span className="text-m-sm font-medium text-m-text">思考强度</span>
+					<button
+						ref={thinkBtnRef}
+						type="button"
+						aria-label={`思考强度：${desktopThinkingLabel(thinking.value ?? THINKING_AUTO)}`}
+						onClick={() => setThinkOpen((v) => !v)}
+						className="m-press inline-flex min-h-9 items-center gap-1 rounded-m-sm px-2 text-m-sm text-m-accent active:bg-m-surface-hover"
+					>
+						<span>{desktopThinkingLabel(thinking.value ?? THINKING_AUTO)}</span>
+						<ChevronDown size={14} strokeWidth={2} aria-hidden />
+					</button>
+					<ThinkingLevelPopover
+						open={thinkOpen}
+						onClose={() => setThinkOpen(false)}
+						anchorEl={thinkBtnRef.current}
+						placement="bottom-end"
+						levels={levels}
+						value={thinking.value ?? THINKING_AUTO}
+						onChange={(level) => {
+							thinking.onChange(level === THINKING_AUTO ? null : level);
+						}}
+					/>
+				</div>
 			)}
 			<label className="flex min-h-12 shrink-0 items-center gap-3 rounded-m-pill bg-m-surface px-4">
 				<Search size={18} className="shrink-0 text-m-text-3" aria-hidden />
@@ -148,12 +181,14 @@ export function ModelPicker({
 									}`}
 								>
 									<span className="min-w-0 flex-1">
-										<span className="block text-m-md break-words text-m-text">{m.name || m.id}</span>
-										<span className="mt-0.5 block font-m-mono text-m-xs break-all text-m-text-3">
-											{searching ? `${m.provider}/${m.id}` : m.id}
-										</span>
+										<span className="block font-m-mono text-[13.5px] break-all text-m-text">{m.id}</span>
+										{searching && (
+											<span className="mt-0.5 block text-[11px] break-all text-m-text-3">
+												{m.provider}
+											</span>
+										)}
 									</span>
-									{active && <Check size={20} className="shrink-0 text-m-accent" aria-hidden />}
+									{active && <Check size={18} className="shrink-0 text-m-accent" aria-hidden />}
 								</button>
 							);
 						})}

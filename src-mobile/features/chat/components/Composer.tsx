@@ -27,7 +27,15 @@ import { WorkspacePickerSheet } from "./WorkspacePickerSheet";
 type Sheet = "plus" | "goal" | "context" | "finder" | "workspace" | null;
 const TONE_TEXT = { neutral: "text-m-text-3", warn: "text-m-warn", danger: "text-m-danger" } as const;
 
-export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpenPicker?: () => void }) {
+export function Composer({
+	sessionId,
+	onOpenPicker,
+	onOpenThinking,
+}: {
+	sessionId: string;
+	onOpenPicker?: () => void;
+	onOpenThinking?: (anchor: HTMLElement | null) => void;
+}) {
 	const { controller } = useChatUi();
 	const session = useSession(sessionId);
 	const working = useChat((s) => s.working);
@@ -295,14 +303,14 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 
 			{showEarBar && (
 				<div className="mb-1.5 flex items-center justify-between gap-2 px-2.5 text-m-xs">
-					<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+					<div className="m-noscrollbar flex min-w-0 flex-1 flex-nowrap items-center gap-x-2.5 overflow-x-auto py-0.5">
 						{working && (
 							<button
 								type="button"
 								aria-label={`发送方式：${BEHAVIOR_LABEL[behavior]}，点击切换`}
 								title={BEHAVIOR_HINT[behavior]}
 								onClick={() => setBehavior(behavior === "followUp" ? "steer" : "followUp")}
-								className="inline-flex items-center gap-1.5 font-medium whitespace-nowrap text-m-text active:opacity-70"
+								className="inline-flex shrink-0 items-center gap-1.5 font-medium whitespace-nowrap text-m-text active:opacity-70"
 							>
 								<span aria-hidden className="size-1.5 shrink-0 rounded-full bg-m-accent m-pulse" />
 								<span>{BEHAVIOR_LABEL[behavior]} ⇄</span>
@@ -312,7 +320,7 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 							<button
 								type="button"
 								onClick={() => void togglePlan()}
-								className="inline-flex items-center gap-1 whitespace-nowrap text-m-text-2 active:text-m-text"
+								className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-m-text-2 active:text-m-text"
 							>
 								<Lightbulb size={12} className="shrink-0 text-m-accent" aria-hidden />
 								<span>规划模式</span>
@@ -323,14 +331,14 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 							<button
 								type="button"
 								onClick={() => setSheet("goal")}
-								className="inline-flex items-center gap-1 whitespace-nowrap text-m-text-2 active:text-m-text"
+								className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-m-text-2 active:text-m-text"
 							>
 								<Target size={12} className="shrink-0 text-m-text-3" aria-hidden />
 								<span>目标</span>
 							</button>
 						)}
 						{queued && (
-							<span className="whitespace-nowrap text-m-accent">{queued}</span>
+							<span className="shrink-0 whitespace-nowrap text-m-accent">{queued}</span>
 						)}
 					</div>
 					{working && canSend && (
@@ -363,8 +371,8 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 				externalStopBar
 				model={cstate?.model}
 				thinking={cstate?.thinkingLevel}
-				onModel={onOpenPicker}
-				onThinking={onOpenPicker}
+				onModel={() => onOpenPicker?.()}
+				onThinking={(el) => (onOpenThinking ? onOpenThinking(el ?? null) : onOpenPicker?.())}
 				contextText={formatContextPercent(pct) ?? "未知"}
 				contextPercent={pct}
 				contextToneClass={TONE_TEXT[tone]}
@@ -383,20 +391,19 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 
 			{/* Native photo/gallery inputs share the existing attachment upload and error flow. */}
 			<BottomSheet open={sheet === "plus"} onClose={close}>
-				<div className="grid grid-cols-3 gap-3 px-4 pt-1">
+				<div className="grid grid-cols-4 gap-2 px-4 pt-1">
+					<ActionTile icon={<Camera size={22} strokeWidth={1.75} />} label="拍照" onClick={() => { close(); fileCamera.current?.click(); }} />
+					<ActionTile icon={<ImagePlus size={22} strokeWidth={1.75} />} label="相册" onClick={() => { close(); fileGallery.current?.click(); }} />
 					<ActionTile
-						icon={<Paperclip size={24} strokeWidth={1.75} />}
+						icon={<Paperclip size={22} strokeWidth={1.75} />}
 						label="文件"
 						onClick={() => {
 							close();
 							fileAny.current?.click();
 						}}
 					/>
-					<ActionTile icon={<Camera size={24} strokeWidth={1.75} />} label="拍照" onClick={() => { close(); fileCamera.current?.click(); }} />
-					<ActionTile icon={<ImagePlus size={24} strokeWidth={1.75} />} label="相册" onClick={() => { close(); fileGallery.current?.click(); }} />
-					<ActionTile icon={<Monitor size={24} strokeWidth={1.75} />} label="电脑端选中项" onClick={() => setSheet("finder")} />
 					<ActionTile
-						icon={<PenLine size={24} strokeWidth={1.75} />}
+						icon={<PenLine size={22} strokeWidth={1.75} />}
 						label="草图"
 						onClick={() => {
 							close();
@@ -406,20 +413,26 @@ export function Composer({ sessionId, onOpenPicker }: { sessionId: string; onOpe
 				</div>
 				<div className="pt-3 pb-3">
 					<MenuRow
-						icon={<FolderOpen size={22} strokeWidth={1.75} />}
-						label="在项目中工作"
+						icon={<Monitor size={21} strokeWidth={1.75} />}
+						label="电脑端文件"
+						hint="插入电脑工作区中的文件"
+						onClick={() => setSheet("finder")}
+					/>
+					<MenuRow
+						icon={<FolderOpen size={21} strokeWidth={1.75} />}
+						label="切换工作目录"
 						hint={cwd ? baseName(cwd) : "选择项目目录"}
 						onClick={() => setSheet("workspace")}
 					/>
 					<MenuRow
-						icon={<Target size={22} strokeWidth={1.75} />}
+						icon={<Target size={21} strokeWidth={1.75} />}
 						label="目标"
-						hint={goal ? `${goalLabel(goal)}：${goal.objective}` : "设定后会持续朝它推进"}
+						hint={goal ? `${goalLabel(goal)}：${goal.objective}` : "设定持续推进的任务目标"}
 						onClick={() => setSheet("goal")}
 					/>
-					<div className="flex min-h-13 w-full items-center gap-4 py-1 pr-4 pl-5">
+					<div className="flex min-h-13 w-full items-center gap-3.5 py-1.5 pr-4 pl-5">
 						<span className="flex w-6 shrink-0 items-center justify-center text-m-text-2">
-							<Lightbulb size={22} strokeWidth={1.75} />
+							<Lightbulb size={21} strokeWidth={1.75} />
 						</span>
 						<span className="min-w-0 flex-1">
 							<span className="block text-m-md text-m-text">规划模式</span>

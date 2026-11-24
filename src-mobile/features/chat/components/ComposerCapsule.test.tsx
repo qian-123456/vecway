@@ -16,7 +16,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
 describe("ComposerCapsule", () => {
-	it("renders a stable desktop-style 2-row composer with unified model-thinking and compact context ring", () => {
+	it("renders a stable desktop-style 2-row composer with split model and thinking triggers plus compact context ring", () => {
 		const onModel = vi.fn();
 		const onThinking = vi.fn();
 		const onContext = vi.fn();
@@ -25,12 +25,14 @@ describe("ComposerCapsule", () => {
 		);
 		expect(container.querySelector(".m-glass-panel, .m-glass-btn")).toBeNull();
 		expect(screen.getByRole("textbox").closest(".bg-m-composer-bg")).not.toBeNull();
-		const modelBtn = screen.getByRole("button", { name: "当前模型：gpt-5，思考强度：High，点击切换" });
-		expect(modelBtn.className).toContain("rounded-lg");
+		const modelBtn = screen.getByRole("button", { name: "当前模型：gpt-5，点击切换" });
+		const thinkBtn = screen.getByRole("button", { name: "思考强度：High，点击切换" });
 		expect(modelBtn.textContent).toContain("gpt-5");
-		expect(modelBtn.textContent).toContain("High");
+		expect(thinkBtn.textContent).toContain("High");
 		fireEvent.click(modelBtn);
 		expect(onModel).toHaveBeenCalledTimes(1);
+		fireEvent.click(thinkBtn);
+		expect(onThinking).toHaveBeenCalledTimes(1);
 
 		const context = screen.getByRole("button", { name: "上下文用量：15%" });
 		fireEvent.click(context);
@@ -135,7 +137,7 @@ describe("ComposerCapsule", () => {
   expect(onStop).toHaveBeenCalledTimes(1);
 	});
 
-	it("unifies model and English thinking trigger while truncating only long model names", () => {
+	it("keeps split model and English thinking triggers while truncating only long model names", () => {
 		const onModel = vi.fn();
 		const onThinking = vi.fn();
 		render(
@@ -151,12 +153,15 @@ describe("ComposerCapsule", () => {
 				onThinking={onThinking}
 			/>,
 		);
-		const modelBtn = screen.getByRole("button", { name: "当前模型：very-long-custom-model-slug，思考强度：High，点击切换" });
+		const modelBtn = screen.getByRole("button", { name: "当前模型：very-long-custom-model-slug，点击切换" });
+		const thinkBtn = screen.getByRole("button", { name: "思考强度：High，点击切换" });
 		expect(modelBtn.textContent).toContain("very-long-custom-model-slug");
-		expect(modelBtn.textContent).toContain("High");
+		expect(thinkBtn.textContent).toContain("High");
 		expect(modelBtn.querySelector(".truncate")).not.toBeNull();
 		fireEvent.click(modelBtn);
 		expect(onModel).toHaveBeenCalledTimes(1);
+		fireEvent.click(thinkBtn);
+		expect(onThinking).toHaveBeenCalledTimes(1);
 
 		const contextBtn = screen.getByRole("button", { name: "上下文用量：25%" });
 		expect(contextBtn.querySelectorAll("circle")).toHaveLength(2);
@@ -174,10 +179,11 @@ describe("ComposerCapsule", () => {
 				onThinking={() => {}}
 			/>,
 		);
-		const modelBtn = screen.getByRole("button", { name: "当前模型：gemini-4-neon，思考强度：High，点击切换" });
+		const modelBtn = screen.getByRole("button", { name: "当前模型：gemini-4-neon，点击切换" });
+		const thinkBtn = screen.getByRole("button", { name: "思考强度：High，点击切换" });
 		expect(modelBtn.textContent).toContain("gemini-4-neon");
-		expect(modelBtn.textContent).toContain("High");
+		expect(thinkBtn.textContent).toContain("High");
 		expect(modelBtn.textContent).not.toContain(":high");
-		expect(modelBtn.textContent).not.toContain("Auto");
+		expect(thinkBtn.textContent).not.toContain("Auto");
 	});
 });

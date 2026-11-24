@@ -44,7 +44,7 @@ async function openNewSidechat() {
 	const view = render(<SidechatPage route={route} />);
 	await flush();
 	fireEvent.click(screen.getByRole("button", { name: "切换辅助对话" }));
-	fireEvent.click(screen.getByRole("button", { name: "新建辅助对话" }));
+	fireEvent.click(screen.getByRole("menuitem", { name: "新建辅助对话" }));
 	return view;
 }
 function refetch() { act(() => events.emit("rpc", { sessionId: "thread", frame: { type: "message_end" } })); }
@@ -143,7 +143,7 @@ describe("sidechat message delivery", () => {
 		const view = await openThread();
 		view.rerender(<SidechatPage route={{ ...route, params: { id: "other" } }} />); await flush();
 		fireEvent.click(screen.getByRole("button", { name: "切换辅助对话" }));
-		fireEvent.click(screen.getByRole("button", { name: "新建辅助对话" }));
+		fireEvent.click(screen.getByRole("menuitem", { name: "新建辅助对话" }));
 		expect(screen.getByPlaceholderText("问一个问题，开始辅助对话")).toBeTruthy();
 		create = async () => ({ sessionId: "new-thread" });
 		await type("新父会话问题");

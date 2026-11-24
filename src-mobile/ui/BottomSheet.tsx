@@ -19,6 +19,7 @@ export function BottomSheet({
 	open,
 	onClose,
 	title,
+	ariaLabel,
 	subtitle,
 	children,
 	footer,
@@ -29,6 +30,7 @@ export function BottomSheet({
 	open: boolean;
 	onClose: () => void;
 	title?: ReactNode;
+	ariaLabel?: string;
 	subtitle?: ReactNode;
 	children: ReactNode;
 	footer?: ReactNode;
@@ -194,7 +196,7 @@ export function BottomSheet({
 				ref={sheetRef}
 				role="dialog"
 				aria-modal={isTopModal ? "true" : undefined}
-				aria-label={typeof activeTitle === "string" ? activeTitle : undefined}
+				aria-label={ariaLabel ?? (typeof activeTitle === "string" ? activeTitle : undefined)}
 				tabIndex={-1}
 				data-visible={visible ? "true" : "false"}
 				className={`m-sheet-surface absolute inset-x-0 bottom-0 flex flex-col overflow-hidden rounded-t-m-xl bg-m-bg-elev text-m-text outline-none ${visible ? "translate-y-0" : "translate-y-full"} ${className}`}

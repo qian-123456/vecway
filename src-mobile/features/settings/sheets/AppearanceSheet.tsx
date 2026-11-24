@@ -1,9 +1,83 @@
 import { Check } from "lucide-react";
 import { DARK_THEMES, LIGHT_THEMES, resolveThemeId, type MobileThemeDef } from "../../../app/themes";
-import { usePrefs } from "../../../core/stores/prefs";
-import { ListGroup, Segmented, Switch } from "../../../ui";
+import { usePrefs, type SchemePref } from "../../../core/stores/prefs";
+import { ListGroup, SelectRow, Switch } from "../../../ui";
 import { SettingRow, SettingsSheet } from "../rows";
-import { FOLD_OPEN_KEY, MSG_SIZE_KEY, MSG_SIZES, msgSizeFromPref, msgSizePx, SCHEMES } from "../settingsMap";
+import { FOLD_OPEN_KEY, MSG_SIZE_KEY, MSG_SIZES, msgSizeFromPref, msgSizePx } from "../settingsMap";
+
+function SchemeSelector({
+	value,
+	onChange,
+}: {
+	value: SchemePref;
+	onChange: (next: SchemePref) => void;
+}) {
+	const items: ReadonlyArray<{ value: SchemePref; label: string }> = [
+		{ value: "light", label: "浅色" },
+		{ value: "dark", label: "深色" },
+		{ value: "system", label: "跟随系统" },
+	];
+	return (
+		<div role="radiogroup" aria-label="色彩模式" className="grid grid-cols-3 gap-3 pt-1">
+			{items.map((item) => {
+				const selected = value === item.value;
+				return (
+					<button
+						key={item.value}
+						type="button"
+						role="radio"
+						aria-checked={selected}
+						onClick={() => onChange(item.value)}
+						className="flex flex-col items-center gap-2 text-center active:scale-[0.97] transition-transform duration-(--m-dur-press)"
+					>
+						<span
+							aria-hidden
+							className={`relative flex h-20 w-full overflow-hidden rounded-[12px] border-2 p-1.5 transition-colors ${
+								selected ? "border-m-accent shadow-sm" : "border-m-border-strong"
+							}`}
+							style={
+								item.value === "light"
+									? { backgroundColor: "#F6F6F4" }
+									: item.value === "dark"
+										? { backgroundColor: "#14161A" }
+										: { background: "linear-gradient(135deg, #F6F6F4 50%, #14161A 50%)" }
+							}
+						>
+							{/* Miniature Apple-style chat frame preview */}
+							<span className="flex w-full flex-col justify-between p-1">
+								<span className="flex justify-end">
+									<span
+										className="h-2 w-8 rounded-[5px_5px_2px_5px]"
+										style={{ backgroundColor: item.value === "light" ? "#2563EB" : "#3B82F6" }}
+									/>
+								</span>
+								<span className="space-y-1">
+									<span
+										className="block h-1.5 w-3/4 rounded-full"
+										style={{ backgroundColor: item.value === "light" ? "#1C1917" : "#F3F4F6", opacity: 0.72 }}
+									/>
+									<span
+										className="block h-1.5 w-1/2 rounded-full"
+										style={{ backgroundColor: item.value === "light" ? "#1C1917" : "#F3F4F6", opacity: 0.35 }}
+									/>
+								</span>
+							</span>
+						</span>
+						<span className="text-m-xs font-medium text-m-text">{item.label}</span>
+						<span
+							aria-hidden
+							className={`flex h-5 w-5 items-center justify-center rounded-full border transition-colors ${
+								selected ? "border-m-accent bg-m-accent text-white" : "border-m-border-strong bg-transparent"
+							}`}
+						>
+							{selected && <Check size={12} strokeWidth={2.5} />}
+						</span>
+					</button>
+				);
+			})}
+		</div>
+	);
+}
 
 function ThemeSwatchGrid({
 	themes,
@@ -86,9 +160,9 @@ export function AppearanceSheet({ open, onClose }: { open: boolean; onClose: () 
 
 	return (
 		<SettingsSheet open={open} onClose={onClose} title="外观设置">
-			<ListGroup note="外观只影响这台手机，不会改动电脑上的设置。">
-				<SettingRow name="色彩模式" hint="跟随系统，或固定为浅色、深色" stacked>
-					<Segmented label="色彩模式" value={scheme} options={SCHEMES} onChange={(v) => set({ scheme: v })} />
+			<ListGroup title="色彩模式" note="外观只影响这台手机，不会改动电脑上的设置。">
+				<SettingRow name="显示模式" hint="跟随系统，或固定为浅色、深色" stacked>
+					<SchemeSelector value={scheme} onChange={(v) => set({ scheme: v })} />
 				</SettingRow>
 				{scheme !== "dark" && (
 					<SettingRow
@@ -118,9 +192,16 @@ export function AppearanceSheet({ open, onClose }: { open: boolean; onClose: () 
 						/>
 					</SettingRow>
 				)}
-				<SettingRow name="对话字号" hint="对话正文的文字大小" stacked>
-					<Segmented label="对话字号" value={size} options={MSG_SIZES} onChange={(v) => setExtra(MSG_SIZE_KEY, v)} />
-				</SettingRow>
+			</ListGroup>
+			<ListGroup title="阅读与交互">
+				<SelectRow
+					title="对话字号"
+					subtitle="对话正文的文字大小"
+					presentation="menu"
+					value={size}
+					options={MSG_SIZES}
+					onChange={(v) => setExtra(MSG_SIZE_KEY, v)}
+				/>
 				<SettingRow name="默认展开步骤" hint="对话里的思考和工具步骤默认展开显示">
 					<Switch label="默认展开步骤" checked={foldOpen} onChange={(v) => setExtra(FOLD_OPEN_KEY, v)} />
 				</SettingRow>

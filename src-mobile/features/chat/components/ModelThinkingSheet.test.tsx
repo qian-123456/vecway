@@ -93,7 +93,7 @@ describe("ModelThinkingSheet", () => {
 
 		const panel = screen.getByRole("tabpanel");
 		await act(async () => {
-			fireEvent.click(within(panel).getByRole("button", { name: /Claude Opus/ }));
+			fireEvent.click(within(panel).getByRole("button", { name: /claude-opus/ }));
 		});
 
 		expect(loadRecentModels()).toEqual(["anthropic/claude-opus"]);
@@ -108,8 +108,8 @@ describe("ModelThinkingSheet", () => {
 		fireEvent.click(recentTab);
 
 		const panel2 = screen.getByRole("tabpanel");
-		expect(within(panel2).getByText("Claude Opus")).toBeTruthy();
-		fireEvent.click(within(panel2).getByRole("button", { name: "从常用移除 Claude Opus" }));
+		expect(within(panel2).getByText("claude-opus")).toBeTruthy();
+		fireEvent.click(within(panel2).getByRole("button", { name: "从常用移除 claude-opus" }));
 		expect(JSON.parse(localStorage.getItem(RECENT_MODELS_STORAGE_KEY) ?? "[]")).toEqual([]);
 	});
 
@@ -127,7 +127,7 @@ describe("ModelThinkingSheet", () => {
 		fireEvent.change(searchInput, { target: { value: "llama" } });
 		expect(screen.queryByRole("tablist", { name: "模型供应商" })).toBeNull();
 		expect(screen.getByText("1 个结果")).toBeTruthy();
-		expect(screen.getByText("Llama 3")).toBeTruthy();
+		expect(screen.getByText("llama-3")).toBeTruthy();
 
 		fireEvent.click(screen.getByRole("button", { name: "清除模型搜索" }));
 		expect(screen.getByRole("tablist", { name: "模型供应商" })).toBeTruthy();

@@ -25,6 +25,7 @@ import { MessageActionsSheet } from "./components/MessageActions";
 import { MessageList } from "./components/MessageList";
 import { PlanSheet, type PlanSheetStatus } from "./components/PlanSheet";
 import { ModelThinkingSheet } from "./components/ModelThinkingSheet";
+import { ThinkingSourcePopover } from "./components/ThinkingLevelPopover";
 import { PendingCards } from "./components/PendingCards";
 import { StatCard } from "./components/StatLine";
 import { TurnNotices } from "./components/TurnNotices";
@@ -155,6 +156,8 @@ export function ChatPage({ route }: PageProps) {
 	const [stat, setStat] = useState<RequestStat | null>(null);
 	const [menuSheet, setMenuSheet] = useState(false);
 	const [pickerOpen, setPickerOpen] = useState(false);
+	const [thinkingOpen, setThinkingOpen] = useState(false);
+	const [thinkingAnchor, setThinkingAnchor] = useState<HTMLElement | null>(null);
 	const [newOpen, setNewOpen] = useState(false);
 	const [workspaceOpen, setWorkspaceOpen] = useState(false);
 	const session = useSession(id);
@@ -204,6 +207,7 @@ export function ChatPage({ route }: PageProps) {
 		!drawerOpen &&
 		!menuSheet &&
 		!pickerOpen &&
+		!thinkingOpen &&
 		!newOpen &&
 		!workspaceOpen &&
 		!pathOpen &&
@@ -313,7 +317,14 @@ export function ChatPage({ route }: PageProps) {
 					<PendingCards />
 					<ResumeBar sessionId={id} />
 					<TurnNotices sessionId={id} />
-					<Composer sessionId={id} onOpenPicker={() => setPickerOpen(true)} />
+					<Composer
+						sessionId={id}
+						onOpenPicker={() => setPickerOpen(true)}
+						onOpenThinking={(el) => {
+							setThinkingAnchor(el);
+							setThinkingOpen(true);
+						}}
+					/>
 				</div>
 			</div>
 			<MessageActionsSheet
@@ -340,6 +351,14 @@ export function ChatPage({ route }: PageProps) {
 				source={modelSource}
 				currentLevel={controller.state.cstate?.thinkingLevel ?? null}
 				onFacts={(f) => controller.patchState({ ...(f.model ? { model: f.model } : {}), thinkingLevel: f.thinkingLevel })}
+			/>
+			<ThinkingSourcePopover
+				open={thinkingOpen}
+				onClose={() => setThinkingOpen(false)}
+				anchorEl={thinkingAnchor}
+				source={modelSource}
+				currentLevel={controller.state.cstate?.thinkingLevel ?? null}
+				onFacts={(f) => controller.patchState({ thinkingLevel: f.thinkingLevel })}
 			/>
 			<PathSheet
 				open={pathOpen}

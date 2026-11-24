@@ -1,32 +1,7 @@
-import { ChevronDown, CircleAlert } from "lucide-react";
+import { CircleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import { errorMessage } from "../../core/api";
-import { Button, EmptyState, inputCls, Spinner } from "../../ui";
-
-/** Native select styled like `inputCls` with a trailing chevron. `className` tweaks the fill (e.g. `bg-m-card!` in sheets). */
-export function Select({
-	value,
-	onChange,
-	children,
-	label,
-	className = "",
-}: {
-	value: string;
-	onChange: (v: string) => void;
-	children: ReactNode;
-	label?: string;
-	className?: string;
-}) {
-	return (
-		<span className="relative block">
-			<select aria-label={label} className={`${inputCls} appearance-none pr-11 ${className}`} value={value} onChange={(e) => onChange(e.target.value)}>
-				{children}
-			</select>
-			<ChevronDown size={18} className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-m-text-3" aria-hidden />
-		</span>
-	);
-}
+import { Button, EmptyState, Spinner } from "../../ui";
 
 /** Loads data on mount; `reload` refetches without clearing existing data (pull-to-refresh friendly). */
 export function useLoad<T>(fn: () => Promise<T>, deps: ReadonlyArray<unknown> = []) {

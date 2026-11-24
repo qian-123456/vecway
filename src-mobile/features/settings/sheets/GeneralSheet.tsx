@@ -1,9 +1,16 @@
 import { Cpu } from "lucide-react";
 import { useRef, useState } from "react";
 import { api, errorMessage } from "../../../core/api";
-import { ListGroup, ListRow, Segmented, toast } from "../../../ui";
-import { SettingRow, SettingsSheet } from "../rows";
-import { APPROVAL_MODES, approvalEffect, AUTOMATION_OVERLAP_POLICIES, isAutomationOverlapPolicy, type ApprovalMode, type AutomationOverlapPolicy } from "../settingsMap";
+import { ListGroup, ListRow, SelectRow, toast } from "../../../ui";
+import { SettingsSheet } from "../rows";
+import {
+	APPROVAL_MODES,
+	approvalEffect,
+	AUTOMATION_OVERLAP_POLICIES,
+	isAutomationOverlapPolicy,
+	type ApprovalMode,
+	type AutomationOverlapPolicy,
+} from "../settingsMap";
 
 const SOURCE_LABEL: Record<string, string> = {
 	"modelRoles.default": "来自模型角色「全局默认」",
@@ -54,7 +61,10 @@ export function GeneralSheet({
 		setOverlapBusy(true);
 		setOverlapError(null);
 		try {
-			const result = await api<{ ok?: boolean; key?: string; value?: unknown }>("POST", "/left/settings/set", { key: "automationOverlapPolicy", value: next });
+			const result = await api<{ ok?: boolean; key?: string; value?: unknown }>("POST", "/left/settings/set", {
+				key: "automationOverlapPolicy",
+				value: next,
+			});
 			if (result.ok !== true || result.key !== "automationOverlapPolicy" || !isAutomationOverlapPolicy(result.value)) {
 				throw new Error("电脑未返回有效的自动化重合策略，请刷新设置后重试。");
 			}
@@ -70,31 +80,54 @@ export function GeneralSheet({
 		}
 	};
 
+	const approvalOptions = APPROVAL_MODES.map((o) => ({
+		value: o.value,
+		label: o.label,
+		hint: approvalEffect(o.value),
+	}));
+	const overlapOptions = AUTOMATION_OVERLAP_POLICIES.map((o) => ({
+		value: o.value,
+		label: o.label,
+		hint: o.effect,
+	}));
+
 	return (
 		<SettingsSheet open={open} onClose={onClose} title="通用设置">
 			<ListGroup title="审批" note="已经在运行的会话保持原来的模式，新开的会话使用这里的选择。">
-				<SettingRow name="审批权限模式" hint={mode ? approvalEffect(mode) : "正在读取当前模式"} stacked>
-					<Segmented
-						label="审批权限模式"
-						value={mode}
-						disabled={busy || mode == null}
-						options={APPROVAL_MODES}
-						onChange={(v) => void choose(v)}
-					/>
-				</SettingRow>
+				<SelectRow
+					title="审批权限模式"
+					subtitle={mode ? approvalEffect(mode) : "正在读取当前模式"}
+					presentation="menu"
+					value={mode}
+					disabled={busy || mode == null}
+					options={approvalOptions}
+					onChange={(v) => void choose(v)}
+				/>
 			</ListGroup>
 			<ListGroup title="自动化" note="对所有自动化的后续触发立即生效，不中断当前运行；已接收的排队任务会保留并依次执行。">
-				<SettingRow name="运行重合策略" hint={AUTOMATION_OVERLAP_POLICIES.find((policy) => policy.value === automationOverlapPolicy)?.effect} stacked>
-					<Segmented
-						label="运行重合策略"
-						value={automationOverlapPolicy}
-						disabled={overlapBusy || automationOverlapPolicy == null}
-						options={AUTOMATION_OVERLAP_POLICIES}
-						onChange={(value) => void chooseOverlapPolicy(value)}
-					/>
-					{automationOverlapPolicy == null && <div role="alert" className="m-selectable mt-2 text-m-sm text-m-danger">无法读取自动化重合策略，请返回设置后下拉刷新。</div>}
-					{overlapError && <div role="alert" className="m-selectable mt-2 whitespace-pre-wrap break-words text-m-sm text-m-danger">保存失败：{overlapError}</div>}
-				</SettingRow>
+				<SelectRow
+					title="运行重合策略"
+					subtitle={AUTOMATION_OVERLAP_POLICIES.find((policy) => policy.value === automationOverlapPolicy)?.effect}
+					presentation="menu"
+					value={automationOverlapPolicy}
+					disabled={overlapBusy || automationOverlapPolicy == null}
+					options={overlapOptions}
+					onChange={(value) => void chooseOverlapPolicy(value)}
+					error={
+						<>
+							{automationOverlapPolicy == null && (
+								<div role="alert" className="m-selectable text-m-sm text-m-danger">
+									无法读取自动化重合策略，请返回设置后下拉刷新。
+								</div>
+							)}
+							{overlapError && (
+								<div role="alert" className="m-selectable whitespace-pre-wrap break-words text-m-sm text-m-danger">
+									保存失败：{overlapError}
+								</div>
+							)}
+						</>
+					}
+				/>
 			</ListGroup>
 			<ListGroup title="新会话" note="要换默认模型，去「模型角色」里修改「全局默认」。">
 				<ListRow

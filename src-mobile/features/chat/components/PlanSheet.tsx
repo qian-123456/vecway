@@ -7,7 +7,9 @@ import {
 	List,
 	Maximize2,
 	Minimize2,
+	MoreHorizontal,
 	PanelBottomClose,
+	Search,
 	X,
 } from "lucide-react";
 import {
@@ -22,11 +24,14 @@ import {
 import { createPortal } from "react-dom";
 import type { PlanStatus } from "../../../../src/features/chat/plan/planStatus";
 import { copyText } from "../../../core/lib/format";
-import { Button, Chip, Spinner, toast, type ChipTone } from "../../../ui";
+import { AnchoredPopover, BottomSheet, Button, IconButton, ListGroup, MenuRow, SelectRow, Spinner, toast } from "../../../ui";
 import { Markdown } from "../../../ui/Markdown";
 import { useOverlay } from "../../../ui/overlay";
 import { defaultApproveMode, type ApprovePlanOptions, type PlanApproveMode } from "../../panels/usePlanExecution";
-import { shortModel } from "../lib/models";
+import { desktopThinkingLabel, resolveThinkingLevels, shortModel, type ModelOpt } from "../lib/models";
+import { CompactModelPane } from "./ModelThinkingSheet";
+import { ThinkingLevelPopover } from "./ThinkingLevelPopover";
+import { sessionModelSource, useModelFacts } from "./useModelFacts";
 
 export type PlanSheetMode = "half" | "full" | "float";
 export type PlanSheetStatus = "review" | "pending" | "executing" | "completed" | "failed" | "handoff";
@@ -37,15 +42,6 @@ export interface PlanHeading {
 	title: string;
 	id: string;
 }
-
-const STATUS_CHIP: Record<PlanSheetStatus, { label: string; tone: ChipTone; live?: boolean }> = {
-	review: { label: "待确认", tone: "accent" },
-	pending: { label: "等待执行", tone: "warn", live: true },
-	executing: { label: "执行中", tone: "accent", live: true },
-	completed: { label: "已完成", tone: "success" },
-	failed: { label: "执行失败", tone: "danger" },
-	handoff: { label: "已移交", tone: "neutral" },
-};
 
 /** Extract `# Title` from markdown when no explicit title is supplied. */
 export function extractPlanTitle(md: string): string | null {
@@ -175,6 +171,7 @@ const EXEC_MODE_OPTIONS: ReadonlyArray<{ id: PlanApproveMode; label: string }> =
 
 /** Compact Apple-style execution mode & role/model approval dock shared by PlanSheet and PlanPage. */
 export function PlanApprovalControls({
+	sessionId,
 	planStatus,
 	canFresh = false,
 	running = false,
@@ -182,6 +179,7 @@ export function PlanApprovalControls({
 	onApprove,
 	onAnnotate,
 }: {
+	sessionId?: string;
 	planStatus?: PlanStatus | null;
 	canFresh?: boolean;
 	running?: boolean;
@@ -198,6 +196,22 @@ export function PlanApprovalControls({
 		if (!tiers.length) return null;
 		return tiers.some((t) => t.role === defaultRole) ? (defaultRole ?? null) : (tiers[0]?.role ?? null);
 	});
+	const [custom, setCustom] = useState<{ provider: string; id: string; level: string } | null>(null);
+	const [modelSheetOpen, setModelSheetOpen] = useState(false);
+	const [modelQuery, setModelQuery] = useState("");
+	const [thinkOpen, setThinkOpen] = useState(false);
+	const thinkBtnRef = useRef<HTMLButtonElement>(null);
+
+	const modelSource = useMemo(() => (sessionId ? sessionModelSource(sessionId) : null), [sessionId]);
+	const noopSource = useMemo(
+		() => ({
+			load: async () => ({ models: [], current: null, thinkingLevel: null, liveThinking: [] }),
+			setModel: async () => ({ current: null, thinkingLevel: null, liveThinking: [] }),
+			setThinking: async () => ({ current: null, thinkingLevel: null, liveThinking: [] }),
+		}),
+		[],
+	);
+	const facts = useModelFacts(modelSheetOpen && Boolean(modelSource), modelSource ?? noopSource);
 
 	useEffect(() => {
 		if (keepDisabled && mode === "keep") setMode("compact");
@@ -214,91 +228,101 @@ export function PlanApprovalControls({
 		});
 	}, [tiers, defaultRole]);
 
+	useEffect(() => {
+		if (modelSheetOpen) setModelQuery("");
+	}, [modelSheetOpen]);
+
 	const activeTier = tiers.find((t) => t.role === role) ?? null;
-	const modelSpec = activeTier?.spec ?? planStatus?.planModel ?? null;
 	const pct = typeof planStatus?.contextPercent === "number" ? Math.round(planStatus.contextPercent) : null;
 	const busy = running || approving;
 
-	return (
-		<div className="mx-auto w-full max-w-md space-y-2">
-			{/* Execution mode choices */}
-			<div
-				role="radiogroup"
-				aria-label="执行方式"
-				className="grid grid-cols-3 gap-1 rounded-m-md bg-m-surface p-1"
-			>
-				{EXEC_MODE_OPTIONS.map((opt) => {
-					const disabledOpt =
-						busy ||
-						(opt.id === "keep" && keepDisabled) ||
-						(opt.id === "fresh" && !freshEnabled);
-					const selected = mode === opt.id;
-					const titleHint =
-						opt.id === "keep" && keepDisabled
-							? `上下文已达 ${pct ?? 95}% 以上，请压缩或新开会话`
-							: opt.id === "fresh" && !freshEnabled
-								? "需要已保存的计划文件与项目目录"
-								: undefined;
-					return (
-						<button
-							key={opt.id}
-							type="button"
-							role="radio"
-							aria-checked={selected}
-							disabled={disabledOpt}
-							title={titleHint}
-							onClick={() => setMode(opt.id)}
-							className={`m-press min-h-9 rounded-m-sm px-1.5 py-1 text-[11.5px] leading-tight font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-								selected
-									? "bg-m-segment-on text-m-text shadow-xs"
-									: "text-m-text-2 active:bg-m-surface-hover"
-							}`}
-						>
-							<span className="block truncate">{opt.label}</span>
-						</button>
-					);
-				})}
-			</div>
+	const modeOptions = useMemo(
+		() =>
+			EXEC_MODE_OPTIONS.filter((opt) => opt.id !== "fresh" || freshEnabled).map((opt) => ({
+				value: opt.id,
+				label: opt.label,
+				disabled: opt.id === "keep" && keepDisabled,
+				disabledReason:
+					opt.id === "keep" && keepDisabled ? `上下文已达 ${pct ?? 95}% 以上，请压缩或新开会话` : undefined,
+			})),
+		[freshEnabled, keepDisabled, pct],
+	);
 
-			{/* Execution role / model info */}
-			{(tiers.length > 0 || modelSpec) && (
-				<div className="flex items-center justify-between gap-2 px-0.5 text-[11.5px] text-m-text-3">
-					{tiers.length > 1 ? (
-						<div className="m-noscrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="radiogroup" aria-label="执行角色">
-							{tiers.map((t) => {
-								const selected = t.role === role;
-								return (
-									<button
-										key={t.role}
-										type="button"
-										role="radio"
-										aria-checked={selected}
-										disabled={busy}
-										onClick={() => setRole(t.role)}
-										title={t.spec}
-										className={`m-press shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium whitespace-nowrap transition-colors ${
-											selected
-												? "bg-m-accent-soft text-m-accent-soft-text"
-												: "bg-m-surface text-m-text-2 active:bg-m-surface-2"
-										}`}
-									>
-										{t.role}
-									</button>
-								);
-							})}
+	const catalogModels = facts.data?.models ?? [];
+	const customOption = custom
+		? catalogModels.find((m) => m.provider === custom.provider && m.id === custom.id)
+		: undefined;
+	const customLevels = custom ? resolveThinkingLevels(customOption, customOption?.thinking, custom.level) : [];
+	const hasThinkingChoice = Boolean(custom && customLevels.length > 1);
+	const customSpec = custom
+		? custom.level && custom.level !== "auto"
+			? `${custom.provider}/${custom.id}:${custom.level}`
+			: `${custom.provider}/${custom.id}`
+		: null;
+	const effectiveRoleSpec = customSpec ?? (tiers.length <= 1 ? null : role);
+
+	const modelTriggerText = custom
+		? custom.id
+		: activeTier
+			? activeTier.spec
+				? `${activeTier.role} · ${shortModel(activeTier.spec)}`
+				: activeTier.role
+			: shortModel(planStatus?.planModel ?? "") || "当前会话模型";
+
+	const handlePickCustomModel = (m: ModelOpt) => {
+		const levels = resolveThinkingLevels(m, m.thinking, null);
+		setCustom({
+			provider: m.provider,
+			id: m.id,
+			level: levels[0] ?? "auto",
+		});
+		setModelSheetOpen(false);
+	};
+
+	const canCustomizeModel = Boolean(sessionId) || tiers.length > 1;
+
+	return (
+		<div className="mx-auto w-full max-w-md space-y-2.5">
+			<ListGroup className="!mx-0">
+				<SelectRow
+					title="执行方式"
+					presentation="menu"
+					value={mode}
+					options={modeOptions}
+					disabled={busy}
+					onChange={(next) => setMode(next)}
+				/>
+				{(canCustomizeModel || activeTier || planStatus?.planModel) && (
+					<div className="m-list-row flex min-h-12 items-center justify-between gap-3 px-4 py-2">
+						<span className="shrink-0 text-m-sm font-medium whitespace-nowrap text-m-text">执行模型</span>
+						<div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
+							<button
+								type="button"
+								disabled={busy || !canCustomizeModel}
+								aria-label={`选择执行模型，当前：${modelTriggerText}`}
+								onClick={() => setModelSheetOpen(true)}
+								className="m-press inline-flex min-h-9 min-w-0 max-w-full items-center gap-1 rounded-m-sm px-2 py-1.5 text-right text-m-accent active:bg-m-surface-hover disabled:text-m-text-3 disabled:opacity-70"
+							>
+								<span className="min-w-0 break-words font-m-mono text-[13px] leading-snug">{modelTriggerText}</span>
+								{canCustomizeModel && <ChevronDown size={14} strokeWidth={2} className="shrink-0 opacity-80" aria-hidden />}
+							</button>
+							{hasThinkingChoice && custom && (
+								<button
+									ref={thinkBtnRef}
+									type="button"
+									disabled={busy}
+									aria-label={`执行思考强度：${desktopThinkingLabel(custom.level)}`}
+									onClick={() => setThinkOpen(true)}
+									className="m-press inline-flex min-h-9 shrink-0 items-center gap-0.5 rounded-m-sm px-1.5 py-1 text-[12.5px] whitespace-nowrap text-m-text-2 active:bg-m-surface-hover disabled:opacity-45"
+								>
+									<span>{desktopThinkingLabel(custom.level)}</span>
+									<ChevronDown size={13} strokeWidth={2} className="shrink-0 opacity-75" aria-hidden />
+								</button>
+							)}
 						</div>
-					) : (
-						<span className="min-w-0 truncate">
-							{activeTier ? `执行角色：${activeTier.role}` : "执行模型"}
-						</span>
-					)}
-					{modelSpec && (
-						<span className="shrink-0 truncate font-m-mono text-[11px] text-m-text-3" title={modelSpec}>
-							{shortModel(modelSpec)}
-						</span>
-					)}
-				</div>
-			)}
+					</div>
+				)}
+			</ListGroup>
 
 			{/* Primary action buttons */}
 			<div className="flex items-center gap-2">
@@ -314,12 +338,133 @@ export function PlanApprovalControls({
 					variant="primary"
 					className="flex-1 whitespace-nowrap"
 					disabled={busy}
-					onClick={() => void onApprove?.({ mode, role })}
+					onClick={() => void onApprove?.({ mode, role: effectiveRoleSpec })}
 				>
 					{approving && <Spinner size={15} />}
 					执行计划
 				</Button>
 			</div>
+
+			{custom && (
+				<ThinkingLevelPopover
+					open={thinkOpen}
+					onClose={() => setThinkOpen(false)}
+					anchorEl={thinkBtnRef.current}
+					placement="top-end"
+					levels={customLevels}
+					value={custom.level || "auto"}
+					disabled={busy}
+					onChange={(lvl) => {
+						setCustom((prev) => (prev ? { ...prev, level: lvl } : prev));
+					}}
+				/>
+			)}
+
+			<BottomSheet open={modelSheetOpen} onClose={() => setModelSheetOpen(false)}>
+				<div className="flex h-[62dvh] max-h-[540px] flex-col">
+					<div className="flex shrink-0 items-center gap-2 border-b border-m-border bg-m-bg-elev px-3.5 pt-0.5 pb-2.5">
+						{sessionId ? (
+							<label className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-[10px] border border-m-border bg-m-surface py-0.5 pr-1 pl-3">
+								<Search size={16} className="shrink-0 text-m-text-3" aria-hidden />
+								<input
+									type="search"
+									value={modelQuery}
+									onChange={(e) => setModelQuery(e.target.value)}
+									placeholder="搜索模型或供应商"
+									aria-label="搜索模型"
+									className="min-h-9 min-w-0 flex-1 bg-transparent text-m-md text-m-text outline-none placeholder:text-m-text-3 [&::-webkit-search-cancel-button]:appearance-none"
+								/>
+								{modelQuery !== "" && (
+									<IconButton icon={<X size={16} />} label="清除模型搜索" variant="plain" size="sm" onClick={() => setModelQuery("")} />
+								)}
+							</label>
+						) : (
+							<div className="min-w-0 flex-1 px-1 text-m-md font-semibold text-m-text">选择执行模型</div>
+						)}
+						<IconButton icon={<X size={18} />} label="关闭" variant="plain" size="sm" onClick={() => setModelSheetOpen(false)} />
+					</div>
+
+					{sessionId && facts.loading && !facts.data ? (
+						<div className="flex flex-1 items-center justify-center gap-2 py-12 text-m-sm text-m-text-3">
+							<Spinner size={18} /> 正在加载模型
+						</div>
+					) : sessionId && facts.data?.models?.length ? (
+						<CompactModelPane
+							models={facts.data.models}
+							current={custom ? { provider: custom.provider, id: custom.id } : null}
+							configuredProviders={facts.configuredProviders}
+							providerLabels={facts.providerLabels}
+							providerOrder={facts.providerOrder}
+							busy={busy}
+							active={modelSheetOpen}
+							query={modelQuery}
+							onPick={handlePickCustomModel}
+							extraTopSection={
+								tiers.length > 0 ? (
+									<div className="border-b border-m-border/60 px-3.5 py-2">
+										<div className="mb-1 text-[11px] font-medium text-m-text-3">预设角色</div>
+										<div className="space-y-1">
+											{tiers.map((t) => {
+												const selected = !custom && role === t.role;
+												return (
+													<button
+														key={t.role}
+														type="button"
+														onClick={() => {
+															setCustom(null);
+															setRole(t.role);
+															setModelSheetOpen(false);
+														}}
+														className={`flex min-h-10 w-full items-center justify-between gap-2 rounded-m-sm px-2.5 py-1.5 text-left text-m-sm ${
+															selected ? "bg-m-accent-soft/45 font-medium text-m-accent" : "text-m-text active:bg-m-surface-hover"
+														}`}
+													>
+														<span className="truncate">{t.role}</span>
+														<span className="flex shrink-0 items-center gap-1.5">
+															{t.spec && <span className="font-m-mono text-[11.5px] text-m-text-3">{shortModel(t.spec)}</span>}
+															{selected && <Check size={15} className="text-m-accent" aria-hidden />}
+														</span>
+													</button>
+												);
+											})}
+										</div>
+									</div>
+								) : undefined
+							}
+						/>
+					) : (
+						<div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-3">
+							{tiers.length > 0 && (
+								<div className="space-y-1">
+									{tiers.map((t) => {
+										const selected = !custom && role === t.role;
+										return (
+											<button
+												key={t.role}
+												type="button"
+												onClick={() => {
+													setCustom(null);
+													setRole(t.role);
+													setModelSheetOpen(false);
+												}}
+												className={`flex min-h-11 w-full items-center justify-between gap-2 rounded-m-sm px-3 py-2 text-left text-m-sm ${
+													selected ? "bg-m-accent-soft/45 font-medium text-m-accent" : "text-m-text active:bg-m-surface-hover"
+												}`}
+											>
+												<span className="truncate">{t.role}</span>
+												<span className="flex shrink-0 items-center gap-1.5">
+													{t.spec && <span className="font-m-mono text-[11.5px] text-m-text-3">{shortModel(t.spec)}</span>}
+													{selected && <Check size={15} className="text-m-accent" aria-hidden />}
+												</span>
+											</button>
+										);
+									})}
+								</div>
+							)}
+						</div>
+					)}
+				</div>
+			</BottomSheet>
 		</div>
 	);
 }
@@ -378,6 +523,7 @@ export function PlanSheet({
 	);
 
 	const [tocOpen, setTocOpen] = useState(false);
+	const [moreOpen, setMoreOpen] = useState(false);
 	const [showDiff, setShowDiff] = useState(false);
 	const [headings, setHeadings] = useState<PlanHeading[]>([]);
 	const [curSection, setCurSection] = useState(0);
@@ -386,17 +532,21 @@ export function PlanSheet({
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const bodyRef = useRef<HTMLDivElement>(null);
+	const moreBtnRef = useRef<HTMLButtonElement>(null);
+	const tocBtnRef = useRef<HTMLButtonElement>(null);
 	const dragRef = useRef<{ pointerId: number; startY: number; startTime: number; lastY: number } | null>(null);
 
 	useEffect(() => {
 		if (open) {
 			if (modeProp === undefined) setUncontrolledMode("half");
 			setTocOpen(false);
+			setMoreOpen(false);
 			setDragOffset(0);
 			setDragging(false);
 			dragRef.current = null;
 		} else {
 			setTocOpen(false);
+			setMoreOpen(false);
 		}
 	}, [open, modeProp]);
 
@@ -407,10 +557,10 @@ export function PlanSheet({
 	// Separate overlay layers so Back closes TOC first without swallowing PlanSheet's history entry.
 	const isTopModal = useOverlay(open && mode !== "float", onClose);
 	useOverlay(open && mode !== "float" && tocOpen, useCallback(() => setTocOpen(false), []));
+	useOverlay(open && mode !== "float" && moreOpen, useCallback(() => setMoreOpen(false), []));
 
 	const resolvedTitle = title?.trim() || extractPlanTitle(text) || "执行方案";
 	const progress = useMemo(() => parseChecklistProgress(text), [text]);
-	const chip = STATUS_CHIP[status];
 	const hasDiff = prevContent !== null && prevContent !== text;
 	const diffLines = useMemo(
 		() => (showDiff && hasDiff && prevContent !== null ? computeLineDiff(prevContent, text) : []),
@@ -614,65 +764,26 @@ export function PlanSheet({
 				>
 					<div aria-hidden className="mx-auto mt-2 mb-2 h-[4px] w-9 rounded-m-pill bg-m-border-strong" />
 
-					{/* Row 1: Title + version badge on left; Copy, Diff, Expand/Restore, Minimize, Close on right */}
-					<div className="flex items-center justify-between gap-2">
-						<div className="flex min-w-0 flex-1 items-center gap-2">
-							<h2 className="min-w-0 truncate text-[16px] font-semibold tracking-[-0.015em] text-m-text">
-								{resolvedTitle}
-							</h2>
-							{version > 0 && (
-								<span className="shrink-0 whitespace-nowrap rounded-full bg-m-surface px-1.5 py-0.5 font-m-mono text-[10px] font-medium text-m-text-3">
-									v{version}
-								</span>
-							)}
-						</div>
+					{/* Row 1: Wrapping Title on left; ONLY ⋯ and ✕ on right */}
+					<div className="flex items-start justify-between gap-2">
+						<h2 className="min-w-0 flex-1 pt-1 text-[16px] leading-snug font-semibold tracking-[-0.015em] break-words text-m-text">
+							{resolvedTitle}
+						</h2>
 
 						<div className="flex shrink-0 items-center gap-0.5">
 							<button
+								ref={moreBtnRef}
 								type="button"
-								aria-label="复制计划"
-								title="复制计划"
-								onClick={() => void copyPlan()}
+								aria-label="更多操作"
+								aria-haspopup="menu"
+								aria-expanded={moreOpen}
+								onClick={() => {
+									setMoreOpen((v) => !v);
+									setTocOpen(false);
+								}}
 								className="m-press flex h-9 w-9 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
 							>
-								<Copy size={15} strokeWidth={1.75} />
-							</button>
-							{hasDiff && (
-								<button
-									type="button"
-									aria-label="对比版本"
-									title="对比版本"
-									aria-pressed={showDiff}
-									onClick={() => {
-										setShowDiff((v) => !v);
-										setTocOpen(false);
-									}}
-									className={`m-press flex h-9 w-9 items-center justify-center rounded-full ${
-										showDiff
-											? "bg-m-accent-soft text-m-accent-soft-text"
-											: "text-m-text-2 active:bg-m-surface-hover"
-									}`}
-								>
-									<GitCompareArrows size={15} strokeWidth={1.75} />
-								</button>
-							)}
-							<button
-								type="button"
-								aria-label={mode === "full" ? "还原半屏" : "全屏展开"}
-								title={mode === "full" ? "还原半屏" : "全屏展开"}
-								onClick={() => setMode((m) => (m === "full" ? "half" : "full"))}
-								className="m-press flex h-9 w-9 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
-							>
-								{mode === "full" ? <Minimize2 size={15} strokeWidth={1.75} /> : <Maximize2 size={15} strokeWidth={1.75} />}
-							</button>
-							<button
-								type="button"
-								aria-label="收起为悬浮条"
-								title="收起为悬浮条"
-								onClick={() => setMode("float")}
-								className="m-press flex h-9 w-9 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
-							>
-								<PanelBottomClose size={15} strokeWidth={1.75} />
+								<MoreHorizontal size={17} strokeWidth={1.85} />
 							</button>
 							<button
 								type="button"
@@ -681,77 +792,134 @@ export function PlanSheet({
 								onClick={onClose}
 								className="m-press flex h-9 w-9 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
 							>
-								<X size={15} strokeWidth={1.85} />
+								<X size={16} strokeWidth={1.85} />
 							</button>
 						</div>
 					</div>
 
-					{/* Row 2: Full-width TOC dropdown trigger + status/progress chip */}
-					<div className="relative mt-2 flex items-center gap-2">
-						<button
-							type="button"
-							disabled={showDiff || headings.length === 0}
-							aria-expanded={tocOpen}
-							onClick={() => setTocOpen((v) => !v)}
-							className="flex h-9 min-w-0 flex-1 items-center gap-1.5 rounded-m-sm bg-m-surface px-2.5 text-left text-[12px] text-m-text-2 transition-colors active:bg-m-surface-2 disabled:opacity-50"
-						>
-							<List size={13} strokeWidth={1.8} className="shrink-0 text-m-text-quiet" aria-hidden />
-							<span className="shrink-0 whitespace-nowrap font-medium">
-								目录 · {headings.length} 章节
-							</span>
-							{headings[curSection] && !showDiff && (
-								<span className="min-w-0 flex-1 truncate text-m-text-quiet">
-									{headings[curSection].title}
+					{/* Row 2: Always-visible TOC button + optional plain progress count (ZERO status chip/text) */}
+					{(headings.length > 0 || progress !== null || !showDiff) && (
+						<div className="mt-2 flex items-center gap-2">
+							<button
+								ref={tocBtnRef}
+								type="button"
+								disabled={showDiff || headings.length === 0}
+								aria-expanded={tocOpen}
+								onClick={() => {
+									setTocOpen((v) => !v);
+									setMoreOpen(false);
+								}}
+								className="flex h-9 min-w-0 flex-1 items-center gap-1.5 rounded-m-sm bg-m-surface px-2.5 text-left text-[12px] text-m-text-2 transition-colors active:bg-m-surface-2 disabled:opacity-50"
+							>
+								<List size={13} strokeWidth={1.8} className="shrink-0 text-m-text-quiet" aria-hidden />
+								<span className="shrink-0 font-medium whitespace-nowrap">
+									目录 · {headings.length} 章节
+								</span>
+								{headings[curSection] && !showDiff && (
+									<span className="min-w-0 flex-1 truncate text-m-text-quiet">
+										{headings[curSection].title}
+									</span>
+								)}
+								<ChevronDown
+									size={13}
+									strokeWidth={1.8}
+									aria-hidden
+									className={`shrink-0 text-m-text-quiet transition-transform duration-150 ${
+										tocOpen ? "rotate-180" : ""
+									}`}
+								/>
+							</button>
+							{progress && (
+								<span className="shrink-0 font-m-mono text-[12px] font-medium whitespace-nowrap text-m-text-3 tabular-nums">
+									{progress.done}/{progress.total}
 								</span>
 							)}
-							<ChevronDown
-								size={13}
-								strokeWidth={1.8}
-								aria-hidden
-								className={`shrink-0 text-m-text-quiet transition-transform duration-150 ${
-									tocOpen ? "rotate-180" : ""
-								}`}
-							/>
-						</button>
-
-						<Chip tone={chip.tone} className="shrink-0">
-							{chip.live && (
-								<span aria-hidden className="m-pulse inline-block h-1.5 w-1.5 rounded-full bg-current" />
-							)}
-							{progress ? `${chip.label} · ${progress.done}/${progress.total}` : chip.label}
-						</Chip>
-
-						{tocOpen && headings.length > 0 && (
-							<div
-								role="menu"
-								aria-label="方案目录"
-								className="m-liquid-surface absolute top-10 right-0 left-0 z-10 max-h-60 overflow-y-auto overscroll-contain rounded-m-md p-1.5"
-							>
-								{headings.map((h, idx) => {
-									const active = idx === curSection;
-									return (
-										<button
-											key={`${idx}-${h.id}`}
-											type="button"
-											role="menuitem"
-											onClick={() => jumpToHeading(idx)}
-											style={{ paddingLeft: `${10 + (h.level - 1) * 10}px` }}
-											className={`flex min-h-10 w-full items-center gap-2 rounded-m-sm pr-2.5 py-2 text-left text-[12.5px] transition-colors active:bg-m-surface-hover ${
-												active ? "bg-m-surface font-medium text-m-text" : "text-m-text-2"
-											}`}
-										>
-											<span className="w-5 shrink-0 font-m-mono text-[11px] tabular-nums text-m-text-quiet">
-												{String(idx + 1).padStart(2, "0")}
-											</span>
-											<span className="min-w-0 flex-1 truncate">{h.title}</span>
-											{active && <Check size={13} className="shrink-0 text-m-accent" aria-hidden />}
-										</button>
-									);
-								})}
-							</div>
-						)}
-					</div>
+						</div>
+					)}
 				</div>
+
+				<AnchoredPopover
+					open={open && moreOpen}
+					onClose={() => setMoreOpen(false)}
+					anchorEl={moreBtnRef.current}
+					placement="bottom-end"
+					ariaLabel="计划操作"
+					minWidth={188}
+					className="m-liquid-surface rounded-2xl!"
+				>
+					<div role="menu" className="py-1">
+						<MenuRow
+							icon={<Copy size={16} strokeWidth={1.75} />}
+							label="复制计划"
+							onClick={() => {
+								setMoreOpen(false);
+								void copyPlan();
+							}}
+						/>
+						{hasDiff && (
+							<MenuRow
+								icon={<GitCompareArrows size={16} strokeWidth={1.75} />}
+								label={showDiff ? "查看正文" : "对比版本"}
+								selected={showDiff}
+								onClick={() => {
+									setShowDiff((v) => !v);
+									setMoreOpen(false);
+								}}
+							/>
+						)}
+						<MenuRow
+							icon={mode === "full" ? <Minimize2 size={16} strokeWidth={1.75} /> : <Maximize2 size={16} strokeWidth={1.75} />}
+							label={mode === "full" ? "还原半屏" : "全屏展开"}
+							onClick={() => {
+								setMode((m) => (m === "full" ? "half" : "full"));
+								setMoreOpen(false);
+							}}
+						/>
+						<MenuRow
+							icon={<PanelBottomClose size={16} strokeWidth={1.75} />}
+							label="收起为悬浮条"
+							onClick={() => {
+								setMode("float");
+								setMoreOpen(false);
+							}}
+						/>
+					</div>
+				</AnchoredPopover>
+
+				<AnchoredPopover
+					open={open && tocOpen && headings.length > 0}
+					onClose={() => setTocOpen(false)}
+					anchorEl={tocBtnRef.current}
+					placement="bottom-start"
+					ariaLabel="方案目录"
+					minWidth={260}
+					maxWidth={340}
+					className="m-liquid-surface rounded-2xl!"
+				>
+					<div role="menu" aria-label="方案目录" className="max-h-64 overflow-y-auto overscroll-contain p-1.5">
+						{headings.map((h, idx) => {
+							const active = idx === curSection;
+							return (
+								<button
+									key={`${idx}-${h.id}`}
+									type="button"
+									role="menuitem"
+									onClick={() => jumpToHeading(idx)}
+									style={{ paddingLeft: `${10 + (h.level - 1) * 10}px` }}
+									className={`flex min-h-10 w-full items-center gap-2 rounded-m-sm py-2 pr-2.5 text-left text-[12.5px] transition-colors active:bg-m-surface-hover ${
+										active ? "bg-m-surface font-medium text-m-text" : "text-m-text-2"
+									}`}
+								>
+									<span className="w-5 shrink-0 font-m-mono text-[11px] text-m-text-quiet tabular-nums">
+										{String(idx + 1).padStart(2, "0")}
+									</span>
+									<span className="min-w-0 flex-1 truncate">{h.title}</span>
+									{active && <Check size={13} className="shrink-0 text-m-accent" aria-hidden />}
+								</button>
+							);
+						})}
+					</div>
+				</AnchoredPopover>
 
 				{/* Scrollable Body */}
 				<div
@@ -786,6 +954,7 @@ export function PlanSheet({
 						}}
 					>
 						<PlanApprovalControls
+							sessionId={sessionId}
 							planStatus={planStatus}
 							canFresh={canFresh}
 							running={running}

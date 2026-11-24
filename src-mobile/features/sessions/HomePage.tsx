@@ -13,6 +13,7 @@ import { ComposerCapsule, type ComposerApi } from "../chat/components/ComposerCa
 import { useKeyboardOpen } from "../chat/components/ComposerToolbar";
 import { EmptyChatCanvas } from "../chat/components/EmptyChatCanvas";
 import { ModelThinkingSheet } from "../chat/components/ModelThinkingSheet";
+import { ThinkingSourcePopover } from "../chat/components/ThinkingLevelPopover";
 import { SketchPad } from "../chat/components/SketchPad";
 import type { ModelSource } from "../chat/components/useModelFacts";
 import { draftBook, queueComposerAction, queueFirstSend, type ComposerAction } from "../chat/lib/drafts";
@@ -34,6 +35,8 @@ export function HomePage(_props: PageProps) {
 	const [atts, setAtts] = useState<Attachment[]>([]);
 	const [plusOpen, setPlusOpen] = useState(false);
 	const [modelOpen, setModelOpen] = useState(false);
+	const [thinkingOpen, setThinkingOpen] = useState(false);
+	const [thinkingAnchor, setThinkingAnchor] = useState<HTMLElement | null>(null);
 	const [sending, setSending] = useState(false);
 	const mode = useTree((s) => s.mode);
 	const allSessions = useSessions((s) => s.list);
@@ -552,24 +555,27 @@ export function HomePage(_props: PageProps) {
 					model={facts.current?.id}
 					thinking={facts.thinkingLevel}
 					onModel={() => setModelOpen(true)}
-					onThinking={() => setModelOpen(true)}
+					onThinking={(el) => {
+						setThinkingAnchor(el ?? null);
+						setThinkingOpen(true);
+					}}
 				/>
 			</div>
 			<input ref={fileRef} type="file" multiple hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) { setPlusOpen(false); addFiles(files); } }} />
 			<input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) { setPlusOpen(false); addFiles(files, true); } }} />
 			<input ref={galleryRef} type="file" accept="image/*" multiple hidden onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) { setPlusOpen(false); addFiles(files, true); } }} />
 			<BottomSheet open={plusOpen} onClose={() => setPlusOpen(false)}>
-				<div className="grid grid-cols-3 gap-3 px-4 pt-1">
-					<ActionTile icon={<Paperclip size={24} strokeWidth={1.75} />} label="文件" onClick={() => fileRef.current?.click()} />
-					<ActionTile icon={<Camera size={24} strokeWidth={1.75} />} label="拍照" onClick={() => cameraRef.current?.click()} />
-					<ActionTile icon={<ImagePlus size={24} strokeWidth={1.75} />} label="相册" onClick={() => galleryRef.current?.click()} />
-					<ActionTile icon={<Monitor size={24} strokeWidth={1.75} />} label="电脑端选中项" onClick={() => void openAction("finder")} />
-					<ActionTile icon={<PenLine size={24} strokeWidth={1.75} />} label="草图" onClick={() => { setPlusOpen(false); setSketchOpen(true); }} />
+				<div className="grid grid-cols-4 gap-2 px-4 pt-1">
+					<ActionTile icon={<Camera size={22} strokeWidth={1.75} />} label="拍照" onClick={() => cameraRef.current?.click()} />
+					<ActionTile icon={<ImagePlus size={22} strokeWidth={1.75} />} label="相册" onClick={() => galleryRef.current?.click()} />
+					<ActionTile icon={<Paperclip size={22} strokeWidth={1.75} />} label="文件" onClick={() => fileRef.current?.click()} />
+					<ActionTile icon={<PenLine size={22} strokeWidth={1.75} />} label="草图" onClick={() => { setPlusOpen(false); setSketchOpen(true); }} />
 				</div>
 				<div className="pt-3 pb-3">
-					<MenuRow icon={<FolderOpen size={22} strokeWidth={1.75} />} label="在项目中工作" hint="选择项目目录" onClick={() => { setPlusOpen(false); setDirectoryOpen(true); }} />
-					<MenuRow icon={<Target size={22} strokeWidth={1.75} />} label="目标" hint="设定后会持续朝它推进" onClick={() => void openAction("goal")} />
-					<div className="flex min-h-13 items-center gap-4 py-1 pr-4 pl-5"><Lightbulb size={22} strokeWidth={1.75} className="shrink-0 text-m-text-2" /><span className="flex-1 whitespace-nowrap text-m-md">规划模式</span><Switch label="规划模式" checked={planOn} disabled={sending} onChange={setPlanOn} /></div>
+					<MenuRow icon={<Monitor size={21} strokeWidth={1.75} />} label="电脑端文件" hint="插入电脑工作区中的文件" onClick={() => void openAction("finder")} />
+					<MenuRow icon={<FolderOpen size={21} strokeWidth={1.75} />} label="在项目中工作" hint="选择项目目录" onClick={() => { setPlusOpen(false); setDirectoryOpen(true); }} />
+					<MenuRow icon={<Target size={21} strokeWidth={1.75} />} label="目标" hint="设定持续推进的任务目标" onClick={() => void openAction("goal")} />
+					<div className="flex min-h-13 items-center gap-3.5 py-1.5 pr-4 pl-5"><Lightbulb size={21} strokeWidth={1.75} className="shrink-0 text-m-text-2" /><span className="flex-1 whitespace-nowrap text-m-md">规划模式</span><Switch label="规划模式" checked={planOn} disabled={sending} onChange={setPlanOn} /></div>
 				</div>
 			</BottomSheet>
 			<MenuSheet open={menuOpen} onClose={() => setMenuOpen(false)} onNewSession={() => setNewOpen(true)} />
@@ -580,6 +586,14 @@ export function HomePage(_props: PageProps) {
 				setDirectory(dir);
 			}} />
 			<ModelThinkingSheet open={modelOpen} onClose={() => setModelOpen(false)} source={modelSource} currentLevel={facts.thinkingLevel} onFacts={(next) => setFacts(next)} />
+			<ThinkingSourcePopover
+				open={thinkingOpen}
+				onClose={() => setThinkingOpen(false)}
+				anchorEl={thinkingAnchor}
+				source={modelSource}
+				currentLevel={facts.thinkingLevel}
+				onFacts={(next) => setFacts(next)}
+			/>
 			<SketchPad
 				open={sketchOpen}
 				onClose={() => setSketchOpen(false)}

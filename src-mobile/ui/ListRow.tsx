@@ -95,6 +95,8 @@ export function MenuRow({
 	danger = false,
 	disabled = false,
 	selected = false,
+	role,
+	ariaChecked,
 }: {
 	icon?: ReactNode;
 	label: ReactNode;
@@ -104,13 +106,17 @@ export function MenuRow({
 	danger?: boolean;
 	disabled?: boolean;
 	selected?: boolean;
+	role?: "menuitem" | "menuitemradio";
+	ariaChecked?: boolean;
 }) {
 	return (
 		<button
 			type="button"
+			role={role}
+			aria-checked={role === "menuitemradio" ? (ariaChecked ?? selected) : undefined}
 			onClick={onClick}
 			disabled={disabled}
-			aria-current={selected || undefined}
+			aria-current={role ? undefined : selected || undefined}
 			className={`flex min-h-13 w-full items-center gap-4 px-5 py-2.5 text-left transition-colors duration-(--m-dur-fast) ease-m active:bg-m-surface-hover disabled:opacity-40 ${
 				danger ? "text-m-danger" : selected ? "text-m-accent" : "text-m-text"
 			}`}
@@ -122,6 +128,50 @@ export function MenuRow({
 			</span>
 			{right != null && <span className="flex shrink-0 items-center text-m-sm whitespace-nowrap text-m-text-3">{right}</span>}
 			{selected && !(isValidElement(right) && right.type === Check) && <Check size={20} className="shrink-0 text-m-accent" aria-hidden />}
+		</button>
+	);
+}
+
+/** Selectable row inside a grouped card (radio semantics, right-side accent checkmark). */
+export function ChoiceRow({
+	checked,
+	onPick,
+	icon,
+	title,
+	subtitle,
+	tag,
+	disabled = false,
+}: {
+	checked: boolean;
+	onPick: () => void;
+	icon?: ReactNode;
+	title: ReactNode;
+	subtitle?: ReactNode;
+	tag?: ReactNode;
+	disabled?: boolean;
+}) {
+	return (
+		<button
+			type="button"
+			role="radio"
+			aria-checked={checked}
+			disabled={disabled}
+			onClick={onPick}
+			className="m-list-row flex w-full items-center gap-4 pl-4 text-left transition-colors duration-(--m-dur-fast) ease-m active:bg-m-surface-hover disabled:opacity-40"
+		>
+			{icon != null && (
+				<span className={`flex w-6 shrink-0 items-center justify-center ${checked ? "text-m-accent" : "text-m-text-2"}`}>{icon}</span>
+			)}
+			<span className="m-list-sep flex min-h-14 min-w-0 flex-1 items-center gap-3 py-3 pr-4">
+				<span className="min-w-0 flex-1">
+					<span className={`block text-m-md break-words ${checked ? "font-medium text-m-accent" : "text-m-text"}`}>{title}</span>
+					{subtitle != null && <span className="mt-0.5 block text-m-xs break-words text-m-text-3">{subtitle}</span>}
+				</span>
+				{tag}
+				<span className="flex w-5 shrink-0 justify-center">
+					{checked && <Check size={20} className="text-m-accent" aria-hidden />}
+				</span>
+			</span>
 		</button>
 	);
 }

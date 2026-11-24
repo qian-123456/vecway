@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 
 export type IconButtonVariant = "filled" | "plain" | "tinted" | "glass";
 
@@ -26,7 +26,7 @@ export function IconButton({
 }: {
 	icon: ReactNode;
 	label: string;
-	onClick?: () => void;
+	onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
 	disabled?: boolean;
 	variant?: IconButtonVariant;
 	size?: "md" | "sm";

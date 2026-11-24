@@ -1,5 +1,6 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Clock, Loader2, X } from "lucide-react";
 import { useState } from "react";
+import { shortModel } from "../chat/lib/models";
 import { Chip } from "../../ui";
 import type { ChipTone } from "../../ui";
 import { elapsedMs, formatElapsed, rowLabel, statusText } from "./model";
@@ -30,11 +31,22 @@ const DOT_Y = 25;
 const line = "absolute w-px bg-m-border-strong";
 
 /** Guides and the elbow of one row, drawn in the indentation columns. */
-function Connectors({ flat }: { flat: FlatRow }) {
+function Connectors({ flat, compact = false }: { flat: FlatRow; compact?: boolean }) {
 	const { guides, isLast } = flat;
 	const depth = Math.min(flat.depth, MAX_VISIBLE_DEPTH);
 	const guideOffset = flat.depth - depth;
 	if (depth === 0) return null;
+	if (compact) {
+		return (
+			<span className="flex shrink-0 self-stretch" aria-hidden>
+				{Array.from({ length: depth }, (_, i) => (
+					<span key={i} className="relative shrink-0" style={{ width: 14 }}>
+						<span className="absolute top-1.5 bottom-1.5 left-1.5 w-px bg-m-border/80" />
+					</span>
+				))}
+			</span>
+		);
+	}
 	return (
 		<span className="flex shrink-0 self-stretch" aria-hidden>
 			{Array.from({ length: depth }, (_, i) => {
@@ -57,18 +69,88 @@ function Connectors({ flat }: { flat: FlatRow }) {
 	);
 }
 
-function TreeRow({ flat, hasChildren, collapsed, now, onOpen, onToggle }: {
+function CompactStatusIcon({ bucket }: { bucket: Bucket }) {
+	if (bucket === "running") return <Loader2 size={13} className="shrink-0 animate-spin text-m-accent" aria-hidden />;
+	if (bucket === "done") return <Check size={13} strokeWidth={2.5} className="shrink-0 text-m-success" aria-hidden />;
+	if (bucket === "failed") return <X size={13} strokeWidth={2.5} className="shrink-0 text-m-danger" aria-hidden />;
+	return <Clock size={13} className="shrink-0 text-m-text-3" aria-hidden />;
+}
+
+const COMPACT_BADGE: Record<Bucket, string> = {
+	running: "bg-m-accent-soft text-m-accent-soft-text",
+	queued: "bg-m-surface-2 text-m-text-3",
+	done: "bg-m-success-bg text-m-success",
+	failed: "bg-m-danger-bg text-m-danger",
+};
+
+function TreeRow({ flat, hasChildren, collapsed, now, compact, onOpen, onToggle }: {
 	flat: FlatRow;
 	hasChildren: boolean;
 	collapsed: boolean;
 	now: number;
+	compact: boolean;
 	onOpen: (id: string) => void;
 	onToggle: (id: string) => void;
 }) {
 	const { row, bucket } = flat.node;
 	const label = rowLabel(row);
 	const elapsed = formatElapsed(elapsedMs(row, now));
-	const meta = [label.role, row.model].filter(Boolean).join(" · ");
+	const modelShort = row.model ? shortModel(row.model) || row.model : "";
+	const meta = [label.role, compact ? modelShort : row.model].filter(Boolean).join(" · ");
+
+	if (compact) {
+		const toolsLabel = row.toolCallCount ? `${row.toolCallCount} 次工具` : null;
+		return (
+			<li className={`flex ${flat.dim ? "opacity-55" : ""}`}>
+				<Connectors flat={flat} compact />
+				<button
+					type="button"
+					onClick={() => onOpen(row.id)}
+					aria-label={`${label.primary}，${statusText(row.status)}${flat.depth > 0 ? `，第 ${flat.depth + 1} 层` : ""}`}
+					className="m-press flex min-h-12 min-w-0 flex-1 items-start gap-2.5 rounded-m-md px-2.5 py-2 text-left transition-colors active:bg-m-surface-hover"
+				>
+					<span className="mt-1 flex size-5 shrink-0 items-center justify-center rounded-full bg-m-surface">
+						<CompactStatusIcon bucket={bucket} />
+					</span>
+					<span className="min-w-0 flex-1">
+						<span className="flex items-center gap-1.5">
+							<span className="min-w-0 flex-1 truncate text-[13px] font-medium leading-snug text-m-text">
+								{label.primary}
+							</span>
+							{elapsed && (
+								<span className="shrink-0 text-[11px] whitespace-nowrap tabular-nums text-m-text-3">
+									{elapsed}
+								</span>
+							)}
+						</span>
+						{label.description && (
+							<span className="mt-0.5 line-clamp-1 text-[11.5px] leading-snug text-m-text-2">
+								{label.description}
+							</span>
+						)}
+						<span className="mt-1 flex flex-wrap items-center gap-1.5 text-[10.5px] leading-none">
+							<span className={`rounded-m-pill px-1.5 py-0.5 font-medium whitespace-nowrap ${COMPACT_BADGE[bucket]}`}>
+								{statusText(row.status)}
+							</span>
+							{label.role && (
+								<span className="rounded bg-m-surface px-1.5 py-0.5 whitespace-nowrap text-m-text-2">
+									{label.role}
+								</span>
+							)}
+							{modelShort && (
+								<span className="truncate font-m-mono text-m-text-3">{modelShort}</span>
+							)}
+							{toolsLabel && (
+								<span className="whitespace-nowrap tabular-nums text-m-text-3">· {toolsLabel}</span>
+							)}
+						</span>
+					</span>
+					<ChevronRight size={14} strokeWidth={1.75} className="mt-1.5 shrink-0 text-m-text-3" aria-hidden />
+				</button>
+			</li>
+		);
+	}
+
 	return (
 		<li className={`m-list-row flex pl-4 ${flat.dim ? "opacity-55" : ""}`}>
 			<Connectors flat={flat} />
@@ -123,11 +205,13 @@ export function SubagentTree({
 	rows,
 	now,
 	onOpen,
+	compact = false,
 	className = "bg-m-card",
 }: {
 	rows: readonly FlatRow[];
 	now: number;
 	onOpen: (id: string) => void;
+	compact?: boolean;
 	/** Card fill; `bg-m-card` on elevated canvases, `bg-m-surface` on the page canvas. */
 	className?: string;
 }) {
@@ -147,7 +231,16 @@ export function SubagentTree({
 	return (
 		<ul className={`m-list m-0 list-none overflow-hidden rounded-m-lg p-0 ${className}`}>
 			{visibleRows.map((f) => (
-				<TreeRow key={f.node.id} flat={f} hasChildren={f.node.children.length > 0} collapsed={collapsed.has(f.node.id)} now={now} onOpen={onOpen} onToggle={toggle} />
+				<TreeRow
+					key={f.node.id}
+					flat={f}
+					hasChildren={f.node.children.length > 0}
+					collapsed={collapsed.has(f.node.id)}
+					now={now}
+					compact={compact}
+					onOpen={onOpen}
+					onToggle={toggle}
+				/>
 			))}
 		</ul>
 	);

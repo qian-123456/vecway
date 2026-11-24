@@ -1,10 +1,29 @@
-import { ChevronDown, ChevronRight, Copy, Server } from "lucide-react";
+import {
+	ChevronDown,
+	ChevronRight,
+	Copy,
+	ExternalLink,
+	FolderOpen,
+	MoreHorizontal,
+	Server,
+	Square,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { api, errorMessage } from "../../core/api";
 import { copyText, sessionName } from "../../core/lib/format";
 import { nav, type PageProps } from "../../core/nav";
 import { useSession, useSessions } from "../../core/stores/sessions";
-import { Button, Chip, EmptyState, ListGroup, PageHeader, PullToRefresh, confirm, toast } from "../../ui";
+import {
+	AnchoredPopover,
+	EmptyState,
+	IconButton,
+	ListGroup,
+	MenuRow,
+	PageHeader,
+	PullToRefresh,
+	confirm,
+	toast,
+} from "../../ui";
 import { abbreviateHomePath } from "../sessions/NewSessionSheet";
 import { LoadGate } from "./PanelState";
 import { useLoad, useResync } from "./hooks";
@@ -40,9 +59,10 @@ function isSessionOwned(s: ServiceInfo, sessionId: string, sessionCwd?: string |
 	return s.startedByApp && (!sessionCwd || !s.cwd || pathMatches(s.cwd, sessionCwd));
 }
 
-export function ServicesPanel({ sessionId, embedded = false, active: _active = true }: { sessionId: string; embedded?: boolean; active?: boolean }) {
+export function ServicesPanel({ sessionId, embedded = false, active = true }: { sessionId: string; embedded?: boolean; active?: boolean }) {
 	const [diagOpen, setDiagOpen] = useState(false);
 	const [stopping, setStopping] = useState<number | null>(null);
+	const [menuTarget, setMenuTarget] = useState<{ service: ServiceInfo; anchor: HTMLElement | null } | null>(null);
 	const session = useSession(sessionId);
 	const byId = useSessions((s) => s.byId);
 	const state = useLoad(
@@ -82,11 +102,19 @@ export function ServicesPanel({ sessionId, embedded = false, active: _active = t
 		return { projectRows: project, otherRows: other };
 	}, [rows, sessionId, session?.cwd]);
 
+	const openInBrowser = (addr: string) => {
+		window.open(addr, "_blank", "noopener,noreferrer");
+	};
+
+	const activeMenuService = menuTarget?.service ?? null;
+	const activeMenuAddr = activeMenuService ? activeMenuService.url || `http://localhost:${activeMenuService.port}` : "";
+	const activeMenuOwned = activeMenuService ? isSessionOwned(activeMenuService, sessionId, session?.cwd) : false;
+
 	const body = (
 		<PullToRefresh onRefresh={() => state.reload(true)}>
 			<LoadGate state={state}>
 				{() => (
-					<div className="space-y-4 px-4 pt-3" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 24px)" }}>
+					<div className="space-y-4 pt-3" style={{ paddingBottom: "calc(var(--m-safe-bottom) + 24px)" }}>
 						{projectRows.length === 0 ? (
 							<EmptyState
 								icon={<Server size={22} strokeWidth={1.75} />}
@@ -94,68 +122,51 @@ export function ServicesPanel({ sessionId, embedded = false, active: _active = t
 								hint="由 Agent 或本项目目录启动的本地开发服务器会显示在这里"
 							/>
 						) : (
-							<ListGroup className="!mx-0">
+							<ListGroup title={`运行中的服务 · ${projectRows.length}`}>
 								{projectRows.map((s) => {
-									const owned = isSessionOwned(s, sessionId, session?.cwd);
 									const sess = s.sessionId ? byId[s.sessionId] : undefined;
 									const owner = sess ? sessionName(sess) : null;
 									const addr = s.url || `http://localhost:${s.port}`;
+									const metaParts = [addr];
+									if (s.cwd) metaParts.push(abbreviateHomePath(s.cwd));
+									if (owner) metaParts.push(`来自 ${owner}`);
+									if (s.memoryKb) metaParts.push(`${Math.round(s.memoryKb / 1024)} MB`);
 									return (
-										<div key={`${s.pid}:${s.port}`} className="m-list-row space-y-2.5 px-4 py-3.5">
-											<div className="flex items-start justify-between gap-2">
-												<div className="min-w-0 flex-1">
-													<div className="flex flex-wrap items-center gap-1.5">
-														<Chip tone="success">
-															<span aria-hidden className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-current" />
-															运行中
-														</Chip>
-														<Chip tone="accent">:{s.port}</Chip>
-														{s.startedByApp && <Chip>应用启动</Chip>}
-													</div>
-													<div className="mt-1.5 text-m-md font-medium break-all text-m-text">{s.name}</div>
+										<div key={`${s.pid}:${s.port}`} className="m-list-row flex items-center gap-2 py-2.5 pr-2 pl-4">
+											<button
+												type="button"
+												onClick={() => openInBrowser(addr)}
+												className="min-w-0 flex-1 text-left active:opacity-75"
+											>
+												<div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+													<span className="inline-block h-2 w-2 shrink-0 self-center rounded-full bg-m-success" aria-hidden />
+													<span className="text-m-md font-medium break-words text-m-text">{s.name}</span>
+													<span className="font-m-mono text-m-xs whitespace-nowrap text-m-accent">:{s.port}</span>
 												</div>
-												{owned && (
-													<Button
-														variant="danger"
-														size="sm"
-														busy={stopping === s.pid}
-														onClick={() => void stop(s)}
-													>
-														停止
-													</Button>
-												)}
-											</div>
-											<div className="flex flex-wrap items-center gap-2 text-m-xs text-m-text-2">
-												<button
-													type="button"
-													aria-label={`复制本机地址 ${addr}`}
-													onClick={() => void copyText(addr).then((ok) => ok && toast("已复制本机地址", { kind: "success" }))}
-													className="inline-flex min-h-8 items-center gap-1.5 rounded-m-pill bg-m-surface px-2.5 text-m-xs text-m-accent active:bg-m-surface-2"
-												>
-													<Copy size={12} aria-hidden />
-													<span className="font-medium whitespace-nowrap">复制本机地址</span>
-													<span className="font-m-mono text-m-text-2">{addr}</span>
-												</button>
-												{s.memoryKb ? <span className="whitespace-nowrap text-m-text-3">{Math.round(s.memoryKb / 1024)} MB</span> : null}
-												{owner && <span className="truncate text-m-text-3">来自：{owner}</span>}
-											</div>
-											{s.cwd && (
-												<div className="m-selectable truncate font-m-mono text-m-xs text-m-text-3">
-													{abbreviateHomePath(s.cwd)}
+												<div className="mt-1 pl-4 font-m-mono text-[12px] leading-relaxed break-all text-m-text-3">
+													{metaParts.join(" · ")}
 												</div>
-											)}
+											</button>
+											<IconButton
+												variant="plain"
+												size="sm"
+												icon={<MoreHorizontal size={18} strokeWidth={1.75} />}
+												label={`操作 ${s.name}`}
+												disabled={stopping === s.pid}
+												onClick={(e) => setMenuTarget({ service: s, anchor: e.currentTarget })}
+											/>
 										</div>
 									);
 								})}
 							</ListGroup>
 						)}
 
-						<div className="rounded-m-lg border border-m-border bg-m-card">
+						<ListGroup>
 							<button
 								type="button"
 								aria-expanded={diagOpen}
 								onClick={() => setDiagOpen((v) => !v)}
-								className="flex min-h-11 w-full items-center justify-between gap-2 px-4 py-2.5 text-left text-m-sm font-medium text-m-text-2 active:bg-m-surface-hover"
+								className="m-list-row flex min-h-11 w-full items-center justify-between gap-2 px-4 py-2.5 text-left text-m-sm font-medium text-m-text-2 active:bg-m-surface-hover"
 							>
 								<span className="whitespace-nowrap">
 									本机其他端口（诊断）
@@ -163,29 +174,78 @@ export function ServicesPanel({ sessionId, embedded = false, active: _active = t
 								</span>
 								{diagOpen ? <ChevronDown size={17} className="shrink-0 text-m-text-3" /> : <ChevronRight size={17} className="shrink-0 text-m-text-3" />}
 							</button>
-							{diagOpen && (
-								<div className="border-t border-m-border">
-									{otherRows.length === 0 ? (
-										<p className="px-4 py-3 text-m-xs text-m-text-3">没有检测到其他监听端口</p>
-									) : (
-										<div className="divide-y divide-m-border">
-											{otherRows.map((s) => (
-												<div key={`other-${s.pid}:${s.port}`} className="space-y-1 px-4 py-2.5">
-													<div className="flex items-center justify-between gap-2">
-														<span className="min-w-0 truncate text-m-sm font-medium text-m-text">{s.name}</span>
-														<div className="flex shrink-0 items-center gap-1.5">
-															<Chip>:{s.port}</Chip>
-															<Chip>PID {s.pid}</Chip>
-														</div>
-													</div>
-													<div className="m-selectable truncate font-m-mono text-m-xs text-m-text-3">{s.command}</div>
-												</div>
-											))}
+							{diagOpen &&
+								(otherRows.length === 0 ? (
+									<div className="px-4 py-3 text-m-xs text-m-text-3">没有检测到其他监听端口</div>
+								) : (
+									otherRows.map((s) => (
+										<div key={`other-${s.pid}:${s.port}`} className="m-list-row space-y-1 px-4 py-2.5">
+											<div className="flex flex-wrap items-baseline justify-between gap-2">
+												<span className="text-m-sm font-medium break-words text-m-text">{s.name}</span>
+												<span className="font-m-mono text-m-xs whitespace-nowrap text-m-text-3">
+													:{s.port} · PID {s.pid}
+												</span>
+											</div>
+											<div className="m-selectable font-m-mono text-m-xs break-all text-m-text-3">{s.command}</div>
 										</div>
+									))
+								))}
+						</ListGroup>
+
+						<AnchoredPopover
+							open={active && activeMenuService !== null}
+							onClose={() => setMenuTarget(null)}
+							anchorEl={menuTarget?.anchor}
+							placement="bottom-end"
+							ariaLabel="服务操作"
+							minWidth={196}
+						>
+							{activeMenuService && (
+								<>
+									<MenuRow
+										icon={<ExternalLink size={17} strokeWidth={1.75} />}
+										label="在浏览器打开"
+										onClick={() => {
+											const addr = activeMenuAddr;
+											setMenuTarget(null);
+											openInBrowser(addr);
+										}}
+									/>
+									<MenuRow
+										icon={<Copy size={17} strokeWidth={1.75} />}
+										label="复制本机地址"
+										onClick={() => {
+											const addr = activeMenuAddr;
+											setMenuTarget(null);
+											void copyText(addr).then((ok) => ok && toast("已复制本机地址", { kind: "success" }));
+										}}
+									/>
+									{activeMenuService.cwd && (
+										<MenuRow
+											icon={<FolderOpen size={17} strokeWidth={1.75} />}
+											label="复制目录"
+											onClick={() => {
+												const dir = activeMenuService.cwd ?? "";
+												setMenuTarget(null);
+												void copyText(dir).then((ok) => ok && toast("已复制目录", { kind: "success" }));
+											}}
+										/>
 									)}
-								</div>
+									{activeMenuOwned && (
+										<MenuRow
+											icon={<Square size={16} strokeWidth={1.75} />}
+											label="停止服务"
+											danger
+											onClick={() => {
+												const svc = activeMenuService;
+												setMenuTarget(null);
+												void stop(svc);
+											}}
+										/>
+									)}
+								</>
 							)}
-						</div>
+						</AnchoredPopover>
 					</div>
 				)}
 			</LoadGate>

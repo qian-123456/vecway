@@ -1,8 +1,6 @@
 import {
 	ArrowDown,
 	Camera,
-	Check,
-	ChevronDown,
 	ChevronRight,
 	Copy,
 	CornerDownLeft,
@@ -12,7 +10,6 @@ import {
 	MoreHorizontal,
 	Paperclip,
 	Pencil,
-	Plus,
 	RefreshCw,
 	Sparkles,
 	Trash2,
@@ -39,9 +36,11 @@ import {
 	PageHeader,
 	PullToRefresh,
 	TextField,
+	TitleSwitcher,
 	confirm,
 	inputCls,
 	toast,
+	type TitleSwitcherItem,
 } from "../../ui";
 import { ActionTile } from "../../ui/ActionTile";
 import { Markdown } from "../../ui/Markdown";
@@ -50,6 +49,7 @@ import type { Attachment, ComposerState } from "../chat/chatStore";
 import { ComposerCapsule, type ComposerApi } from "../chat/components/ComposerCapsule";
 import { ContextSheet } from "../chat/components/ContextSheet";
 import { ModelThinkingSheet } from "../chat/components/ModelThinkingSheet";
+import { ThinkingSourcePopover } from "../chat/components/ThinkingLevelPopover";
 import { Thinking } from "../chat/components/Thinking";
 import { ToolCard, toolState } from "../chat/components/ToolCard";
 import { Images } from "../chat/components/TurnView";
@@ -61,7 +61,7 @@ import { formatDesktopStatParts, formatStatClock, requestStatFromItem, type Requ
 import { EMPTY_TRANSCRIPT, mergePage } from "../chat/lib/transcript";
 import { loadUnsent, saveUnsent } from "../chat/lib/unsent";
 import { ErrorState, LoadGate, Loading } from "./PanelState";
-import { useLayer, useLoad, useResync, type LoadState } from "./hooks";
+import { useLoad, useResync, type LoadState } from "./hooks";
 import { useRightDrawer, type SidechatAnnotationPayload } from "./rightDrawerStore";
 
 type PendingMessage = { id: number; text: string; images: ImageRef[] };
@@ -72,6 +72,7 @@ type DraftInject = { targetKey: string; text: string; nonce: number };
 
 const NEW_DRAFT_KEY = "__new__";
 const EMPTY_ATTS: SidechatAttachment[] = [];
+const EMPTY_ROWS: MobileSession[] = [];
 export const HANDBACK_MARKER = "【回传整理】";
 export const HANDBACK_PROMPT = `${HANDBACK_MARKER}请把我们在这个辅助对话里讨论并确定下来的内容，整理成一份可以交给主会话的结论。
 
@@ -345,7 +346,6 @@ function SidechatPanelInner({
 	viewRef.current = { mode, activeThreadId };
 	const [createdMetaMap, setCreatedMetaMap] = useState<Record<string, SidechatMessage>>({});
 	const justCreatedIds = useRef(new Set<string>());
-	const [switcherOpen, setSwitcherOpen] = useState(false);
 	const [handbackOpen, setHandbackOpen] = useState(false);
 	const [canHandback, setCanHandback] = useState(false);
 	const [draftInject, setDraftInject] = useState<DraftInject | null>(null);
@@ -365,7 +365,6 @@ function SidechatPanelInner({
 		setActiveThreadId(null);
 		setCreatedMetaMap({});
 		justCreatedIds.current.clear();
-		setSwitcherOpen(false);
 		setHandbackOpen(false);
 		setCanHandback(false);
 		autoInitializedFor.current = null;
@@ -401,7 +400,7 @@ function SidechatPanelInner({
 	);
 	useResync(() => void state.reload(true));
 
-	const rows = state.data ?? [];
+	const rows = state.data ?? EMPTY_ROWS;
 	const pendingSidechat = useRightDrawer((s) => s.pendingSidechat);
 
 	// Initial auto-select and ongoing reconciliation whenever a refreshed list succeeds.
@@ -480,7 +479,6 @@ function SidechatPanelInner({
 		const payload = useRightDrawer.getState().consumeSidechatAnnotation(sessionId);
 		if (!payload) return;
 		const text = formatAnnotationPayload(payload);
-		setSwitcherOpen(false);
 		if (rows.length === 0 && payload.comment?.trim()) {
 			// First sidechat with explicit comment: create and open immediately so the user sees the answer stream.
 			const msg: SidechatMessage = { text, imagePaths: [], images: [] };
@@ -502,8 +500,6 @@ function SidechatPanelInner({
 			drafts.appendText(targetKey, text);
 		}
 	}, [pendingSidechat, sessionId, draftSession, state.loading, state.data, rows, activeThreadId, createSidechat, drafts]);
-
-	useLayer(active && switcherOpen, () => setSwitcherOpen(false));
 
 	const sessionsById = useSessions((s) => s.byId);
 	const activeRow = useMemo(
@@ -527,19 +523,6 @@ function SidechatPanelInner({
 		if (!active || (mode !== "thread" && !hasHandback)) setMoreOpen(false);
 	}, [active, mode, hasHandback]);
 
-	const drawerTab = useRightDrawer((s) => s.tabBySession[sessionId]);
-	const drawerOpen = useRightDrawer((s) => s.open);
-	const wasDrawerOpen = useRef(drawerOpen);
-	useEffect(() => {
-		const closedNow = wasDrawerOpen.current && !drawerOpen;
-		wasDrawerOpen.current = drawerOpen;
-		if (!embedded) return;
-		if (closedNow || (drawerTab && drawerTab !== "sidechat")) {
-			setSwitcherOpen(false);
-		}
-	}, [embedded, drawerTab, drawerOpen]);
-
-	const toggleSwitcher = useCallback(() => setSwitcherOpen((v) => !v), []);
 	const openHandback = useCallback(() => setHandbackOpen(true), []);
 	const [renameTarget, setRenameTarget] = useState<MobileSession | null>(null);
 	const [renameDraft, setRenameDraft] = useState("");
@@ -627,20 +610,106 @@ function SidechatPanelInner({
 		return list;
 	}, [hasHandback, openHandback, mode, activeRow, openRename, deleteThread]);
 
+	const switcherItems = useMemo<TitleSwitcherItem[]>(() => {
+		const items: TitleSwitcherItem[] = rows.map((s) => ({
+			id: s.id,
+			label: sessionName(s),
+			subtitle: `${STATUS_LABEL[s.status] ?? s.status} · ${relTime(s.updatedAt)}`,
+			badge: s.status === "working" ? "var(--m-accent)" : undefined,
+			removable: true,
+		}));
+		if (mode === "new" || rows.length === 0) {
+			items.unshift({
+				id: NEW_DRAFT_KEY,
+				label: "新辅助对话",
+				subtitle: "基于当前主对话创建新分支",
+			});
+		}
+		return items;
+	}, [rows, mode]);
+
+	const selectFromSwitcher = useCallback((id: string) => {
+		if (id === NEW_DRAFT_KEY) {
+			setMode("new");
+			setActiveThreadId(null);
+			setCanHandback(false);
+			return;
+		}
+		setActiveThreadId(id);
+		setMode("thread");
+	}, []);
+
+	const stepFromSwitcher = useCallback(
+		(dir: -1 | 1) => {
+			if (rows.length === 0) return;
+			if (mode !== "thread" || !activeThreadId) {
+				const target = dir > 0 ? rows[0] : rows[rows.length - 1];
+				if (target) {
+					setActiveThreadId(target.id);
+					setMode("thread");
+				}
+				return;
+			}
+			if (rows.length < 2) return;
+			const idx = rows.findIndex((r) => r.id === activeThreadId);
+			const next = rows[(idx + dir + rows.length) % rows.length];
+			if (next) setActiveThreadId(next.id);
+		},
+		[rows, mode, activeThreadId],
+	);
+
+	const removeFromSwitcher = useCallback(
+		(id: string) => {
+			const target = rows.find((r) => r.id === id);
+			if (target) void deleteThread(target);
+		},
+		[rows, deleteThread],
+	);
+
+	const startNewThread = useCallback(() => {
+		setMode("new");
+		setActiveThreadId(null);
+		setCanHandback(false);
+	}, []);
+
+	const titleSwitcherConfig = useMemo(
+		() =>
+			draftSession
+				? undefined
+				: {
+						label: headerTitle,
+						ariaLabel: "切换辅助对话",
+						popoverTitle: `全部辅助对话（${rows.length}）`,
+						emptyText: "还没有辅助对话，点击下方新建或在对话框提问",
+						items: switcherItems,
+						activeId: mode === "thread" && activeThreadId ? activeThreadId : NEW_DRAFT_KEY,
+						onSelect: selectFromSwitcher,
+						onStep: rows.length > 0 ? stepFromSwitcher : undefined,
+						onRemove: removeFromSwitcher,
+						create: { label: "新建辅助对话", onClick: startNewThread },
+					},
+		[
+			draftSession,
+			headerTitle,
+			rows.length,
+			switcherItems,
+			mode,
+			activeThreadId,
+			selectFromSwitcher,
+			stepFromSwitcher,
+			removeFromSwitcher,
+			startNewThread,
+		],
+	);
+
 	useEffect(() => {
 		if (!embedded) return;
 		useRightDrawer.getState().setTabHeader(sessionId, "sidechat", {
 			title: headerTitle,
 			moreActions,
-			sidechatSwitcher: draftSession
-				? undefined
-				: {
-						count: rows.length,
-						open: switcherOpen,
-						toggle: toggleSwitcher,
-					},
+			titleSwitcher: titleSwitcherConfig,
 		});
-	}, [embedded, sessionId, headerTitle, moreActions, draftSession, rows.length, switcherOpen, toggleSwitcher]);
+	}, [embedded, sessionId, headerTitle, moreActions, titleSwitcherConfig]);
 	useEffect(() => {
 		if (!embedded) return;
 		return () => {
@@ -688,116 +757,6 @@ function SidechatPanelInner({
 				/>
 			)}
 
-			{active && switcherOpen && (
-				<div className="absolute inset-0 z-(--z-base) flex flex-col justify-start">
-					<div
-						aria-hidden="true"
-						onClick={() => setSwitcherOpen(false)}
-						className="absolute inset-0 bg-m-scrim/35"
-					/>
-					<div
-						role="dialog"
-						aria-label="辅助对话列表"
-						className="m-liquid-surface relative mx-3 mt-2 flex max-h-[75%] flex-col overflow-hidden rounded-2xl"
-					>
-						<div className="flex shrink-0 items-center justify-between border-b border-m-border/60 px-4 py-2.5">
-							<span className="text-m-xs font-medium text-m-text-3">全部辅助对话（{rows.length}）</span>
-							<button
-								type="button"
-								aria-label="关闭切换"
-								onClick={() => setSwitcherOpen(false)}
-								className="inline-flex h-7 w-7 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface"
-							>
-								<X size={15} />
-							</button>
-						</div>
-						<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
-							{state.loading && state.data === null ? (
-								<Loading label="加载辅助对话列表..." />
-							) : state.error !== null && rows.length === 0 ? (
-								<ErrorState message={state.error} onRetry={() => void state.reload()} />
-							) : (
-								<>
-									{state.error !== null && (
-										<div role="alert" className="mb-2 flex items-center justify-between gap-2 rounded-xl bg-m-warn-bg px-3 py-2 text-m-xs text-m-warn">
-											<span className="min-w-0 flex-1 break-words">刷新失败：{state.error}</span>
-											<Button size="sm" onClick={() => void state.reload()}>重试</Button>
-										</div>
-									)}
-									{rows.length === 0 ? (
-										<div className="px-3 py-6 text-center text-m-xs text-m-text-3">
-											还没有辅助对话，点击下方新建或在对话框提问
-										</div>
-									) : (
-										<div className="space-y-1">
-											{rows.map((s) => {
-												const selected = mode === "thread" && s.id === activeThreadId;
-												const title = sessionName(s);
-												return (
-													<div key={s.id} className="flex items-center gap-1">
-														<button
-															type="button"
-															aria-current={selected ? "true" : undefined}
-															onClick={() => {
-																setActiveThreadId(s.id);
-																setMode("thread");
-																setSwitcherOpen(false);
-															}}
-															className={`min-w-0 flex-1 rounded-xl px-3 py-2.5 text-left transition-colors ${
-																selected ? "bg-m-accent-soft/45" : "active:bg-m-surface-hover"
-															}`}
-														>
-															<div className="flex items-center gap-2">
-																{selected && <Check size={14} className="shrink-0 text-m-accent" />}
-																<span className="min-w-0 flex-1 truncate text-m-sm font-medium text-m-text">
-																	{title}
-																</span>
-															</div>
-															<div className="mt-1 flex items-center gap-1.5 text-m-xs text-m-text-3">
-																{s.status === "working" && <span aria-hidden className="m-pulse h-2 w-2 rounded-full bg-m-accent" />}
-																<span className="whitespace-nowrap">{STATUS_LABEL[s.status] ?? s.status}</span>
-																<span aria-hidden>·</span>
-																<span className="whitespace-nowrap">{relTime(s.updatedAt)}</span>
-															</div>
-															{s.lastAssistant && (
-																<p className="mt-1 line-clamp-2 text-m-xs text-m-text-2">{s.lastAssistant}</p>
-															)}
-														</button>
-														<button
-															type="button"
-															aria-label={`删除 ${title}`}
-															onClick={() => void deleteThread(s)}
-															className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-m-text-3 active:bg-m-danger-bg active:text-m-danger"
-														>
-															<Trash2 size={15} strokeWidth={1.75} />
-														</button>
-													</div>
-												);
-											})}
-										</div>
-									)}
-								</>
-							)}
-						</div>
-						<div className="shrink-0 border-t border-m-border/60 p-2.5">
-							<Button
-								variant="primary"
-								className="w-full"
-								icon={<Plus size={18} strokeWidth={2} />}
-								onClick={() => {
-									setMode("new");
-									setActiveThreadId(null);
-									setCanHandback(false);
-									setSwitcherOpen(false);
-								}}
-							>
-								新建辅助对话
-							</Button>
-						</div>
-					</div>
-				</div>
-			)}
-
 			<BottomSheet
 				open={active && renameTarget !== null}
 				onClose={() => {
@@ -833,44 +792,41 @@ function SidechatPanelInner({
 	return (
 		<div className="flex h-full flex-col bg-m-bg">
 			<PageHeader
-				title={headerTitle}
+				title={
+					titleSwitcherConfig ? (
+						<TitleSwitcher
+							label={titleSwitcherConfig.label}
+							ariaLabel={titleSwitcherConfig.ariaLabel}
+							popoverTitle={titleSwitcherConfig.popoverTitle}
+							emptyText={titleSwitcherConfig.emptyText}
+							items={titleSwitcherConfig.items}
+							activeId={titleSwitcherConfig.activeId}
+							onSelect={titleSwitcherConfig.onSelect}
+							onStep={titleSwitcherConfig.onStep}
+							onRemove={titleSwitcherConfig.onRemove}
+							create={titleSwitcherConfig.create}
+						/>
+					) : (
+						headerTitle
+					)
+				}
 				onBack={() => nav.back()}
 				right={
-					<div className="flex items-center gap-1">
+					moreActions.length > 0 ? (
 						<button
 							type="button"
-							aria-label="切换辅助对话"
-							aria-expanded={switcherOpen}
-							onClick={() => setSwitcherOpen((v) => !v)}
-							className={`inline-flex h-9 items-center gap-1 rounded-full px-2.5 text-m-xs font-medium whitespace-nowrap transition-colors ${
-								switcherOpen ? "bg-m-accent-soft text-m-accent-soft-text" : "text-m-text-2 active:bg-m-surface-hover"
-							}`}
+							aria-label="更多操作"
+							aria-haspopup="menu"
+							aria-expanded={moreOpen}
+							onClick={(e) => {
+								setMoreAnchor(e.currentTarget);
+								setMoreOpen((v) => !v);
+							}}
+							className="m-press inline-flex h-10 w-10 items-center justify-center rounded-m-pill text-m-text-2 active:bg-m-surface-hover active:text-m-text"
 						>
-							<MessagesSquare size={15} strokeWidth={1.85} aria-hidden />
-							{rows.length > 0 && <span className="tabular-nums">{rows.length}</span>}
-							<ChevronDown
-								size={12}
-								strokeWidth={2}
-								aria-hidden
-								className={`transition-transform duration-(--m-dur-fast) ${switcherOpen ? "rotate-180" : ""}`}
-							/>
+							<MoreHorizontal size={20} strokeWidth={1.85} />
 						</button>
-						{moreActions.length > 0 && (
-							<button
-								type="button"
-								aria-label="更多操作"
-								aria-haspopup="menu"
-								aria-expanded={moreOpen}
-								onClick={(e) => {
-									setMoreAnchor(e.currentTarget);
-									setMoreOpen((v) => !v);
-								}}
-								className="m-press inline-flex h-10 w-10 items-center justify-center rounded-m-pill text-m-text-2 active:bg-m-surface-hover active:text-m-text"
-							>
-								<MoreHorizontal size={20} strokeWidth={1.85} />
-							</button>
-						)}
-					</div>
+					) : undefined
 				}
 			/>
 			{body}
@@ -946,6 +902,8 @@ function NewSidechatView({
 	const [draftModel, setDraftModel] = useState<string | null>(null);
 	const [draftThinking, setDraftThinking] = useState<string | null>(null);
 	const [pickerOpen, setPickerOpen] = useState(false);
+	const [thinkingOpen, setThinkingOpen] = useState(false);
+	const [thinkingAnchor, setThinkingAnchor] = useState<HTMLElement | null>(null);
 	const draftModelRef = useRef(draftModel);
 	const draftThinkingRef = useRef(draftThinking);
 	draftModelRef.current = draftModel;
@@ -1050,7 +1008,10 @@ function NewSidechatView({
 				model={activeModel}
 				thinking={activeThinking}
 				onModel={() => setPickerOpen(true)}
-				onThinking={() => setPickerOpen(true)}
+				onThinking={(el) => {
+					setThinkingAnchor(el ?? null);
+					setThinkingOpen(true);
+				}}
 				onSend={(msg, sentText, sentAtts) =>
 					onCreate(msg, sentText, sentAtts, {
 						model: draftModel,
@@ -1065,6 +1026,16 @@ function NewSidechatView({
 				currentLevel={activeThinking}
 				onFacts={(f) => {
 					if (f.model !== undefined) setDraftModel(f.model ?? null);
+					if (f.thinkingLevel !== undefined) setDraftThinking(f.thinkingLevel ?? null);
+				}}
+			/>
+			<ThinkingSourcePopover
+				open={active && thinkingOpen}
+				onClose={() => setThinkingOpen(false)}
+				anchorEl={thinkingAnchor}
+				source={draftModelSource}
+				currentLevel={activeThinking}
+				onFacts={(f) => {
 					if (f.thinkingLevel !== undefined) setDraftThinking(f.thinkingLevel ?? null);
 				}}
 			/>
@@ -1115,6 +1086,8 @@ function ThreadView({
 	const [showJump, setShowJump] = useState(false);
 	const [cstate, setCstate] = useState<ComposerState | null>(null);
 	const [pickerOpen, setPickerOpen] = useState(false);
+	const [thinkingOpen, setThinkingOpen] = useState(false);
+	const [thinkingAnchor, setThinkingAnchor] = useState<HTMLElement | null>(null);
 	const [contextOpen, setContextOpen] = useState(false);
 	const [contextAnchor, setContextAnchor] = useState<HTMLElement | null>(null);
 	const [compacting, setCompacting] = useState(false);
@@ -1516,7 +1489,10 @@ function ThreadView({
 					model={cstate?.model ?? null}
 					thinking={cstate?.thinkingLevel ?? null}
 					onModel={() => setPickerOpen(true)}
-					onThinking={() => setPickerOpen(true)}
+					onThinking={(el) => {
+						setThinkingAnchor(el ?? null);
+						setThinkingOpen(true);
+					}}
 					contextText={formatContextPercent(pct) ?? "未知"}
 					contextPercent={pct}
 					contextToneClass={TONE_TEXT[ctxTone]}
@@ -1555,6 +1531,14 @@ function ThreadView({
 				currentLevel={cstate?.thinkingLevel ?? null}
 				contextTokens={cstate?.contextTokens}
 				onFacts={(f) => setCstate((prev) => ({ ...(prev ?? {}), ...(f.model ? { model: f.model } : {}), thinkingLevel: f.thinkingLevel }))}
+			/>
+			<ThinkingSourcePopover
+				open={active && thinkingOpen}
+				onClose={() => setThinkingOpen(false)}
+				anchorEl={thinkingAnchor}
+				source={threadModelSource}
+				currentLevel={cstate?.thinkingLevel ?? null}
+				onFacts={(f) => setCstate((prev) => ({ ...(prev ?? {}), thinkingLevel: f.thinkingLevel }))}
 			/>
 			<ContextSheet
 				open={active && contextOpen}
@@ -1790,8 +1774,8 @@ function Composer({
 	onToggleBehavior?: () => void;
 	model?: string | null;
 	thinking?: string | null;
-	onModel?: () => void;
-	onThinking?: () => void;
+	onModel?: (anchor?: HTMLElement | null) => void;
+	onThinking?: (anchor?: HTMLElement | null) => void;
 	contextText?: string | null;
 	contextPercent?: number | null;
 	contextToneClass?: string;

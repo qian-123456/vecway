@@ -122,7 +122,7 @@ describe("SettingsPage navigation and groups", () => {
 		// Bottom sheet title should appear
 		expect(await screen.findByText("通用设置")).toBeDefined();
 		expect(screen.getByText("审批权限模式")).toBeDefined();
-		expect(within(screen.getByRole("radiogroup", { name: "运行重合策略" })).getByRole("radio", { name: "跳过" }).getAttribute("aria-checked")).toBe("true");
+		expect(screen.getByRole("button", { name: "运行重合策略，当前：跳过" })).toBeDefined();
 	});
 
 	it.each([
@@ -140,10 +140,15 @@ describe("SettingsPage navigation and groups", () => {
 		});
 		render(<SettingsPage />);
 		fireEvent.click(await screen.findByText("通用"));
-		const group = within(screen.getByRole("radiogroup", { name: "运行重合策略" }));
-		expect(group.getByRole("radio", { name: initial === "queue" ? "排队" : "跳过" }).getAttribute("aria-checked")).toBe("true");
-		fireEvent.click(group.getByRole("radio", { name: label }));
-		await waitFor(() => expect(group.getByRole("radio", { name: label }).getAttribute("aria-checked")).toBe("true"));
+		const trigger = await screen.findByRole("button", {
+			name: `运行重合策略，当前：${initial === "queue" ? "排队" : "跳过"}`,
+		});
+		fireEvent.click(trigger);
+		const menu = screen.getByRole("menu", { name: "运行重合策略" });
+		fireEvent.click(within(menu).getByRole("menuitemradio", { name: new RegExp(`^${label}`) }));
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: `运行重合策略，当前：${label}` })).toBeDefined(),
+		);
 		expect(apiModule.api).toHaveBeenCalledWith("POST", "/left/settings/set", { key: "automationOverlapPolicy", value });
 		expect(screen.getByText(/对所有自动化的后续触发立即生效，不中断当前运行/)).toBeDefined();
 	});
@@ -158,14 +163,13 @@ describe("SettingsPage navigation and groups", () => {
 		});
 		render(<SettingsPage />);
 		fireEvent.click(await screen.findByText("通用"));
-		const group = within(screen.getByRole("radiogroup", { name: "运行重合策略" }));
-		fireEvent.click(group.getByRole("radio", { name: "排队" }));
-		fireEvent.click(group.getByRole("radio", { name: "并行" }));
-		expect(group.getByRole("radio", { name: "跳过" }).getAttribute("aria-checked")).toBe("true");
-		expect((group.getByRole("radio", { name: "并行" }) as HTMLButtonElement).disabled).toBe(true);
+		const trigger = (await screen.findByRole("button", { name: "运行重合策略，当前：跳过" })) as HTMLButtonElement;
+		fireEvent.click(trigger);
+		fireEvent.click(screen.getByRole("menuitemradio", { name: /^排队/ }));
+		expect((screen.getByRole("button", { name: "运行重合策略，当前：跳过" }) as HTMLButtonElement).disabled).toBe(true);
 		expect(vi.mocked(apiModule.api).mock.calls.filter(([method]) => method === "POST")).toHaveLength(1);
 		await act(async () => finishSave({ ok: true, key: "automationOverlapPolicy", value: "queue" }));
-		expect(group.getByRole("radio", { name: "排队" }).getAttribute("aria-checked")).toBe("true");
+		expect(screen.getByRole("button", { name: "运行重合策略，当前：排队" })).toBeDefined();
 	});
 
 	it.each([
@@ -185,14 +189,15 @@ describe("SettingsPage navigation and groups", () => {
 		});
 		render(<SettingsPage />);
 		fireEvent.click(await screen.findByText("通用"));
-		const group = within(screen.getByRole("radiogroup", { name: "运行重合策略" }));
-		fireEvent.click(group.getByRole("radio", { name: "排队" }));
+		fireEvent.click(await screen.findByRole("button", { name: "运行重合策略，当前：跳过" }));
+		fireEvent.click(screen.getByRole("menuitemradio", { name: /^排队/ }));
 		await waitFor(() => expect(screen.getAllByRole("alert").some((alert) => alert.textContent?.includes(message))).toBe(true));
-		expect(group.getByRole("radio", { name: "跳过" }).getAttribute("aria-checked")).toBe("true");
+		const retryTrigger = screen.getByRole("button", { name: "运行重合策略，当前：跳过" });
 		if (error) expect(screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("full detail"))).toBe(true);
 		failed = false;
-		fireEvent.click(group.getByRole("radio", { name: "排队" }));
-		await waitFor(() => expect(group.getByRole("radio", { name: "排队" }).getAttribute("aria-checked")).toBe("true"));
+		fireEvent.click(retryTrigger);
+		fireEvent.click(screen.getByRole("menuitemradio", { name: /^排队/ }));
+		await waitFor(() => expect(screen.getByRole("button", { name: "运行重合策略，当前：排队" })).toBeDefined());
 	});
 
 	it.each([undefined, "unknown"])("does not invent a policy when the server returns %s", async (automationOverlapPolicy) => {
@@ -203,8 +208,8 @@ describe("SettingsPage navigation and groups", () => {
 		});
 		render(<SettingsPage />);
 		fireEvent.click(await screen.findByText("通用"));
-		const radios = within(screen.getByRole("radiogroup", { name: "运行重合策略" })).getAllByRole("radio") as HTMLButtonElement[];
-		expect(radios.every((radio) => radio.disabled && radio.getAttribute("aria-checked") === "false")).toBe(true);
+		const trigger = (await screen.findByRole("button", { name: "运行重合策略，当前：请选择" })) as HTMLButtonElement;
+		expect(trigger.disabled).toBe(true);
 		expect(screen.getByText("无法读取自动化重合策略，请返回设置后下拉刷新。")).toBeDefined();
 		expect(apiModule.api).not.toHaveBeenCalledWith("POST", expect.anything(), expect.anything());
 	});
@@ -218,7 +223,7 @@ describe("SettingsPage navigation and groups", () => {
 		expect(await screen.findByText("外观设置")).toBeDefined();
 		expect(screen.getByRole("switch", { name: "默认展开步骤" })).toBeDefined();
 		expect(screen.getByRole("radiogroup", { name: "色彩模式" })).toBeDefined();
-		expect(screen.getByRole("radiogroup", { name: "对话字号" })).toBeDefined();
+		expect(screen.getByRole("button", { name: /对话字号/ })).toBeDefined();
 	});
 
 	it("keeps system, light, and dark appearance choices editable and persisted locally", async () => {
@@ -232,7 +237,8 @@ describe("SettingsPage navigation and groups", () => {
 			expect(usePrefs.getState().scheme).toBe(value);
 		}
 
-		fireEvent.click(screen.getByRole("radio", { name: "特大" }));
+		fireEvent.click(screen.getByRole("button", { name: /对话字号/ }));
+		fireEvent.click(screen.getByRole("menuitemradio", { name: /^特大/ }));
 		expect(usePrefs.getState().extra.msgSize).toBe("xl");
 		fireEvent.click(screen.getByRole("switch", { name: "默认展开步骤" }));
 		expect(usePrefs.getState().extra.foldOpen).toBe(true);

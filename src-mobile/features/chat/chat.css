@@ -1,12 +1,4 @@
 /* Chat-only styles that Tailwind utilities cannot express. Tokens only. */
-.m-turn {
-	/* Off-screen turns skip layout/paint: keeps 150-turn sessions smooth. */
-	content-visibility: auto;
-	contain-intrinsic-size: auto 160px;
-}
-.m-turn-live {
-	content-visibility: visible;
-}
 /* Assistant reply text (Markdown root): Settings ▸ 外观 size with Direction A reading rhythm. */
 .m-md.m-msg {
 	font-size: var(--m-msg-fs);

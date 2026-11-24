@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, ClipboardList, Copy, GitCompareArrows, ListTree, RefreshCw } from "lucide-react";
+import { AlertTriangle, ChevronDown, ClipboardList, Copy, GitCompareArrows, ListTree, MoreHorizontal, RefreshCw } from "lucide-react";
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PlanStatus } from "../../../src/features/chat/plan/planStatus";
 import { api } from "../../core/api";
@@ -6,7 +6,7 @@ import { copyText } from "../../core/lib/format";
 import { nav, paths, type PageProps } from "../../core/nav";
 import { useSession } from "../../core/stores/sessions";
 import { isDraftId } from "../../core/types";
-import { AnchoredPopover, Chip, EmptyState, IconButton, PageHeader, PullToRefresh, toast, type ChipTone } from "../../ui";
+import { AnchoredPopover, EmptyState, IconButton, MenuRow, PageHeader, PullToRefresh, toast } from "../../ui";
 import { Markdown } from "../../ui/Markdown";
 import { ChatCtx } from "../chat/ChatContext";
 import {
@@ -26,34 +26,26 @@ interface PlanResponse {
 	planStatus?: PlanStatus | null;
 }
 
-interface PlanBadge {
-	label: string;
-	tone: ChipTone;
-	live?: boolean;
-}
-
-function planBadge(status: PlanStatus | null): PlanBadge {
+function planStatusText(status: PlanStatus | null): string {
 	if (status?.approved) {
 		switch (status.approved.status) {
 			case "executing":
-				return { label: "执行中", tone: "accent", live: true };
+				return "执行中";
 			case "completed":
-				return { label: "已完成", tone: "success" };
+				return "已完成";
 			case "failed":
-				return { label: "执行失败", tone: "danger" };
+				return "执行失败";
 			case "handoff":
-				return { label: "已移交新会话", tone: "accent" };
+				return "已移交新会话";
 		}
 	}
 	if (status?.enabled) {
-		return status.phase === "review"
-			? { label: "等待审批", tone: "warn" }
-			: { label: "规划中", tone: "accent", live: true };
+		return status.phase === "review" ? "等待审批" : "规划中";
 	}
 	if (status && (status.content?.trim() || status.planFile)) {
-		return { label: "已保存计划", tone: "neutral" };
+		return "已保存计划";
 	}
-	return { label: "暂无计划", tone: "neutral" };
+	return "暂无计划";
 }
 
 
@@ -80,7 +72,7 @@ export function PlanPanel({ sessionId, embedded = false, active = true }: { sess
 		: (status?.prevContent ?? null);
 	const title = status?.approved?.title ?? status?.title ?? "当前计划";
 	const version = status?.approved?.version ?? status?.version ?? 0;
-	const badge = planBadge(status);
+	const statusLabel = planStatusText(status);
 	const progress = useMemo(() => (planContent ? parseChecklistProgress(planContent) : null), [planContent]);
 	const hasDiff = Boolean(planContent && prevContent !== null && prevContent !== planContent);
 	const [showDiff, setShowDiff] = useState(false);
@@ -90,9 +82,10 @@ export function PlanPanel({ sessionId, embedded = false, active = true }: { sess
 	);
 	const [headings, setHeadings] = useState<PlanHeading[]>([]);
 	const [tocOpen, setTocOpen] = useState(false);
-	const [copied, setCopied] = useState(false);
+	const [moreOpen, setMoreOpen] = useState(false);
 	const [localApproving, setLocalApproving] = useState(false);
 	const tocBtnRef = useRef<HTMLButtonElement>(null);
+	const moreBtnRef = useRef<HTMLButtonElement>(null);
 	const [mdRoot, setMdRoot] = useState<HTMLDivElement | null>(null);
 	const approving = controller ? controller.state.planApproving : localApproving;
 	const isReview = Boolean(status?.enabled && status.phase === "review" && !status?.approved && planContent);
@@ -107,7 +100,10 @@ export function PlanPanel({ sessionId, embedded = false, active = true }: { sess
 	}, [planContent, version]);
 
 	useEffect(() => {
-		if (!active) setTocOpen(false);
+		if (!active) {
+			setTocOpen(false);
+			setMoreOpen(false);
+		}
 	}, [active]);
 
 	useLayoutEffect(() => {
@@ -133,9 +129,7 @@ export function PlanPanel({ sessionId, embedded = false, active = true }: { sess
 				toast("复制失败", { kind: "error" });
 				return;
 			}
-			setCopied(true);
 			toast("已复制计划内容", { kind: "success" });
-			window.setTimeout(() => setCopied(false), 1500);
 		});
 	};
 
@@ -204,49 +198,37 @@ export function PlanPanel({ sessionId, embedded = false, active = true }: { sess
 		<>
 			{planContent && (
 				<div className="shrink-0 border-b border-m-border bg-m-bg-elev/85 px-4 py-2.5 backdrop-blur-md">
-					<div className="flex items-center justify-between gap-2">
-						<div className="flex min-w-0 flex-1 items-center gap-2">
-							<h2 className="m-selectable min-w-0 truncate text-m-md font-semibold text-m-text">{title}</h2>
-							<Chip tone={badge.tone} className="shrink-0">
-								{badge.live && <span aria-hidden className="m-pulse mr-1 inline-block h-1.5 w-1.5 rounded-full bg-current" />}
-								{badge.label}
-							</Chip>
-							{version > 0 && <span className="shrink-0 text-m-xs whitespace-nowrap text-m-text-3">v{version}</span>}
-						</div>
-						<div className="flex shrink-0 items-center gap-0.5">
-							<IconButton
-								variant="plain"
-								size="sm"
-								icon={copied ? <Check size={16} className="text-m-success" /> : <Copy size={16} />}
-								label="复制计划"
-								onClick={copyPlan}
-							/>
-							{hasDiff && (
-								<IconButton
-									variant="plain"
-									size="sm"
-									icon={<GitCompareArrows size={16} className={showDiff ? "text-m-accent" : undefined} />}
-									label="对比版本"
-									onClick={() => {
-										setShowDiff((v) => !v);
-										setTocOpen(false);
-									}}
-								/>
-							)}
-							{embedded && (
-								<IconButton variant="plain" size="sm" icon={<RefreshCw size={16} />} label="刷新计划" onClick={() => void refresh()} />
-							)}
-						</div>
+					<div className="flex items-start justify-between gap-2">
+						<h2 className="m-selectable min-w-0 flex-1 pt-1 text-m-md leading-snug font-semibold break-words text-m-text">
+							{title}
+						</h2>
+						<button
+							ref={moreBtnRef}
+							type="button"
+							aria-label="更多操作"
+							aria-haspopup="menu"
+							aria-expanded={moreOpen}
+							onClick={() => {
+								setMoreOpen((v) => !v);
+								setTocOpen(false);
+							}}
+							className="m-press flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-m-text-2 active:bg-m-surface-hover"
+						>
+							<MoreHorizontal size={17} strokeWidth={1.85} />
+						</button>
 					</div>
-					{(headings.length > 0 || progress !== null) && (
+					{(headings.length > 0 || progress !== null || !showDiff) && (
 						<div className="mt-2 flex items-center gap-2">
 							<button
 								ref={tocBtnRef}
 								type="button"
 								disabled={showDiff || headings.length === 0}
 								aria-expanded={tocOpen}
-								onClick={() => setTocOpen((v) => !v)}
-								className="m-press flex min-h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded-m-pill bg-m-surface px-3 py-1.5 text-left text-m-xs font-medium text-m-text-2 active:bg-m-surface-2 disabled:opacity-50"
+								onClick={() => {
+									setTocOpen((v) => !v);
+									setMoreOpen(false);
+								}}
+								className="m-press flex min-h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded-m-sm bg-m-surface px-3 py-1.5 text-left text-m-xs font-medium text-m-text-2 active:bg-m-surface-2 disabled:opacity-50"
 							>
 								<span className="flex min-w-0 items-center gap-1.5">
 									<ListTree size={14} className="shrink-0 text-m-text-3" />
@@ -257,12 +239,9 @@ export function PlanPanel({ sessionId, embedded = false, active = true }: { sess
 							{progress && (
 								<span
 									title={status?.approved?.status === "executing" && progress.nextStep ? `当前：${progress.nextStep}` : undefined}
-									className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-m-pill bg-m-accent-soft px-3 py-1.5 text-m-xs font-medium whitespace-nowrap text-m-accent-soft-text"
+									className="shrink-0 font-m-mono text-m-xs font-medium whitespace-nowrap text-m-text-3 tabular-nums"
 								>
-									<CheckCircle2 size={14} className="shrink-0" />
-									<span>
-										{progress.done}/{progress.total}
-									</span>
+									{progress.done}/{progress.total}
 								</span>
 							)}
 						</div>
@@ -313,6 +292,7 @@ export function PlanPanel({ sessionId, embedded = false, active = true }: { sess
 					style={{ paddingBottom: "calc(var(--m-safe-bottom) + 12px)" }}
 				>
 					<PlanApprovalControls
+						sessionId={sessionId}
 						planStatus={status}
 						canFresh={canFresh}
 						running={Boolean(state.data?.streaming)}
@@ -322,6 +302,48 @@ export function PlanPanel({ sessionId, embedded = false, active = true }: { sess
 					/>
 				</div>
 			)}
+
+			<AnchoredPopover
+				open={active && moreOpen && Boolean(planContent)}
+				onClose={() => setMoreOpen(false)}
+				anchorEl={moreBtnRef.current}
+				placement="bottom-end"
+				ariaLabel="计划操作"
+				minWidth={188}
+				className="m-liquid-surface rounded-2xl!"
+			>
+				<div role="menu" className="py-1">
+					<MenuRow
+						icon={<Copy size={16} strokeWidth={1.75} />}
+						label="复制计划"
+						onClick={() => {
+							setMoreOpen(false);
+							copyPlan();
+						}}
+					/>
+					{hasDiff && (
+						<MenuRow
+							icon={<GitCompareArrows size={16} strokeWidth={1.75} />}
+							label={showDiff ? "查看正文" : "对比版本"}
+							selected={showDiff}
+							onClick={() => {
+								setShowDiff((v) => !v);
+								setMoreOpen(false);
+							}}
+						/>
+					)}
+					{embedded && (
+						<MenuRow
+							icon={<RefreshCw size={16} strokeWidth={1.75} />}
+							label="刷新计划"
+							onClick={() => {
+								setMoreOpen(false);
+								void refresh();
+							}}
+						/>
+					)}
+				</div>
+			</AnchoredPopover>
 
 			<AnchoredPopover
 				open={active && tocOpen && headings.length > 0}
@@ -355,7 +377,7 @@ export function PlanPanel({ sessionId, embedded = false, active = true }: { sess
 		<div className="flex h-full flex-col bg-m-bg">
 			<PageHeader
 				title="计划"
-				subtitle={badge.label}
+				subtitle={statusLabel}
 				onBack={() => nav.back()}
 				right={<IconButton icon={<RefreshCw size={20} />} label="刷新计划" onClick={() => void refresh()} />}
 			/>

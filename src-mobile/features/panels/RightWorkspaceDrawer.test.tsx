@@ -93,7 +93,7 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(screen.queryByRole("dialog", { name: "工作区抽屉" })).toBeNull();
 
 		act(() => useRightDrawer.getState().openDrawer("s1", "git"));
-		await waitFor(() => expect(screen.getByText("工作区是干净的")).toBeTruthy());
+		await waitFor(() => expect(screen.getAllByText(/工作区干净/).length).toBeGreaterThan(0));
 		expect(apiSpy).toHaveBeenCalledWith("GET", "/sessions/s1/git/status", undefined, expect.any(Object));
 
 		// Switch to services, keeping git mounted & hidden
@@ -137,7 +137,7 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 
 		render(<RightWorkspaceDrawer sessionId="s1" />);
 		act(() => useRightDrawer.getState().openDrawer("s1", "git"));
-		await waitFor(() => expect(screen.getByText("工作区是干净的")).toBeTruthy());
+		await waitFor(() => expect(screen.getAllByText(/工作区干净/).length).toBeGreaterThan(0));
 		expect(screen.queryByRole("tab", { name: "计划" })).toBeNull();
 	});
 
@@ -208,13 +208,13 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		fireEvent.click(sidechatTab);
 		expect(screen.queryByRole("dialog", { name: "辅助对话列表" })).toBeNull();
 
-		// Tapping Row 1 top title button opens the sidechat switcher list (without open-in-main action)
+		// Tapping Row 1 top title button opens the TitleSwitcher popover list
 		fireEvent.click(screen.getByRole("button", { name: /切换辅助对话/ }));
-		expect(screen.getByRole("dialog", { name: "辅助对话列表" })).toBeTruthy();
+		expect(screen.getByRole("menu", { name: /全部辅助对话/ })).toBeTruthy();
 		expect(screen.queryByRole("button", { name: /打开完整会话|在主对话中打开/ })).toBeNull();
 
-		fireEvent.click(screen.getByRole("button", { name: /^第二旁聊/ }));
-		expect(screen.queryByRole("dialog", { name: "辅助对话列表" })).toBeNull();
+		fireEvent.click(screen.getByRole("menuitemradio", { name: /^第二旁聊/ }));
+		expect(screen.queryByRole("menu", { name: /全部辅助对话/ })).toBeNull();
 		await screen.findByText("第二旁聊");
 
 		// Top-right ⋯ holds 把结论发回主对话 and 重命名此辅助对话
@@ -262,33 +262,33 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(screen.queryByRole("textbox", { name: "提交说明" })).toBeNull();
 
 		// Open diff and send to AI
-		fireEvent.click(screen.getByRole("button", { name: /修改\s*app\.ts/ }));
+		fireEvent.click(screen.getByText("app.ts"));
 		await screen.findByText("改动差异");
 		fireEvent.click(screen.getByRole("button", { name: /让 AI 修改/ }));
 		expect(useRightDrawer.getState().pendingMain?.payload.sourceLabel).toBe("Git 改动 · src/app.ts");
 
 		// Close diff and test commit-all modal
 		fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
-		fireEvent.click(screen.getByRole("button", { name: "提交全部改动" }));
+		fireEvent.click(screen.getByRole("button", { name: "填写说明提交" }));
 		await waitFor(() => expect((screen.getByRole("textbox", { name: "提交说明" }) as HTMLTextAreaElement).value).toBe("feat: polish mobile ux"));
 		fireEvent.click(screen.getByRole("button", { name: "确认提交" }));
 		await waitFor(() => expect(apiSpy).toHaveBeenCalledWith("POST", "/sessions/s1/git/stage", { paths: ["src/app.ts"] }));
 		expect(apiSpy).toHaveBeenCalledWith("POST", "/sessions/s1/git/commit", { message: "feat: polish mobile ux" });
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
-		// History hides author/SHA on main row and keeps branches collapsed by default
-		fireEvent.click(screen.getByRole("radio", { name: "历史" }));
+		// Switch to Commits tab to verify commit list with author & short sha
+		fireEvent.click(screen.getByRole("tab", { name: /提交/ }));
 		await screen.findByText("initial commit");
-		expect(screen.queryByText("Alice")).toBeNull();
-		expect(screen.queryByText("abcdef1")).toBeNull();
-		const branchToggle = screen.getByRole("button", { name: /分支与高级操作/ });
-		expect(branchToggle.getAttribute("aria-expanded")).toBe("false");
-		fireEvent.click(branchToggle);
-		expect(branchToggle.getAttribute("aria-expanded")).toBe("true");
-		expect(await screen.findByText("当前")).toBeTruthy();
+		expect(screen.getByText("Alice")).toBeTruthy();
+		expect(screen.getByText("abcdef1")).toBeTruthy();
+
+		// Switch to Branches/Topology tab to verify current branch
+		fireEvent.click(screen.getByRole("tab", { name: /分支/ }));
+		expect(await screen.findByText(/当前/)).toBeTruthy();
 		expect(screen.getAllByText("feat/ux").length).toBeGreaterThanOrEqual(2);
 	});
 
-	it("defaults FilesPanel to changed files, renders markdown preview, and sends Ask AI", async () => {
+	it("shows directory tree with slim uncommitted bar, renders markdown preview, and sends Ask AI", async () => {
 		vi.spyOn(apiModule, "api").mockImplementation(async (_m, path) => {
 			if (path.endsWith("/git/status")) {
 				return { isRepo: true, branch: "main", files: [{ path: "docs/README.md", status: "M", staged: false, unstaged: true }] };
@@ -296,10 +296,11 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 			if (path.includes("/file?")) {
 				return { path: "docs/README.md", size: 24, binary: false, truncated: false, text: "# 标题\n\n正文内容" };
 			}
-			return { path: "/proj", parent: null, entries: [] };
+			return { path: "/proj/docs", parent: "/proj", entries: [{ name: "README.md", path: "/proj/docs/README.md", kind: "file", size: 24 }] };
 		});
 
 		render(<FilesPanel sessionId="s1" embedded />);
+		expect(await screen.findByText("1 个文件还没提交")).toBeTruthy();
 		fireEvent.click(await screen.findByRole("button", { name: /README\.md/ }));
 		await screen.findByText("正文内容");
 		expect(screen.queryByRole("button", { name: /自动换行/ })).toBeNull();
@@ -340,8 +341,9 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(diagBtn.getAttribute("aria-expanded")).toBe("false");
 		fireEvent.click(diagBtn);
 		await screen.findByText("other-app");
-		// Only 1 stop button (for the session-owned project service)
-		expect(screen.getAllByRole("button", { name: "停止" })).toHaveLength(1);
+		// Open row actions menu for project service
+		fireEvent.click(screen.getByRole("button", { name: "操作 vite" }));
+		expect(await screen.findByRole("button", { name: "停止服务" })).toBeTruthy();
 	});
 
 	it("captures terminal output blocks and dispatches unified multi-select annotations", async () => {

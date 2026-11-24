@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BottomSheet } from "./BottomSheet";
 import { ImageViewerHost, openImage } from "./ImageViewer";
 import { CodeBlock } from "./CodeBlock";
+import { SelectRow } from "./SelectRow";
+import { TitleSwitcher } from "./TitleSwitcher";
 
 vi.mock("../core/nav", () => ({ nav: { pushLayer: () => () => {} } }));
 
@@ -121,5 +123,91 @@ describe("code copy payload", () => {
   expect(screen.getByText("const line79 = 79;")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "收起" }));
   expect(screen.queryByText("const line79 = 79;")).toBeNull();
+ });
+});
+
+function touch(target: Element, type: string, x: number, y: number) {
+ const event = new Event(type, { bubbles: true, cancelable: true });
+ Object.defineProperty(event, "touches", { value: [{ clientX: x, clientY: y }] });
+ fireEvent(target, event);
+}
+
+describe("TitleSwitcher gestures and removal", () => {
+ it("steps horizontally via touch swipe on the title button and reveals delete on swipe-left", () => {
+  const onStep = vi.fn();
+  const onSelect = vi.fn();
+  const onRemove = vi.fn();
+
+  render(
+   <TitleSwitcher
+    label="终端 1"
+    ariaLabel="切换终端"
+    popoverTitle="全部终端"
+    items={[
+     { id: "t1", label: "终端 1", removable: true },
+     { id: "t2", label: "终端 2", removable: true },
+    ]}
+    activeId="t1"
+    onStep={onStep}
+    onSelect={onSelect}
+    onRemove={onRemove}
+   />,
+  );
+
+  const trigger = screen.getByRole("button", { name: "切换终端" });
+  touch(trigger, "touchstart", 200, 30);
+  touch(trigger, "touchmove", 140, 32);
+  touch(trigger, "touchend", 140, 32);
+  expect(onStep).toHaveBeenCalledWith(1);
+
+  fireEvent.click(trigger);
+  const secondItem = screen.getByRole("menuitemradio", { name: "终端 2" });
+  touch(secondItem, "touchstart", 260, 120);
+  touch(secondItem, "touchmove", 180, 122);
+  touch(secondItem, "touchend", 180, 122);
+  fireEvent.click(screen.getByRole("button", { name: "删除 终端 2" }));
+  expect(onRemove).toHaveBeenCalledWith("t2");
+ });
+});
+
+describe("SelectRow presentations", () => {
+ it("supports both anchored menu and searchable bottom-sheet list presentations", () => {
+  const onMenuChange = vi.fn();
+  const onListChange = vi.fn();
+
+  render(
+   <>
+    <SelectRow
+     title="发送方式"
+     presentation="menu"
+     value="enter"
+     options={[
+      { value: "enter", label: "Enter" },
+      { value: "mod-enter", label: "⌘ + Enter" },
+     ]}
+     onChange={onMenuChange}
+    />
+    <SelectRow
+     title="目录选择"
+     presentation="list"
+     searchable
+     value="d1"
+     options={[
+      { value: "d1", label: "Vecway", hint: "~/Documents/Vecway" },
+      { value: "d2", label: "Mobile", hint: "~/Documents/Mobile" },
+     ]}
+     onChange={onListChange}
+    />
+   </>,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: /发送方式/ }));
+  fireEvent.click(screen.getByRole("menuitemradio", { name: "⌘ + Enter" }));
+  expect(onMenuChange).toHaveBeenCalledWith("mod-enter");
+
+  fireEvent.click(screen.getByRole("button", { name: /目录选择/ }));
+  fireEvent.change(screen.getByRole("searchbox", { name: "搜索目录选择" }), { target: { value: "Mobile" } });
+  fireEvent.click(screen.getByRole("radio", { name: /Mobile/ }));
+  expect(onListChange).toHaveBeenCalledWith("d2");
  });
 });

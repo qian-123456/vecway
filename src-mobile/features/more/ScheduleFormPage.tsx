@@ -4,10 +4,10 @@ import type { ReactNode } from "react";
 import { api, errorMessage } from "../../core/api";
 import { nav } from "../../core/nav";
 import type { PageProps } from "../../core/nav";
-import { BottomSheet, Button, Field, inputCls, PageHeader, Segmented, Spinner, Switch, toast } from "../../ui";
+import { BottomSheet, Button, Field, inputCls, ListGroup, PageHeader, SelectRow, Spinner, Switch, toast } from "../../ui";
 import { ModelPicker } from "../../ui/ModelPicker";
 import type { PickerModel } from "../../ui/ModelPicker";
-import { LoadState, Select, useLoad } from "./controls";
+import { LoadState, useLoad } from "./controls";
 import {
 	buildPayload,
 	emptyForm,
@@ -187,19 +187,25 @@ function Form({ dirs, existing }: { dirs: Dir[]; existing: Schedule | null }) {
 					</Section>
 
 					<Section title="运行环境">
-						<Field label="工作目录" error={err(errors.cwd)} hint={f.cwd || undefined}>
-							<Select value={f.cwd} onChange={(v) => set({ cwd: v })}>
-								{!f.cwd && <option value="">请选择目录</option>}
-								{cwdOptions.map((d) => (
-									<option key={d.path} value={d.path}>
-										{d.label || d.path}
-									</option>
-								))}
-							</Select>
-						</Field>
-						<Group label="运行方式" hint={RUN_MODE_HINT[f.runMode]}>
-							<Segmented label="运行方式" value={f.runMode} options={RUN_MODE_OPTIONS} onChange={(v) => set({ runMode: v })} />
-						</Group>
+						<ListGroup className="!mx-0">
+							<SelectRow
+								title="工作目录"
+								subtitle={f.cwd || undefined}
+								presentation="list"
+								value={f.cwd}
+								options={cwdOptions.map((d) => ({ value: d.path, label: d.label || d.path, hint: d.path }))}
+								onChange={(v) => set({ cwd: v })}
+								error={err(errors.cwd)}
+							/>
+							<SelectRow
+								title="运行方式"
+								subtitle={RUN_MODE_HINT[f.runMode]}
+								presentation="menu"
+								value={f.runMode}
+								options={RUN_MODE_OPTIONS}
+								onChange={(v) => set({ runMode: v })}
+							/>
+						</ListGroup>
 						<Group label="模型" hint={f.model ? undefined : "留空使用默认模型"}>
 							<button
 								type="button"
@@ -217,25 +223,38 @@ function Form({ dirs, existing }: { dirs: Dir[]; existing: Schedule | null }) {
 					</Section>
 
 					<Section title="重复节奏">
-						<Segmented label="重复方式" value={f.kind} options={KIND_OPTIONS} onChange={(v) => set({ kind: v })} />
+						<ListGroup className="!mx-0">
+							<SelectRow
+								title="重复方式"
+								presentation="menu"
+								value={f.kind}
+								options={KIND_OPTIONS}
+								onChange={(v) => set({ kind: v })}
+							/>
+							{f.kind === "interval" && (
+								<SelectRow
+									title="单位"
+									label="单位"
+									presentation="menu"
+									value={f.ivUnit}
+									options={[
+										{ value: "min", label: "分钟" },
+										{ value: "hour", label: "小时" },
+									]}
+									onChange={(v) => set({ ivUnit: v as "min" | "hour" })}
+								/>
+							)}
+						</ListGroup>
 						{f.kind === "interval" && (
 							<Field label="每隔" error={err(errors.iv)}>
-								<span className="flex min-w-0 gap-2">
-									<input
-										className={formInputCls}
-										type="number"
-										inputMode="numeric"
-										min={1}
-										value={f.ivNum}
-										onChange={(e) => set({ ivNum: e.target.value })}
-									/>
-									<span className="w-32 shrink-0">
-										<Select label="单位" value={f.ivUnit} onChange={(v) => set({ ivUnit: v as "min" | "hour" })}>
-											<option value="min">分钟</option>
-											<option value="hour">小时</option>
-										</Select>
-									</span>
-								</span>
+								<input
+									className={formInputCls}
+									type="number"
+									inputMode="numeric"
+									min={1}
+									value={f.ivNum}
+									onChange={(e) => set({ ivNum: e.target.value })}
+								/>
 							</Field>
 						)}
 						{f.kind === "daily" && (
@@ -308,9 +327,16 @@ function Form({ dirs, existing }: { dirs: Dir[]; existing: Schedule | null }) {
 					</Section>
 
 					<Section title="通知与开关">
-						<Group label="通知" hint={NOTIFY_HINT[f.notify]}>
-							<Segmented label="通知" value={f.notify} options={NOTIFY_OPTIONS} onChange={(v) => set({ notify: v })} />
-						</Group>
+						<ListGroup className="!mx-0">
+							<SelectRow
+								title="通知"
+								subtitle={NOTIFY_HINT[f.notify]}
+								presentation="menu"
+								value={f.notify}
+								options={NOTIFY_OPTIONS}
+								onChange={(v) => set({ notify: v })}
+							/>
+						</ListGroup>
 						<div className="flex flex-col gap-2">
 							<SwitchRow label="每次运行新建会话" hint="关闭则在同一个会话里继续" checked={f.fresh} onChange={(v) => set({ fresh: v })} />
 							<SwitchRow label="启用" checked={f.enabled} onChange={(v) => set({ enabled: v })} />

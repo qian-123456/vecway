@@ -219,12 +219,14 @@ describe("ConnectionSheet native mode", () => {
 		});
 
 		render(<ConnectionSheet open onClose={() => {}} />);
-		const lanRadio = await screen.findByRole("radio", { name: "局域网直连" });
-		fireEvent.click(lanRadio);
+		fireEvent.click(await screen.findByRole("button", { name: /连接方式/ }));
+		const lanItem = await screen.findByRole("menuitemradio", { name: /局域网直连/ });
+		fireEvent.click(lanItem);
 		await waitFor(() => expect(switchChannel).toHaveBeenCalledWith("lan_tls"));
 		expect(await screen.findByText("局域网 TLS")).toBeDefined();
 
-		fireEvent.click(screen.getByRole("radio", { name: "自动优选" }));
+		fireEvent.click(screen.getByRole("button", { name: /连接方式/ }));
+		fireEvent.click(await screen.findByRole("menuitemradio", { name: /自动优选/ }));
 		await waitFor(() => expect(switchChannel).toHaveBeenCalledWith(null));
 	});
 

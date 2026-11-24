@@ -129,17 +129,16 @@ describe("panel presentation contracts", () => {
 		await screen.findByText("app.ts");
 
 		// One-tap AI save stages & commits automatically
-		fireEvent.click(screen.getByRole("button", { name: /AI 生成说明并保存/ }));
+		fireEvent.click(screen.getByRole("button", { name: /AI 生成并提交/ }));
 		await waitFor(() => expect(apiSpy).toHaveBeenCalledWith("POST", "/sessions/s-git-1/git/commit", { message: "feat: one tap ai save" }));
 		expect(apiSpy).toHaveBeenCalledWith("POST", "/sessions/s-git-1/git/stage", { paths: ["src/app.ts"] });
 
-		// Inline manual commit flow
-		fireEvent.click(screen.getByRole("button", { name: /自填提交说明/ }));
-		const box = screen.getByRole("textbox", { name: "提交说明" }) as HTMLTextAreaElement;
-		fireEvent.click(screen.getByRole("button", { name: "生成说明" }));
+		// Manual commit modal flow
+		fireEvent.click(screen.getByRole("button", { name: /填写说明提交/ }));
+		const box = await screen.findByRole("textbox", { name: "提交说明" }) as HTMLTextAreaElement;
 		await waitFor(() => expect(box.value).toBe("feat: one tap ai save"));
 		fireEvent.change(box, { target: { value: "fix: manual override" } });
-		fireEvent.click(screen.getByRole("button", { name: "提交改动" }));
+		fireEvent.click(screen.getByRole("button", { name: "确认提交" }));
 		await waitFor(() => expect(apiSpy).toHaveBeenCalledWith("POST", "/sessions/s-git-1/git/commit", { message: "fix: manual override" }));
 
 		// Per-file BottomSheet action menu -> DiffOverlay with 发给主对话
@@ -180,8 +179,9 @@ describe("panel presentation contracts", () => {
 
 		render(<PlanPanel sessionId="s-plan-1" embedded />);
 		await screen.findByText("重构计划");
-		expect(screen.getByText("v2")).toBeTruthy();
+		expect(screen.queryByText("v2")).toBeNull();
 		expect(screen.getByText("1/2")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
 		expect(screen.getByRole("button", { name: "复制计划" })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "刷新计划" })).toBeTruthy();
 

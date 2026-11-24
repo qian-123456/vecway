@@ -2,7 +2,7 @@ import { Users } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { PageProps } from "../../core/nav";
 import { nav, paths } from "../../core/nav";
-import { EmptyState, PageHeader, PullToRefresh, Segmented, Spinner } from "../../ui";
+import { EmptyState, PageHeader, PullToRefresh, Spinner, TitleSwitcher, type TitleSwitcherItem } from "../../ui";
 import { FILTERS, buildTree, countRows, filterTree, flattenTree } from "./model";
 import type { Filter } from "./model";
 import { SubagentTree } from "./SubagentTree";
@@ -17,20 +17,38 @@ export function SubagentsPage({ route }: PageProps) {
 	const flat = useMemo(() => flattenTree(filterTree(buildTree(rows), filter), filter), [rows, filter]);
 	const anyRunning = counts.running + counts.queued > 0;
 	const now = useNow(anyRunning);
-	const options = FILTERS.map((f) => ({
-		value: f.key,
-		label: `${f.label} ${f.key === "all" ? rows.length : f.key === "running" ? counts.running + counts.queued : counts[f.key]}`,
-	}));
+	const items = useMemo<TitleSwitcherItem[]>(
+		() =>
+			FILTERS.map((f) => {
+				const n = f.key === "all" ? rows.length : f.key === "running" ? counts.running + counts.queued : counts[f.key];
+				return {
+					id: f.key,
+					label: `${f.label}（${n}）`,
+				};
+			}),
+		[rows.length, counts],
+	);
+	const activeLabel = items.find((i) => i.id === filter)?.label ?? "全部";
 
 	return (
 		<div className="flex h-full flex-col bg-m-bg">
-			<PageHeader title="子代理" subtitle={rows.length ? `共 ${rows.length} 个` : undefined}>
-				{rows.length > 0 && (
-					<div className="px-4 pt-1 pb-3">
-						<Segmented label="状态筛选" value={filter} options={options} onChange={setFilter} />
-					</div>
-				)}
-			</PageHeader>
+			<PageHeader
+				title={
+					rows.length > 0 ? (
+						<TitleSwitcher
+							label={`子代理 · ${activeLabel}`}
+							ariaLabel="筛选子代理状态"
+							popoverTitle="子代理状态"
+							items={items}
+							activeId={filter}
+							onSelect={(v) => setFilter(v as Filter)}
+						/>
+					) : (
+						"子代理"
+					)
+				}
+				subtitle={rows.length ? `共 ${rows.length} 个` : undefined}
+			/>
 			<PullToRefresh className="min-h-0 flex-1" onRefresh={() => refreshSubagents(sessionId)}>
 				{!loaded ? (
 					<div className="flex justify-center py-12 text-m-text-3">
