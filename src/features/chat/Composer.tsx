@@ -34,7 +34,7 @@ import { applyArgName, buildArgItems, type ArgCandidate } from "./slash/argCompl
 import { findArgProvider } from "./slash/argProviders";
 import { AtFileMenu, useAtFileMenu } from "./AtFileMenu";
 import { ComposerAttachmentStrip } from "./ComposerAttachmentStrip";
-import { ComposerFastMode, ComposerFastModeIndicator, ComposerFastModeStatus } from "./ComposerFastMode";
+import { ComposerFastMode, ComposerFastModeIndicator, ComposerFastModeStatus, useFastModeActive } from "./ComposerFastMode";
 import { ComposerModelControls } from "./ComposerModelControls";
 import {
 	COMPOSER_TEXT_METRICS_CLASS,
@@ -910,6 +910,7 @@ export function Composer({
 		() => (planChoice ? pickCurrentModel([planChoice.key], models) : sessionCurrent),
 		[planChoice, sessionCurrent, models],
 	);
+	const fastModeActive = useFastModeActive(sessionId, current.value || "");
 	// Role layers feed `@role` resolution and the write scope; read while planning only.
 	useEffect(() => {
 		if (!planPreview) return;
@@ -3063,6 +3064,7 @@ export function Composer({
 							thinkingFooter={(!planPreview || planMode) && current.value ? (
 								<ComposerFastModeStatus key={`${sessionId}:${current.value}`} sessionId={sessionId} modelKey={current.value} />
 							) : undefined}
+							fastMode={(!planPreview || planMode) && current.value ? fastModeActive : false}
 							onEnsureModels={() => void loadModels()}
 							onSelectModel={async (key) => {
 								if (compacting) {

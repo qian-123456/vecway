@@ -147,6 +147,21 @@ function useFastModeControl(sessionId: string, modelKey: string): FastModeContro
 	return { active, channel, pending, title, toggle };
 }
 
+/** True when Fast Mode is currently active for the given session/draft and model. */
+export function useFastModeActive(sessionId: string, modelKey: string): boolean {
+	const isDraft = isLocalDraftId(sessionId);
+	const state = useLive((s) => (isDraft ? undefined : s.sessions[sessionId]?.state));
+	const draftFastMode = usePendingSession((s) => (isDraft ? s.drafts[sessionId]?.fastMode ?? null : null));
+	const providerRows = useProviders((s) => s.rows);
+	const providersLoaded = useProviders((s) => s.loaded);
+	const providersError = useProviders((s) => s.error);
+	const channel =
+		fastModeChannel(state, modelKey) ??
+		(state?.model ? null : offlineFastModeChannel(modelKey, providersLoaded && !providersError ? providerRows : null));
+	if (!channel) return false;
+	return isDraft ? draftFastMode === true : state?.fastModeActive === true;
+}
+
 /** Top-left one-click fast-mode toggle inside the thinking-level card for supported first-party GPT models. */
 export function ComposerFastMode({ sessionId, modelKey }: { sessionId: string; modelKey: string }) {
 	const ctrl = useFastModeControl(sessionId, modelKey);

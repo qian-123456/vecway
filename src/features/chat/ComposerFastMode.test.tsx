@@ -13,6 +13,7 @@ import {
 	ComposerFastModeStatus,
 	fastModeChannel,
 	offlineFastModeChannel,
+	useFastModeActive,
 } from "./ComposerFastMode";
 const SID = "s1";
 
@@ -96,15 +97,17 @@ function apiState(overrides: Record<string, unknown> = {}, modelOverrides: Recor
 function renderInThinkingPicker(modelKey: string, sessionId = SID) {
 	function Harness() {
 		const [open, setOpen] = useState(false);
+		const fastMode = useFastModeActive(sessionId, modelKey);
 		return (
 			<ThinkingLevelPicker
-				levels={["auto", "low", "medium", "high"]}
+				levels={["auto", "low", "medium", "high", "xhigh"]}
 				value="high"
 				open={open}
 				onOpenChange={setOpen}
 				onSelect={() => {}}
 				accessory={<ComposerFastMode sessionId={sessionId} modelKey={modelKey} />}
 				accessoryFooter={<ComposerFastModeStatus sessionId={sessionId} modelKey={modelKey} />}
+				fastMode={fastMode}
 			/>
 		);
 	}
@@ -244,6 +247,8 @@ describe("ComposerFastMode", () => {
 		});
 		expect(activeBtn.getAttribute("aria-pressed")).toBe("true");
 		expect(activeBtn.className).toContain("text-amber-500");
+		expect(screen.getByRole("slider").getAttribute("data-fast-mode")).toBe("true");
+		expect(document.querySelector(".es-fast-particles")?.children.length).toBe(14);
 		expect(screen.getByRole("slider")).toBeTruthy();
 
 		fireEvent.click(activeBtn);

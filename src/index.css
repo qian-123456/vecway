@@ -2305,6 +2305,127 @@ button:active,
 		filter 0.12s ease,
 		transform 0.4s ease;
 }
+/* Fast mode: selected ticks slide left and fade out while warp-speed particles stream across the filled range. */
+.es-root[data-fast-mode="true"] .es-tick[data-selected="true"] {
+	opacity: 0;
+	transform: translate(-50%, -50%) scale(0.75) translateX(-85px);
+}
+.es-root[data-fast-mode-dot-transition="entering"]:not([data-highlighted="true"]) .es-tick[data-selected="true"] {
+	animation:
+		es-fast-tick-scale 0.8s var(--es-ease) both,
+		es-fast-tick-translate 1.15s 50ms ease-in-out both,
+		es-fast-tick-fade 0.5s 0.7s ease-in-out both;
+}
+.es-root[data-fast-mode-dot-transition="exiting"]:not([data-highlighted="true"]) .es-tick[data-selected="true"] {
+	animation:
+		es-fast-tick-return-scale 0.35s ease-in-out both,
+		es-fast-tick-return-translate 0.35s ease-out both,
+		es-fade-in 0.3s ease-in-out both;
+}
+.es-root[data-reduced-motion="true"][data-fast-mode-dot-transition] .es-tick[data-selected="true"] {
+	animation-duration: 0s;
+	animation-delay: 0s;
+}
+@keyframes es-fast-tick-scale {
+	from {
+		transform: translate(-50%, -50%) scale(1);
+	}
+	to {
+		transform: translate(-50%, -50%) scale(0.75);
+	}
+}
+@keyframes es-fast-tick-translate {
+	from {
+		translate: 0;
+	}
+	to {
+		translate: -85px;
+	}
+}
+@keyframes es-fast-tick-fade {
+	from {
+		opacity: 1;
+	}
+	to {
+		opacity: 0;
+	}
+}
+@keyframes es-fast-tick-return-scale {
+	from {
+		transform: translate(-50%, -50%) scale(0.75);
+	}
+	to {
+		transform: translate(-50%, -50%) scale(1);
+	}
+}
+@keyframes es-fast-tick-return-translate {
+	from {
+		translate: 10px;
+	}
+	to {
+		translate: 0;
+	}
+}
+.es-fast-clip {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+	clip-path: inset(0 calc(100% - var(--es-p) * 1% - var(--es-off)) 0 0);
+	opacity: 0;
+	transition: opacity 0.3s var(--es-ease);
+}
+.es-fast-clip[data-visible="true"] {
+	opacity: 1;
+}
+.es-fast-particles {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+.es-fast-particles[data-animation-active="false"] .es-fast-path {
+	animation-play-state: paused;
+}
+.es-fast-path {
+	position: absolute;
+	inset-inline: 0;
+	height: 0;
+	opacity: 0;
+	will-change: transform, opacity;
+	transform: translate(100%);
+	animation-name: es-fast-travel;
+	animation-timing-function: linear;
+	animation-iteration-count: infinite;
+}
+.es-fast-dot {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 3px;
+	height: 3px;
+	border-radius: 999px;
+	background: #ffffffb8;
+	box-shadow: 0 0 5px #ffffff57;
+}
+@keyframes es-fast-travel {
+	0% {
+		opacity: 0;
+		transform: translate(100%);
+	}
+	8% {
+		opacity: 1;
+		transform: translate(92%);
+	}
+	92% {
+		opacity: 1;
+		transform: translate(8%);
+	}
+	100% {
+		opacity: 0;
+		transform: translate(0, 0);
+	}
+}
 .es-thumb-rail {
 	position: absolute;
 	inset-block: 0;

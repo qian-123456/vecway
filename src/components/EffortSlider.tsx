@@ -58,6 +58,7 @@ export function EffortSlider({
 	onPreview,
 	onCommit,
 	onCancel,
+	fastMode = false,
 }: {
 	/** Number of stops, weakest (0) → strongest (count - 1); the last is the strongest position of the passed list. */
 	count: number;
@@ -72,6 +73,8 @@ export function EffortSlider({
 	onCommit: (index: number) => void;
 	/** Press aborted (pointer capture lost / cancelled): drop the preview. */
 	onCancel: () => void;
+	/** Fast mode active: hides selected ticks and streams warp-speed particles across the filled range. */
+	fastMode?: boolean;
 }) {
 	const rootRef = useRef<HTMLDivElement>(null);
 	const press = useRef<{ x: number; y: number; index: number } | null>(null);
@@ -90,6 +93,8 @@ export function EffortSlider({
 	const p = value < 0 ? null : last <= 0 ? 0 : (value / last) * 100;
 	const atMax = last > 0 && value === last;
 	const effects = useDelayedUnmount(atMax, reduced ? 0 : EFFECTS_FADE_MS);
+	const fastEffects = useDelayedUnmount(fastMode && !atMax && p !== null, reduced ? 0 : EFFECTS_FADE_MS);
+	const fastDotTransition = useFastModeDotTransition(fastMode, reduced);
 
 	const move = (index: number) => {
 		if (index === value) return;
@@ -222,6 +227,8 @@ export function EffortSlider({
 				data-dragging={dragging}
 				data-highlighted={atMax}
 				data-reduced-motion={reduced}
+				data-fast-mode={fastMode}
+				data-fast-mode-dot-transition={fastDotTransition}
 				data-keyboard-focused={keyboardFocused}
 				onPointerDown={onPointerDown}
 				onPointerMove={onPointerMove}
@@ -242,6 +249,11 @@ export function EffortSlider({
 							</span>
 						)}
 					</span>
+					{fastEffects.mounted && (
+						<span aria-hidden className="es-fast-clip" data-visible={fastEffects.visible}>
+							<FastTrackParticles active={!reduced} initialStartPercent={p ?? 0} />
+						</span>
+					)}
 					<div className="es-tick-rail">
 						{Array.from({ length: count }, (_, i) => {
 							const tp = last <= 0 ? 0 : (i / last) * 100;
@@ -355,6 +367,66 @@ function TrackParticle({ index }: { index: number }) {
 				transitionDuration: `${PARTICLE_CYCLE_S * spot.durationScale}s`,
 			}}
 		/>
+	);
+}
+
+/** Tracks entering/active/exiting phases when Fast Mode toggles so selected ticks slide away or return smoothly. */
+function useFastModeDotTransition(fastMode: boolean, reduced: boolean): "entering" | "active" | "exiting" | undefined {
+	const prev = useRef(fastMode);
+	const [phase, setPhase] = useState<"entering" | "active" | "exiting" | undefined>(fastMode ? "active" : undefined);
+
+	useEffect(() => {
+		if (prev.current === fastMode) return;
+		prev.current = fastMode;
+		if (reduced) {
+			setPhase(fastMode ? "active" : undefined);
+			return;
+		}
+		setPhase(fastMode ? "entering" : "exiting");
+		const timer = setTimeout(() => {
+			setPhase(fastMode ? "active" : undefined);
+		}, fastMode ? 1200 : 350);
+		return () => clearTimeout(timer);
+	}, [fastMode, reduced]);
+
+	return phase;
+}
+
+const FAST_PARTICLE_STEP_S = 1.9 / PARTICLE_COUNT;
+
+/** 14 white sparks streaming right-to-left across the filled track while Fast Mode is enabled. */
+function FastTrackParticles({ active, initialStartPercent }: { active: boolean; initialStartPercent: number }) {
+	const [startPercent] = useState(initialStartPercent);
+	const startFraction = 1 - Math.min(Math.max(startPercent, 0), 100) / 100;
+
+	return (
+		<span aria-hidden className="es-fast-particles" data-animation-active={active}>
+			{Array.from({ length: PARTICLE_COUNT }, (_, i) => {
+				const duration = 1.9 / (1 + (noise(i, 21) - 0.5) * 2 * 0.2);
+				const delay = i * FAST_PARTICLE_STEP_S - duration * startFraction;
+				const opacity = 0.4 + 0.6 * noise(i, 11);
+				const scale = 0.5 + 0.45 * noise(i, 12);
+				return (
+					<span
+						key={i}
+						className="es-fast-path"
+						style={{
+							animationDelay: `${delay}s`,
+							animationDuration: `${duration}s`,
+							top: `${12 + 76 * noise(i, 23)}%`,
+						}}
+					>
+						<span
+							className="es-fast-dot"
+							style={{
+								opacity,
+								transform: `translate(-50%, -50%) scale(${scale})`,
+							}}
+						/>
+					</span>
+				);
+			})}
+		</span>
 	);
 }
 
