@@ -146,7 +146,6 @@ export function AutomationSection() {
 					label={t("settingsSections.general.overlapPolicyLabel")}
 					infoTip={t("settingsSections.general.overlapPolicyHint")}
 					stacked
-					description={t(`settingsSections.general.overlap.${overlapPolicy}.description`)}
 					status={overlapSave.status}
 					statusError={overlapSave.error}
 					control={
@@ -266,8 +265,7 @@ export function AutomationSection() {
 						<SettingRow
 							key={key}
 							label={t(labelKey)}
-							infoTip={t("settingsSections.automations.placeholderHint")}
-							description={t(descKey)}
+							infoTip={`${t(descKey)}\n${t("settingsSections.automations.placeholderHint")}`}
 							stacked
 							status={promptSave.status}
 							statusError={promptSave.error}

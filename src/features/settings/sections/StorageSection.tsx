@@ -400,7 +400,7 @@ export function StorageSection() {
 				/>
 				<SettingRow
 					label={t("settingsSectionsStorage.storage.appDbLabel")}
-					description={t("settingsSectionsStorage.storage.appDbDesc")}
+					infoTip={t("settingsSectionsStorage.storage.appDbDesc")}
 					hint={overview ? t("settingsSectionsStorage.storage.dbCompactHint", { bytes: formatBytes(overview.dbBytes) }) : t("settingsSectionsStorage.storage.loading")}
 					control={
 						<Button loading={busy === "db"} disabled={busy !== null || !overview} onClick={() => void compactDb()}>
@@ -413,12 +413,12 @@ export function StorageSection() {
 			<SettingsCard
 				jump={t("settingsSectionsStorage.storage.jumpOmpSessions")}
 				title={t("settingsSectionsStorage.storage.titleOmpSessions")}
-				description={t("settingsSectionsStorage.storage.descOmpSessions")}
+				infoTip={t("settingsSectionsStorage.storage.descOmpSessions")}
 				aside={sessions ? t("settingsSectionsStorage.storage.totalSessionsAside", { bytes: formatBytes(sessions.totalBytes), count: sessions.sessionCount }) : undefined}
 			>
 				<SettingRow
 					label={t("settingsSectionsStorage.storage.deleteStaleLabel")}
-					description={t("settingsSectionsStorage.storage.deleteStaleDesc")}
+					infoTip={t("settingsSectionsStorage.storage.deleteStaleDesc")}
 					hint={
 						stalePreview
 							? stalePreview.count > 0
@@ -464,7 +464,7 @@ export function StorageSection() {
 				<SettingsCard
 					jump={t("settingsSectionsStorage.storage.jumpByProject")}
 					title={t("settingsSectionsStorage.storage.titleByProject")}
-					description={t("settingsSectionsStorage.storage.descByProject")}
+					infoTip={t("settingsSectionsStorage.storage.descByProject")}
 					aside={
 						<div className="flex items-center gap-2">
 							<button

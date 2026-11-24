@@ -79,21 +79,20 @@ function useFallbackSwitches(onSaved?: () => void) {
 	};
 
 	const offReason = t("settingsModels.masterFallbackDisabledNote");
-	const noteOf = <T extends string>(opts: { value: T; note: string }[], v: T) => opts.find((o) => o.value === v)?.note;
-
-	return { master, fallbackOn, revert, usageAware, reservePolicy, pct, busy, savedKey, pctText, setPctText, pctError, save, commitPct, offReason, noteOf };
+	return { master, fallbackOn, revert, usageAware, reservePolicy, pct, busy, savedKey, pctText, setPctText, pctError, save, commitPct, offReason };
 }
 
 /** Switches: master switch, trigger and revert policy. */
 export function FallbackSwitchesCard({ onSaved }: { onSaved?: () => void }) {
 	const { t } = useT();
-	const { master, fallbackOn, revert, busy, savedKey, save, offReason, noteOf } = useFallbackSwitches(onSaved);
+	const { master, fallbackOn, revert, busy, savedKey, save, offReason } = useFallbackSwitches(onSaved);
 
 	return (
 		<SettingsCard title={t("settingsModels.autoFallbackCardTitle")} jump={t("settingsModels.autoFallbackCardJump")}>
 			<SettingRow
 				label={<span title="retry.modelFallback">{t("settingsModels.autoFallbackLabel")}</span>}
-				description={master ? t("settingsModels.autoFallbackDesc") : offReason}
+				description={master ? undefined : offReason}
+				infoTip={t("settingsModels.autoFallbackDesc")}
 				status={savedStatus(savedKey, "retry.modelFallback")}
 				control={
 					<Switch
@@ -107,8 +106,8 @@ export function FallbackSwitchesCard({ onSaved }: { onSaved?: () => void }) {
 			<div className={master ? undefined : "opacity-50"}>
 				<SettingRow
 					label={<span title="retry.fallbackOn">{t("settingsModels.fallbackOnLabel")}</span>}
-					description={master ? noteOf(FALLBACK_ON_OPTIONS, fallbackOn) : offReason}
-					hint={t("settingsModels.fallbackOnHint")}
+					description={master ? undefined : offReason}
+					infoTip={[...FALLBACK_ON_OPTIONS.map((o) => `${o.label} — ${o.note}`), t("settingsModels.fallbackOnHint")].join("\n")}
 					status={savedStatus(savedKey, "retry.fallbackOn")}
 					stacked
 					control={
@@ -118,7 +117,7 @@ export function FallbackSwitchesCard({ onSaved }: { onSaved?: () => void }) {
 							disabled={busy || !master}
 							aria-label={t("settingsModels.fallbackOnAria")}
 							onChange={(v) => void save("retry.fallbackOn", v)}
-							options={FALLBACK_ON_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+							options={FALLBACK_ON_OPTIONS.map((o) => ({ value: o.value, label: o.label, title: o.note }))}
 						/>
 					}
 				/>
@@ -126,8 +125,8 @@ export function FallbackSwitchesCard({ onSaved }: { onSaved?: () => void }) {
 			<div className={master ? undefined : "opacity-50"}>
 				<SettingRow
 					label={<span title="retry.fallbackRevertPolicy">{t("settingsModels.revertPolicyLabel")}</span>}
-					description={master ? noteOf(REVERT_POLICY_OPTIONS, revert) : offReason}
-					hint={t("settingsModels.revertPolicyHint")}
+					description={master ? undefined : offReason}
+					infoTip={[...REVERT_POLICY_OPTIONS.map((o) => `${o.label} — ${o.note}`), t("settingsModels.revertPolicyHint")].join("\n")}
 					status={savedStatus(savedKey, "retry.fallbackRevertPolicy")}
 					stacked
 					control={
@@ -137,7 +136,7 @@ export function FallbackSwitchesCard({ onSaved }: { onSaved?: () => void }) {
 							disabled={busy || !master}
 							aria-label={t("settingsModels.revertPolicyAria")}
 							onChange={(v) => void save("retry.fallbackRevertPolicy", v)}
-							options={REVERT_POLICY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+							options={REVERT_POLICY_OPTIONS.map((o) => ({ value: o.value, label: o.label, title: o.note }))}
 						/>
 					}
 				/>
@@ -148,13 +147,13 @@ export function FallbackSwitchesCard({ onSaved }: { onSaved?: () => void }) {
 
 /** Low-frequency usage-aware early fallback: toggle, reserve percentage and reserve policy. */
 export function UsageAwareCard({ onSaved }: { onSaved?: () => void }) {
-	const { master, usageAware, reservePolicy, pct, busy, savedKey, pctText, setPctText, pctError, save, commitPct, offReason, noteOf } =
+	const { master, usageAware, reservePolicy, pct, busy, savedKey, pctText, setPctText, pctError, save, commitPct, offReason } =
 		useFallbackSwitches(onSaved);
 	const { t } = useT();
 	const active = master && usageAware;
 
 	return (
-		<SettingsCard title={t("settingsModels.usageAwareCardTitle")} description={t("settingsModels.usageAwareCardDesc")} jump={t("settingsModels.usageAwareCardJump")}>
+		<SettingsCard title={t("settingsModels.usageAwareCardTitle")} infoTip={t("settingsModels.usageAwareCardDesc")} jump={t("settingsModels.usageAwareCardJump")}>
 			<div className={master ? undefined : "opacity-50"}>
 				<SettingRow
 					label={<span title="retry.usageAwareFallback">{t("settingsModels.usageAwareLabel")}</span>}
@@ -179,11 +178,9 @@ export function UsageAwareCard({ onSaved }: { onSaved?: () => void }) {
 							<span className="text-[var(--status-error)]">{pctError}</span>
 						) : master && !usageAware ? (
 							t("settingsModels.reservePctInactiveDesc")
-						) : (
-							t("settingsModels.reservePctActiveDesc")
-						)
+						) : undefined
 					}
-					infoTip={t("settingsModels.reservePctHint", { pct: RESERVE_PCT_DEFAULT })}
+					infoTip={`${t("settingsModels.reservePctActiveDesc")}\n${t("settingsModels.reservePctHint", { pct: RESERVE_PCT_DEFAULT })}`}
 					status={savedStatus(savedKey, "retry.usageReservePct")}
 					control={
 						<div className="flex items-center gap-1.5">
@@ -210,8 +207,8 @@ export function UsageAwareCard({ onSaved }: { onSaved?: () => void }) {
 			<div className={active ? undefined : "opacity-50"}>
 				<SettingRow
 					label={<span title="retry.usageReservePolicy">{t("settingsModels.reservePolicyLabel")}</span>}
-					description={noteOf(RESERVE_POLICY_OPTIONS, reservePolicy)}
-					hint={t("settingsModels.reservePolicyHint")}
+					description={!master ? offReason : !usageAware ? t("settingsModels.reservePctInactiveDesc") : undefined}
+					infoTip={[...RESERVE_POLICY_OPTIONS.map((o) => `${o.label} — ${o.note}`), t("settingsModels.reservePolicyHint")].join("\n")}
 					status={savedStatus(savedKey, "retry.usageReservePolicy")}
 					stacked
 					control={
@@ -221,7 +218,7 @@ export function UsageAwareCard({ onSaved }: { onSaved?: () => void }) {
 							disabled={busy || !master || !usageAware}
 							aria-label={t("settingsModels.reservePolicyAria")}
 							onChange={(v) => void save("retry.usageReservePolicy", v)}
-							options={RESERVE_POLICY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+							options={RESERVE_POLICY_OPTIONS.map((o) => ({ value: o.value, label: o.label, title: o.note }))}
 						/>
 					}
 				/>

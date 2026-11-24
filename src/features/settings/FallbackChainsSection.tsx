@@ -275,7 +275,7 @@ function RoleGroup({
 }) {
 	const { t } = useT();
 	return (
-		<SettingsCard title={title} aside={t("settingsModels.countItemsAside", { count })} description={description} clip jump={title}>
+		<SettingsCard title={title} aside={t("settingsModels.countItemsAside", { count })} infoTip={description} clip jump={title}>
 			{children}
 		</SettingsCard>
 	);
@@ -457,7 +457,7 @@ export function FallbackChainsSection({ query = "" }: { query?: string }) {
 
 					{showExplainer && <PriorityExplainer />}
 
-					<SettingsCard title={t("settingsModels.inSessionSwitchCardTitle")} description={t("settingsModels.inSessionSwitchCardDesc")} jump={t("settingsModels.inSessionSwitchCardTitle")}>
+					<SettingsCard title={t("settingsModels.inSessionSwitchCardTitle")} infoTip={t("settingsModels.inSessionSwitchCardDesc")} jump={t("settingsModels.inSessionSwitchCardTitle")}>
 						<div className="p-4">
 							<CycleOrderEditor value={cycle} availableRoles={allRoleIds} onSaved={handleChanged} />
 						</div>

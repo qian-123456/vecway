@@ -47,21 +47,21 @@ export function NotificationsSection() {
 				<ToggleRow
 					fieldId="notifyTurnEnd"
 					label={t("notifications.notifyTurnEnd")}
-					description={t("notifications.notifyTurnEndDesc")}
+					infoTip={t("notifications.notifyTurnEndDesc")}
 					checked={settings?.notifyTurnEnd ?? true}
 					onChange={(v) => save({ notifyTurnEnd: v })}
 				/>
 				<ToggleRow
 					fieldId="notifyApproval"
 					label={t("notifications.notifyApproval")}
-					description={t("notifications.notifyApprovalDesc")}
+					infoTip={t("notifications.notifyApprovalDesc")}
 					checked={settings?.notifyApproval ?? true}
 					onChange={(v) => save({ notifyApproval: v })}
 				/>
 				<ToggleRow
 					fieldId="notifyExit"
 					label={t("notifications.notifyExit")}
-					description={t("notifications.notifyExitDesc")}
+					infoTip={t("notifications.notifyExitDesc")}
 					checked={settings?.notifyExit ?? true}
 					onChange={(v) => save({ notifyExit: v })}
 				/>
@@ -71,21 +71,21 @@ export function NotificationsSection() {
 				<ToggleRow
 					fieldId="notifySound"
 					label={t("notifications.notifySound")}
-					description={t("notifications.notifySoundDesc")}
+					infoTip={t("notifications.notifySoundDesc")}
 					checked={settings?.notifySound ?? true}
 					onChange={(v) => save({ notifySound: v })}
 				/>
 				<ToggleRow
 					fieldId="dockBadgeEnabled"
 					label={t("notifications.dockBadgeEnabled")}
-					description={t("notifications.dockBadgeEnabledDesc")}
+					infoTip={t("notifications.dockBadgeEnabledDesc")}
 					checked={settings?.dockBadgeEnabled ?? true}
 					onChange={(v) => save({ dockBadgeEnabled: v })}
 				/>
 				<SettingRow
 					fieldId="notifyTest"
 					label={t("notifications.notifyTest")}
-					description={t("notifications.notifyTestDesc")}
+					infoTip={t("notifications.notifyTestDesc")}
 					control={
 						<Button icon={Bell} loading={testing} onClick={handleNotifyTest}>
 							{testing ? t("notifications.testSending") : t("notifications.testSend")}

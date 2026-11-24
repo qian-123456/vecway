@@ -198,7 +198,7 @@ export function ModelRulesSection({
 			title={t("settingsModels.modelRulesTitle")}
 			jump={t("settingsModels.modelRulesJump")}
 			aside={t("settingsModels.rulesCountAside", { count: visible.length })}
-			description={t("settingsModels.modelRulesDesc")}
+			infoTip={t("settingsModels.modelRulesDesc")}
 			clip
 		>
 			{visible.length === 0 ? (

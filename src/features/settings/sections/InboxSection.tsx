@@ -48,8 +48,7 @@ export function InboxSection() {
 				<SettingRow
 					fieldId="inboxWindowHours"
 					label={t("notifications.inbox.autoRemoveHours")}
-					infoTip={t("notifications.inbox.autoRemoveHoursDesc")}
-					hint={t("notifications.inbox.hoursHint")}
+					infoTip={`${t("notifications.inbox.autoRemoveHoursDesc")}\n${t("notifications.inbox.hoursHint")}`}
 					control={
 						<div className="flex items-start gap-1.5">
 							<CommitInput
@@ -151,7 +150,7 @@ export function DoctorSection() {
 					<SettingRow
 						fieldId="doctorIdleMinutes"
 						label={t("notifications.doctor.idleMinutesLabel")}
-						description={t("notifications.doctor.idleMinutesDesc")}
+						infoTip={t("notifications.doctor.idleMinutesDesc")}
 						control={
 							<Segmented
 								value={String(settings?.doctorIdleMinutes ?? 30)}
@@ -169,7 +168,7 @@ export function DoctorSection() {
 					<SettingRow
 						fieldId="doctorScheduleTime"
 						label={t("notifications.doctor.scheduleTimeLabel")}
-						description={t("notifications.doctor.scheduleTimeDesc")}
+						infoTip={t("notifications.doctor.scheduleTimeDesc")}
 						control={
 							<CommitInput
 								className="w-24"

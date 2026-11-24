@@ -256,7 +256,7 @@ export function TemplatesCard({
 	};
 
 	return (
-		<SettingsCard title={t("modelTemplates.cardTitle")} description={t("modelTemplates.cardDesc", { hint: scopeWriteHint(scope, projects) })} clip jump={t("modelTemplates.cardTitle")}>
+		<SettingsCard title={t("modelTemplates.cardTitle")} infoTip={t("modelTemplates.cardDesc", { hint: scopeWriteHint(scope, projects) })} clip jump={t("modelTemplates.cardTitle")}>
 			<div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
 				<span className="text-[11px] text-[var(--text-dim)]">
 					{snapshot === null ? t("common.loading") : t("modelTemplates.totalTemplates", { count: String(templates.length) })}

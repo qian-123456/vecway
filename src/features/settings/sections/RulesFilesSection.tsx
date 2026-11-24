@@ -254,7 +254,7 @@ export function RulesFilesSection() {
 						<SettingRow
 							key={p.id}
 							label={p.label}
-							description={p.description}
+							infoTip={p.description}
 							control={
 								<Button icon={ArrowUpRight} onClick={() => navigate(p.id)}>
 									{t("memoryRules.goToPage", { label: p.label })}

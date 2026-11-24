@@ -63,7 +63,7 @@ export function SessionsSection() {
 				<ToggleRow
 					fieldId="sessionTurnAutoRefresh"
 					label={t("settingsSections.sessions.turnAutoRefreshLabel")}
-					description={t("settingsSections.sessions.turnAutoRefreshDesc")}
+					infoTip={t("settingsSections.sessions.turnAutoRefreshDesc")}
 					checked={settings?.sessionTurnAutoRefresh ?? true}
 					onChange={(v) => save({ sessionTurnAutoRefresh: v })}
 				/>
@@ -94,7 +94,7 @@ export function SessionsSection() {
 				<ToggleRow
 					fieldId="queueAutoSend"
 					label={t("settingsSections.sessions.queueAutoSendLabel")}
-					description={t("settingsSections.sessions.queueAutoSendDesc")}
+					infoTip={t("settingsSections.sessions.queueAutoSendDesc")}
 					checked={settings?.queueAutoSend !== false}
 					onChange={(v) => save({ queueAutoSend: v })}
 				/>

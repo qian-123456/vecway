@@ -6,7 +6,6 @@ import {
 	useContext,
 	useEffect,
 	useMemo,
-	useRef,
 	useState,
 	type KeyboardEvent,
 	type ReactNode,
@@ -37,6 +36,7 @@ import {
 } from "./ompPlacement";
 import { JsonEditor, RecordEditor, SecretInput, StringListEditor } from "./ompValueEditors";
 import { EmptyState } from "../../components/EmptyState";
+import { InfoTip } from "../../components/InfoTip";
 import { Notice } from "../../components/Notice";
 import { Button, Chip, CommitInput, IconButton, MODEL_PICKER_BUTTON_CLASS, SaveIndicator, SectionHeader, SettingsCard, useSaveStatus } from "./ui";
 import { SectionJumpBar } from "./SectionJumpBar";
@@ -213,44 +213,6 @@ function SecretJson({ entry, busy, onSave }: { entry: OmpConfigEntry; busy: bool
 			onSave={onSave}
 			onClose={() => setOpen(false)}
 		/>
-	);
-}
-
-/** Description clamped to two lines; the 「展开」 toggle appears only when text is actually cut. */
-function ClampedDescription({ text }: { text: string }) {
-	const { t } = useT();
-	const ref = useRef<HTMLParagraphElement>(null);
-	const [expanded, setExpanded] = useState(false);
-	const [overflow, setOverflow] = useState(false);
-	useEffect(() => {
-		const el = ref.current;
-		if (!el) return;
-		const measure = () => {
-			if (!expanded) setOverflow(el.scrollHeight > el.clientHeight + 1);
-		};
-		measure();
-		const ro = new ResizeObserver(measure);
-		ro.observe(el);
-		return () => ro.disconnect();
-	}, [text, expanded]);
-	return (
-		<div className="mt-0.5">
-			<p
-				ref={ref}
-				className={clsx("text-xs leading-[1.5] text-[var(--text-muted)]", !expanded && "line-clamp-2")}
-			>
-				{text}
-			</p>
-			{(overflow || expanded) && (
-				<button
-					type="button"
-					onClick={() => setExpanded((v) => !v)}
-					className="mt-1 inline-flex items-center rounded-md hairline bg-[var(--well-bg)] px-2 py-0.5 text-[11px] font-medium text-[var(--text)] hover:bg-[var(--bg-hover)] whitespace-nowrap cursor-pointer transition-colors"
-				>
-					{expanded ? t("settingsCore.ompList.collapse") : t("settingsCore.ompList.expand")}
-				</button>
-			)}
-		</div>
 	);
 }
 
@@ -463,6 +425,7 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 						>
 							{title}
 						</span>
+						{description && <InfoTip text={description} />}
 						{warning && (
 							<span className="text-[var(--status-warning)]" title={warning} role="img" aria-label={t("settingsCore.ompList.riskWarning")}>
 								⚠
@@ -486,7 +449,6 @@ export function OmpSettingRow({ entry, onChanged }: { entry: OmpConfigEntry; onC
 						<SaveIndicator status={save.status} error={save.error} />
 					</div>
 					{warning && <div className="mt-0.5 text-xs leading-[1.5] text-[var(--status-warning)]">{warning}</div>}
-					{description && <ClampedDescription text={description} />}
 					{hierarchyDisabled && dep && (
 						<div className="mt-1 text-xs text-[var(--status-warning)]">{depReason}</div>
 					)}
@@ -727,10 +689,10 @@ export function MemoryBackendRows({ entry, onChanged }: { entry: OmpConfigEntry;
 							<span className="whitespace-nowrap text-[13px] font-medium text-[var(--text)]" title={!enabled ? labelTooltip : undefined}>
 								{enableTitle}
 							</span>
+							{enableDescription && <InfoTip text={enableDescription} />}
 							{!enabled && overrideChip}
 							{!enabled && <SaveIndicator status={save.status} error={save.error} />}
 						</div>
-						<ClampedDescription text={enableDescription} />
 						{!enabled && saveErrorNode}
 					</div>
 					<div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5 pt-0.5">
@@ -766,6 +728,7 @@ export function MemoryBackendRows({ entry, onChanged }: { entry: OmpConfigEntry;
 								>
 									{backendTitle}
 								</span>
+								{backendDescription && <InfoTip text={backendDescription} />}
 								{warning && (
 									<span className="text-[var(--status-warning)]" title={warning} role="img" aria-label={t("settingsCore.ompList.riskWarning")}>
 										⚠
@@ -775,7 +738,6 @@ export function MemoryBackendRows({ entry, onChanged }: { entry: OmpConfigEntry;
 								<SaveIndicator status={save.status} error={save.error} />
 							</div>
 							{warning && <div className="mt-0.5 text-xs leading-[1.5] text-[var(--status-warning)]">{warning}</div>}
-							{backendDescription && <ClampedDescription text={backendDescription} />}
 							{saveErrorNode}
 						</div>
 						<div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5 pt-0.5">
@@ -921,7 +883,7 @@ export function OmpSections({ page, slot, only }: { page: OmpHostPage; slot?: st
 					const secTitle = ompSectionTitle(g.section, locale);
 					return (
 						<div key={g.section.id} data-jump={secTitle} className="scroll-mt-4">
-							<SettingsCard title={secTitle} aside={g.section.tui} description={g.section.description}>
+							<SettingsCard title={secTitle} aside={g.section.tui} infoTip={g.section.description}>
 								{g.visible.map((entry) =>
 									entry.key === "memory.backend" ? (
 										<MemoryBackendRows key={entry.key} entry={entry} />

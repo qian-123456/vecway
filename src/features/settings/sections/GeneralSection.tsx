@@ -125,7 +125,6 @@ export function GeneralSection() {
 	);
 
 	const approval = (settings?.defaultApprovalMode ?? "write") as ApprovalMode;
-	const currentApprovalOption = approvalOptions.find((o) => o.value === approval) ?? approvalOptions[1];
 	const overlapPolicy = settings?.automationOverlapPolicy ?? "skip";
 	return (
 		<div className="space-y-6">
@@ -136,7 +135,7 @@ export function GeneralSection() {
 				<SettingRow
 					fieldId="newSessionModel"
 					label={t("settingsSections.general.defaultModelLabel")}
-					description={t("settingsSections.general.defaultModelDesc")}
+					infoTip={t("settingsSections.general.defaultModelDesc")}
 					control={
 						<div className="flex min-w-0 items-center gap-2">
 							<span className="min-w-0 truncate text-xs text-[var(--text-muted)]" title={defaultRole ?? undefined}>
@@ -153,7 +152,7 @@ export function GeneralSection() {
 				<SettingRow
 					fieldId="defaultApprovalMode"
 					label={t("settingsSections.general.approvalModeLabel")}
-					description={currentApprovalOption.desc}
+					infoTip={approvalOptions.map((o) => `${o.label} — ${o.desc}`).join("\n")}
 					status={approvalSave.status}
 					statusError={approvalSave.error}
 					control={
@@ -206,7 +205,6 @@ export function GeneralSection() {
 					label={t("settingsSections.general.overlapPolicyLabel")}
 					infoTip={t("settingsSections.general.overlapPolicyHint")}
 					stacked
-					description={t(`settingsSections.general.overlap.${overlapPolicy}.description`)}
 					status={overlapSave.status}
 					statusError={overlapSave.error}
 					control={
@@ -239,7 +237,7 @@ export function GeneralSection() {
 				<SettingRow
 					fieldId="language"
 					label={t("settings.language")}
-					description={t("settings.languageDesc")}
+					infoTip={t("settings.languageDesc")}
 					control={
 						<Segmented
 							aria-label={t("settings.language")}
@@ -276,8 +274,7 @@ export function GeneralSection() {
 				<SettingRow
 					fieldId="gitDeliveryMode"
 					label={t("settingsSections.general.gitDeliveryModeLabel")}
-					description={t("settingsSections.general.gitDeliveryModeDesc")}
-					infoTip={t("settingsSections.general.gitDeliveryModeHint")}
+					infoTip={`${t("settingsSections.general.gitDeliveryModeDesc")}\n${t("settingsSections.general.gitDeliveryModeHint")}`}
 					control={
 						<Segmented
 							value={(settings?.gitDeliveryMode as "pr" | "direct") ?? "pr"}

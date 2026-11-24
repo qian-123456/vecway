@@ -414,12 +414,8 @@ export function ContextWindowSection() {
 			</SettingsCard>
 
 			<SettingsCard jump={t("settingsSectionsContext.context.jumpModelWindow")}
-				title={
-					<span className="inline-flex items-center gap-1.5">
-						<span>{t("settingsSectionsContext.context.titleModelWindow")}</span>
-						<InfoTip text={t("settingsSectionsContext.context.footerModelWindow")} />
-					</span>
-				}
+				title={t("settingsSectionsContext.context.titleModelWindow")}
+				infoTip={t("settingsSectionsContext.context.footerModelWindow")}
 				description={t("settingsSectionsContext.context.descModelWindow", { matched: matchedTotal, total: rows.length })}
 			>
 				<div className="@container flex min-h-[320px] flex-col @[580px]:flex-row">

@@ -527,7 +527,7 @@ export function RulesCard({
 		<SettingsCard
 			title={t("modelTemplates.rulesCardTitle")}
 			jump={t("modelTemplates.rulesCardTitle")}
-			description={t("modelTemplates.rulesCardDesc")}
+			infoTip={t("modelTemplates.rulesCardDesc")}
 			aside={rules.length > 0 ? t("modelTemplates.rulesCount", { count: String(rules.length) }) : undefined}
 			clip
 		>
@@ -627,7 +627,7 @@ export function RulesCard({
 			<div className="border-t border-[var(--border-divider)]">
 				<SettingRow
 					label={t("modelTemplates.bottomLineLabel")}
-					description={t("modelTemplates.bottomLineScopeDesc", { scope: scopeLabel })}
+					infoTip={t("modelTemplates.bottomLineScopeDesc", { scope: scopeLabel })}
 					control={
 						<NativeSelect
 							aria-label={t("modelTemplates.bottomLineLabel")}

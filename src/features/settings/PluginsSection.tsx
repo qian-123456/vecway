@@ -354,7 +354,7 @@ export function PluginsSection({
 				title={t("settingsCore.plugins.extensions")}
 				jump={t("settingsCore.plugins.extensions")}
 				aside={t("settingsCore.plugins.countUnit", { count: extensions.length })}
-				description={t("settingsCore.plugins.extensionsDesc")}
+				infoTip={t("settingsCore.plugins.extensionsDesc")}
 				fieldId="extensionList"
 				clip
 			>

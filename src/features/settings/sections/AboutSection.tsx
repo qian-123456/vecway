@@ -234,12 +234,10 @@ export function AboutSection() {
 			<SettingsCard jump={t("settingsSections.about.titleApp")} title={t("settingsSections.about.titleApp")}>
 				<SettingRow
 					label={t("settingsSections.about.thisProduct")}
+					infoTip={t("settingsSections.about.thisProductDesc")}
 					description={
-						<div className="space-y-1">
-							<div className="text-xs text-[var(--text-muted)]">{t("settingsSections.about.thisProductDesc")}</div>
-							<div className="text-[11px] font-mono text-[var(--text-dim)]">
-								Vecway v{desktopAppVersion ?? appVersion ?? t("settingsSections.about.unknown")}
-							</div>
+						<div className="text-[11px] font-mono text-[var(--text-dim)]">
+							Vecway v{desktopAppVersion ?? appVersion ?? t("settingsSections.about.unknown")}
 						</div>
 					}
 					control={
@@ -267,8 +265,7 @@ export function AboutSection() {
 				</SettingRow>
 				<SettingRow
 					label={t("settingsSections.about.appAutoUpdateLabel")}
-					description={t("settingsSections.about.appAutoUpdateDesc")}
-					hint={appAutoCheck ? t("settingsSections.about.appCheckIntervalHint") : undefined}
+					infoTip={`${t("settingsSections.about.appAutoUpdateDesc")}\n${t("settingsSections.about.appCheckIntervalHint")}`}
 					status={appSave.status}
 					statusError={appSave.error}
 					onActivate={() => void appSave.run(() => setAppAutoCheck(!appAutoCheck))}
@@ -356,8 +353,7 @@ export function AboutSection() {
 				) : null}
 				<SettingRow
 					label={t("settingsSections.about.autoUpdateLabel")}
-					description={t("settingsSections.about.autoUpdateDesc")}
-					hint={settings?.ompAutoUpdate === true ? t("settingsSections.about.checkIntervalHint") : undefined}
+					infoTip={`${t("settingsSections.about.autoUpdateDesc")}\n${t("settingsSections.about.checkIntervalHint")}`}
 					status={ompSave.status}
 					statusError={ompSave.error}
 					onActivate={() => void ompSave.run(() => save({ ompAutoUpdate: !settings?.ompAutoUpdate }))}

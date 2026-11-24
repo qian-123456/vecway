@@ -415,7 +415,7 @@ export function PrivacySection() {
 				<ToggleRow
 					fieldId="privacyRevealDefault"
 					label={t("settingsSectionsPrivacy.privacy.revealDefaultLabel")}
-					description={t("settingsSectionsPrivacy.privacy.revealDefaultDesc")}
+					infoTip={t("settingsSectionsPrivacy.privacy.revealDefaultDesc")}
 					checked={settings?.privacyRevealDefault ?? true}
 					onChange={(v) => save({ privacyRevealDefault: v })}
 				/>

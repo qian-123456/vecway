@@ -35,7 +35,7 @@ export function RequestStatsCard() {
 			<ToggleRow
 				fieldId="requestStats"
 				label={t("settingsSections.requestStats.toggleLabel")}
-				description={t("settingsSections.requestStats.toggleDesc")}
+				infoTip={t("settingsSections.requestStats.toggleDesc")}
 				checked={requestStats}
 				onChange={setRequestStats}
 			/>
@@ -91,12 +91,11 @@ export function ConversationDisplayCard() {
 			<SettingRow
 				fieldId="sideChatHandback"
 				label={t("settingsSections.conversationDisplay.sideChatHandbackLabel")}
-				description={
-					sideChatHandback === "summary"
-						? t("settingsSections.conversationDisplay.sideChatHandbackSummary")
-						: t("settingsSections.conversationDisplay.sideChatHandbackSelect")
-				}
-				infoTip={t("settingsSections.conversationDisplay.sideChatHandbackHint")}
+				infoTip={[
+					t("settingsSections.conversationDisplay.sideChatHandbackSummary"),
+					t("settingsSections.conversationDisplay.sideChatHandbackSelect"),
+					t("settingsSections.conversationDisplay.sideChatHandbackHint"),
+				].join("\n")}
 				control={
 					<Segmented<SideChatHandbackMode>
 						aria-label={t("settingsSections.conversationDisplay.sideChatHandbackAria")}
@@ -104,8 +103,16 @@ export function ConversationDisplayCard() {
 						value={sideChatHandback}
 						onChange={setSideChatHandback}
 						options={[
-							{ value: "summary", label: t("settingsSections.conversationDisplay.sideChatHandbackOptionSummary") },
-							{ value: "select", label: t("settingsSections.conversationDisplay.sideChatHandbackOptionSelect") },
+							{
+								value: "summary",
+								label: t("settingsSections.conversationDisplay.sideChatHandbackOptionSummary"),
+								title: t("settingsSections.conversationDisplay.sideChatHandbackSummary"),
+							},
+							{
+								value: "select",
+								label: t("settingsSections.conversationDisplay.sideChatHandbackOptionSelect"),
+								title: t("settingsSections.conversationDisplay.sideChatHandbackSelect"),
+							},
 						]}
 					/>
 				}

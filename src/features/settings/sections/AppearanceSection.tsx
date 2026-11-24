@@ -73,15 +73,15 @@ export function AppearanceSection() {
 					fieldId="theme"
 					stacked
 					label={t("settingsSections.appearance.themeLabel")}
-					description={t("settingsSections.appearance.themeDesc")}
+					infoTip={t("settingsSections.appearance.themeDesc")}
 					control={<ThemePicker />}
 				/>
 			</SettingsCard>
-			<SettingsCard jump={t("settingsSections.appearance.typographyAndLayoutJump")} title={t("settings.appearance.typographyAndLayout")} footer={t("settings.appearance.footerLocalOnly")}>
+			<SettingsCard jump={t("settingsSections.appearance.typographyAndLayoutJump")} title={t("settings.appearance.typographyAndLayout")} infoTip={t("settings.appearance.footerLocalOnly")}>
 				<SettingRow
 					fieldId="fontSize"
 					label={t("settings.appearance.fontSize")}
-					description={t("settings.appearance.fontSizeDesc")}
+					infoTip={t("settings.appearance.fontSizeDesc")}
 					control={
 						<div className="flex items-center gap-1.5">
 							<ResetButton
@@ -101,7 +101,7 @@ export function AppearanceSection() {
 				<SettingRow
 					fieldId="uiDensity"
 					label={t("settings.appearance.uiScale")}
-					description={t("settings.appearance.uiScaleDesc")}
+					infoTip={t("settings.appearance.uiScaleDesc")}
 					control={
 						<div className="flex items-center gap-1.5">
 							<ResetButton
@@ -121,8 +121,7 @@ export function AppearanceSection() {
 				<SettingRow
 					fieldId="uiScale"
 					label={t("settings.appearance.zoom")}
-					description={t("settingsSections.appearance.zoomDesc", { min: minZoom, max: maxZoom })}
-					hint={t("settingsSections.appearance.zoomHint", { hint: zoomHint })}
+					infoTip={`${t("settingsSections.appearance.zoomDesc", { min: minZoom, max: maxZoom })}\n${t("settingsSections.appearance.zoomHint", { hint: zoomHint })}`}
 					control={
 						<div className="flex items-center gap-1.5">
 							<ResetButton label={t("settings.appearance.zoom")} visible={zoom !== DEFAULT_ZOOM} onClick={resetZoom} />

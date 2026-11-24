@@ -278,7 +278,7 @@ export function SwitchLogCard({
 			<SettingsCard
 				title={t("modelTemplates.recentSwitchesTitle")}
 				jump={t("modelTemplates.recentSwitchesTitle")}
-				description={t("modelTemplates.recentSwitchesDesc")}
+				infoTip={t("modelTemplates.recentSwitchesDesc")}
 				aside={t("modelTemplates.rulesCount", { count: String(entries.length) })}
 				clip
 			>

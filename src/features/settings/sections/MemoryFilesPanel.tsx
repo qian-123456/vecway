@@ -422,7 +422,7 @@ export function MemoryFilesPanel() {
 			)}
 
 			{slug && split.notes.length > 0 && (
-				<SettingsCard title={t("memoryRules.memoryCardTitle")} description={t("memoryRules.memoryCardDesc")}>
+				<SettingsCard title={t("memoryRules.memoryCardTitle")} infoTip={t("memoryRules.memoryCardDesc")}>
 					{split.notes.map((f) => (
 						<NoteCard
 							key={f.rel}
@@ -437,7 +437,7 @@ export function MemoryFilesPanel() {
 			)}
 
 			{slug && (
-				<SettingsCard title={t("memoryRules.skillsCardTitle")} description={t("memoryRules.skillsCardDesc")}>
+				<SettingsCard title={t("memoryRules.skillsCardTitle")} infoTip={t("memoryRules.skillsCardDesc")}>
 					{split.skills.length === 0 ? (
 						<p className="px-4 py-3 text-xs text-[var(--text-muted)]">{t("memoryRules.noSkillsYet")}</p>
 					) : (

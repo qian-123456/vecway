@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useT } from "../../stores/language";
+import { InfoTip } from "../../components/InfoTip";
 import { Segmented } from "../../components/Segmented";
 import { ompConfigSet } from "../../lib/ipc";
 import {
@@ -58,11 +59,9 @@ export function AutoCompactionCard() {
 	return (
 		<div data-omp-key="compaction.enabled" className="space-y-3 px-4 py-3">
 			<div className="flex items-start justify-between gap-4">
-				<div className="min-w-0">
+				<div className="flex min-w-0 items-center gap-1.5">
 					<div className="text-xs font-medium text-[var(--text)]">{t("settingsModels.autoCompactionTitle")}</div>
-					<div className="mt-0.5 text-[11px] leading-4 text-[var(--text-dim)]">
-						{t("settingsModels.autoCompactionDesc")}
-					</div>
+					<InfoTip text={t("settingsModels.autoCompactionDesc")} />
 				</div>
 				<div className="flex shrink-0 items-center gap-2">
 					<SaveIndicator status={save.status} error={save.error} />
