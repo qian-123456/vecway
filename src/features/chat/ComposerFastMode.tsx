@@ -1,5 +1,4 @@
 import clsx from "clsx";
-import { Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { errMsg } from "../../lib/dialogs";
 import { ensureLive, isResumeCancelled } from "../../lib/ensureLive";
@@ -13,6 +12,25 @@ import { isLocalDraftId, usePendingSession } from "../sessions/pendingSession";
 import { fastModeChannel, offlineFastModeChannel } from "./fastMode";
 
 export { fastModeChannel, offlineFastModeChannel, type FastModeChannel } from "./fastMode";
+
+/** Refined bolt icon proportioned like SF Symbols `bolt` / `bolt.fill` with parallel diagonal edges. */
+function LightningIcon({ size, filled }: { size: number; filled: boolean }) {
+	return (
+		<svg
+			width={size}
+			height={size}
+			viewBox="0 0 16 16"
+			fill={filled ? "currentColor" : "none"}
+			stroke="currentColor"
+			strokeWidth={filled ? 0.75 : 1.35}
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			aria-hidden
+		>
+			<path d="M9.6 1.5L3.4 9.2h4.4l-1.4 5.3 6.2-7.7H8.2l1.4-5.3z" />
+		</svg>
+	);
+}
 
 interface FastModeControlState {
 	active: boolean;
@@ -110,7 +128,7 @@ export function ComposerFastMode({ sessionId, modelKey }: { sessionId: string; m
 					: "text-[var(--text-muted)] hover:text-[var(--text)]",
 			)}
 		>
-			<Zap size={15} fill={ctrl.active ? "currentColor" : "none"} aria-hidden />
+			<LightningIcon size={15} filled={ctrl.active} />
 		</button>
 	);
 }
@@ -130,7 +148,7 @@ export function ComposerFastModeIndicator({ sessionId, modelKey }: { sessionId: 
 			onClick={() => void ctrl.toggle()}
 			className="-mx-1 inline-flex h-5 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-amber-500 dark:text-amber-400 transition-[opacity,transform] duration-150 ease-[var(--ease-out)] hover:opacity-80 active:scale-[0.95] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--accent)_50%,transparent)] disabled:cursor-not-allowed disabled:opacity-50"
 		>
-			<Zap size={12} fill="currentColor" aria-hidden />
+			<LightningIcon size={12} filled />
 		</button>
 	);
 }
