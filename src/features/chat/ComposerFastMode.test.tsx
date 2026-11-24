@@ -7,7 +7,7 @@ import type { ProviderRow } from "../../lib/contracts";
 import { emptySessionLive, useLive } from "../../stores/live";
 import { useProviders } from "../providers/store";
 import { usePendingSession } from "../sessions/pendingSession";
-import { ComposerFastMode, fastModeChannel, offlineFastModeChannel } from "./ComposerFastMode";
+import { ComposerFastMode, ComposerFastModeIndicator, fastModeChannel, offlineFastModeChannel } from "./ComposerFastMode";
 const SID = "s1";
 
 const h = vi.hoisted(() => ({
@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
 	providerRows: vi.fn(async (): Promise<ProviderRow[]> => []),
 	ensureLive: vi.fn(async (_sessionId: string) => ({})),
 	toastError: vi.fn(),
+	toastInfo: vi.fn(),
 }));
 
 vi.mock("../../lib/ipc", () => ({
@@ -29,6 +30,7 @@ vi.mock("../../lib/ensureLive", () => ({
 vi.mock("../../lib/toast", () => ({
 	toast: {
 		error: h.toastError,
+		info: h.toastInfo,
 	},
 }));
 
@@ -48,6 +50,7 @@ beforeEach(() => {
 	h.providerRows.mockResolvedValue([]);
 	h.ensureLive.mockReset();
 	h.toastError.mockReset();
+	h.toastInfo.mockReset();
 	useLive.setState({ sessions: {} });
 	usePendingSession.setState({ drafts: {}, selectedId: null });
 	useProviders.setState({ rows: [], loaded: false, error: null });
@@ -185,10 +188,10 @@ describe("ComposerFastMode", () => {
 			},
 		});
 		renderInThinkingPicker("openai/gpt-5.4");
-		expect(screen.queryByRole("combobox")).toBeNull();
+		expect(screen.queryByRole("button", { name: /响应速度|Response speed/ })).toBeNull();
 	});
 
-	it("toggles fast mode via set_fast_mode and keeps ThinkingLevelPicker open when dismissing menu", async () => {
+	it("toggles fast mode in one click, shows enabled notice, and keeps ThinkingLevelPicker open", async () => {
 		useLive.setState({
 			sessions: {
 				[SID]: {
@@ -218,33 +221,78 @@ describe("ComposerFastMode", () => {
 
 		renderInThinkingPicker("openai-codex/gpt-6.2-sol");
 
-		const trigger = screen.getByRole("combobox", { name: /响应速度：标准|Response speed: Standard/ });
-		fireEvent.click(trigger);
+		const toggleBtn = screen.getByRole("button", { name: /响应速度：标准|Response speed: Standard/ });
+		expect(toggleBtn.getAttribute("aria-pressed")).toBe("false");
+		expect(screen.queryByRole("combobox")).toBeNull();
 
-		const options = screen.getAllByRole("option");
-		expect(options[0].getAttribute("aria-selected")).toBe("true");
-		expect(options[1].getAttribute("aria-selected")).toBe("false");
-		expect(options[1].textContent).toMatch(/套餐额度|plan quota/);
-
-		// Pressing Escape closes the speed menu without closing the parent ThinkingLevelPicker card.
-		fireEvent.keyDown(trigger, { key: "Escape" });
-		expect(screen.queryByRole("listbox")).toBeNull();
-		expect(screen.getByRole("slider")).toBeTruthy();
-
-		// Open again and select Fast.
-		fireEvent.click(trigger);
-		fireEvent.click(screen.getAllByRole("option")[1]);
+		fireEvent.click(toggleBtn);
 		await waitFor(() =>
 			expect(h.rpcSend).toHaveBeenCalledWith(SID, { type: "set_fast_mode", enabled: true }),
 		);
+		expect(h.toastInfo).toHaveBeenCalledTimes(1);
 
-		const activeTrigger = await screen.findByRole("combobox", {
+		const activeBtn = await screen.findByRole("button", {
 			name: /响应速度：快速|Response speed: Fast/,
 		});
-		expect(activeTrigger.className).toContain("text-[var(--accent)]");
-		fireEvent.click(activeTrigger);
-		expect(screen.getAllByRole("option")[1].getAttribute("aria-selected")).toBe("true");
+		expect(activeBtn.getAttribute("aria-pressed")).toBe("true");
+		expect(activeBtn.className).toContain("text-amber-500");
 		expect(screen.getByRole("slider")).toBeTruthy();
+
+		fireEvent.click(activeBtn);
+		await waitFor(() =>
+			expect(h.rpcSend).toHaveBeenCalledWith(SID, { type: "set_fast_mode", enabled: false }),
+		);
+	});
+
+	it("renders colored toolbar indicator only when fast mode is active and allows one-click turn off", async () => {
+		useLive.setState({
+			sessions: {
+				[SID]: {
+					...emptySessionLive(),
+					alive: true,
+					state: codexState(),
+				},
+			},
+		});
+		h.rpcSend.mockImplementation(async (_sid, cmd) => {
+			const c = cmd as { type: string; enabled?: boolean };
+			if (c.type === "set_fast_mode") {
+				const next = Boolean(c.enabled);
+				useLive.getState().reduceFrame({
+					sessionId: SID,
+					frame: {
+						type: "response",
+						command: "set_fast_mode",
+						success: true,
+						data: { enabled: next, active: next },
+					},
+				});
+				return { data: { enabled: next, active: next } };
+			}
+			return {};
+		});
+
+		const { rerender } = render(<ComposerFastModeIndicator sessionId={SID} modelKey="openai-codex/gpt-6.2-sol" />);
+		expect(screen.queryByRole("button")).toBeNull();
+
+		useLive.setState({
+			sessions: {
+				[SID]: {
+					...emptySessionLive(),
+					alive: true,
+					state: codexState({ fastModeEnabled: true, fastModeActive: true }),
+				},
+			},
+		});
+		rerender(<ComposerFastModeIndicator sessionId={SID} modelKey="openai-codex/gpt-6.2-sol" />);
+		const indicator = screen.getByRole("button", { name: /响应速度：快速|Response speed: Fast/ });
+		expect(indicator.className).toContain("text-amber-500");
+
+		fireEvent.click(indicator);
+		await waitFor(() =>
+			expect(h.rpcSend).toHaveBeenCalledWith(SID, { type: "set_fast_mode", enabled: false }),
+		);
+		expect(screen.queryByRole("button")).toBeNull();
 	});
 
 	it("wakes an idle session and re-verifies channel before calling set_fast_mode", async () => {
@@ -272,8 +320,7 @@ describe("ComposerFastMode", () => {
 		});
 
 		renderInThinkingPicker("openai/gpt-5.4");
-		fireEvent.click(screen.getByRole("combobox"));
-		fireEvent.click(screen.getAllByRole("option")[1]);
+		fireEvent.click(screen.getByRole("button", { name: /响应速度：标准|Response speed: Standard/ }));
 
 		await waitFor(() => expect(h.toastError).toHaveBeenCalledTimes(1));
 		expect(h.ensureLive).toHaveBeenCalledWith(SID);
@@ -286,16 +333,17 @@ describe("ComposerFastMode", () => {
 
 		renderInThinkingPicker("openai-codex/gpt-6.1-sol", draftId);
 
-		const trigger = await screen.findByRole("combobox", { name: /响应速度：标准|Response speed: Standard/ });
-		fireEvent.click(trigger);
-		fireEvent.click(screen.getAllByRole("option")[1]);
+		const toggleBtn = await screen.findByRole("button", { name: /响应速度：标准|Response speed: Standard/ });
+		fireEvent.click(toggleBtn);
 
 		expect(usePendingSession.getState().drafts[draftId].fastMode).toBe(true);
 		expect(h.ensureLive).not.toHaveBeenCalled();
 		expect(h.rpcSend).not.toHaveBeenCalled();
+		expect(h.toastInfo).toHaveBeenCalledTimes(1);
 
-		const activeTrigger = await screen.findByRole("combobox", { name: /响应速度：快速|Response speed: Fast/ });
-		expect(activeTrigger.className).toContain("text-[var(--accent)]");
+		const activeBtn = await screen.findByRole("button", { name: /响应速度：快速|Response speed: Fast/ });
+		expect(activeBtn.getAttribute("aria-pressed")).toBe("true");
+		expect(activeBtn.className).toContain("text-amber-500");
 	});
 
 	it("hides fast mode on a local draft for third-party relays or custom baseUrl overrides", async () => {
@@ -307,10 +355,10 @@ describe("ComposerFastMode", () => {
 		});
 
 		renderInThinkingPicker("0E-gpt/gpt-6.1-sol", draftId);
-		expect(screen.queryByRole("combobox")).toBeNull();
+		expect(screen.queryByRole("button", { name: /响应速度|Response speed/ })).toBeNull();
 
 		cleanup();
 		renderInThinkingPicker("openai/gpt-5.4", draftId);
-		expect(screen.queryByRole("combobox")).toBeNull();
+		expect(screen.queryByRole("button", { name: /响应速度|Response speed/ })).toBeNull();
 	});
 });

@@ -34,7 +34,7 @@ import { applyArgName, buildArgItems, type ArgCandidate } from "./slash/argCompl
 import { findArgProvider } from "./slash/argProviders";
 import { AtFileMenu, useAtFileMenu } from "./AtFileMenu";
 import { ComposerAttachmentStrip } from "./ComposerAttachmentStrip";
-import { ComposerFastMode } from "./ComposerFastMode";
+import { ComposerFastMode, ComposerFastModeIndicator } from "./ComposerFastMode";
 import { ComposerModelControls } from "./ComposerModelControls";
 import {
 	COMPOSER_TEXT_METRICS_CLASS,
@@ -3054,6 +3054,9 @@ export function Composer({
 							onModelOpenChange={setModelOpen}
 							thinkingOpen={thinkingOpen}
 							onThinkingOpenChange={setThinkingOpen}
+							fastModeIndicator={(!planPreview || planMode) && current.value ? (
+								<ComposerFastModeIndicator key={`${sessionId}:${current.value}`} sessionId={sessionId} modelKey={current.value} />
+							) : undefined}
 							thinkingAccessory={(!planPreview || planMode) && current.value ? (
 								<ComposerFastMode key={`${sessionId}:${current.value}`} sessionId={sessionId} modelKey={current.value} />
 							) : undefined}

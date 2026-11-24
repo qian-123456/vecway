@@ -25,6 +25,7 @@ export function ComposerModelControls({
 	modelOpen,
 	onModelOpenChange,
 	thinkingOpen,
+	fastModeIndicator,
 	thinkingAccessory,
 	onThinkingOpenChange,
 	onEnsureModels,
@@ -48,6 +49,7 @@ export function ComposerModelControls({
 	onModelOpenChange: (open: boolean) => void;
 	thinkingOpen: boolean;
 	onThinkingOpenChange: (open: boolean) => void;
+	fastModeIndicator?: ReactNode;
 	thinkingAccessory?: ReactNode;
 	onEnsureModels?: () => void;
 	onSelectModel: (key: string) => void | Promise<void>;
@@ -106,6 +108,7 @@ export function ComposerModelControls({
 				)}
 			</div>
 
+			{!planChoiceUnknown && fastModeIndicator}
 			{/* Thinking chip: levels from the catalog, or a grey 未配置/不支持 chip; never hidden */}
 			{!planChoiceUnknown && (
 				<ThinkingLevelPicker
