@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { errMsg } from "../../lib/dialogs";
 import { ensureLive, isResumeCancelled } from "../../lib/ensureLive";
 import { rpcSend } from "../../lib/ipc";
@@ -32,45 +32,8 @@ function LightningIcon({ size, filled }: { size: number; filled: boolean }) {
 	);
 }
 
-type TransientFastNotice = "disabled";
-const transientNotices = new Map<string, TransientFastNotice>();
-const transientTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const noticeListeners = new Set<() => void>();
-
-function emitNoticeChange() {
-	for (const listener of noticeListeners) listener();
-}
-
-function clearTransientNotice(sessionId: string) {
-	const timer = transientTimers.get(sessionId);
-	if (timer) {
-		clearTimeout(timer);
-		transientTimers.delete(sessionId);
-	}
-	if (transientNotices.delete(sessionId)) emitNoticeChange();
-}
-
-function showDisabledNotice(sessionId: string) {
-	clearTransientNotice(sessionId);
-	transientNotices.set(sessionId, "disabled");
-	emitNoticeChange();
-	const timer = setTimeout(() => {
-		transientTimers.delete(sessionId);
-		if (transientNotices.delete(sessionId)) emitNoticeChange();
-	}, 1800);
-	transientTimers.set(sessionId, timer);
-}
-
-function subscribeNotice(listener: () => void) {
-	noticeListeners.add(listener);
-	return () => {
-		noticeListeners.delete(listener);
-	};
-}
-
 interface FastModeControlState {
 	active: boolean;
-	channel: "api" | "codex";
 	pending: boolean;
 	title: string;
 	toggle: () => Promise<void>;
@@ -113,8 +76,6 @@ function useFastModeControl(sessionId: string, modelKey: string): FastModeContro
 		const nextEnabled = !active;
 		if (isDraft) {
 			setDraftFastMode(sessionId, nextEnabled);
-			if (nextEnabled) clearTransientNotice(sessionId);
-			else showDisabledNotice(sessionId);
 			return;
 		}
 		if (inFlight.current) return;
@@ -134,8 +95,6 @@ function useFastModeControl(sessionId: string, modelKey: string): FastModeContro
 				return;
 			}
 			await rpcSend(sessionId, { type: "set_fast_mode", enabled: nextEnabled });
-			if (nextEnabled) clearTransientNotice(sessionId);
-			else showDisabledNotice(sessionId);
 		} catch (error) {
 			if (!isResumeCancelled(error)) toast.error(t("components.fastModeFailed", { error: errMsg(error) }));
 		} finally {
@@ -144,7 +103,7 @@ function useFastModeControl(sessionId: string, modelKey: string): FastModeContro
 		}
 	};
 
-	return { active, channel, pending, title, toggle };
+	return { active, pending, title, toggle };
 }
 
 /** True when Fast Mode is currently active for the given session/draft and model. */
@@ -205,48 +164,4 @@ export function ComposerFastModeIndicator({ sessionId, modelKey }: { sessionId: 
 			<LightningIcon size={12} filled />
 		</button>
 	);
-}
-
-/** Inline fast-mode status rendered inside ThinkingLevelPicker so feedback stays right under the user's gaze. */
-export function ComposerFastModeStatus({ sessionId, modelKey }: { sessionId: string; modelKey: string }) {
-	const { t } = useT();
-	const ctrl = useFastModeControl(sessionId, modelKey);
-	const notice = useSyncExternalStore(
-		subscribeNotice,
-		() => transientNotices.get(sessionId) ?? null,
-		() => null,
-	);
-
-	useEffect(() => {
-		return () => clearTransientNotice(sessionId);
-	}, [sessionId]);
-
-	if (!ctrl) return null;
-
-	if (ctrl.active) {
-		const label =
-			ctrl.channel === "codex" ? t("components.fastModeInlineCodex") : t("components.fastModeInlineApi");
-		return (
-			<div
-				role="status"
-				className="mt-2.5 flex items-center justify-center gap-1 text-center text-[11px] leading-tight text-amber-600 dark:text-amber-400"
-			>
-				<LightningIcon size={11} filled />
-				<span>{label}</span>
-			</div>
-		);
-	}
-
-	if (notice === "disabled") {
-		return (
-			<div
-				role="status"
-				className="mt-2.5 text-center text-[11px] leading-tight text-[var(--text-40,var(--text-dim))]"
-			>
-				{t("components.fastModeDisabledNotice")}
-			</div>
-		);
-	}
-
-	return null;
 }

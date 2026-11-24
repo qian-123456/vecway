@@ -44,7 +44,6 @@ export function ThinkingLevelPicker({
 	onOpenChange,
 	onSelect,
 	accessory,
-	accessoryFooter,
 	fastMode = false,
 	onConfigure = () => openSettingsTarget("providers"),
 	tight = false,
@@ -62,8 +61,6 @@ export function ThinkingLevelPicker({
 	onSelect: (level: string) => void;
 	/** An independent action in the card's top-left corner. */
 	accessory?: ReactNode;
-	/** Optional inline status footer rendered at the bottom of the card. */
-	accessoryFooter?: ReactNode;
 	/** Fast mode active: animates the effort slider track with warp-speed particles. */
 	fastMode?: boolean;
 	/** Opens model settings from the 「未配置思考等级」 chip; defaults to Settings ▸ API 供应商. */
@@ -148,7 +145,7 @@ export function ThinkingLevelPicker({
 					onDismiss={() => onOpenChange(false)}
 					className="w-[280px] max-w-[calc(100vw-16px)] rounded-[20px] border border-[var(--line,var(--border-divider))] !bg-[var(--bg-panel)] shadow-apple-modal"
 				>
-					<ThinkingLevelControl levels={levels} value={value} onSelect={onSelect} accessory={accessory} accessoryFooter={accessoryFooter} fastMode={fastMode} />
+					<ThinkingLevelControl levels={levels} value={value} onSelect={onSelect} accessory={accessory} fastMode={fastMode} />
 				</FloatingLayer>
 			)}
 		</div>
@@ -184,14 +181,12 @@ function ThinkingLevelControl({
 	value,
 	onSelect,
 	accessory,
-	accessoryFooter,
 	fastMode = false,
 }: {
 	levels: string[];
 	value: string;
 	onSelect: (level: string) => void;
 	accessory?: ReactNode;
-	accessoryFooter?: ReactNode;
 	fastMode?: boolean;
 }) {
 	const { t } = useT();
@@ -269,7 +264,6 @@ function ThinkingLevelControl({
 					/>
 				</div>
 			)}
-			{accessoryFooter}
 			{listOpen && (
 				<FloatingLayer
 					anchor={buttonRef.current}

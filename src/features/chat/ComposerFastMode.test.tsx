@@ -10,7 +10,6 @@ import { usePendingSession } from "../sessions/pendingSession";
 import {
 	ComposerFastMode,
 	ComposerFastModeIndicator,
-	ComposerFastModeStatus,
 	fastModeChannel,
 	offlineFastModeChannel,
 	useFastModeActive,
@@ -106,7 +105,6 @@ function renderInThinkingPicker(modelKey: string, sessionId = SID) {
 				onOpenChange={setOpen}
 				onSelect={() => {}}
 				accessory={<ComposerFastMode sessionId={sessionId} modelKey={modelKey} />}
-				accessoryFooter={<ComposerFastModeStatus sessionId={sessionId} modelKey={modelKey} />}
 				fastMode={fastMode}
 			/>
 		);
@@ -240,7 +238,6 @@ describe("ComposerFastMode", () => {
 			expect(h.rpcSend).toHaveBeenCalledWith(SID, { type: "set_fast_mode", enabled: true }),
 		);
 		expect(h.toastInfo).not.toHaveBeenCalled();
-		expect((await screen.findByRole("status")).textContent).toMatch(/已开启快速模式|Fast mode on/);
 
 		const activeBtn = await screen.findByRole("button", {
 			name: /响应速度：快速|Response speed: Fast/,
@@ -255,7 +252,6 @@ describe("ComposerFastMode", () => {
 		await waitFor(() =>
 			expect(h.rpcSend).toHaveBeenCalledWith(SID, { type: "set_fast_mode", enabled: false }),
 		);
-		expect((await screen.findByRole("status")).textContent).toMatch(/已切回标准速度|Switched to standard speed/);
 	});
 
 	it("renders colored toolbar indicator only when fast mode is active and allows one-click turn off", async () => {
@@ -354,7 +350,6 @@ describe("ComposerFastMode", () => {
 		expect(h.ensureLive).not.toHaveBeenCalled();
 		expect(h.rpcSend).not.toHaveBeenCalled();
 		expect(h.toastInfo).not.toHaveBeenCalled();
-		expect((await screen.findByRole("status")).textContent).toMatch(/已开启快速模式|Fast mode on/);
 
 		const activeBtn = await screen.findByRole("button", { name: /响应速度：快速|Response speed: Fast/ });
 		expect(activeBtn.getAttribute("aria-pressed")).toBe("true");
