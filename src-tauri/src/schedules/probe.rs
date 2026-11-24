@@ -118,12 +118,10 @@ pub fn classify_probe(
             Some(10) => ProbeOutcome::Quiet,
             Some(0) => {
                 let out_trimmed = stdout.trim();
-                if out_trimmed.is_empty() {
-                    ProbeOutcome::Quiet
-                } else if parse_structured_result(out_trimmed)
+                let quiet_structured = parse_structured_result(out_trimmed)
                     .and_then(|r| r.status)
-                    .is_some_and(|s| s.eq_ignore_ascii_case("quiet"))
-                {
+                    .is_some_and(|s| s.eq_ignore_ascii_case("quiet"));
+                if out_trimmed.is_empty() || quiet_structured {
                     ProbeOutcome::Quiet
                 } else {
                     ProbeOutcome::ScriptOk { output: combined }
@@ -140,22 +138,29 @@ pub fn classify_probe(
     }
 }
 
-async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(mut reader: R) -> String {
-    let mut buf = Vec::new();
+async fn read_bounded_into<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) {
     let mut chunk = [0u8; 4096];
-    while buf.len() < MAX_OUTPUT_BYTES {
-        match reader.read(&mut chunk).await {
+    loop {
+        let remaining = {
+            let guard = buf.lock().unwrap_or_else(|e| e.into_inner());
+            MAX_OUTPUT_BYTES.saturating_sub(guard.len())
+        };
+        if remaining == 0 {
+            break;
+        }
+        let max_read = chunk.len().min(remaining);
+        match reader.read(&mut chunk[..max_read]).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                let take = n.min(MAX_OUTPUT_BYTES - buf.len());
-                buf.extend_from_slice(&chunk[..take]);
-                if take < n {
-                    break;
-                }
+                buf.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend_from_slice(&chunk[..n]);
             }
         }
     }
-    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// Execute a lightweight shell probe/script in `cwd` with login PATH and automation state dir.
@@ -220,41 +225,54 @@ pub async fn execute_probe(
     };
 
     let pid = child.id();
+    let out_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let err_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_task = tokio::spawn(async move {
-        match stdout {
-            Some(s) => read_bounded(s).await,
-            None => String::new(),
+    let out_buf_task = out_buf.clone();
+    let mut out_task = tokio::spawn(async move {
+        if let Some(s) = stdout {
+            read_bounded_into(s, out_buf_task).await;
         }
     });
-    let err_task = tokio::spawn(async move {
-        match stderr {
-            Some(s) => read_bounded(s).await,
-            None => String::new(),
+    let err_buf_task = err_buf.clone();
+    let mut err_task = tokio::spawn(async move {
+        if let Some(s) = stderr {
+            read_bounded_into(s, err_buf_task).await;
         }
     });
 
-    let wait_res = tokio::time::timeout(timeout, child.wait()).await;
-    let (exit_code, timed_out) = match wait_res {
-        Ok(Ok(status)) => (status.code(), false),
-        Ok(Err(_)) => (None, false),
+    // Single end-to-end deadline covering both child exit and stdout/stderr draining so
+    // background descendants keeping pipes open cannot hang past the timeout.
+    let deadline = tokio::time::Instant::now() + timeout;
+    let wait_all = tokio::time::timeout_at(deadline, async {
+        tokio::join!(child.wait(), &mut out_task, &mut err_task)
+    })
+    .await;
+
+    let (exit_code, timed_out) = match wait_all {
+        Ok((Ok(status), _, _)) => (status.code(), false),
+        Ok((Err(_), _, _)) => (None, false),
         Err(_) => {
             #[cfg(unix)]
             if let Some(p) = pid {
-                // Kill the entire process group so background descendants do not linger.
+                // Kill the entire process group so background descendants holding pipes open do not linger.
                 unsafe {
                     libc::killpg(p as i32, libc::SIGKILL);
                 }
             }
             let _ = child.kill().await;
-            let _ = child.wait().await;
+            let _ = tokio::time::timeout(Duration::from_millis(200), child.wait()).await;
+            out_task.abort();
+            err_task.abort();
             (None, true)
         }
     };
 
-    let stdout_str = out_task.await.unwrap_or_default();
-    let stderr_str = err_task.await.unwrap_or_default();
+    let stdout_str =
+        String::from_utf8_lossy(&out_buf.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
+    let stderr_str =
+        String::from_utf8_lossy(&err_buf.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
     let combined = combine_output(&stdout_str, &stderr_str);
     let outcome = classify_probe(trigger, exit_code, timed_out, &stdout_str, &stderr_str);
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -307,5 +325,113 @@ mod tests {
         assert_eq!(parsed.summary.as_deref(), Some("outside window"));
         assert_eq!(parsed.session_id.as_deref(), Some("s-1"));
         assert!(parse_structured_result("plain text without json").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn execute_probe_bounds_leaked_descendant_pipes_with_single_deadline() {
+        let dir = std::env::temp_dir().join(format!("ompws-probe-m3-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let started = Instant::now();
+        let (exit_code, timed_out, _duration_ms, outcome, combined) = execute_probe(
+            &dir,
+            "(sleep 10) & echo hi",
+            ScheduleAgentTrigger::OnSignal,
+            None,
+            Duration::from_millis(250),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(timed_out, "leaked descendant pipe must trigger timeout");
+        assert_eq!(exit_code, None);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "probe hung past bounded deadline: {elapsed:?}"
+        );
+        assert!(
+            matches!(outcome, ProbeOutcome::Failed { .. }),
+            "expected Failed outcome on timeout, got {outcome:?}"
+        );
+        assert!(combined.contains("hi") || matches!(outcome, ProbeOutcome::Failed { .. }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn execute_probe_timeout_when_only_stdout_stays_open_does_not_panic() {
+        let dir = std::env::temp_dir().join(format!("ompws-probe-out-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let started = Instant::now();
+        let (exit_code, timed_out, _duration_ms, outcome, combined) = execute_probe(
+            &dir,
+            "(sleep 10 2>&-) & echo out_only",
+            ScheduleAgentTrigger::OnSignal,
+            None,
+            Duration::from_millis(250),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            timed_out,
+            "open stdout descendant pipe must trigger timeout"
+        );
+        assert_eq!(exit_code, None);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "probe hung past bounded deadline: {elapsed:?}"
+        );
+        assert!(
+            matches!(outcome, ProbeOutcome::Failed { .. }),
+            "expected Failed outcome on timeout, got {outcome:?}"
+        );
+        assert!(
+            combined.contains("out_only"),
+            "expected buffered stdout, got {combined:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn execute_probe_timeout_when_only_stderr_stays_open_does_not_panic() {
+        let dir = std::env::temp_dir().join(format!("ompws-probe-err-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let started = Instant::now();
+        let (exit_code, timed_out, _duration_ms, outcome, combined) = execute_probe(
+            &dir,
+            "(sleep 10 >&2 1>&-) & echo err_only >&2",
+            ScheduleAgentTrigger::OnSignal,
+            None,
+            Duration::from_millis(250),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            timed_out,
+            "open stderr descendant pipe must trigger timeout"
+        );
+        assert_eq!(exit_code, None);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "probe hung past bounded deadline: {elapsed:?}"
+        );
+        assert!(
+            matches!(outcome, ProbeOutcome::Failed { .. }),
+            "expected Failed outcome on timeout, got {outcome:?}"
+        );
+        assert!(
+            combined.contains("err_only"),
+            "expected buffered stderr, got {combined:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

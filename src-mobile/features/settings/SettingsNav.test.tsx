@@ -478,4 +478,99 @@ describe("SettingsPage navigation and groups", () => {
 		});
 		expect(promptBoxes[0].value).toBe("正在编辑中的提示词");
 	});
+
+	it("H6: handles A -> B -> revert A prompt autosave race and patches only automationDefaultModel from ModelPicker", async () => {
+		let resolveFirstPrompt!: (v: unknown) => void;
+		let resolveSecondPrompt!: (v: unknown) => void;
+		const promptPatches: Array<Record<string, unknown>> = [];
+		let serverState = {
+			automationBackgroundEnabled: true,
+			automationOverlapPolicy: "skip" as const,
+			automationDefaultResultMode: "structured" as const,
+			automationDefaultModel: "anthropic/claude-sonnet-4-5",
+			automationDefaultThinking: "medium",
+			automationPromptMockTest: "模板A" as string | null,
+			automationPromptRealOnceTest: null as string | null,
+			automationPromptRealLoopTest: null as string | null,
+			automationPromptAdjust: null as string | null,
+		};
+		const load = vi.mocked(apiModule.api).getMockImplementation()!;
+		vi.mocked(apiModule.api).mockImplementation((method, path, body) => {
+			if (path === "/left/settings") return Promise.resolve({ defaultApprovalMode: "write", ...serverState });
+			if (path === "/left/roles") {
+				return Promise.resolve({
+					models: [
+						{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet" },
+						{ provider: "openai", id: "gpt-5", name: "GPT-5" },
+					],
+				});
+			}
+			if (method === "POST" && path === "/left/settings/automation") {
+				const patch = (body ?? {}) as Record<string, unknown>;
+				promptPatches.push(patch);
+				if ("automationPromptMockTest" in patch) {
+					if (promptPatches.filter((p) => "automationPromptMockTest" in p).length === 1) {
+						return new Promise((r) => {
+							resolveFirstPrompt = () => {
+								serverState = { ...serverState, ...patch };
+								r({ ...serverState });
+							};
+						});
+					}
+					return new Promise((r) => {
+						resolveSecondPrompt = () => {
+							serverState = { ...serverState, ...patch };
+							r({ ...serverState });
+						};
+					});
+				}
+				serverState = { ...serverState, ...patch };
+				return Promise.resolve({ ...serverState });
+			}
+			return load(method, path, body);
+		});
+
+		render(<SettingsPage />);
+		fireEvent.click(await screen.findByText("自动化"));
+
+		const mockBox = (await screen.findAllByRole("textbox"))[0] as HTMLTextAreaElement;
+		await waitFor(() => expect(mockBox.value).toBe("模板A"));
+
+		// 1. Edit to B and blur (starts in-flight POST for B)
+		fireEvent.focus(mockBox);
+		fireEvent.change(mockBox, { target: { value: "模板B" } });
+		fireEvent.blur(mockBox);
+
+		// 2. While B is still in-flight, revert to A and blur -> MUST queue A (not no-op against stale snapshot!)
+		fireEvent.focus(mockBox);
+		fireEvent.change(mockBox, { target: { value: "模板A" } });
+		fireEvent.blur(mockBox);
+
+		// Settle B first -> textarea must stay "模板A" and second POST for "模板A" must run
+		await act(async () => resolveFirstPrompt(serverState));
+		expect(mockBox.value).toBe("模板A");
+		await waitFor(() =>
+			expect(promptPatches.filter((p) => "automationPromptMockTest" in p)).toHaveLength(2),
+		);
+		expect(promptPatches.filter((p) => "automationPromptMockTest" in p)[1]).toEqual({
+			automationPromptMockTest: "模板A",
+		});
+		await act(async () => resolveSecondPrompt(serverState));
+		expect(mockBox.value).toBe("模板A");
+
+		// 3. Selecting a model in ModelPicker must patch ONLY automationDefaultModel (never automationDefaultThinking)
+		promptPatches.length = 0;
+		fireEvent.click(screen.getByRole("button", { name: /默认自动化模型/ }));
+		const searchInput = await screen.findByRole("searchbox", { name: "搜索模型" });
+		fireEvent.change(searchInput, { target: { value: "gpt-5" } });
+		fireEvent.click(await screen.findByText("gpt-5"));
+		await waitFor(() =>
+			expect(promptPatches).toContainEqual({ automationDefaultModel: "openai/gpt-5" }),
+		);
+		for (const p of promptPatches) {
+			if ("automationDefaultModel" in p) {
+				expect(p).not.toHaveProperty("automationDefaultThinking");
+			}
+		}
+	});
 });

@@ -353,6 +353,7 @@ struct TermEntry {
     attach: Mutex<AttachState>,
     closed: AtomicBool,
     pty_id: Mutex<Option<String>>,
+    ownership: Mutex<Option<crate::git::commands::TerminalOwnershipGuard>>,
     owner: Option<String>,
     title: String,
     preserve_on_detach: AtomicBool,
@@ -370,6 +371,7 @@ impl TermEntry {
             }
             TermEvent::Exit(code) => {
                 b.exit = Some(code);
+                self.ownership.lock().take();
                 Out::Exit(code)
             }
         };
@@ -382,6 +384,9 @@ impl TermEntry {
         }
         if let Some(id) = self.pty_id.lock().take() {
             pty::close(&id);
+            // Ownership stays held until `TermEvent::Exit` fires after `child.wait()`.
+        } else {
+            self.ownership.lock().take();
         }
     }
 }
@@ -439,11 +444,11 @@ fn reap_unattached_now(id: &str, entry: &TermEntry, expected_gen: u64) {
 fn open_term(
     cwd: &str,
     argv: Vec<String>,
-    cols: u16,
-    rows: u16,
+    size: (u16, u16),
     grace: Duration,
     session_file: Option<&str>,
     owner: Option<String>,
+    ownership: Option<crate::git::commands::TerminalOwnershipGuard>,
 ) -> Result<String, ApiError> {
     if terms().lock().len() >= MAX_TERMINALS {
         return Err(ApiError(
@@ -466,13 +471,14 @@ fn open_term(
         }),
         closed: AtomicBool::new(false),
         pty_id: Mutex::new(None),
+        ownership: Mutex::new(ownership),
         owner,
         title: cwd.to_string(),
         preserve_on_detach: AtomicBool::new(false),
     });
     let sink_entry = entry.clone();
     let sink: pty::Sink = Arc::new(move |_id: &str, ev| sink_entry.push(ev));
-    let pty_id = pty::open(cwd, &argv, cols, rows, sink, &extra_env)
+    let pty_id = pty::open(cwd, &argv, size.0, size.1, sink, &extra_env)
         .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
     *entry.pty_id.lock() = Some(pty_id);
     let id = uuid::Uuid::new_v4().to_string();
@@ -498,21 +504,26 @@ async fn term_open<B: Backend>(
     let meta = super::draft::find_session(&ctx.backend, &body.session_id)
         .await
         .ok_or(ApiError(StatusCode::NOT_FOUND, "会话不存在".into()))?;
+    let owner = auth::device_id_for_token(&ctx.db.lock(), &token)
+        .ok_or(ApiError(StatusCode::UNAUTHORIZED, "设备已移除".into()))?;
+    let ownership = {
+        let _mutation = crate::catalog::session_mutation_lock().lock().await;
+        crate::git::commands::try_register_terminal_ownership(&meta.cwd)
+            .map_err(|msg| ApiError(StatusCode::CONFLICT, msg))?
+    };
     let cwd = meta.cwd;
     let session_file = meta.file;
     let (cols, rows) = (body.cols.unwrap_or(80), body.rows.unwrap_or(24));
-    let owner = auth::device_id_for_token(&ctx.db.lock(), &token)
-        .ok_or(ApiError(StatusCode::UNAUTHORIZED, "设备已移除".into()))?;
     let cwd2 = cwd.clone();
     let id = tokio::task::spawn_blocking(move || {
         open_term(
             &cwd2,
             vec![],
-            cols,
-            rows,
+            (cols, rows),
             DETACH_GRACE,
             Some(&session_file),
             Some(owner),
+            Some(ownership),
         )
     })
     .await
@@ -746,6 +757,7 @@ mod tests {
                 }),
                 closed: AtomicBool::new(false),
                 pty_id: Mutex::new(None),
+                ownership: Mutex::new(None),
                 owner: Some(owner.to_owned()),
                 title: "terminal".into(),
                 preserve_on_detach: AtomicBool::new(false),
@@ -813,9 +825,9 @@ mod tests {
         let id = open_term(
             "/tmp",
             vec!["sh".into()],
-            80,
-            24,
+            (80, 24),
             Duration::from_secs(60),
+            None,
             None,
             None,
         )
@@ -880,6 +892,7 @@ mod tests {
             }),
             closed: AtomicBool::new(false),
             pty_id: Mutex::new(None),
+            ownership: Mutex::new(None),
             owner: None,
             title: "terminal".into(),
             preserve_on_detach: AtomicBool::new(false),
@@ -914,5 +927,82 @@ mod tests {
         reap_unattached_now(&id, &entry, 4);
         assert!(get_term(&id).is_err());
         assert!(entry.closed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mobile_terminal_holds_worktree_ownership_until_pty_exit() {
+        let dir = std::env::temp_dir().join(format!("omp-mob-term-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir_str = dir.to_string_lossy().into_owned();
+
+        // Deterministic unit check: `shutdown()` on an entry with an active `pty_id`
+        // must NOT release ownership early; only `TermEvent::Exit` releases it.
+        let det_ownership =
+            crate::git::commands::try_register_terminal_ownership(&dir_str).expect("register");
+        let (tx, _) = broadcast::channel(8);
+        let synthetic = TermEntry {
+            backlog: Mutex::new(Backlog {
+                buf: VecDeque::new(),
+                exit: None,
+            }),
+            tx,
+            attach: Mutex::new(AttachState {
+                subs: 0,
+                generation: 0,
+            }),
+            closed: AtomicBool::new(false),
+            pty_id: Mutex::new(Some("pending-pty-wait".into())),
+            ownership: Mutex::new(Some(det_ownership)),
+            owner: None,
+            title: dir_str.clone(),
+            preserve_on_detach: AtomicBool::new(false),
+        };
+        synthetic.shutdown();
+        assert!(
+            crate::git::commands::try_reserve_worktree(&dir_str).is_err(),
+            "shutdown alone must not release ownership before PTY child exits"
+        );
+        synthetic.push(TermEvent::Exit(Some(0)));
+        let wt_guard = crate::git::commands::try_reserve_worktree(&dir_str)
+            .expect("reservation succeeds once TermEvent::Exit arrives");
+        drop(wt_guard);
+
+        // Live PTY end-to-end check: removing the terminal signals the child and
+        // ownership is released once the reader emits Out::Exit after `child.wait()`.
+        let ownership =
+            crate::git::commands::try_register_terminal_ownership(&dir_str).expect("register");
+        let id = open_term(
+            &dir_str,
+            vec!["cat".into()],
+            (80, 24),
+            Duration::from_secs(60),
+            None,
+            None,
+            Some(ownership),
+        )
+        .expect("open mobile term");
+        let entry = get_term(&id).expect("term entry");
+        let mut rx = entry.tx.subscribe();
+
+        assert!(crate::git::commands::try_reserve_worktree(&dir_str).is_err());
+
+        remove_term(&id);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Ok(out) if matches!(*out, Out::Exit(_)) => break,
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+        .await
+        .expect("PTY exit event");
+
+        let wt_guard = crate::git::commands::try_reserve_worktree(&dir_str)
+            .expect("worktree reservation succeeds after PTY exit");
+        drop(wt_guard);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

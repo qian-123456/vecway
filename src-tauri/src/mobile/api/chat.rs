@@ -66,8 +66,8 @@
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
 use axum::response::{IntoResponse as _, Response};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine as _;
 use serde::Deserialize;
@@ -716,12 +716,19 @@ fn normalize_automation_draft_item(obj: &Value) -> Option<Value> {
         Some("dismissed") => "dismissed",
         _ => "pending",
     };
-    Some(json!({
+    let mut item = json!({
         "v": 1,
         "draftId": draft_id,
         "status": status,
         "draft": draft,
-    }))
+    });
+    if let Some(present) = obj.get("presentFields").filter(|v| v.is_array()) {
+        item["presentFields"] = present.clone();
+    }
+    if let Some(cadence_present) = obj.get("cadencePresentFields").filter(|v| v.is_array()) {
+        item["cadencePresentFields"] = cadence_present.clone();
+    }
+    Some(item)
 }
 
 fn normalize_automation_state(raw: &Value, persisted: bool) -> Option<Value> {
@@ -737,7 +744,12 @@ fn normalize_automation_state(raw: &Value, persisted: bool) -> Option<Value> {
     if !valid_version {
         return None;
     }
-    if let Some(arr) = raw.get("drafts").and_then(Value::as_array) {
+    let last_proposed = raw
+        .get("lastProposedDraftId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let mut out = if let Some(arr) = raw.get("drafts").and_then(Value::as_array) {
         let drafts: Vec<Value> = arr
             .iter()
             .filter_map(normalize_automation_draft_item)
@@ -747,13 +759,12 @@ fn normalize_automation_state(raw: &Value, persisted: bool) -> Option<Value> {
         } else {
             "idle"
         };
-        return Some(json!({
+        json!({
             "v": 1,
             "mode": mode,
             "drafts": drafts,
-        }));
-    }
-    if let Some(single) = normalize_automation_draft_item(raw) {
+        })
+    } else if let Some(single) = normalize_automation_draft_item(raw) {
         let mode = if raw.get("mode").and_then(Value::as_str) == Some("active")
             || single.get("status").and_then(Value::as_str) == Some("pending")
         {
@@ -761,20 +772,25 @@ fn normalize_automation_state(raw: &Value, persisted: bool) -> Option<Value> {
         } else {
             "idle"
         };
-        return Some(json!({
+        json!({
             "v": 1,
             "mode": mode,
             "drafts": [single],
-        }));
+        })
+    } else {
+        match raw.get("mode").and_then(Value::as_str) {
+            Some(mode @ ("active" | "idle")) => json!({
+                "v": 1,
+                "mode": mode,
+                "drafts": [],
+            }),
+            _ => return None,
+        }
+    };
+    if let Some(id) = last_proposed {
+        out["lastProposedDraftId"] = Value::String(id.to_string());
     }
-    match raw.get("mode").and_then(Value::as_str) {
-        Some(mode @ ("active" | "idle")) => Some(json!({
-            "v": 1,
-            "mode": mode,
-            "drafts": [],
-        })),
-        _ => None,
-    }
+    Some(out)
 }
 
 fn read_saved_automation(file: &FsPath) -> std::io::Result<Option<Value>> {
@@ -2508,10 +2524,10 @@ async fn plan_set<B: Backend>(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AutomationBody {
-    action: String,
-    draft_id: Option<String>,
-    resolution: Option<String>,
+pub(crate) struct AutomationBody {
+    pub(crate) action: String,
+    pub(crate) draft_id: Option<String>,
+    pub(crate) resolution: Option<String>,
 }
 
 fn current_automation_mode(id: &str) -> Option<String> {
@@ -2582,11 +2598,31 @@ async fn wait_until_automation_settled(
     automation_action_settled(target, action, draft_id, resolution)
 }
 
+fn automation_timeout_response(real: Option<String>) -> Response {
+    let mut payload = json!({
+        "error": "操作等待超时，当前会话可能正忙，请稍后刷新查看结果"
+    });
+    if let Some(sid) = real {
+        payload["sessionId"] = json!(sid);
+    }
+    (StatusCode::GATEWAY_TIMEOUT, Json(payload)).into_response()
+}
+
 /// Automation mode & draft card control via `/automation-action ...`.
 async fn automation_set<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Path(id): Path<String>,
     Json(body): Json<AutomationBody>,
+) -> Result<Response, ApiError> {
+    automation_set_with_wait(ctx, id, body, std::time::Duration::from_millis(50), 60).await
+}
+
+pub(crate) async fn automation_set_with_wait<B: Backend>(
+    ctx: Arc<Ctx<B>>,
+    id: String,
+    body: AutomationBody,
+    poll_interval: std::time::Duration,
+    max_polls: usize,
 ) -> Result<Response, ApiError> {
     let meta = load_session(&ctx, &id).await?;
     let action = body.action.trim();
@@ -2648,18 +2684,12 @@ async fn automation_set<B: Backend>(
             action,
             draft_id.as_deref(),
             resolution.as_deref(),
-            std::time::Duration::from_millis(50),
-            60,
+            poll_interval,
+            max_polls,
         )
         .await;
         if !settled {
-            let mut payload = json!({
-                "error": "操作等待超时，当前会话可能正忙，请稍后刷新查看结果"
-            });
-            if let Some(sid) = real {
-                payload["sessionId"] = json!(sid);
-            }
-            return Ok((StatusCode::GATEWAY_TIMEOUT, Json(payload)).into_response());
+            return Ok(automation_timeout_response(real));
         }
     }
 
@@ -3273,6 +3303,115 @@ mod tests {
         .await;
         assert!(!settled);
 
+        let resp = automation_timeout_response(Some(id.clone()));
+        assert_eq!(resp.status(), StatusCode::GATEWAY_TIMEOUT);
+        let bytes = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["sessionId"], id);
+        assert!(body["error"].as_str().is_some_and(|s| !s.is_empty()));
+
         crate::rpc::registry().write().remove(&id);
+    }
+
+    #[tokio::test]
+    async fn automation_status_preserves_present_fields_cadence_present_fields_and_last_proposed_draft_id(
+    ) {
+        let dir = std::env::temp_dir().join(format!("omp-auto-snap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("s.jsonl");
+        let persisted = json!({
+            "type": "custom",
+            "customType": "ompws-automation-state",
+            "data": {
+                "v": 2,
+                "mode": "active",
+                "lastProposedDraftId": "d-persisted",
+                "drafts": [{
+                    "v": 1,
+                    "draftId": "d-persisted",
+                    "status": "pending",
+                    "presentFields": ["name", "cadence"],
+                    "cadencePresentFields": ["kind", "minutes"],
+                    "draft": {
+                        "name": "Persisted",
+                        "prompt": "p",
+                        "cwd": ".",
+                        "cadence": { "kind": "interval", "minutes": 15 }
+                    }
+                }]
+            }
+        });
+        std::fs::write(&file, format!("{persisted}\n")).unwrap();
+
+        let id = format!("auto-snap-{}", uuid::Uuid::new_v4());
+        let restored = automation_status(&id, &file.to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored["lastProposedDraftId"], "d-persisted");
+        assert_eq!(
+            restored["drafts"][0]["presentFields"],
+            json!(["name", "cadence"])
+        );
+        assert_eq!(
+            restored["drafts"][0]["cadencePresentFields"],
+            json!(["kind", "minutes"])
+        );
+
+        let handle = Arc::new(crate::rpc::SessionHandle {
+            session_id: parking_lot::RwLock::new(id.clone()),
+            ..crate::rpc::SessionHandle::for_test()
+        });
+        *handle.automation_status.lock() = Some(json!({
+            "v": 1,
+            "mode": "active",
+            "lastProposedDraftId": "d-live-2",
+            "drafts": [
+                {
+                    "v": 1,
+                    "draftId": "d-live-1",
+                    "status": "saved",
+                    "presentFields": ["name"],
+                    "draft": { "name": "First", "prompt": "p1", "cwd": "." }
+                },
+                {
+                    "v": 1,
+                    "draftId": "d-live-2",
+                    "status": "pending",
+                    "presentFields": ["id", "name", "cadence"],
+                    "cadencePresentFields": ["kind", "time", "every"],
+                    "draft": {
+                        "id": "sched-1",
+                        "name": "Second",
+                        "prompt": "p2",
+                        "cwd": ".",
+                        "cadence": { "kind": "daily", "time": "09:30", "every": 2 }
+                    }
+                }
+            ]
+        }));
+        crate::rpc::registry().write().insert(id.clone(), handle);
+
+        let live = automation_status(&id, &file.to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(live["lastProposedDraftId"], "d-live-2");
+        assert_eq!(live["drafts"][0]["presentFields"], json!(["name"]));
+        assert!(live["drafts"][0].get("cadencePresentFields").is_none());
+        assert_eq!(
+            live["drafts"][1]["presentFields"],
+            json!(["id", "name", "cadence"])
+        );
+        assert_eq!(
+            live["drafts"][1]["cadencePresentFields"],
+            json!(["kind", "time", "every"])
+        );
+
+        crate::rpc::registry().write().remove(&id);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

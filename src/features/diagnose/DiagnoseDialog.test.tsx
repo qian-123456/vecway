@@ -238,5 +238,4 @@ describe("diagnosis dialog lifecycle", () => {
    expect((screen.getByText("diagnose.startDiagnosis").closest("button") as HTMLButtonElement).disabled).toBe(true);
   },
  );
- });
 });

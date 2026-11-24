@@ -512,6 +512,7 @@ pub struct ScheduleRun {
   pub summary: Option<String>,
   pub phase: ScheduleRunPhase,
   pub probe_output: Option<String>,
+  pub worktree_repo_root: Option<String>, pub worktree_path: Option<String>, pub worktree_branch: Option<String>,
 }
 pub struct ProbeTestResult {
   pub exit_code: Option<i32>, pub timed_out: bool, pub duration_ms: u64,
@@ -637,7 +638,7 @@ Frontend events (`app.emit`), names are exact:
 
 An unexpected `rpc:process` exit during an active turn preserves unfinished output, records a system-disconnection warning without inventing a cause, enables manual Continue, and pauses queued auto-send; it never automatically retries. Deliberate stop/restart intent is not presented as an unknown disconnection.
 
-## 6. SQLite schema (`db.rs`, migrations v1 → … → v29)
+## 6. SQLite schema (`db.rs`, migrations v1 → … → v31)
 
 ```sql
 CREATE TABLE workspaces(id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, sort INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'code', dir_dev INTEGER, dir_ino INTEGER, created_at TEXT NOT NULL, UNIQUE(path, mode));  -- v10 rebuilt: uniqueness moved from path to (path, mode); v29 adds dir_dev/dir_ino for Layer 2 relocation tracking
@@ -692,6 +693,7 @@ CREATE TABLE schedule_runs(
   probe_output TEXT,                          -- v25: bounded pre-check stdout/stderr output
   owner_pid INTEGER,                          -- v26: process owning a running row
   resume_attempt TEXT, resume_owner_pid INTEGER, -- v26: correlated continuation reservation
+  worktree_repo_root TEXT, worktree_path TEXT, worktree_branch TEXT, -- v31: isolated worktree identity for quiet probes & nested repos
   FOREIGN KEY(schedule_id) REFERENCES schedules(id) ON DELETE CASCADE
 );
 CREATE INDEX idx_schedule_runs_schedule_id ON schedule_runs(schedule_id, started_at DESC);
@@ -727,7 +729,7 @@ CREATE TABLE model_switch_log(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, rul
   edits TEXT NOT NULL, previous_template_id TEXT, session_results TEXT NOT NULL DEFAULT '[]', undone_at TEXT);
 -- v18: each of the three tables above gained `scope TEXT NOT NULL DEFAULT 'global'` ('global' or an absolute project directory)
 ```
-Use a `user_version` pragma for migrations (current: v27; v12 deletes legacy `suggestion`/`supervisor` todo rows; v13 adds `model_replace_log`; v14 adds `session_meta.kind`; v15 adds `local_rows`; v17 adds the three `model_*` template/rule/log tables; v18 adds their `scope` column, added only when missing so a rewound `user_version` re-migrates cleanly; v19 adds `backlog.deleted_at` and converts `backlog.kind = 'todo'` rows to `idea`; v20 adds `idx_session_meta_parent` on `session_meta(parent_session_id)` for side-chat child lookups; v22 adds nullable `backlog.restored_at`, preserving explicit restoration across startup and age-based archiving; v23 adds `schedules.mode TEXT NOT NULL DEFAULT 'code'`, without inferring old task modes from cwd; v25 idempotently adds `schedules.{probe_command,probe_description,agent_trigger}` and `schedule_runs.{phase,probe_output}`; v26 adds the historical task overlap policy, durable pending occurrences and run owner; v27 removes the task policy column in favor of global Settings without altering accepted pending work). `db.rs` also provides `load_settings`/`save_settings` and
+Use a `user_version` pragma for migrations (current: v31; v12 deletes legacy `suggestion`/`supervisor` todo rows; v13 adds `model_replace_log`; v14 adds `session_meta.kind`; v15 adds `local_rows`; v17 adds the three `model_*` template/rule/log tables; v18 adds their `scope` column, added only when missing so a rewound `user_version` re-migrates cleanly; v19 adds `backlog.deleted_at` and converts `backlog.kind = 'todo'` rows to `idea`; v20 adds `idx_session_meta_parent` on `session_meta(parent_session_id)` for side-chat child lookups; v22 adds nullable `backlog.restored_at`, preserving explicit restoration across startup and age-based archiving; v23 adds `schedules.mode TEXT NOT NULL DEFAULT 'code'`, without inferring old task modes from cwd; v25 idempotently adds `schedules.{probe_command,probe_description,agent_trigger}` and `schedule_runs.{phase,probe_output}`; v26 adds the historical task overlap policy, durable pending occurrences and run owner; v27 removes the task policy column in favor of global Settings without altering accepted pending work; v31 idempotently adds `schedule_runs.{worktree_repo_root,worktree_path,worktree_branch}`). `db.rs` also provides `load_settings`/`save_settings` and
 `ensure_global_workspace(conn)` (creates the single global workspace row `global`/`~/.vecway/global`, owned by
 the `chat` space). v11 moves the global row and every session group (and grouped sessions) to `chat` and drops the
 v10 per-mode `global:<mode>` rows (their dirs stay on disk).

@@ -31,6 +31,8 @@ export default defineMessages({
 		restoreSideChatDraft: "恢复草稿",
 		restoreSideChatDraftCount: "恢复草稿 ({count})",
 		attachmentOnlyDraft: "仅附件草稿（{count} 个）",
+		discardSideChatDraft: "删除草稿",
+		discardSideChatDraftFor: "删除草稿：{preview}",
 	},
 	"en-US": {
 		sidechat: "Side Chat",
@@ -62,5 +64,7 @@ export default defineMessages({
 		restoreSideChatDraft: "Restore draft",
 		restoreSideChatDraftCount: "Restore draft ({count})",
 		attachmentOnlyDraft: "Attachment draft ({count})",
+		discardSideChatDraft: "Discard draft",
+		discardSideChatDraftFor: "Discard draft: {preview}",
 	},
 });

@@ -22,7 +22,11 @@ import {
 import { scrollBehavior } from "../../ui/motion";
 import { ModelPicker } from "../../ui/ModelPicker";
 import type { PickerModel } from "../../ui/ModelPicker";
-import { startAutomationChat, takeManualScheduleDraft } from "../chat/automation/automationStatus";
+import {
+	applyManualDraftPatchToForm,
+	startAutomationChat,
+	takeManualScheduleDraft,
+} from "../chat/automation/automationStatus";
 import { AutomationOverviewView } from "./AutomationOverviewView";
 import { LoadState, useLoad } from "./controls";
 import {
@@ -137,6 +141,7 @@ const FIELD_ORDER: readonly FormField[] = [
 ];
 
 const DRAFT_STORAGE_PREFIX = "omp:mobile:schedule-draft:";
+let nextFormMountToken = 0;
 
 interface StoredScheduleDraft {
 	baseRevision: string;
@@ -427,39 +432,61 @@ function Form({
 	}, [existing, dirs, defaults]);
 	const baseRevision = useMemo(() => computeBaseRevision(existing, baseline), [existing, baseline]);
 
+	const mountTokenRef = useRef(0);
+	if (!mountTokenRef.current) mountTokenRef.current = ++nextFormMountToken;
+	useEffect(() => {
+		if (mountTokenRef.current <= 0) mountTokenRef.current = ++nextFormMountToken;
+		return () => {
+			mountTokenRef.current = -1;
+		};
+	}, []);
+
 	const initRef = useRef<{ form: ScheduleForm; restored: boolean } | null>(null);
 	if (!initRef.current) {
 		const handoff = takeManualScheduleDraft(draftKey);
-		if (handoff) {
-			initRef.current = { form: formFromSchedule(handoff), restored: false };
-		} else {
-			const cached = readStoredDraft(draftKey);
-			if (cached) {
-				if (cached.baseRevision === baseRevision) {
-					const nextForm = { ...baseline, ...cached.form };
-					const dirty = diffFormKeys(nextForm, baseline);
-					initRef.current = { form: nextForm, restored: dirty.length > 0 };
-				} else {
-					const nextForm: ScheduleForm = { ...baseline };
-					const allowedKeys = new Set(Object.keys(baseline) as Array<keyof ScheduleForm>);
-					let rebasedAny = false;
-					for (const k of cached.dirtyKeys) {
-						if (allowedKeys.has(k) && k in cached.form) {
-							(nextForm as unknown as Record<string, unknown>)[k] = cached.form[k];
-							rebasedAny = true;
-						}
-					}
-					const dirty = rebasedAny ? diffFormKeys(nextForm, baseline) : [];
-					if (dirty.length > 0) {
-						initRef.current = { form: nextForm, restored: true };
-					} else {
-						clearStoredDraft(draftKey);
-						initRef.current = { form: baseline, restored: false };
-					}
+		const cached = readStoredDraft(draftKey);
+		const allowedKeys = new Set(Object.keys(baseline) as Array<keyof ScheduleForm>);
+		const applyCachedDirty = (
+			targetForm: ScheduleForm,
+			stored: StoredScheduleDraft,
+			skipKeys?: Set<keyof ScheduleForm>,
+		): boolean => {
+			const keys =
+				stored.baseRevision === baseRevision
+					? diffFormKeys({ ...baseline, ...stored.form }, baseline)
+					: stored.dirtyKeys;
+			let applied = false;
+			for (const k of keys) {
+				if (!allowedKeys.has(k) || skipKeys?.has(k) || !(k in stored.form)) continue;
+				if (JSON.stringify(targetForm[k]) !== JSON.stringify(stored.form[k])) {
+					(targetForm as unknown as Record<string, unknown>)[k] = stored.form[k];
+					applied = true;
 				}
-			} else {
-				initRef.current = { form: baseline, restored: false };
 			}
+			return applied;
+		};
+		if (handoff) {
+			const { form: proposalForm, proposalKeys } = applyManualDraftPatchToForm(baseline, handoff);
+			const restoredLocal = cached ? applyCachedDirty(proposalForm, cached, proposalKeys) : false;
+			initRef.current = { form: proposalForm, restored: restoredLocal };
+		} else if (cached) {
+			if (cached.baseRevision === baseRevision) {
+				const nextForm = { ...baseline, ...cached.form };
+				const dirty = diffFormKeys(nextForm, baseline);
+				initRef.current = { form: nextForm, restored: dirty.length > 0 };
+			} else {
+				const nextForm: ScheduleForm = { ...baseline };
+				const rebasedAny = applyCachedDirty(nextForm, cached);
+				const dirty = rebasedAny ? diffFormKeys(nextForm, baseline) : [];
+				if (dirty.length > 0) {
+					initRef.current = { form: nextForm, restored: true };
+				} else {
+					clearStoredDraft(draftKey);
+					initRef.current = { form: baseline, restored: false };
+				}
+			}
+		} else {
+			initRef.current = { form: baseline, restored: false };
 		}
 	}
 
@@ -634,6 +661,7 @@ function Form({
 	};
 
 	const save = async () => {
+		const submitToken = mountTokenRef.current;
 		const submitted = f;
 		const errs = validateForm(submitted);
 		setErrors(errs);
@@ -644,31 +672,86 @@ function Form({
 		}
 		setSaving(true);
 		try {
-			const body = buildPayload(submitted, existing);
-			if (!existing) body.mode = dirs.find((dir) => dir.path === submitted.cwd)?.mode ?? "code";
-			if (existing) await api("PUT", `/left/schedules/${encodeURIComponent(existing.id)}`, body);
-			else await api("POST", "/left/schedules", body);
-			const unchangedSinceSubmit = JSON.stringify(latestFormRef.current) === JSON.stringify(submitted);
-			if (unchangedSinceSubmit) {
-				clearStoredDraft(draftKey);
-				setRestoredFromCache(false);
+			let targetExisting = existing;
+			let payloadForm = submitted;
+			let dirtySet: Set<keyof ScheduleForm> | null = null;
+			if (existing) {
+				let freshList: Schedule[];
+				try {
+					freshList = await api<Schedule[]>("GET", "/left/schedules");
+				} catch (e) {
+					if (mountTokenRef.current === submitToken) {
+						setSubmitError(`刷新最新配置失败，请重试（${errorMessage(e)}）`);
+					}
+					return;
+				}
+				if (mountTokenRef.current !== submitToken) return;
+				const fresh = Array.isArray(freshList) ? freshList.find((s) => s.id === existing.id) : undefined;
+				if (!fresh) {
+					setSubmitError("刷新最新配置失败，请重试（任务不存在或已被删除）");
+					return;
+				}
+				targetExisting = fresh;
+				const submittedDirty = diffFormKeys(submitted, baseline);
+				dirtySet = new Set(submittedDirty);
+				const freshForm = formFromSchedule(fresh);
+				const mergedForm: ScheduleForm = { ...freshForm };
+				for (const k of submittedDirty) {
+					(mergedForm as unknown as Record<string, unknown>)[k] = submitted[k];
+				}
+				if (dirtySet.has("agentTrigger") && mergedForm.agentTrigger === "never") {
+					mergedForm.runMode = "local";
+				}
+				if (dirtySet.has("runMode") && mergedForm.runMode === "worktree") {
+					mergedForm.fresh = true;
+				}
+				payloadForm = mergedForm;
+			}
+			const body = buildPayload(payloadForm, targetExisting);
+			if (targetExisting && dirtySet) {
+				if (!dirtySet.has("endAt") && !dirtySet.has("kind") && targetExisting.cadence.kind !== "once") {
+					body.endAt = targetExisting.endAt;
+				}
+				if (!dirtySet.has("at") && !dirtySet.has("kind") && targetExisting.cadence.kind === "once") {
+					body.cadence = targetExisting.cadence;
+				}
+			}
+			if (!targetExisting) body.mode = dirs.find((dir) => dir.path === payloadForm.cwd)?.mode ?? "code";
+			if (targetExisting) {
+				const putPath = targetExisting.updatedAt
+					? `/left/schedules/${encodeURIComponent(targetExisting.id)}?expectedUpdatedAt=${encodeURIComponent(targetExisting.updatedAt)}`
+					: `/left/schedules/${encodeURIComponent(targetExisting.id)}`;
+				await api("PUT", putPath, body);
 			} else {
-				const remainingDirty = diffFormKeys(latestFormRef.current, submitted);
-				if (remainingDirty.length > 0) {
-					writeStoredDraft(draftKey, {
-						baseRevision: computeBaseRevision(existing, submitted),
-						dirtyKeys: remainingDirty,
-						form: latestFormRef.current,
-					});
+				await api("POST", "/left/schedules", body);
+			}
+			if (mountTokenRef.current === submitToken) {
+				const unchangedSinceSubmit = JSON.stringify(latestFormRef.current) === JSON.stringify(submitted);
+				if (unchangedSinceSubmit) {
+					clearStoredDraft(draftKey);
+					setRestoredFromCache(false);
+				} else {
+					const remainingDirty = diffFormKeys(latestFormRef.current, submitted);
+					if (remainingDirty.length > 0) {
+						writeStoredDraft(draftKey, {
+							baseRevision: computeBaseRevision(targetExisting, payloadForm),
+							dirtyKeys: remainingDirty,
+							form: latestFormRef.current,
+						});
+					}
 				}
 			}
 			toast("已保存", { kind: "success" });
 			void useMobileSchedules.getState().loadSchedules().catch(() => {});
-			onSaved();
+			if (mountTokenRef.current === submitToken) onSaved();
 		} catch (e) {
-			setSubmitError(`保存失败：${errorMessage(e)}`);
+			if (mountTokenRef.current === submitToken) {
+				setSubmitError(`保存失败：${errorMessage(e)}`);
+			}
 		} finally {
-			setSaving(false);
+			if (mountTokenRef.current === submitToken) {
+				setSaving(false);
+			}
 		}
 	};
 

@@ -3280,12 +3280,15 @@ async fn new_session_automation_context_and_automation_action_route() {
     let cookie = pair(&h).await;
     let ws = h.dir.join("ws");
     std::fs::create_dir_all(&ws).unwrap();
-    h.ctx.db.lock().execute(
-        "INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at)
+    h.ctx
+        .db
+        .lock()
+        .execute(
+            "INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at)
          VALUES('w1', ?1, 'ws', 'project', 0, 'code', '2026-01-01T00:00:00Z')",
-        rusqlite::params![ws.to_string_lossy().as_ref()],
-    )
-    .unwrap();
+            rusqlite::params![ws.to_string_lossy().as_ref()],
+        )
+        .unwrap();
 
     // Oversized or NUL appendSystemPrompt is rejected.
     let (s, _, _) = call(
@@ -3355,7 +3358,10 @@ async fn new_session_automation_context_and_automation_action_route() {
     // composer-state reflects active automationMode before first prompt.
     let (s, _, body) = call(
         &h,
-        get(&format!("/api/sessions/{auto_id}/composer-state"), Some(&cookie)),
+        get(
+            &format!("/api/sessions/{auto_id}/composer-state"),
+            Some(&cookie),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{body}");
@@ -3421,12 +3427,15 @@ async fn probe_test_and_generate_draft_enforce_dir_confinement() {
     let outside = h.dir.join("outside");
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::create_dir_all(&outside).unwrap();
-    h.ctx.db.lock().execute(
-        "INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at)
+    h.ctx
+        .db
+        .lock()
+        .execute(
+            "INSERT INTO workspaces(id, path, name, kind, sort, mode, created_at)
          VALUES('w1', ?1, 'ws', 'project', 0, 'code', '2026-01-01T00:00:00Z')",
-        rusqlite::params![ws.to_string_lossy().as_ref()],
-    )
-    .unwrap();
+            rusqlite::params![ws.to_string_lossy().as_ref()],
+        )
+        .unwrap();
 
     // Unauthenticated probe-test is rejected.
     let (s, _, _) = call(
@@ -3577,7 +3586,10 @@ async fn schedule_worktree_inspect_is_scoped_by_schedule_id() {
     assert_eq!(wt_state["dirty"], 1);
     assert_eq!(wt_state["runId"], "run12345-aaaa");
     assert!(wt_state["committedDiff"].as_str().unwrap().contains("+c1"));
-    assert!(wt_state["uncommittedDiff"].as_str().unwrap().contains("+d1"));
+    assert!(wt_state["uncommittedDiff"]
+        .as_str()
+        .unwrap()
+        .contains("+d1"));
     assert_eq!(wt_state["addedLines"], 2);
 
     // H1: A local-mode schedule whose run ran inside an ordinary linked worktree must NOT claim it.
@@ -3700,18 +3712,531 @@ async fn schedule_worktree_inspect_is_scoped_by_schedule_id() {
     assert!(wt_path.join("dirty.txt").exists());
     assert!(wt_path.exists());
 
-    // Also verify empty POST body parses cleanly via Option<Json<WorktreeActionBody>>.
+    // H1: Non-live session with external_pid or live RPC handle also rejects with 409.
+    h.ctx.backend.extra_sessions.lock().clear();
+    h.ctx.backend.extra_sessions.lock().push(SessionMeta {
+        id: "sess-ext-wt".into(),
+        cwd: wt_path.to_string_lossy().into_owned(),
+        live: false,
+        external_pid: Some(999_999),
+        ..Default::default()
+    });
     let (s, _, body) = call(
         &h,
-        Request::post("/api/left/schedules/sched-owner/worktree/discard")
-            .header(header::COOKIE, &cookie)
-            .body(Body::empty())
-            .unwrap(),
+        post(
+            "/api/left/schedules/sched-owner/worktree/merge",
+            &cookie,
+            json!({
+                "runId": "run12345-aaaa",
+                "branch": wt_state["branch"],
+                "worktreePath": wt_state["worktreePath"]
+            }),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::CONFLICT, "{body}");
     assert!(body.contains("正在运行的任务或活跃会话"), "{body}");
 
+    h.ctx.backend.extra_sessions.lock().clear();
+    let rpc_id = format!("rpc-wt-occ-{}", uuid::Uuid::new_v4());
+    let rpc_handle = Arc::new(crate::rpc::SessionHandle {
+        session_id: parking_lot::RwLock::new(rpc_id.clone()),
+        cwd: wt_path.to_string_lossy().into_owned(),
+        ..crate::rpc::SessionHandle::for_test()
+    });
+    rpc_handle
+        .alive
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::rpc::registry()
+        .write()
+        .insert(rpc_id.clone(), rpc_handle);
+    let (s, _, body) = call(
+        &h,
+        post(
+            "/api/left/schedules/sched-owner/worktree/discard",
+            &cookie,
+            json!({
+                "runId": "run12345-aaaa",
+                "branch": wt_state["branch"],
+                "worktreePath": wt_state["worktreePath"]
+            }),
+        ),
+    )
+    .await;
+    crate::rpc::registry().write().remove(&rpc_id);
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("正在运行的任务或活跃会话"), "{body}");
+
+    // M1: Missing or empty target fields on merge/discard must fail with 400 Bad Request.
+    for endpoint in [
+        "/api/left/schedules/sched-owner/worktree/merge",
+        "/api/left/schedules/sched-owner/worktree/discard",
+    ] {
+        let (s, _, body) = call(&h, post(endpoint, &cookie, json!({}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{endpoint}: {body}");
+        let (s, _, body) = call(
+            &h,
+            post(
+                endpoint,
+                &cookie,
+                json!({
+                    "runId": " ",
+                    "branch": wt_state["branch"],
+                    "worktreePath": wt_state["worktreePath"]
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{endpoint}: {body}");
+    }
+
+    // M1: Editing a schedule from worktree -> local must NOT hide an earlier isolated unmerged worktree.
+    {
+        let db = h.ctx.db.lock();
+        db.execute(
+            "UPDATE schedules SET run_mode = 'local' WHERE id = 'sched-owner'",
+            [],
+        )
+        .unwrap();
+    }
+    let (s, _, body) = call(
+        &h,
+        get("/api/left/schedules/sched-owner/worktree", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let edited_wt: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(edited_wt["runId"], "run12345-aaaa");
+    assert_eq!(edited_wt["branch"], wt_state["branch"]);
+
     let _ = crate::git::worktree::remove(&repo, linked_path, true, true);
     let _ = crate::git::worktree::remove(&repo, wt_path, true, true);
+}
+
+#[tokio::test]
+async fn automation_set_timeout_after_draft_handoff_returns_504_with_session_id() {
+    let h = harness();
+    let draft_info = super::api::draft::create(
+        h.dir.to_string_lossy().into_owned(),
+        crate::contracts::SpaceMode::Code,
+        None,
+        None,
+    )
+    .await;
+    let draft_id = draft_info.session_id.clone();
+
+    // Mock::start_process returns "mock-real-1"; attach an unsettled live handle for it.
+    let real_id = "mock-real-1".to_string();
+    let handle = Arc::new(crate::rpc::SessionHandle {
+        session_id: parking_lot::RwLock::new(real_id.clone()),
+        ..crate::rpc::SessionHandle::for_test()
+    });
+    *handle.automation_status.lock() = Some(json!({
+        "v": 1,
+        "mode": "idle",
+        "drafts": []
+    }));
+    crate::rpc::registry()
+        .write()
+        .insert(real_id.clone(), handle);
+
+    let resp = super::api::chat::automation_set_with_wait(
+        h.ctx.clone(),
+        draft_id.clone(),
+        super::api::chat::AutomationBody {
+            action: "enable".into(),
+            draft_id: None,
+            resolution: None,
+        },
+        std::time::Duration::from_millis(1),
+        2,
+    )
+    .await
+    .unwrap();
+    crate::rpc::registry().write().remove(&real_id);
+
+    assert_eq!(resp.status(), StatusCode::GATEWAY_TIMEOUT);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["sessionId"], "mock-real-1");
+    assert!(body["error"].as_str().is_some_and(|s| !s.is_empty()));
+    assert!(!super::api::draft::is_draft(&draft_id));
+}
+
+#[tokio::test]
+async fn schedule_update_expected_updated_at_rejects_stale_with_409_and_allows_matching() {
+    let h = migrated_harness();
+    let cookie = pair(&h).await;
+    let repo = h.dir.join("sched-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let repo_str = repo.to_string_lossy().into_owned();
+
+    {
+        let db = h.ctx.db.lock();
+        db.execute(
+            "INSERT INTO workspaces(id, name, path, mode, kind, sort, created_at)
+             VALUES('ws-sched-1', 'sched-repo', ?1, 'code', 'project', 1, '2026-01-01T00:00:00Z')",
+            rusqlite::params![repo_str],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, enabled, created_at, updated_at)
+             VALUES('sched-rev', 'Current Name', 'current prompt', ?1, 'local', '{\"kind\":\"interval\",\"minutes\":10}', 1, '2026-01-01T00:00:00Z', '2026-02-01T00:00:00Z')",
+            rusqlite::params![repo_str],
+        )
+        .unwrap();
+    }
+
+    let put_req = |uri: &str, payload: Value| {
+        Request::put(uri)
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap()
+    };
+
+    let (status, _, body) = call(
+        &h,
+        put_req(
+            "/api/left/schedules/sched-rev?expectedUpdatedAt=2026-01-01T00:00:00Z",
+            json!({
+                "name": "Stale Overwrite",
+                "prompt": "stale prompt",
+                "cwd": repo_str,
+                "cadence": { "kind": "interval", "minutes": 15 },
+                "enabled": true
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("已在其他端更新"), "{body}");
+
+    // Newer DB row must remain completely untouched after 409.
+    {
+        let db = h.ctx.db.lock();
+        let cur = crate::schedules::store::get(&db, "sched-rev")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cur.name, "Current Name");
+        assert_eq!(cur.prompt, "current prompt");
+        assert_eq!(cur.updated_at, "2026-02-01T00:00:00Z");
+    }
+
+    // Matching expectedUpdatedAt succeeds.
+    let (status, _, body) = call(
+        &h,
+        put_req(
+            "/api/left/schedules/sched-rev?expectedUpdatedAt=2026-02-01T00:00:00Z",
+            json!({
+                "name": "Fresh Update",
+                "prompt": "fresh prompt",
+                "cwd": repo_str,
+                "cadence": { "kind": "interval", "minutes": 15 },
+                "enabled": true
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let updated: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(updated["name"], "Fresh Update");
+    assert_eq!(updated["prompt"], "fresh prompt");
+    assert_ne!(updated["updatedAt"], "2026-02-01T00:00:00Z");
+}
+
+#[tokio::test]
+async fn schedule_worktree_resolves_older_repo_after_schedule_cwd_moves_to_another_repo() {
+    let h = migrated_harness();
+    let cookie = pair(&h).await;
+    let repo_a = h.dir.join("repo-a");
+    let repo_b = h.dir.join("repo-b");
+    std::fs::create_dir_all(&repo_a).unwrap();
+    std::fs::create_dir_all(&repo_b).unwrap();
+
+    let git = |dir: &std::path::Path, args: &[&str]| -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&repo_a, &["init", "-q", "-b", "main"]) || !git(&repo_b, &["init", "-q", "-b", "main"])
+    {
+        return;
+    }
+    for r in [&repo_a, &repo_b] {
+        assert!(git(r, &["config", "user.name", "t"]));
+        assert!(git(r, &["config", "user.email", "t@example.com"]));
+        assert!(git(r, &["config", "commit.gpgsign", "false"]));
+        std::fs::write(r.join("base.txt"), "base\n").unwrap();
+        assert!(git(r, &["add", "-A"]));
+        assert!(git(r, &["commit", "-q", "-m", "init"]));
+    }
+
+    let wt_a = crate::git::worktree::create(&repo_a, "sched-moved-runold12", None, None).unwrap();
+    let wt_a_path = std::path::Path::new(&wt_a.path);
+    std::fs::write(wt_a_path.join("from_a.txt"), "repo-a-change\n").unwrap();
+
+    h.ctx.backend.extra_sessions.lock().push(SessionMeta {
+        id: "sess-in-repo-a".into(),
+        cwd: wt_a.path.clone(),
+        live: false,
+        ..Default::default()
+    });
+
+    {
+        let db = h.ctx.db.lock();
+        db.execute(
+            "INSERT INTO workspaces(id, name, path, mode, kind, sort, created_at)
+             VALUES('ws-a', 'repo-a', ?1, 'code', 'project', 1, '2026-01-01T00:00:00Z'),
+                   ('ws-b', 'repo-b', ?2, 'code', 'project', 2, '2026-01-01T00:00:00Z')",
+            rusqlite::params![
+                repo_a.to_string_lossy().as_ref(),
+                repo_b.to_string_lossy().as_ref(),
+            ],
+        )
+        .unwrap();
+        // Schedule cwd was moved to repo_b, while an older run ran in repo_a's isolated worktree.
+        db.execute(
+            "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, enabled, created_at, updated_at)
+             VALUES('sched-moved', 'moved', 'p', ?1, 'worktree', '{\"kind\":\"interval\",\"minutes\":10}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            rusqlite::params![repo_b.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO schedule_runs(id, schedule_id, session_id, status, started_at)
+             VALUES('runold12-aaaa', 'sched-moved', 'sess-in-repo-a', 'ok', '2026-01-01T00:01:00Z')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let (s, _, body) = call(
+        &h,
+        get("/api/left/schedules/sched-moved/worktree", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let wt_state: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(wt_state["runId"], "runold12-aaaa");
+    assert_eq!(wt_state["branch"], wt_a.branch.unwrap());
+    assert_eq!(
+        std::fs::canonicalize(wt_state["repoRoot"].as_str().unwrap()).unwrap(),
+        std::fs::canonicalize(&repo_a).unwrap()
+    );
+    assert_eq!(wt_state["dirty"], 1);
+
+    let _ = crate::git::worktree::remove(&repo_a, wt_a_path, true, true);
+}
+
+#[tokio::test]
+async fn reserved_worktree_blocks_mobile_session_create_and_draft_handoff_until_dropped() {
+    let h = migrated_harness();
+    let cookie = pair(&h).await;
+    let wt_dir = h.dir.join("reserved-wt");
+    std::fs::create_dir_all(&wt_dir).unwrap();
+    let wt_str = wt_dir.to_string_lossy().into_owned();
+
+    {
+        let db = h.ctx.db.lock();
+        db.execute(
+            "INSERT INTO workspaces(id, name, path, mode, kind, sort, created_at)
+             VALUES('ws-res', 'reserved-wt', ?1, 'code', 'project', 1, '2026-01-01T00:00:00Z')",
+            rusqlite::params![wt_str],
+        )
+        .unwrap();
+    }
+
+    // Create a draft before reservation starts, then reserve the worktree.
+    let draft_info = super::api::draft::create(
+        wt_str.clone(),
+        crate::contracts::SpaceMode::Code,
+        None,
+        None,
+    )
+    .await;
+
+    let reservation = crate::git::commands::try_reserve_worktree(&wt_str).unwrap();
+
+    // Creating a new session in the reserved worktree is rejected with 409.
+    let (status, _, body) = call(
+        &h,
+        post("/api/left/sessions", &cookie, json!({ "cwd": wt_str })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("正在合并或清理"), "{body}");
+
+    // Handing off an existing draft into the reserved worktree is also rejected.
+    let handoff_err =
+        super::api::draft::handoff(&h.ctx, &draft_info.session_id, |_, _| async { Ok(()) })
+            .await
+            .unwrap_err();
+    assert_eq!(handoff_err.0, StatusCode::BAD_GATEWAY);
+    assert!(
+        handoff_err.1.contains("正在合并或清理"),
+        "{}",
+        handoff_err.1
+    );
+
+    // Dropping the RAII guard releases the reservation and allows handoff/new_session again.
+    drop(reservation);
+    let (status, _, body) = call(
+        &h,
+        post("/api/left/sessions", &cookie, json!({ "cwd": wt_str })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    super::api::draft::discard(&draft_info.session_id).await;
+}
+
+#[tokio::test]
+async fn schedule_worktree_discovers_quiet_probe_in_nested_repo_after_cwd_changes() {
+    let h = migrated_harness();
+    let cookie = pair(&h).await;
+    let non_git_parent = h.dir.join("parent-non-git");
+    let nested_repo = non_git_parent.join("nested-repo");
+    let other_dir = h.dir.join("other-non-git");
+    std::fs::create_dir_all(&nested_repo).unwrap();
+    std::fs::create_dir_all(&other_dir).unwrap();
+
+    let git = |dir: &std::path::Path, args: &[&str]| -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&nested_repo, &["init", "-q", "-b", "main"]) {
+        return;
+    }
+    assert!(git(&nested_repo, &["config", "user.name", "t"]));
+    assert!(git(
+        &nested_repo,
+        &["config", "user.email", "t@example.com"]
+    ));
+    assert!(git(&nested_repo, &["config", "commit.gpgsign", "false"]));
+    std::fs::write(nested_repo.join("base.txt"), "base\n").unwrap();
+    assert!(git(&nested_repo, &["add", "-A"]));
+    assert!(git(&nested_repo, &["commit", "-q", "-m", "init"]));
+
+    let created = crate::schedules::runner::create_schedule_worktree_info(
+        &nested_repo,
+        "probe-task",
+        "runquiet1-aaaa",
+    )
+    .unwrap();
+    let wt_path = std::path::Path::new(&created.path);
+    std::fs::write(wt_path.join("probe-artifact.txt"), "dirty\n").unwrap();
+
+    {
+        let db = h.ctx.db.lock();
+        // Notice nested_repo is NOT in workspaces (allowed_dirs_db), and schedule.cwd
+        // was later changed to `other_dir`. The run has session_id = NULL (quiet probe).
+        db.execute(
+            "INSERT INTO schedules(id, name, prompt, cwd, run_mode, cadence, enabled, created_at, updated_at)
+             VALUES('sched-quiet', 'probe-task', 'p', ?1, 'worktree', '{\"kind\":\"interval\",\"minutes\":10}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            rusqlite::params![other_dir.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO schedule_runs(id, schedule_id, session_id, status, started_at, phase, worktree_repo_root, worktree_path, worktree_branch)
+             VALUES('runquiet1-aaaa', 'sched-quiet', NULL, 'ok', '2026-01-01T00:01:00Z', 'probe_quiet', ?1, ?2, ?3)",
+            rusqlite::params![created.repo_root, created.path, created.branch],
+        )
+        .unwrap();
+    }
+
+    let (s, _, body) = call(
+        &h,
+        get("/api/left/schedules/sched-quiet/worktree", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let wt_state: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(wt_state["runId"], "runquiet1-aaaa");
+    assert!(wt_state["sessionId"].is_null());
+    assert_eq!(
+        std::fs::canonicalize(wt_state["repoRoot"].as_str().unwrap()).unwrap(),
+        std::fs::canonicalize(&nested_repo).unwrap()
+    );
+    assert_eq!(
+        std::fs::canonicalize(wt_state["worktreePath"].as_str().unwrap()).unwrap(),
+        std::fs::canonicalize(wt_path).unwrap()
+    );
+    assert_eq!(wt_state["dirty"], 1);
+
+    // Active terminal ownership inside that worktree must block worktree discard with 409
+    // and allow normal inspection; once dropped, no longer blocks.
+    let term_guard = crate::git::commands::try_register_terminal_ownership(&created.path).unwrap();
+    let (discard_status, _, discard_body) = call(
+        &h,
+        post(
+            "/api/left/schedules/sched-quiet/worktree/discard",
+            &cookie,
+            json!({
+                "runId": "runquiet1-aaaa",
+                "branch": wt_state["branch"],
+                "worktreePath": wt_state["worktreePath"],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(discard_status, StatusCode::CONFLICT, "{discard_body}");
+    assert!(discard_body.contains("正在运行") || discard_body.contains("活跃会话"));
+    drop(term_guard);
+
+    // If the original worktree is replaced at the exact same path by a different branch,
+    // mobile MUST NOT claim or allow discarding the replacement checkout.
+    assert!(crate::git::worktree::remove(&nested_repo, wt_path, true, true).is_ok());
+    assert!(git(
+        &nested_repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/reused-path",
+            &created.path,
+            "HEAD"
+        ]
+    ));
+    let (s2, _, body2) = call(
+        &h,
+        get("/api/left/schedules/sched-quiet/worktree", Some(&cookie)),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK, "{body2}");
+    assert_eq!(
+        body2.trim(),
+        "null",
+        "replacement branch at same path must not match: {body2}"
+    );
+    let (discard_replaced_status, _, discard_replaced_body) = call(
+        &h,
+        post(
+            "/api/left/schedules/sched-quiet/worktree/discard",
+            &cookie,
+            json!({
+                "runId": "runquiet1-aaaa",
+                "branch": wt_state["branch"],
+                "worktreePath": wt_state["worktreePath"],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        discard_replaced_status,
+        StatusCode::CONFLICT,
+        "{discard_replaced_body}"
+    );
+    assert!(
+        wt_path.exists(),
+        "replacement checkout at reused path must stay intact"
+    );
+    let _ = crate::git::worktree::remove(&nested_repo, wt_path, true, true);
 }

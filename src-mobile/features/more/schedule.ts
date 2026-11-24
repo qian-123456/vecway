@@ -527,6 +527,46 @@ export function buildPayload(f: ScheduleForm, existing?: Schedule | null): Recor
 	return draft;
 }
 
+/**
+ * Serialize a merged `Schedule` directly to a `ScheduleDraft` PUT payload
+ * without round-tripping `endAt` or `once.at` through minute-precision `<input>` strings.
+ */
+export function scheduleDraftFromSchedule(s: Schedule): Record<string, unknown> {
+	const trigger = resolveAgentTrigger(s);
+	const effectiveRunMode: RunMode = trigger === "never" ? "local" : s.runMode;
+	const effectiveFresh = effectiveRunMode === "worktree" ? true : s.newChatEachRun !== false;
+	const probeCommand = s.probeCommand?.trim() || null;
+	const probeDescription = s.probeDescription?.trim() || null;
+	const recurring = s.cadence.kind !== "once";
+	const payload: Record<string, unknown> = {
+		id: s.id,
+		name: s.name.trim(),
+		prompt: trigger === "never" ? "" : s.prompt.trim(),
+		cwd: s.cwd,
+		mode: s.mode ?? "code",
+		runMode: effectiveRunMode,
+		cadence: s.cadence,
+		model: s.model ?? null,
+		thinking: s.model ? (s.thinking ?? null) : null,
+		approvalMode: s.approvalMode || null,
+		enabled: s.enabled !== false,
+		notify: s.notify ?? "important",
+		newChatEachRun: effectiveFresh,
+		endAt: recurring ? (s.endAt ?? null) : null,
+		maxRuns: recurring ? (s.maxRuns ?? null) : null,
+		probeCommand,
+		probeDescription,
+		agentTrigger: trigger,
+		resultMode: s.resultMode === "llm_summary" ? "llm_summary" : "structured",
+		invokesExternalModel: s.invokesExternalModel === true,
+	};
+	if (trigger === "always" && !probeCommand) {
+		payload.probeCommand = null;
+		payload.probeDescription = null;
+	}
+	return payload;
+}
+
 /** Clone a schedule into a new creation payload (strips `id`, resets name suffix, starts paused or enabled). */
 export function draftFromSchedule(s: Schedule): Record<string, unknown> {
 	const form = formFromSchedule(s);

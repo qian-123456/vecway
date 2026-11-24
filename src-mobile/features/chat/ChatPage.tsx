@@ -26,6 +26,7 @@ import { abbreviateHomePath } from "../sessions/NewSessionSheet";
 import { sessionModelSource } from "./components/useModelFacts";
 import { resolveThinkingSupported, type ModelFacts, type ModelOpt } from "./lib/models";
 import { takeFirstSend } from "./lib/drafts";
+import { saveUnsent } from "./lib/unsent";
 import { MessageActionsSheet } from "./components/MessageActions";
 import { MessageList } from "./components/MessageList";
 import { PlanSheet, type PlanSheetStatus } from "./components/PlanSheet";
@@ -179,6 +180,7 @@ export function ChatPage({ route }: PageProps) {
 	const [cstateThinking, setCstateThinking] = useState<string | null | undefined>(undefined);
 	const [automationState, setAutomationState] = useState<AutomationSessionState | null>(null);
 	const [automationHydrated, setAutomationHydrated] = useState(false);
+	const [automationBaselineIds, setAutomationBaselineIds] = useState<readonly string[]>([]);
 	const [automationSource, setAutomationSource] = useState<"snapshot" | "live">("snapshot");
 	const autoOpenTrackerRef = useRef(createAutomationDraftAutoOpenTracker());
 	const pendingMain = useRightDrawer((s) => s.pendingMain);
@@ -204,7 +206,16 @@ export function ChatPage({ route }: PageProps) {
 		let cancelled = false;
 		void controller.send(first, "followUp").then((sent) => {
 			if (cancelled || sent) return;
-			if (!controller.composer?.get()) controller.composer?.set(first);
+			const cur = controller.composer?.get() ?? controller.lastText;
+			const trimmedFirst = first.trim();
+			const restored = !cur.trim()
+				? first
+				: trimmedFirst && cur.includes(trimmedFirst)
+					? cur
+					: `${first}\n\n${cur}`;
+			controller.composer?.set(restored);
+			controller.lastText = restored;
+			saveUnsent(id, restored);
 		});
 		return () => {
 			cancelled = true;
@@ -219,6 +230,7 @@ export function ChatPage({ route }: PageProps) {
 		setCstateThinking(c.state.cstate?.thinkingLevel);
 		setAutomationState(c.state.automationState);
 		setAutomationHydrated(c.state.automationHydrated);
+		setAutomationBaselineIds(c.state.automationBaselineIds);
 		setAutomationSource(c.state.automationSource);
 		autoOpenTrackerRef.current.reset();
 		const unsubState = c.store.subscribe((next, prev) => {
@@ -231,6 +243,9 @@ export function ChatPage({ route }: PageProps) {
 			}
 			if (next.automationHydrated !== prev.automationHydrated) {
 				setAutomationHydrated(next.automationHydrated);
+			}
+			if (next.automationBaselineIds !== prev.automationBaselineIds) {
+				setAutomationBaselineIds(next.automationBaselineIds);
 			}
 			if (next.automationSource !== prev.automationSource) {
 				setAutomationSource(next.automationSource);
@@ -252,11 +267,12 @@ export function ChatPage({ route }: PageProps) {
 			automationHydrated,
 			automationState,
 			automationSource,
+			automationBaselineIds,
 		);
 		if (nextDraftId) {
 			useRightDrawer.getState().openAutomationDraft(id, nextDraftId);
 		}
-	}, [id, automationHydrated, automationState, automationSource]);
+	}, [id, automationHydrated, automationState, automationSource, automationBaselineIds]);
 	useEffect(() => {
 		if (!controller || controller.id !== id || !pendingMain || pendingMain.sessionId !== id) return;
 		const payload = useRightDrawer.getState().consumeMainAnnotation(id);

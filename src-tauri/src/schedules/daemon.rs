@@ -394,8 +394,17 @@ async fn execute_claimed_schedule(
     let isolated_cwd = if policy == AutomationOverlapPolicy::Parallel
         && schedule.run_mode == ScheduleRunMode::Worktree
     {
-        match runner::create_schedule_worktree(base_path, &schedule.name, &run_id) {
-            Ok(path) => Some(path),
+        match runner::create_schedule_worktree_info(base_path, &schedule.name, &run_id) {
+            Ok(created) => {
+                let _ = store::set_run_worktree(
+                    conn,
+                    &run_id,
+                    &created.repo_root,
+                    &created.path,
+                    &created.branch,
+                );
+                Some(created.path)
+            }
             Err(e) => {
                 record_headless_error(
                     conn,
@@ -428,8 +437,17 @@ async fn execute_claimed_schedule(
         } else if schedule.agent_trigger == ScheduleAgentTrigger::Never
             && matches!(schedule.run_mode, ScheduleRunMode::Worktree)
         {
-            match runner::create_schedule_worktree(base_path, &schedule.name, &run_id) {
-                Ok(p) => p,
+            match runner::create_schedule_worktree_info(base_path, &schedule.name, &run_id) {
+                Ok(created) => {
+                    let _ = store::set_run_worktree(
+                        conn,
+                        &run_id,
+                        &created.repo_root,
+                        &created.path,
+                        &created.branch,
+                    );
+                    created.path
+                }
                 Err(e) => {
                     record_headless_error(
                         conn,
@@ -570,8 +588,17 @@ async fn execute_claimed_schedule(
     } else {
         match schedule.run_mode {
             ScheduleRunMode::Worktree => {
-                match runner::create_schedule_worktree(base_path, &schedule.name, &run_id) {
-                    Ok(p) => p,
+                match runner::create_schedule_worktree_info(base_path, &schedule.name, &run_id) {
+                    Ok(created) => {
+                        let _ = store::set_run_worktree(
+                            conn,
+                            &run_id,
+                            &created.repo_root,
+                            &created.path,
+                            &created.branch,
+                        );
+                        created.path
+                    }
                     Err(e) => {
                         record_headless_error(
                             conn,

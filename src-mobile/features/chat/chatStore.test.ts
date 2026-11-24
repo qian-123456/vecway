@@ -15,12 +15,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptPage } from "../../core/types";
 import { events } from "../../core/sse";
+import { ApiError } from "../../core/api";
 import { useSessions } from "../../core/stores/sessions";
+import { createAutomationDraftAutoOpenTracker } from "./automation/automationStatus";
 import { ChatController } from "./chatStore";
+import { draftBook, takeFirstSend } from "./lib/drafts";
 import { LIVE_SNAPSHOT_KEY, LIVE_SNAPSHOT_THROTTLE_MS, loadLiveEntry, saveLiveMain } from "./lib/liveSnapshot";
 import { loadUnsent, saveUnsent } from "./lib/unsent";
 import { nav } from "../../core/nav";
-
 const ID = "sess-m3m4";
 
 const { toastMock, confirmMock } = vi.hoisted(() => ({ toastMock: vi.fn(), confirmMock: vi.fn() }));
@@ -1125,5 +1127,423 @@ describe("automation status sync & sequencing", () => {
 		expect(c.state.automationSource).toBe("snapshot");
 		expect(c.state.automationState?.drafts[0].draftId).toBe("d-reconn");
 		c.dispose();
+	});
+
+	it("M7: does not consume pre-hydration live proposal as snapshot baseline", async () => {
+		let resolveState!: (v: unknown) => void;
+		apiMock.mockImplementation(async (_m: string, path: string) => {
+			if (path.endsWith("/composer-state")) {
+				return new Promise((r) => {
+					resolveState = r;
+				});
+			}
+			if (path.includes("/transcript")) return { items: [], nextOffset: 0 };
+			return {};
+		});
+
+		const c = new ChatController("s-pre-live");
+		const tracker = createAutomationDraftAutoOpenTracker();
+		c.start();
+		await rafTick();
+
+		// Live proposal arrives BEFORE initial GET /composer-state resolves
+		events.emit("rpc", {
+			sessionId: "s-pre-live",
+			frame: {
+				type: "extension_ui_request",
+				method: "setStatus",
+				statusKey: "ompws-automation",
+				statusText: JSON.stringify({
+					mode: "active",
+					lastProposedDraftId: "d-first-live",
+					drafts: [
+						{
+							draftId: "d-old",
+							status: "pending",
+							draft: { name: "历史", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 10 } },
+						},
+						{
+							draftId: "d-first-live",
+							status: "pending",
+							draft: { name: "首条实时", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 15 } },
+						},
+					],
+				}),
+			},
+		});
+
+		expect(c.state.automationHydrated).toBe(false);
+		expect(c.state.automationBaselineHydrated).toBe(false);
+		expect(tracker.next(c.state.automationHydrated, c.state.automationState, c.state.automationSource, c.state.automationBaselineIds)).toBeNull();
+
+		// Initial HTTP snapshot resolves and ALREADY cached d-first-live (P2-4)
+		resolveState({
+			streaming: false,
+			automationState: {
+				mode: "active",
+				drafts: [
+					{
+						draftId: "d-old",
+						status: "pending",
+						draft: { name: "历史", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 10 } },
+					},
+					{
+						draftId: "d-first-live",
+						status: "pending",
+						draft: { name: "首条实时", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 15 } },
+					},
+				],
+			},
+		});
+		await rafTick();
+
+		expect(c.state.automationHydrated).toBe(true);
+		expect(c.state.automationBaselineHydrated).toBe(true);
+		expect(c.state.automationBaselineIds).toEqual(["d-old"]);
+		expect(c.state.automationSource).toBe("live");
+		// Tracker must NOT swallow d-first-live even when HTTP snapshot cached it!
+		expect(
+			tracker.next(
+				c.state.automationHydrated,
+				c.state.automationState,
+				c.state.automationSource,
+				c.state.automationBaselineIds,
+			),
+		).toBe("d-first-live");
+		c.dispose();
+	});
+
+	it("Round 5 P2: retains pre-hydration live proposal when agent_end discards first composer-state and retry hydrates", async () => {
+		const resolvers: Array<(v: unknown) => void> = [];
+		const retryRequested = deferred<void>();
+		apiMock.mockImplementation(async (_m: string, path: string) => {
+			if (path.endsWith("/composer-state")) {
+				return new Promise((r) => {
+					resolvers.push(r);
+					if (resolvers.length >= 2) retryRequested.resolve();
+				});
+			}
+			if (path.includes("/transcript")) return { items: [], nextOffset: 0 };
+			return {};
+		});
+		const c = new ChatController("s-retry-hydrate");
+		const tracker = createAutomationDraftAutoOpenTracker();
+		c.start();
+		await rafTick();
+		expect(resolvers.length).toBeGreaterThanOrEqual(1);
+
+		// 1. Live proposal arrives before the first composer-state response returns.
+		events.emit("rpc", {
+			sessionId: "s-retry-hydrate",
+			frame: {
+				type: "extension_ui_request",
+				method: "setStatus",
+				statusKey: "ompws-automation",
+				statusText: JSON.stringify({
+					mode: "active",
+					lastProposedDraftId: "d-early-retry",
+					drafts: [
+						{
+							draftId: "d-hist",
+							status: "pending",
+							draft: { name: "历史", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 10 } },
+						},
+						{
+							draftId: "d-early-retry",
+							status: "pending",
+							draft: { name: "新方案", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 15 } },
+						},
+					],
+				}),
+			},
+		});
+
+		// 2. agent_end advances activitySequence and queues a follow-up syncState retry.
+		events.emit("rpc", {
+			sessionId: "s-retry-hydrate",
+			frame: { type: "agent_end" },
+		});
+		await rafTick();
+
+		// 3. First composer-state resolves late and is discarded due to activitySequence mismatch.
+		resolvers[0]({
+			streaming: true,
+			automationState: {
+				mode: "active",
+				drafts: [
+					{
+						draftId: "d-hist",
+						status: "pending",
+						draft: { name: "历史", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 10 } },
+					},
+				],
+			},
+		});
+		await rafTick();
+		expect(c.state.automationBaselineHydrated).toBe(false);
+		await retryRequested.promise;
+		expect(resolvers.length).toBeGreaterThanOrEqual(2);
+		// 4. Retry composer-state started AFTER the proposal (autoSeq === automationSeq)
+		// and returns a snapshot (even without lastProposedDraftId, e.g. transcript fallback).
+		resolvers[1]({
+			streaming: false,
+			automationState: {
+				mode: "active",
+				drafts: [
+					{
+						draftId: "d-hist",
+						status: "pending",
+						draft: { name: "历史", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 10 } },
+					},
+					{
+						draftId: "d-early-retry",
+						status: "pending",
+						draft: { name: "新方案", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 15 } },
+					},
+				],
+			},
+		});
+		await rafTick();
+
+		expect(c.state.automationHydrated).toBe(true);
+		expect(c.state.automationBaselineHydrated).toBe(true);
+		expect(c.state.automationBaselineIds).toEqual(["d-hist"]);
+		expect(c.state.automationSource).toBe("live");
+		expect(c.state.automationState?.lastProposedDraftId).toBe("d-early-retry");
+		expect(
+			tracker.next(
+				c.state.automationHydrated,
+				c.state.automationState,
+				c.state.automationSource,
+				c.state.automationBaselineIds,
+			),
+		).toBe("d-early-retry");
+		c.dispose();
+	});
+
+	it("Round 6 P2: preserves newest early proposal marker when status-only broadcast supersedes snapshot after two proposals", async () => {
+		let resolveState!: (v: unknown) => void;
+		apiMock.mockImplementation(async (_m: string, path: string) => {
+			if (path.endsWith("/composer-state")) {
+				return new Promise((r) => {
+					resolveState = r;
+				});
+			}
+			if (path.includes("/transcript")) return { items: [], nextOffset: 0 };
+			return {};
+		});
+
+		const c = new ChatController("s-two-early-live");
+		const tracker = createAutomationDraftAutoOpenTracker();
+		c.start();
+		await rafTick();
+
+		const mkDraft = (draftId: string, name: string) => ({
+			draftId,
+			status: "pending" as const,
+			draft: { name, prompt: "p", cwd: ".", runMode: "local" as const, cadence: { kind: "interval" as const, minutes: 10 } },
+		});
+
+		// 1. Two proposals arrive before initial composer-state resolves.
+		events.emit("rpc", {
+			sessionId: "s-two-early-live",
+			frame: {
+				type: "extension_ui_request",
+				method: "setStatus",
+				statusKey: "ompws-automation",
+				statusText: JSON.stringify({
+					mode: "active",
+					lastProposedDraftId: "d-live-1",
+					drafts: [mkDraft("d-hist", "历史"), mkDraft("d-live-1", "方案一")],
+				}),
+			},
+		});
+		events.emit("rpc", {
+			sessionId: "s-two-early-live",
+			frame: {
+				type: "extension_ui_request",
+				method: "setStatus",
+				statusKey: "ompws-automation",
+				statusText: JSON.stringify({
+					mode: "active",
+					lastProposedDraftId: "d-live-2",
+					drafts: [mkDraft("d-hist", "历史"), mkDraft("d-live-1", "方案一"), mkDraft("d-live-2", "方案二")],
+				}),
+			},
+		});
+		// 2. A status-only broadcast (no lastProposedDraftId) supersedes the snapshot before hydration.
+		events.emit("rpc", {
+			sessionId: "s-two-early-live",
+			frame: {
+				type: "extension_ui_request",
+				method: "setStatus",
+				statusKey: "ompws-automation",
+				statusText: JSON.stringify({
+					mode: "active",
+					drafts: [mkDraft("d-hist", "历史"), mkDraft("d-live-1", "方案一"), mkDraft("d-live-2", "方案二")],
+				}),
+			},
+		});
+		expect(c.state.automationState?.lastProposedDraftId).toBeUndefined();
+
+		// 3. Initial composer-state resolves late (autoSeq !== automationSeq -> retained live state).
+		resolveState({
+			streaming: false,
+			automationState: {
+				mode: "active",
+				drafts: [mkDraft("d-hist", "历史"), mkDraft("d-live-1", "方案一"), mkDraft("d-live-2", "方案二")],
+			},
+		});
+		await rafTick();
+
+		expect(c.state.automationHydrated).toBe(true);
+		expect(c.state.automationBaselineHydrated).toBe(true);
+		expect(c.state.automationBaselineIds).toEqual(["d-hist"]);
+		expect(c.state.automationSource).toBe("live");
+		expect(c.state.automationState?.lastProposedDraftId).toBe("d-live-2");
+		expect(
+			tracker.next(
+				c.state.automationHydrated,
+				c.state.automationState,
+				c.state.automationSource,
+				c.state.automationBaselineIds,
+			),
+		).toBe("d-live-2");
+		c.dispose();
+	});
+
+	it("P2-3: pre-hydration live status broadcast without lastProposedDraftId baselines historical drafts instead of auto-opening", async () => {
+		let resolveState!: (v: unknown) => void;
+		apiMock.mockImplementation(async (_m: string, path: string) => {
+			if (path.endsWith("/composer-state")) {
+				return new Promise((r) => {
+					resolveState = r;
+				});
+			}
+			if (path.includes("/transcript")) return { items: [], nextOffset: 0 };
+			return {};
+		});
+
+		const c = new ChatController("s-pre-broadcast");
+		const tracker = createAutomationDraftAutoOpenTracker();
+		c.start();
+		await rafTick();
+
+		// Full status broadcast (no lastProposedDraftId) arrives BEFORE composer-state resolves
+		events.emit("rpc", {
+			sessionId: "s-pre-broadcast",
+			frame: {
+				type: "extension_ui_request",
+				method: "setStatus",
+				statusKey: "ompws-automation",
+				statusText: JSON.stringify({
+					mode: "active",
+					drafts: [
+						{
+							draftId: "d-hist-1",
+							status: "pending",
+							draft: { name: "历史1", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 10 } },
+						},
+					],
+				}),
+			},
+		});
+
+		resolveState({
+			streaming: false,
+			automationState: {
+				mode: "active",
+				drafts: [
+					{
+						draftId: "d-hist-1",
+						status: "pending",
+						draft: { name: "历史1", prompt: "p", cwd: ".", runMode: "local", cadence: { kind: "interval", minutes: 10 } },
+					},
+				],
+			},
+		});
+		await rafTick();
+
+		expect(c.state.automationBaselineIds).toEqual(["d-hist-1"]);
+		expect(
+			tracker.next(
+				c.state.automationHydrated,
+				c.state.automationState,
+				c.state.automationSource,
+				c.state.automationBaselineIds,
+			),
+		).toBeNull();
+		c.dispose();
+	});
+
+	it("H3 + M6: transfers draft without queueFirstSend on 504 ApiError with sessionId, and preserves extra text on promotion", async () => {
+		const replaceSpy = vi.spyOn(nav, "replace").mockImplementation(() => {});
+		try {
+			// 1. H3: 504 timeout returns { error, sessionId } -> transfer text/atts, NO queueFirstSend, rethrow
+			const draft504 = "mobile-draft-504";
+			const c1 = new ChatController(draft504);
+			let curText1 = "/automate 巡检服务";
+			c1.composer = { get: () => curText1, set: (v) => { curText1 = v; } };
+			c1.store.setState({
+				atts: [{ id: 1, name: "log.txt", isImage: false, url: "", status: "ok", path: "/tmp/log.txt" }],
+			});
+			apiMock.mockRejectedValueOnce(
+				new ApiError(504, "Gateway Timeout", { error: "Gateway Timeout", sessionId: "real-504" }),
+			);
+
+			await expect(c1.setAutomationMode(true, "巡检服务", "/automate 巡检服务")).rejects.toThrow("未确认开启");
+			expect(replaceSpy).toHaveBeenCalledWith("/s/real-504");
+			expect(takeFirstSend("real-504")).toBeNull();
+			expect(loadUnsent("real-504")).toBe("/automate 巡检服务");
+			expect(draftBook.restore("real-504")?.atts).toHaveLength(1);
+			c1.dispose();
+
+			// 2. M6: Promotion success preserves extra text typed beyond submittedRaw
+			const draftPromo = "mobile-draft-promo";
+			const c2 = new ChatController(draftPromo);
+			let curText2 = "/automate 巡检服务 补充条件";
+			c2.composer = { get: () => curText2, set: (v) => { curText2 = v; } };
+			apiMock.mockResolvedValueOnce({ sessionId: "real-promo", automationState: { mode: "active", drafts: [] } });
+			const nextId = await c2.setAutomationMode(true, "巡检服务", "/automate 巡检服务");
+			expect(nextId).toBe("real-promo");
+			expect(takeFirstSend("real-promo")).toBe("巡检服务");
+			expect(loadUnsent("real-promo")).toBe("补充条件");
+			expect(draftBook.restore("real-promo")?.text).toBe("补充条件");
+			c2.dispose();
+		} finally {
+			replaceSpy.mockRestore();
+		}
+	});
+
+	it("P2-2: transfers promoted draft text and attachments even if controller was disposed while activation was in flight", async () => {
+		const replaceSpy = vi.spyOn(nav, "replace").mockImplementation(() => {});
+		try {
+			const draftId = "mobile-draft-disposed-promo";
+			const c = new ChatController(draftId);
+			c.lastText = "/automate 巡检 补充";
+			c.store.setState({
+				atts: [{ id: 1, name: "trace.log", isImage: false, url: "", status: "ok", path: "/tmp/trace.log" }],
+			});
+			let resolveAuto!: (v: unknown) => void;
+			apiMock.mockImplementationOnce(
+				() => new Promise((r) => { resolveAuto = r; }),
+			);
+
+			const p = c.setAutomationMode(true, "巡检", "/automate 巡检");
+			// User leaves the draft chat while POST /automation is in flight
+			c.dispose();
+			resolveAuto({ sessionId: "real-after-dispose", automationState: { mode: "active", drafts: [] } });
+			const nextId = await p;
+
+			expect(nextId).toBe("real-after-dispose");
+			expect(replaceSpy).not.toHaveBeenCalled();
+			expect(takeFirstSend("real-after-dispose")).toBeNull();
+			expect(loadUnsent("real-after-dispose")).toBe("巡检\n\n补充");
+			expect(draftBook.restore("real-after-dispose")?.text).toBe("巡检\n\n补充");
+			expect(draftBook.restore("real-after-dispose")?.atts).toHaveLength(1);
+			expect(draftBook.restore(draftId)).toBeNull();
+		} finally {
+			replaceSpy.mockRestore();
+		}
 	});
 });

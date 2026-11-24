@@ -51,6 +51,7 @@ describe("settings store", () => {
 		const patchSpy = vi.spyOn(ipc, "patchSettings").mockImplementation(async (patch) => ({ ...mockSettings, ...patch }));
 		await useSettings.getState().update({ automationOverlapPolicy });
 		expect(patchSpy).toHaveBeenCalledWith({ automationOverlapPolicy });
+		vi.spyOn(ipc, "getSettings").mockResolvedValue(saved);
 		useSettings.setState({ settings: null });
 		await useSettings.getState().load();
 		expect(useSettings.getState().settings?.automationOverlapPolicy).toBe(automationOverlapPolicy);

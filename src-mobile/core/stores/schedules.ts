@@ -143,7 +143,7 @@ interface MobileSchedulesState {
 	loadDetail: (id: string) => Promise<{ runs: ScheduleRun[]; awaiting: ScheduleRun[]; worktree: AutomationWorktreeState | null }>;
 	markSeen: (scheduleId: string, runAt: string | null | undefined) => void;
 	createSchedule: (draft: Record<string, unknown>) => Promise<Schedule>;
-	updateSchedule: (id: string, draft: Record<string, unknown>) => Promise<Schedule>;
+	updateSchedule: (id: string, draft: Record<string, unknown>, expectedUpdatedAt?: string) => Promise<Schedule>;
 	deleteSchedule: (id: string) => Promise<void>;
 	toggleSchedule: (s: Schedule) => Promise<void>;
 	runNow: (id: string) => Promise<void>;
@@ -203,6 +203,9 @@ function ensureSseWired(): void {
 	events.on("schedules", () => scheduleRefresh(true));
 	events.on("todos", () => scheduleRefresh(false));
 	events.on("resync", () => scheduleRefresh(true));
+	events.on("hello", (ev) => {
+		if (ev?.reconnect) scheduleRefresh(true);
+	});
 }
 
 export const useMobileSchedules = create<MobileSchedulesState>((set, get) => ({
@@ -301,8 +304,10 @@ export const useMobileSchedules = create<MobileSchedulesState>((set, get) => ({
 		return created;
 	},
 
-	updateSchedule: async (id, draft) => {
-		const updated = await api<Schedule>("PUT", `/left/schedules/${enc(id)}`, draft);
+	updateSchedule: async (id, draft, expectedUpdatedAt) => {
+		const exp = expectedUpdatedAt?.trim();
+		const q = exp ? `?expectedUpdatedAt=${enc(exp)}` : "";
+		const updated = await api<Schedule>("PUT", `/left/schedules/${enc(id)}${q}`, draft);
 		await get().loadSchedules().catch(() => {});
 		return updated;
 	},

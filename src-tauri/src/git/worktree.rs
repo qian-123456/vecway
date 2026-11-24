@@ -353,6 +353,7 @@ pub fn create(
     let root = info.main_root();
     ensure_excluded(&info.common_dir)?;
     let target = root.join(WORKTREES_DIR).join(&slug);
+    let _reservation = super::commands::try_reserve_worktree(&target.to_string_lossy())?;
     if target.exists() {
         return Err(format!("目录已存在：{}", target.display()));
     }
@@ -580,6 +581,7 @@ pub fn create_detached(repo: &Path, dir_name: &str, sha: &str) -> Result<PathBuf
     let root = info.main_root();
     ensure_excluded(&info.common_dir)?;
     let target = root.join(WORKTREES_DIR).join(dir_name);
+    let _reservation = super::commands::try_reserve_worktree(&target.to_string_lossy())?;
     if target.is_dir() && repo_info(&target).is_some() {
         return Ok(canon(&target));
     }

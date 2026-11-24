@@ -74,6 +74,8 @@ type StoredDraftItem = {
 	draftId: string;
 	status: "pending" | "saved" | "dismissed";
 	draft: Record<string, unknown>;
+	presentFields?: string[];
+	cadencePresentFields?: string[];
 };
 
 type StoredState = {
@@ -131,7 +133,11 @@ function inferRunner(filename: string, content: string): string {
 	return "bash";
 }
 
-function publishStatus(ctx: Ctx | undefined, state: StoredState): void {
+function publishStatus(
+	ctx: Ctx | undefined,
+	state: StoredState,
+	newlyProposedDraftId?: string,
+): void {
 	try {
 		if (!ctx?.ui?.setStatus) return;
 		const visibleDrafts = state.drafts.filter((d) => d.status !== "dismissed");
@@ -145,10 +151,18 @@ function publishStatus(ctx: Ctx | undefined, state: StoredState): void {
 			mode: state.mode,
 			drafts: visibleDrafts,
 		};
+		if (
+			newlyProposedDraftId &&
+			visibleDrafts.some((d) => d.draftId === newlyProposedDraftId && d.status === "pending")
+		) {
+			payload.lastProposedDraftId = newlyProposedDraftId;
+		}
 		if (latest) {
 			payload.draftId = latest.draftId;
 			payload.status = latest.status;
 			payload.draft = latest.draft;
+			if (latest.presentFields) payload.presentFields = latest.presentFields;
+			if (latest.cadencePresentFields) payload.cadencePresentFields = latest.cadencePresentFields;
 		}
 		ctx.ui.setStatus(STATUS_KEY, JSON.stringify(payload));
 	} catch {
@@ -221,13 +235,13 @@ export default function ompWorkspaceAutomation(pi: Pi): void {
 	let lastCtx: Ctx | undefined;
 	let state: StoredState = { v: 2, mode: "idle", drafts: [] };
 
-	const persistAndPublish = (ctx: Ctx | undefined) => {
+	const persistAndPublish = (ctx: Ctx | undefined, newlyProposedDraftId?: string) => {
 		try {
 			pi.appendEntry(STATE_ENTRY, state);
 		} catch {
 			// ignore
 		}
-		publishStatus(ctx, state);
+		publishStatus(ctx, state, newlyProposedDraftId);
 	};
 
 	const setMode = async (active: boolean, ctx: Ctx | undefined) => {
@@ -353,7 +367,22 @@ export default function ompWorkspaceAutomation(pi: Pi): void {
 									content: [{ type: "text", text: "Missing draft object for propose action." }],
 								};
 							}
-							const draftObj = { ...(rawDraft as Record<string, unknown>) };
+							const rawRecord = rawDraft as Record<string, unknown>;
+							const presentFields = Object.keys(rawRecord).filter((k) => {
+								const v = rawRecord[k];
+								if (v === undefined) return false;
+								if (k === "cwd" && (typeof v !== "string" || !v.trim())) return false;
+								if (k === "cadence" && (!v || typeof v !== "object" || Array.isArray(v))) return false;
+								return true;
+							});
+							const rawCadence =
+								rawRecord.cadence && typeof rawRecord.cadence === "object" && !Array.isArray(rawRecord.cadence)
+									? (rawRecord.cadence as Record<string, unknown>)
+									: null;
+							const cadencePresentFields = rawCadence
+								? Object.keys(rawCadence).filter((k) => rawCadence[k] !== undefined)
+								: [];
+							const draftObj = { ...rawRecord };
 							if (typeof draftObj.cwd !== "string" || !draftObj.cwd.trim()) {
 								draftObj.cwd = ctx?.cwd || ".";
 							}
@@ -369,8 +398,9 @@ export default function ompWorkspaceAutomation(pi: Pi): void {
 								draftId,
 								status: "pending",
 								draft: draftObj,
+								presentFields,
+								cadencePresentFields,
 							};
-							// Upsert by matching automation id or exact name among pending drafts;
 							// distinct automations coexist side by side.
 							const incomingId = typeof draftObj.id === "string" && draftObj.id.trim() ? draftObj.id.trim() : null;
 							const incomingName = typeof draftObj.name === "string" ? draftObj.name.trim() : "";
@@ -389,7 +419,7 @@ export default function ompWorkspaceAutomation(pi: Pi): void {
 								nextDrafts.push(item);
 							}
 							state = { v: 2, mode: "active", drafts: nextDrafts };
-							persistAndPublish(ctx);
+							persistAndPublish(ctx, draftId);
 							return {
 								content: [
 									{

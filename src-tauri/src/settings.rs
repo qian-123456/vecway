@@ -158,6 +158,18 @@ pub fn apply_automation_patch(settings: &mut Settings, patch: AutomationSettings
     }
     settings.automation_background_enabled != prev_bg
 }
+/// Apply an automation settings patch to explicit DB and memory stores under `SAVE_LOCK`.
+pub(crate) async fn update_automation_in_stores(
+    db_lock: &parking_lot::Mutex<rusqlite::Connection>,
+    mem_lock: &parking_lot::RwLock<Settings>,
+    patch: AutomationSettingsPatch,
+) -> Result<(Settings, bool), String> {
+    let _guard = SAVE_LOCK.lock().await;
+    let mut settings = mem_lock.read().clone();
+    let bg_changed = apply_automation_patch(&mut settings, patch);
+    let saved = apply_to_stores(db_lock, mem_lock, settings)?;
+    Ok((saved, bg_changed))
+}
 
 /// Atomically update any subset of the 9 global automation settings using `SAVE_LOCK`,
 /// then serialize LaunchAgent reconciliation through completion when `automation_background_enabled` changed.
@@ -165,19 +177,78 @@ pub async fn update_automation_settings(
     state: &AppState,
     patch: AutomationSettingsPatch,
 ) -> Result<Settings, String> {
-    let (saved, bg_changed) = {
-        let _guard = SAVE_LOCK.lock().await;
-        let mut settings = state.settings.read().clone();
-        let bg_changed = apply_automation_patch(&mut settings, patch);
-        let saved = apply_locked(state, settings)?;
-        (saved, bg_changed)
-    };
+    let (saved, bg_changed) =
+        update_automation_in_stores(&state.db, &state.settings, patch).await?;
     if bg_changed {
         reconcile_launch_agent(state).await;
     }
     Ok(saved)
 }
 
+fn automation_settings_changed(prev: &Settings, next: &Settings) -> bool {
+    prev.automation_background_enabled != next.automation_background_enabled
+        || prev.automation_overlap_policy != next.automation_overlap_policy
+        || prev.automation_default_result_mode != next.automation_default_result_mode
+        || prev.automation_default_model != next.automation_default_model
+        || prev.automation_default_thinking != next.automation_default_thinking
+        || prev.automation_prompt_mock_test != next.automation_prompt_mock_test
+        || prev.automation_prompt_real_once_test != next.automation_prompt_real_once_test
+        || prev.automation_prompt_real_loop_test != next.automation_prompt_real_loop_test
+        || prev.automation_prompt_adjust != next.automation_prompt_adjust
+}
+
+fn merge_settings_patch(current: &Settings, patch: serde_json::Value) -> Result<Settings, String> {
+    let patch_obj = patch
+        .as_object()
+        .ok_or_else(|| "设置补丁必须是 JSON 对象".to_string())?;
+    let mut base_val =
+        serde_json::to_value(current).map_err(|e| format!("序列化当前设置失败：{e}"))?;
+    let base_map = base_val
+        .as_object_mut()
+        .ok_or_else(|| "当前设置不是 JSON 对象".to_string())?;
+    for (key, value) in patch_obj {
+        if !base_map.contains_key(key) {
+            return Err(format!("未知的设置项：{key}"));
+        }
+        base_map.insert(key.clone(), value.clone());
+    }
+    serde_json::from_value(base_val).map_err(|e| format!("解析设置补丁失败：{e}"))
+}
+
+/// Atomically merge a partial JSON patch onto the current settings under `SAVE_LOCK`.
+pub(crate) async fn patch_in_stores(
+    db_lock: &parking_lot::Mutex<rusqlite::Connection>,
+    mem_lock: &parking_lot::RwLock<Settings>,
+    patch: serde_json::Value,
+) -> Result<(Settings, bool, bool), String> {
+    let _guard = SAVE_LOCK.lock().await;
+    let prev = mem_lock.read().clone();
+    let next = merge_settings_patch(&prev, patch)?;
+    let saved = apply_to_stores(db_lock, mem_lock, next)?;
+    let bg_changed = prev.automation_background_enabled != saved.automation_background_enabled;
+    let auto_changed = automation_settings_changed(&prev, &saved);
+    Ok((saved, bg_changed, auto_changed))
+}
+
+/// Server-side atomic partial settings update under `SAVE_LOCK`.
+/// Preserves unrelated fields written concurrently (e.g. from mobile automation settings).
+#[tauri::command]
+pub async fn patch_settings(
+    state: tauri::State<'_, AppState>,
+    patch: serde_json::Value,
+) -> Result<Settings, String> {
+    let (saved, bg_changed, auto_changed) =
+        patch_in_stores(&state.db, &state.settings, patch).await?;
+    crate::notify::refresh_badge(&state).await;
+    apply_window_title(&state);
+    if bg_changed {
+        reconcile_launch_agent(&state).await;
+    }
+    if auto_changed {
+        crate::state::emit_schedules_changed(&state);
+    }
+    Ok(saved)
+}
 /// Serializes LaunchAgent reconciliation, re-reading the latest persisted value
 /// inside the lock so rapid enable -> disable updates never land out of order.
 pub async fn reconcile_launch_agent_with<R, S>(read_latest: R, sync_fn: S) -> Result<bool, String>
@@ -206,12 +277,16 @@ pub async fn reconcile_launch_agent(state: &AppState) {
 
 /// Validates, persists, and updates memory while the caller holds `SAVE_LOCK`.
 /// Avoids holding parking_lot synchronization guards across asynchronous await points.
-fn apply_locked(state: &AppState, settings: Settings) -> Result<Settings, String> {
+fn apply_to_stores(
+    db_lock: &parking_lot::Mutex<rusqlite::Connection>,
+    mem_lock: &parking_lot::RwLock<Settings>,
+    settings: Settings,
+) -> Result<Settings, String> {
     validate(&settings)?;
 
     // Persist to database; scoped to ensure parking_lot MutexGuard is dropped immediately.
     {
-        let conn = state.db.lock();
+        let conn = db_lock.lock();
         db::save_settings(&conn, &settings)?;
     }
 
@@ -221,7 +296,7 @@ fn apply_locked(state: &AppState, settings: Settings) -> Result<Settings, String
 
     // Update in-memory state; scoped to ensure parking_lot RwLockWriteGuard is dropped immediately.
     {
-        let mut mem = state.settings.write();
+        let mut mem = mem_lock.write();
         *mem = settings.clone();
     }
     crate::schedules::scheduler::notify_scheduler();
@@ -229,6 +304,9 @@ fn apply_locked(state: &AppState, settings: Settings) -> Result<Settings, String
     Ok(settings)
 }
 
+fn apply_locked(state: &AppState, settings: Settings) -> Result<Settings, String> {
+    apply_to_stores(&state.db, &state.settings, settings)
+}
 /// Pure validation of user settings.
 ///
 /// Returns `Ok(())` if all invariants hold, or an actionable Chinese error description.
@@ -460,8 +538,14 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
     }
     for (label, value) in [
         ("模拟测试提示词模板", &settings.automation_prompt_mock_test),
-        ("单次真测提示词模板", &settings.automation_prompt_real_once_test),
-        ("迭代调试提示词模板", &settings.automation_prompt_real_loop_test),
+        (
+            "单次真测提示词模板",
+            &settings.automation_prompt_real_once_test,
+        ),
+        (
+            "迭代调试提示词模板",
+            &settings.automation_prompt_real_loop_test,
+        ),
         ("AI 调整提示词模板", &settings.automation_prompt_adjust),
     ] {
         if let Some(text) = value {
@@ -1671,7 +1755,10 @@ mod tests {
         db::save_settings(&conn, &settings).unwrap();
         let loaded = db::load_settings(&conn);
         assert!(!loaded.automation_background_enabled);
-        assert_eq!(loaded.automation_overlap_policy, AutomationOverlapPolicy::Queue);
+        assert_eq!(
+            loaded.automation_overlap_policy,
+            AutomationOverlapPolicy::Queue
+        );
         assert_eq!(
             loaded.automation_default_result_mode,
             ScheduleResultMode::LlmSummary
@@ -1788,11 +1875,83 @@ mod tests {
         assert_eq!(calls.last().copied(), Some(false));
         assert!(
             !agents
-                .join(format!("{}.plist", crate::schedules::daemon::LAUNCH_AGENT_LABEL))
+                .join(format!(
+                    "{}.plist",
+                    crate::schedules::daemon::LAUNCH_AGENT_LABEL
+                ))
                 .exists(),
             "final plist must be removed after enable -> disable"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn patch_settings_preserves_concurrent_mobile_automation_change_and_rejects_unknown_keys()
+    {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        let initial = Settings::default();
+        db::save_settings(&conn, &initial).unwrap();
+
+        let db_lock = parking_lot::Mutex::new(conn);
+        let mem_lock = parking_lot::RwLock::new(initial);
+
+        // Simulate concurrent mobile update setting automationBackgroundEnabled = false,
+        // followed by a desktop partial patch updating an unrelated field (notifySound = true).
+        let (after_mobile, bg_changed) = update_automation_in_stores(
+            &db_lock,
+            &mem_lock,
+            AutomationSettingsPatch {
+                automation_background_enabled: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(bg_changed);
+        assert!(!after_mobile.automation_background_enabled);
+
+        let (after_desktop, bg_changed_2, auto_changed_2) = patch_in_stores(
+            &db_lock,
+            &mem_lock,
+            serde_json::json!({ "notifySound": true }),
+        )
+        .await
+        .unwrap();
+        assert!(!bg_changed_2);
+        assert!(!auto_changed_2);
+        assert!(after_desktop.notify_sound);
+        assert!(!after_desktop.automation_background_enabled);
+        assert!(!db::load_settings(&db_lock.lock()).automation_background_enabled);
+
+        // Rejects non-object and unknown keys without mutating persisted settings.
+        assert!(
+            patch_in_stores(&db_lock, &mem_lock, serde_json::json!("bad"))
+                .await
+                .is_err()
+        );
+        assert!(
+            patch_in_stores(&db_lock, &mem_lock, serde_json::json!({ "unknownKey": 1 }))
+                .await
+                .is_err()
+        );
+        assert!(mem_lock.read().notify_sound);
+        assert!(!mem_lock.read().automation_background_enabled);
+
+        // Patching an automation field marks auto_changed = true.
+        let (after_auto, bg_changed_3, auto_changed_3) = patch_in_stores(
+            &db_lock,
+            &mem_lock,
+            serde_json::json!({ "automationOverlapPolicy": "queue" }),
+        )
+        .await
+        .unwrap();
+        assert!(!bg_changed_3);
+        assert!(auto_changed_3);
+        assert_eq!(
+            after_auto.automation_overlap_policy,
+            AutomationOverlapPolicy::Queue
+        );
     }
 }
 

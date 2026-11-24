@@ -232,4 +232,32 @@ describe("AutomationOverviewView & schedules store fixes", () => {
 			expect(useMobileSchedules.getState().awaitingById["sched-1"]).toHaveLength(1),
 		);
 	});
+
+	it("refreshes schedules, worktrees, awaitingById, and bumps detailVersion on SSE reconnect hello", async () => {
+		let helloPhase = 1;
+		vi.spyOn(apiModule, "api").mockImplementation(async (_m, path) => {
+			if (path === "/left/schedules") {
+				return [{ ...sampleSchedule, name: helloPhase === 1 ? "重连前" : "重连后" }];
+			}
+			if (path === "/left/schedules/sched-1/worktree") return sampleWorktree;
+			if (path === "/left/schedules/sched-1/awaiting") return [];
+			return [];
+		});
+
+		await useMobileSchedules.getState().loadSchedules();
+		const beforeVer = useMobileSchedules.getState().detailVersion;
+
+		helloPhase = 2;
+		// Initial non-reconnect hello should not force refresh; reconnect hello must refresh
+		act(() => {
+			events.emit("hello", { reconnect: false });
+		});
+		expect(useMobileSchedules.getState().detailVersion).toBe(beforeVer);
+
+		act(() => {
+			events.emit("hello", { reconnect: true });
+		});
+		await waitFor(() => expect(useMobileSchedules.getState().detailVersion).toBe(beforeVer + 1));
+		await waitFor(() => expect(useMobileSchedules.getState().schedules[0]?.name).toBe("重连后"));
+	});
 });

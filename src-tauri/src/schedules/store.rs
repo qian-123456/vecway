@@ -464,6 +464,9 @@ fn row_to_run(r: &Row) -> rusqlite::Result<ScheduleRun> {
         summary: r.get(6)?,
         phase: parse_run_phase(&phase_str),
         probe_output: r.get(8)?,
+        worktree_repo_root: r.get(9)?,
+        worktree_path: r.get(10)?,
+        worktree_branch: r.get(11)?,
     })
 }
 
@@ -479,7 +482,7 @@ const SCHEDULE_SELECT: &str = "\
     )";
 
 const RUN_COLS: &str =
-    "id, schedule_id, session_id, status, started_at, finished_at, summary, phase, probe_output";
+    "id, schedule_id, session_id, status, started_at, finished_at, summary, phase, probe_output, worktree_repo_root, worktree_path, worktree_branch";
 
 pub fn list(conn: &Connection) -> Result<Vec<Schedule>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!("{SCHEDULE_SELECT} ORDER BY s.created_at DESC"))?;
@@ -658,8 +661,7 @@ fn insert_schedule_row(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let next_run_at = if draft.enabled {
-        next_run_bounded(&fields.cadence, fields.end_at.as_deref(), now)
-            .map(|dt| dt.to_rfc3339())
+        next_run_bounded(&fields.cadence, fields.end_at.as_deref(), now).map(|dt| dt.to_rfc3339())
     } else {
         None
     };
@@ -712,12 +714,158 @@ fn insert_schedule_row(
 
 /// Insert a brand-new schedule atomically, preserving an unused caller-supplied
 /// `draft.id` and mapping primary-key constraint violations to `Conflict`.
-pub fn create_new(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, CreateScheduleError> {
+pub fn create_new(
+    conn: &Connection,
+    draft: &ScheduleDraft,
+) -> Result<Schedule, CreateScheduleError> {
     validate_draft(draft, None).map_err(CreateScheduleError::Invalid)?;
     let now = Local::now();
     let ts = now_rfc3339();
     let fields = prepare_schedule_fields(draft, now);
     insert_schedule_row(conn, draft, &fields, &ts, now)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateScheduleError {
+    Conflict(String),
+    NotFound(String),
+    Invalid(String),
+}
+
+impl From<String> for UpdateScheduleError {
+    fn from(msg: String) -> Self {
+        Self::Invalid(msg)
+    }
+}
+
+fn update_existing_schedule(
+    conn: &Connection,
+    id: &str,
+    prev: &Schedule,
+    draft: &ScheduleDraft,
+    ts: &str,
+    now: DateTime<Local>,
+) -> Result<Schedule, String> {
+    let fields = prepare_schedule_fields(draft, now);
+    let cadence = &fields.cadence;
+    let end_at = &fields.end_at;
+    let max_runs = fields.max_runs;
+    let rescheduled_once = match (&prev.cadence, cadence) {
+        (ScheduleCadence::Once { at: old }, ScheduleCadence::Once { at: new }) => {
+            DateTime::parse_from_rfc3339(old).ok() != DateTime::parse_from_rfc3339(new).ok()
+        }
+        (_, ScheduleCadence::Once { .. }) => true,
+        _ => false,
+    };
+    if rescheduled_once && has_active_run(conn, id).map_err(|e| e.to_string())? {
+        return Err("任务仍在运行，请结束后再改期".to_string());
+    }
+    if draft.enabled && !prev.enabled {
+        // Re-enabling a completed once is refused unless `at` moved to a
+        // new (future) instant — that is a reschedule, not a re-enable.
+        if let ScheduleCadence::Once { at } = &draft.cadence {
+            let same_instant = matches!(&prev.cadence,
+                ScheduleCadence::Once { at: prev_at }
+                    if DateTime::parse_from_rfc3339(prev_at).ok()
+                        == DateTime::parse_from_rfc3339(at).ok());
+            let ran = prev.last_run_at.is_some();
+            if ran && same_instant {
+                return Err("一次性任务已执行，请复制或重新创建".to_string());
+            }
+        }
+    }
+
+    // Editing while capped at `max_runs` stays completed; raising/removing
+    // the cap re-derives a fresh fire time (`runs_done` is kept).
+    let cap_reached = max_runs.is_some_and(|max| prev.runs_done >= max);
+    let next_run_at = if !draft.enabled || cap_reached {
+        None
+    } else {
+        // Keep the stored instant when nothing timing-related changed.
+        let keep = prev.enabled
+            && prev.cadence == *cadence
+            && prev.end_at == *end_at
+            && prev.next_run_at.is_some();
+        if keep {
+            prev.next_run_at.clone()
+        } else {
+            next_run_bounded(cadence, end_at.as_deref(), now).map(|dt| dt.to_rfc3339())
+        }
+    };
+    // A schedule that can never fire again (once ran / once time passed /
+    // recurring past end_at or its run cap) is stored disabled → `completed`.
+    let enabled = (draft.enabled && next_run_at.is_some()) as i32;
+
+    conn.execute(
+        "UPDATE schedules
+         SET name = ?2, prompt = ?3, cwd = ?4, run_mode = ?5, cadence = ?6,
+             model = ?7, thinking = ?8, approval_mode = ?9, enabled = ?10,
+             next_run_at = ?11, end_at = ?12, updated_at = ?13,
+             notify = ?14, new_chat_each_run = ?15, max_runs = ?16,
+             last_run_at = CASE WHEN ?17 THEN NULL ELSE last_run_at END, mode = ?18,
+             probe_command = ?19, probe_description = ?20, agent_trigger = ?21,
+             result_mode = ?22, invokes_external_model = ?23
+         WHERE id = ?1",
+        params![
+            id,
+            draft.name,
+            draft.prompt,
+            draft.cwd,
+            fields.run_mode_str,
+            fields.cadence_json,
+            draft.model,
+            draft.thinking,
+            draft.approval_mode,
+            enabled,
+            next_run_at,
+            end_at,
+            ts,
+            fields.notify_str,
+            draft.new_chat_each_run as i32,
+            max_runs,
+            rescheduled_once,
+            draft.mode.as_str(),
+            fields.probe_command,
+            fields.probe_description,
+            fields.agent_trigger_str,
+            fields.result_mode_str,
+            fields.invokes_external_model_int,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    get(conn, id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "自动化不存在".to_string())
+}
+
+/// Update an existing schedule atomically after checking an optional `expected_updated_at`
+/// revision token inside the DB connection lock.
+pub fn upsert_checked(
+    conn: &Connection,
+    draft: &ScheduleDraft,
+    expected_updated_at: Option<&str>,
+) -> Result<Schedule, UpdateScheduleError> {
+    let id = draft
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| UpdateScheduleError::Invalid("缺少自动化 ID".to_string()))?;
+    let prev = get(conn, id)
+        .map_err(|e| UpdateScheduleError::Invalid(e.to_string()))?
+        .ok_or_else(|| UpdateScheduleError::NotFound("自动化不存在".to_string()))?;
+    if let Some(exp) = expected_updated_at.map(str::trim).filter(|s| !s.is_empty()) {
+        if prev.updated_at != exp {
+            return Err(UpdateScheduleError::Conflict(
+                "自动化配置已在其他端更新，请刷新后再保存".to_string(),
+            ));
+        }
+    }
+    validate_draft(draft, Some(&prev)).map_err(UpdateScheduleError::Invalid)?;
+    let now = Local::now();
+    let ts = now_rfc3339();
+    update_existing_schedule(conn, id, &prev, draft, &ts, now).map_err(UpdateScheduleError::Invalid)
 }
 
 pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, String> {
@@ -733,100 +881,11 @@ pub fn upsert(conn: &Connection, draft: &ScheduleDraft) -> Result<Schedule, Stri
     validate_draft(draft, prev.as_ref())?;
 
     let now = Local::now();
-    let fields = prepare_schedule_fields(draft, now);
-    if let (Some(id), Some(prev)) = (draft.id.as_ref(), prev) {
-        let cadence = &fields.cadence;
-        let end_at = &fields.end_at;
-        let max_runs = fields.max_runs;
-        let rescheduled_once = match (&prev.cadence, cadence) {
-            (ScheduleCadence::Once { at: old }, ScheduleCadence::Once { at: new }) => {
-                DateTime::parse_from_rfc3339(old).ok() != DateTime::parse_from_rfc3339(new).ok()
-            }
-            (_, ScheduleCadence::Once { .. }) => true,
-            _ => false,
-        };
-        if rescheduled_once && has_active_run(conn, id).map_err(|e| e.to_string())? {
-            return Err("任务仍在运行，请结束后再改期".to_string());
-        }
-        if draft.enabled && !prev.enabled {
-            // Re-enabling a completed once is refused unless `at` moved to a
-            // new (future) instant — that is a reschedule, not a re-enable.
-            if let ScheduleCadence::Once { at } = &draft.cadence {
-                let same_instant = matches!(&prev.cadence,
-                    ScheduleCadence::Once { at: prev_at }
-                        if DateTime::parse_from_rfc3339(prev_at).ok()
-                            == DateTime::parse_from_rfc3339(at).ok());
-                let ran = prev.last_run_at.is_some();
-                if ran && same_instant {
-                    return Err("一次性任务已执行，请复制或重新创建".to_string());
-                }
-            }
-        }
-
-        // Editing while capped at `max_runs` stays completed; raising/removing
-        // the cap re-derives a fresh fire time (`runs_done` is kept).
-        let cap_reached = max_runs.is_some_and(|max| prev.runs_done >= max);
-        let next_run_at = if !draft.enabled || cap_reached {
-            None
-        } else {
-            // Keep the stored instant when nothing timing-related changed.
-            let keep = prev.enabled
-                && prev.cadence == *cadence
-                && prev.end_at == *end_at
-                && prev.next_run_at.is_some();
-            if keep {
-                prev.next_run_at.clone()
-            } else {
-                next_run_bounded(cadence, end_at.as_deref(), now).map(|dt| dt.to_rfc3339())
-            }
-        };
-        // A schedule that can never fire again (once ran / once time passed /
-        // recurring past end_at or its run cap) is stored disabled → `completed`.
-        let enabled = (draft.enabled && next_run_at.is_some()) as i32;
-
-        conn.execute(
-            "UPDATE schedules
-             SET name = ?2, prompt = ?3, cwd = ?4, run_mode = ?5, cadence = ?6,
-                 model = ?7, thinking = ?8, approval_mode = ?9, enabled = ?10,
-                 next_run_at = ?11, end_at = ?12, updated_at = ?13,
-                 notify = ?14, new_chat_each_run = ?15, max_runs = ?16,
-                 last_run_at = CASE WHEN ?17 THEN NULL ELSE last_run_at END, mode = ?18,
-                 probe_command = ?19, probe_description = ?20, agent_trigger = ?21,
-                 result_mode = ?22, invokes_external_model = ?23
-             WHERE id = ?1",
-            params![
-                id,
-                draft.name,
-                draft.prompt,
-                draft.cwd,
-                fields.run_mode_str,
-                fields.cadence_json,
-                draft.model,
-                draft.thinking,
-                draft.approval_mode,
-                enabled,
-                next_run_at,
-                end_at,
-                ts,
-                fields.notify_str,
-                draft.new_chat_each_run as i32,
-                max_runs,
-                rescheduled_once,
-                draft.mode.as_str(),
-                fields.probe_command,
-                fields.probe_description,
-                fields.agent_trigger_str,
-                fields.result_mode_str,
-                fields.invokes_external_model_int,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-
-        return get(conn, id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "自动化不存在".to_string());
+    if let (Some(id), Some(prev)) = (draft.id.as_ref(), prev.as_ref()) {
+        return update_existing_schedule(conn, id, prev, draft, &ts, now);
     }
 
+    let fields = prepare_schedule_fields(draft, now);
     insert_schedule_row(conn, draft, &fields, &ts, now).map_err(|e| match e {
         CreateScheduleError::Conflict(msg) | CreateScheduleError::Invalid(msg) => msg,
     })
@@ -1247,7 +1306,28 @@ pub fn create_run(
         summary: summary.map(str::to_string),
         phase: ScheduleRunPhase::Agent,
         probe_output: None,
+        worktree_repo_root: None,
+        worktree_path: None,
+        worktree_branch: None,
     })
+}
+
+pub fn set_run_worktree(
+    conn: &Connection,
+    run_id: &str,
+    worktree_repo_root: &str,
+    worktree_path: &str,
+    worktree_branch: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE schedule_runs
+         SET worktree_repo_root = ?2,
+             worktree_path = ?3,
+             worktree_branch = ?4
+         WHERE id = ?1",
+        params![run_id, worktree_repo_root, worktree_path, worktree_branch],
+    )?;
+    Ok(())
 }
 
 #[allow(dead_code)]

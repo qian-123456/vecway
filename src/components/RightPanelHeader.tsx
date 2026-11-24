@@ -110,7 +110,6 @@ export interface ClosedBlankSideChatDraft {
 }
 
 const CLOSED_DRAFTS_STORAGE_KEY = "omp_closed_blank_sidechat_drafts";
-const MAX_CLOSED_DRAFTS_PER_PARENT = 5;
 
 const closedBlankDrafts = new Map<string, ClosedBlankSideChatDraft[]>();
 const closedDraftListeners = new Set<() => void>();
@@ -172,8 +171,7 @@ function ensureClosedDraftsHydrated(): void {
 			if (!Array.isArray(list)) continue;
 			const valid = list
 				.map(sanitizeDraftEntry)
-				.filter((d): d is ClosedBlankSideChatDraft => d !== null && d.parentId === parentId)
-				.slice(0, MAX_CLOSED_DRAFTS_PER_PARENT);
+				.filter((d): d is ClosedBlankSideChatDraft => d !== null && d.parentId === parentId);
 			if (valid.length > 0) closedBlankDrafts.set(parentId, valid);
 		}
 	} catch {
@@ -190,7 +188,7 @@ function persistClosedDrafts(): void {
 		}
 		const obj: Record<string, ClosedBlankSideChatDraft[]> = {};
 		for (const [parentId, list] of closedBlankDrafts.entries()) {
-			if (list.length > 0) obj[parentId] = list.slice(0, MAX_CLOSED_DRAFTS_PER_PARENT);
+			if (list.length > 0) obj[parentId] = list;
 		}
 		sessionStorage.setItem(CLOSED_DRAFTS_STORAGE_KEY, JSON.stringify(obj));
 	} catch {
@@ -201,10 +199,7 @@ function persistClosedDrafts(): void {
 function saveClosedBlankDraft(draft: ClosedBlankSideChatDraft): void {
 	ensureClosedDraftsHydrated();
 	const existing = closedBlankDrafts.get(draft.parentId) ?? [];
-	const next = [draft, ...existing.filter((d) => d.tabId !== draft.tabId)].slice(
-		0,
-		MAX_CLOSED_DRAFTS_PER_PARENT,
-	);
+	const next = [draft, ...existing.filter((d) => d.tabId !== draft.tabId)];
 	closedBlankDrafts.set(draft.parentId, next);
 	persistClosedDrafts();
 	notifyClosedDrafts();
@@ -245,6 +240,18 @@ export function restoreClosedBlankSideChatDraft(parentId: string, tabId?: string
 	if (snap.images.length > 0) c.setImages(restoredId, snap.images);
 	if (snap.files.length > 0) c.setFiles(restoredId, snap.files);
 	return restoredId;
+}
+
+export function discardClosedBlankSideChatDraft(parentId: string, tabId: string): void {
+	ensureClosedDraftsHydrated();
+	const list = closedBlankDrafts.get(parentId);
+	if (!list || list.length === 0) return;
+	const remaining = list.filter((d) => d.tabId !== tabId);
+	if (remaining.length === list.length) return;
+	if (remaining.length > 0) closedBlankDrafts.set(parentId, remaining);
+	else closedBlankDrafts.delete(parentId);
+	persistClosedDrafts();
+	notifyClosedDrafts();
 }
 
 export function _clearClosedBlankSideChatDrafts(): void {
@@ -853,18 +860,32 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 						d.text.trim().replace(/\s+/g, " ") ||
 						t("rightPanel.attachmentOnlyDraft", { count: d.images.length + d.files.length });
 					return (
-						<button
-							key={d.tabId}
-							type="button"
-							onClick={() => {
-								restoreClosedBlankSideChatDraft(selectedId!, d.tabId);
-								setDraftMenuOpen(false);
-							}}
-							className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-neutral-300 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-neutral-800/60 hover:text-neutral-100 active:scale-[0.985]"
-						>
-							<RotateCcw size={12} className="shrink-0 text-sky-400" />
-							<span className="min-w-0 flex-1 truncate">{preview}</span>
-						</button>
+						<div key={d.tabId} className="flex items-center gap-1 rounded-md hover:bg-neutral-800/60">
+							<button
+								type="button"
+								onClick={() => {
+									restoreClosedBlankSideChatDraft(selectedId!, d.tabId);
+									setDraftMenuOpen(false);
+								}}
+								className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-neutral-300 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:text-neutral-100 active:scale-[0.985]"
+							>
+								<RotateCcw size={12} className="shrink-0 text-sky-400" />
+								<span className="min-w-0 flex-1 truncate">{preview}</span>
+							</button>
+							<button
+								type="button"
+								title={t("rightPanel.discardSideChatDraft")}
+								aria-label={t("rightPanel.discardSideChatDraftFor", { preview })}
+								onClick={() => {
+									const willBeEmpty = closedDrafts.length <= 1;
+									discardClosedBlankSideChatDraft(selectedId!, d.tabId);
+									if (willBeEmpty) setDraftMenuOpen(false);
+								}}
+								className="mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-neutral-500 transition-colors hover:bg-neutral-700/80 hover:text-rose-300"
+							>
+								<X size={12} />
+							</button>
+						</div>
 					);
 				})}
 			</FloatingLayer>

@@ -249,7 +249,7 @@ export function RightWorkspaceDrawer({
 			swipedCloseRef.current = false;
 			delete el.dataset.dragging;
 			el.style.transition = "";
-			el.style.transform = "translate3d(0,0,0)";
+			el.style.transform = restTransform;
 			if (scrimRef.current) {
 				scrimRef.current.style.transition = "";
 				scrimRef.current.style.opacity = "";
@@ -261,14 +261,14 @@ export function RightWorkspaceDrawer({
 		} else {
 			delete el.dataset.dragging;
 			el.style.transition = "";
-			el.style.transform = keepOnscreen ? "translate3d(0,0,0)" : "translate3d(100%,0,0)";
+			el.style.transform = restTransform;
 			if (scrimRef.current) {
 				scrimRef.current.style.transition = "";
 				scrimRef.current.style.opacity = "";
 			}
 			el.setAttribute("inert", "");
 		}
-	}, [open, keepOnscreen]);
+	}, [open, restTransform]);
 	const hasAutomationTab = Boolean(
 		(automationState?.drafts ?? []).some((d) => d.status === "pending" || d.status === "saved"),
 	);
@@ -422,13 +422,18 @@ export function RightWorkspaceDrawer({
 			if (Math.abs(dx) <= 10 && Math.abs(dy) <= 10) return;
 			s.axis = Math.abs(dx) > Math.abs(dy) * 1.5 && dx > 10 ? "x" : "y";
 			if (s.axis === "x") {
+				const liveBaseX = Math.max(0, readTranslateXY(el).x);
+				s.baseX = liveBaseX;
+				s.x = p.clientX;
+				s.dx = 0;
+				el.style.transform = `translate3d(${liveBaseX}px,0,0)`;
 				el.dataset.dragging = "true";
 				el.style.transition = "none";
 				if (scrimRef.current) scrimRef.current.style.transition = "none";
 			}
 		}
 		if (s.axis !== "x") return;
-		const rawDx = s.baseX + dx;
+		const rawDx = s.baseX + (p.clientX - s.x);
 		const width = Math.max(200, el.clientWidth || 320);
 		s.dx = rawDx < 0 ? rubberBand(rawDx, width, 0.25) : rawDx;
 		trackerRef.current.add(p.clientX, p.clientY, e.timeStamp);

@@ -292,12 +292,11 @@ export default function App() {
 		side: "left" | "right";
 		pointerId: number;
 		handleEl: HTMLDivElement;
-		grabOffsetX: number;
 		startClientX: number;
 		moved: boolean;
 		startWidth: number;
-		startLeftWidth: number;
-		startRightWidth: number;
+		startLeftPref: number;
+		startRightPref: number;
 		startOpen: boolean;
 		currentWidth: number;
 		currentOpen: boolean;
@@ -316,18 +315,19 @@ export default function App() {
 		}
 		const startWidth = effectiveSidebarWidthRef.current;
 		const ui = useUi.getState();
+		const startLeftPref = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, ui.sidebarWidth));
+		const startRightPref = Math.min(MAX_RIGHT_WIDTH, Math.max(MIN_RIGHT_WIDTH, ui.rightWidth));
 		drag.current = {
 			side: "left",
 			pointerId: e.pointerId,
 			handleEl: e.currentTarget,
-			grabOffsetX: e.clientX - startWidth,
 			startClientX: e.clientX,
 			moved: false,
 			startWidth,
-			startLeftWidth: startWidth,
-			startRightWidth: effectiveRightWidthRef.current,
+			startLeftPref,
+			startRightPref,
 			startOpen: ui.sidebarOpen,
-			currentWidth: ui.sidebarWidth,
+			currentWidth: startLeftPref,
 			currentOpen: ui.sidebarOpen,
 			previewCollapse: false,
 		};
@@ -343,20 +343,20 @@ export default function App() {
 			/* synthetic test events may not support pointer capture */
 		}
 		const startWidth = effectiveRightWidthRef.current;
-		const seamX = window.innerWidth - startWidth;
 		const ui = useUi.getState();
+		const startLeftPref = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, ui.sidebarWidth));
+		const startRightPref = Math.min(MAX_RIGHT_WIDTH, Math.max(MIN_RIGHT_WIDTH, ui.rightWidth));
 		drag.current = {
 			side: "right",
 			pointerId: e.pointerId,
 			handleEl: e.currentTarget,
-			grabOffsetX: e.clientX - seamX,
 			startClientX: e.clientX,
 			moved: false,
 			startWidth,
-			startLeftWidth: effectiveSidebarWidthRef.current,
-			startRightWidth: startWidth,
-			startOpen: true,
-			currentWidth: ui.rightWidth,
+			startLeftPref,
+			startRightPref,
+			startOpen: ui.sidebarOpen,
+			currentWidth: startRightPref,
 			currentOpen: true,
 			previewCollapse: false,
 		};
@@ -388,14 +388,40 @@ export default function App() {
 			if (rightEl) rightEl.style.width = `${Math.round(width)}px`;
 		};
 
+		const restoreCommittedDom = (d: NonNullable<typeof drag.current>) => {
+			const ui = useUi.getState();
+			const committed = computeShellWidths({
+				viewportWidth: window.innerWidth,
+				sidebarOpen: d.startOpen,
+				sidebarWidth: ui.sidebarWidth,
+				rightVisible: rightVisibleRef.current,
+				rightWidth: ui.rightWidth,
+			});
+			applyLeftDom(d.startOpen, committed.leftWidth, false);
+			if (rightVisibleRef.current) applyRightDom(committed.rightWidth);
+			d.handleEl.setAttribute(
+				"aria-valuenow",
+				String(
+					Math.round(
+						d.side === "left"
+							? d.startOpen
+								? committed.leftWidth
+								: 0
+							: committed.rightWidth,
+					),
+				),
+			);
+		};
+
 		const updateWidth = () => {
 			rafId = null;
 			const d = drag.current;
 			if (!d || latestClientX === null) return;
 			const ui = useUi.getState();
 			const vw = window.innerWidth;
+			const dx = latestClientX - d.startClientX;
 			if (d.side === "left") {
-				const raw = latestClientX - d.grabOffsetX;
+				const raw = d.startLeftPref + dx;
 				if (d.currentOpen) {
 					if (raw < LEFT_COLLAPSE_THRESHOLD) {
 						d.currentOpen = false;
@@ -430,7 +456,7 @@ export default function App() {
 					String(Math.round(d.currentOpen ? widths.leftWidth : 0)),
 				);
 			} else {
-				const raw = vw - latestClientX + d.grabOffsetX;
+				const raw = d.startRightPref - dx;
 				d.currentWidth = Math.min(
 					MAX_RIGHT_WIDTH,
 					Math.max(MIN_RIGHT_WIDTH, Math.round(raw)),
@@ -451,7 +477,11 @@ export default function App() {
 		const onMove = (e: PointerEvent) => {
 			const d = drag.current;
 			if (!d || e.pointerId !== d.pointerId) return;
-			if (e.clientX !== d.startClientX) d.moved = true;
+			const dx = e.clientX - d.startClientX;
+			if (!d.moved) {
+				if (Math.abs(dx) < 1) return;
+				d.moved = true;
+			}
 			latestClientX = e.clientX;
 			if (rafId === null) rafId = requestAnimationFrame(updateWidth);
 		};
@@ -467,12 +497,12 @@ export default function App() {
 		};
 
 		const commit = () => {
+			const d = drag.current;
 			if (rafId !== null) {
 				cancelAnimationFrame(rafId);
 				rafId = null;
-				updateWidth();
+				if (d?.moved) updateWidth();
 			}
-			const d = drag.current;
 			drag.current = null;
 			if (d) {
 				releaseCapture(d);
@@ -480,7 +510,9 @@ export default function App() {
 					leftPaneRef.current.style.opacity = "";
 					delete leftPaneRef.current.dataset.collapsePreview;
 				}
-				if (d.moved) {
+				if (!d.moved) {
+					restoreCommittedDom(d);
+				} else {
 					const ui = useUi.getState();
 					const vw = window.innerWidth;
 					setViewportWidth(vw);
@@ -539,9 +571,7 @@ export default function App() {
 			drag.current = null;
 			if (d) {
 				releaseCapture(d);
-				applyLeftDom(d.startOpen, d.startLeftWidth, false);
-				if (rightVisibleRef.current) applyRightDom(d.startRightWidth);
-				d.handleEl.setAttribute("aria-valuenow", String(Math.round(d.startWidth)));
+				restoreCommittedDom(d);
 			}
 			setDraggingSide(null);
 		};
@@ -580,6 +610,7 @@ export default function App() {
 			if (active) {
 				drag.current = null;
 				releaseCapture(active);
+				restoreCommittedDom(active);
 			}
 		};
 	}, [draggingSide, setSidebarWidth, setRightWidth, setSidebarOpen]);

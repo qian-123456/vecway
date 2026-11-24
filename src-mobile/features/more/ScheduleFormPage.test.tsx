@@ -230,7 +230,7 @@ describe("ScheduleFormPage", () => {
 					automationDefaultThinking: "high",
 				};
 			}
-			if (method === "PUT" && path === "/left/schedules/sched-rev") {
+			if (method === "PUT" && path.startsWith("/left/schedules/sched-rev")) {
 				return new Promise((resolve) => {
 					resolvePut = resolve;
 				});
@@ -283,6 +283,181 @@ describe("ScheduleFormPage", () => {
 			await act(async () => root2.unmount());
 		} finally {
 			window.location.hash = "";
+			sessionStorage.clear();
+			vi.mocked(api).mockImplementation(baseMock);
+		}
+	});
+
+	it("H4 + M4: merges only dirty keys onto fresh server row at Save time, scopes async save completion, and merges manual proposal patch onto fresh baseline preserving local dirty fields", async () => {
+		sessionStorage.clear();
+		const { api } = await import("../../core/api");
+		const baseMock = vi.mocked(api).getMockImplementation()!;
+		const { stashManualScheduleDraft } = await import("../chat/automation/automationStatus");
+		let serverRow = {
+			id: "sched-h4",
+			name: "初始名",
+			prompt: "初始提示",
+			cwd: "/w",
+			mode: "code",
+			runMode: "local",
+			cadence: { kind: "interval", minutes: 30 },
+			model: null,
+			thinking: null,
+			approvalMode: null,
+			enabled: true,
+			nextRunAt: null,
+			lastRunAt: null,
+			lastRunStatus: null,
+			notify: "important",
+			newChatEachRun: true,
+			endAt: "2026-12-31T23:59:45.123Z",
+			lifecycle: "active",
+			maxRuns: null,
+			runsDone: 0,
+			probeCommand: "initial.sh",
+			probeDescription: "旧说明",
+			agentTrigger: "on_signal",
+			resultMode: "structured",
+			invokesExternalModel: false,
+			updatedAt: "2026-11-24T10:00:00Z",
+		};
+		let resolvePut!: (v: unknown) => void;
+		vi.mocked(api).mockImplementation(async (method: string, path: string, body?: unknown) => {
+			calls.push({ method, path, body });
+			if (path === "/left/dirs") return { dirs: [{ path: "/w", label: "w" }] };
+			if (path === "/left/schedules") return [serverRow];
+			if (method === "PUT" && path.startsWith("/left/schedules/sched-h4")) {
+				return new Promise((resolve) => {
+					resolvePut = resolve;
+				});
+			}
+			return {};
+		});
+		try {
+			// 1. M4: Local cached draft edited probeDescription, then user clicks 转手动精调 with proposal changing name only
+			sessionStorage.setItem(
+				"omp:mobile:schedule-draft:sched-h4",
+				JSON.stringify({
+					baseRevision: "sched-h4",
+					dirtyKeys: ["probeDescription"],
+					form: { probeDescription: "本地已改说明" },
+				}),
+			);
+			stashManualScheduleDraft("sched-h4", {
+				draft: {
+					id: "sched-h4",
+					name: "AI新名",
+					prompt: "",
+					cwd: ".",
+					runMode: "local",
+					cadence: { kind: "interval", minutes: 30 },
+				},
+				presentFields: ["id", "name"],
+			});
+			const root = createRoot(host);
+			await act(async () => root.render(<ScheduleFormPage id="sched-h4" initialTab="config" />));
+			const nameInput = host.querySelector<HTMLInputElement>('div[data-field="name"] input')!;
+			const descInput = host.querySelector<HTMLInputElement>('input[placeholder*="脚本检查什么"]')!;
+			expect(nameInput.value).toBe("AI新名");
+			expect(descInput.value).toBe("本地已改说明");
+
+			// 2. H4: Desktop pauses the schedule and updates probeCommand while this form is open
+			serverRow = {
+				...serverRow,
+				enabled: false,
+				probeCommand: "desktop-updated.sh",
+				updatedAt: "2026-11-24T10:10:00Z",
+			};
+			const saveBtn = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "保存")!;
+			await act(async () => saveBtn.click());
+			const putCall = calls.find((c) => c.method === "PUT" && c.path.startsWith("/left/schedules/sched-h4"));
+			expect(putCall).toBeDefined();
+			const body = putCall!.body as Record<string, unknown>;
+			expect(body.name).toBe("AI新名");
+			expect(body.probeDescription).toBe("本地已改说明");
+			// Desktop edits & untouched timestamp preserved!
+			expect(body.enabled).toBe(false);
+			expect(body.probeCommand).toBe("desktop-updated.sh");
+			expect(body.endAt).toBe("2026-12-31T23:59:45.123Z");
+
+			// 3. H4: Unmount and remount a fresh form with a new local draft before old PUT resolves -> old completion must NOT clear new draft
+			await act(async () => root.unmount());
+			sessionStorage.setItem("omp:mobile:schedule-draft:sched-h4", "KEEP_NEW_DRAFT");
+			await act(async () => resolvePut(serverRow));
+			expect(sessionStorage.getItem("omp:mobile:schedule-draft:sched-h4")).toBe("KEEP_NEW_DRAFT");
+		} finally {
+			sessionStorage.clear();
+			vi.mocked(api).mockImplementation(baseMock);
+		}
+	});
+
+	it("P1-2: aborts save when GET /left/schedules fails and passes expectedUpdatedAt on PUT returning 409 safely", async () => {
+		sessionStorage.clear();
+		const { api, ApiError } = await import("../../core/api");
+		const baseMock = vi.mocked(api).getMockImplementation()!;
+		const serverRow = {
+			id: "sched-p12",
+			name: "原名",
+			prompt: "原提示",
+			cwd: "/w",
+			mode: "code",
+			runMode: "local",
+			cadence: { kind: "interval", minutes: 30 },
+			model: null,
+			thinking: null,
+			approvalMode: null,
+			enabled: true,
+			nextRunAt: null,
+			lastRunAt: null,
+			lastRunStatus: null,
+			notify: "important",
+			newChatEachRun: true,
+			endAt: null,
+			lifecycle: "active",
+			maxRuns: null,
+			runsDone: 0,
+			updatedAt: "2026-11-24T12:00:00Z",
+		};
+		let scheduleFetchCalls = 0;
+		let failRefreshOnSave = true;
+		vi.mocked(api).mockImplementation(async (method: string, path: string, body?: unknown) => {
+			calls.push({ method, path, body });
+			if (path === "/left/dirs") return { dirs: [{ path: "/w", label: "w" }] };
+			if (path === "/left/schedules") {
+				scheduleFetchCalls++;
+				if (scheduleFetchCalls >= 2 && failRefreshOnSave) {
+					throw new Error("network unreachable");
+				}
+				return [serverRow];
+			}
+			if (method === "PUT" && path.startsWith("/left/schedules/sched-p12")) {
+				throw new ApiError(409, "配置已被其他设备修改，请刷新后重试");
+			}
+			return {};
+		});
+		try {
+			const root = createRoot(host);
+			await act(async () => root.render(<ScheduleFormPage id="sched-p12" initialTab="config" />));
+			const nameInput = host.querySelector<HTMLInputElement>('div[data-field="name"] input')!;
+			const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+			await act(async () => {
+				setter.call(nameInput, "新本地名");
+				nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			const saveBtn = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "保存")!;
+			await act(async () => saveBtn.click());
+			expect(host.textContent).toContain("刷新最新配置失败，请重试");
+			expect(calls.some((c) => c.method === "PUT")).toBe(false);
+
+			// Now refresh succeeds, PUT carries ?expectedUpdatedAt=... and 409 surfaces cleanly without clearing draft
+			failRefreshOnSave = false;
+			await act(async () => saveBtn.click());
+			const putCall = calls.find((c) => c.method === "PUT");
+			expect(putCall?.path).toBe("/left/schedules/sched-p12?expectedUpdatedAt=2026-11-24T12%3A00%3A00Z");
+			expect(host.textContent).toContain("配置已被其他设备修改");
+			expect(sessionStorage.getItem("omp:mobile:schedule-draft:sched-p12")).toContain("新本地名");
+			await act(async () => root.unmount());
+		} finally {
 			sessionStorage.clear();
 			vi.mocked(api).mockImplementation(baseMock);
 		}

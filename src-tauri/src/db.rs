@@ -620,6 +620,37 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             Ok(())
         })?;
     }
+    // v31: persist isolated worktree repo_root + path + branch on schedule_runs so quiet
+    // probes and runs in nested Git repos survive schedule cwd changes and never match a
+    // replacement checkout on a different branch at the same path.
+    if version < 31 {
+        step_with(conn, 31, |tx| {
+            for (col, ddl) in [
+                (
+                    "worktree_repo_root",
+                    "ALTER TABLE schedule_runs ADD COLUMN worktree_repo_root TEXT;",
+                ),
+                (
+                    "worktree_path",
+                    "ALTER TABLE schedule_runs ADD COLUMN worktree_path TEXT;",
+                ),
+                (
+                    "worktree_branch",
+                    "ALTER TABLE schedule_runs ADD COLUMN worktree_branch TEXT;",
+                ),
+            ] {
+                let exists: bool = tx.query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('schedule_runs') WHERE name = ?1",
+                    [col],
+                    |r| r.get(0),
+                )?;
+                if !exists {
+                    tx.execute_batch(ddl)?;
+                }
+            }
+            Ok(())
+        })?;
+    }
     Ok(())
 }
 
@@ -963,7 +994,7 @@ mod tests {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(session_meta)")
             .unwrap()
@@ -986,7 +1017,7 @@ mod tests {
         let v3: u32 = fresh
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v3, 30);
+        assert_eq!(v3, 31);
     }
 
     #[test]
@@ -996,7 +1027,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('schedules', 'schedule_runs')",
@@ -1023,7 +1054,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(schedules)")
             .unwrap()
@@ -1098,7 +1129,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
         // Pre-existing row inherits the documented defaults.
         let (notify, new_chat): (String, i64) = conn
             .query_row(
@@ -1199,7 +1230,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
         // Pre-existing row: NULL cap, zero runs.
         let (max_runs, runs_done): (Option<i64>, i64) = conn
             .query_row(
@@ -1260,7 +1291,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
         let schedule_mode: String = conn
             .query_row("SELECT mode FROM schedules WHERE id='scheduled'", [], |r| {
                 r.get(0)
@@ -1411,7 +1442,7 @@ mod tests {
         let v: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(model_replace_log)")
             .unwrap()
@@ -1785,7 +1816,7 @@ mod backlog_v19_tests {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
 
         for idx in [
             "idx_session_meta_seq",
@@ -1826,6 +1857,37 @@ mod backlog_v19_tests {
             recovery_plan.contains("idx_schedule_runs_status"),
             "expected recovery query to use idx_schedule_runs_status, got: {recovery_plan}"
         );
+    }
+
+    #[test]
+    fn migrate_v31_adds_schedule_run_worktree_columns_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE schedule_runs DROP COLUMN worktree_repo_root;
+             ALTER TABLE schedule_runs DROP COLUMN worktree_path;
+             ALTER TABLE schedule_runs DROP COLUMN worktree_branch;",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 30).unwrap();
+
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 31);
+        for col in ["worktree_repo_root", "worktree_path", "worktree_branch"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('schedule_runs') WHERE name = ?1",
+                    [col],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing column {col}");
+        }
     }
 
     #[test]

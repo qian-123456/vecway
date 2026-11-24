@@ -8,12 +8,20 @@ import {
 	getClosedBlankSideChatDrafts,
 	restoreClosedBlankSideChatDraft,
 } from "./RightPanelHeader";
+import { useComposer } from "../stores/composer";
 import { useSessions } from "../stores/sessions";
 import { useUi } from "../stores/ui";
 import { useSideChatView } from "../features/sidechat/viewStore";
 import { useToasts } from "../lib/toast";
 describe("RightPanelHeader blank side-chat close undo", () => {
 	beforeEach(() => {
+		if (typeof globalThis.ResizeObserver === "undefined") {
+			globalThis.ResizeObserver = class {
+				observe() {}
+				unobserve() {}
+				disconnect() {}
+			} as unknown as typeof ResizeObserver;
+		}
 		_clearClosedBlankSideChatDrafts();
 		useSideChatView.setState({ openTabs: {}, openChild: {}, usedAt: {} });
 		useToasts.setState({ items: [] });
@@ -91,7 +99,8 @@ describe("RightPanelHeader blank side-chat close undo", () => {
 		expect(useUi.getState().rightOpen).toBe(false);
 		expect(getClosedBlankSideChatDraft("p1")).toBeUndefined();
 
-		// Switch back to p1 and verify closing two blank tabs retains both snapshots and binds toasts per tabId (H7)
+		// Switch back to p1 (closing restoredId first) and verify closing two blank tabs retains both snapshots and binds toasts per tabId (H7)
+		useSideChatView.getState().closeTab("p1", restoredId!);
 		useUi.getState().selectSession("p1");
 		useUi.setState({ rightTab: "sidechat", openRightTabs: ["sidechat"], rightOpen: true });
 		const tabA = useSideChatView.getState().openBlankTab("p1");
@@ -101,7 +110,6 @@ describe("RightPanelHeader blank side-chat close undo", () => {
 		const view = render(<RightPanelHeader activeTab="sidechat" tabBadges={{} as never} />);
 		fireEvent.click(screen.getAllByRole("button", { name: /关闭标签页/ })[0]);
 		fireEvent.click(screen.getAllByRole("button", { name: /关闭标签页/ })[0]);
-
 		expect(getClosedBlankSideChatDrafts("p1").map((d) => d.tabId)).toEqual([tabB, tabA]);
 		expect(getClosedBlankSideChatDraft("p1", tabA)?.text).toBe("Draft A");
 		expect(getClosedBlankSideChatDraft("p1", tabB)?.text).toBe("Draft B");
@@ -148,5 +156,41 @@ describe("RightPanelHeader blank side-chat close undo", () => {
 		expect(tabsAfterB).toHaveLength(2);
 		expect(useComposer.getState().sideChatDrafts[tabsAfterB[1]]).toBe("Expired toast draft B");
 		expect(getClosedBlankSideChatDrafts("p1")).toHaveLength(0);
+	});
+
+	it("retains 6+ closed blank side-chat drafts without silent eviction and only deletes on explicit discard (P2-7)", () => {
+		const tabIds: string[] = [];
+		for (let i = 1; i <= 7; i += 1) {
+			const tid = useSideChatView.getState().openBlankTab("p1");
+			tabIds.push(tid);
+			useComposer.getState().setSideChatDraft(tid, `Saved draft #${i}`);
+		}
+
+		render(<RightPanelHeader activeTab="sidechat" tabBadges={{} as never} />);
+		for (let i = 0; i < 7; i += 1) {
+			fireEvent.click(screen.getAllByRole("button", { name: /关闭标签页/ })[0]);
+		}
+
+		const retained = getClosedBlankSideChatDrafts("p1");
+		expect(retained).toHaveLength(7);
+		expect(retained.map((d) => d.text)).toEqual([
+			"Saved draft #7",
+			"Saved draft #6",
+			"Saved draft #5",
+			"Saved draft #4",
+			"Saved draft #3",
+			"Saved draft #2",
+			"Saved draft #1",
+		]);
+		expect(sessionStorage.getItem("omp_closed_blank_sidechat_drafts")).toContain("Saved draft #1");
+
+		// Open restore popover and explicitly discard only Saved draft #3
+		fireEvent.click(screen.getByRole("button", { name: "恢复草稿 (7)" }));
+		fireEvent.click(screen.getByRole("button", { name: "删除草稿：Saved draft #3" }));
+
+		const afterDiscard = getClosedBlankSideChatDrafts("p1");
+		expect(afterDiscard).toHaveLength(6);
+		expect(afterDiscard.some((d) => d.text === "Saved draft #3")).toBe(false);
+		expect(afterDiscard.some((d) => d.text === "Saved draft #1")).toBe(true);
 	});
 });

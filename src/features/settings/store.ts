@@ -139,7 +139,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
 					for (const k of Object.keys(currentState) as (keyof Settings)[]) {
 						const keyRev = keyRevisions.get(k);
 						if (keyRev !== undefined && keyRev !== rev) {
-							(nextSettings as Record<string, unknown>)[k] = currentState[k];
+							(nextSettings as unknown as Record<string, unknown>)[k] = currentState[k];
 						}
 					}
 				}

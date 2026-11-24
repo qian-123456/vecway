@@ -221,7 +221,10 @@ describe("mobile gesture physics and exiting inertness fixes", () => {
   const origGetComputedStyle = window.getComputedStyle;
   vi.spyOn(window, "getComputedStyle").mockImplementation((el, pseudo) => {
    if (el === dialog) {
-    return { transform: "matrix(1, 0, 0, 1, 0, 88)" } as CSSStyleDeclaration;
+    return {
+     transform: "none",
+     translate: "0px 88px",
+    } as unknown as CSSStyleDeclaration;
    }
    return origGetComputedStyle(el, pseudo);
   });

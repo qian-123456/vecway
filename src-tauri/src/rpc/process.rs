@@ -1301,6 +1301,9 @@ pub async fn send_raw(handle: &Arc<SessionHandle>, frame: Value) -> Result<(), S
 /// optional new_session{parentSession} + get_state). Returns a handle that is
 /// NOT yet in the registry — `rpc::start` registers it.
 pub async fn spawn(state: &AppState, opts: &StartOpts) -> Result<Arc<SessionHandle>, String> {
+    if crate::git::commands::is_worktree_reserved(&opts.cwd) {
+        return Err("该工作树正在合并或清理，请稍后再试".to_string());
+    }
     let settings = state.settings.read().clone();
     spawn_with_sink(opts, &settings, sink_from_state(state)).await
 }

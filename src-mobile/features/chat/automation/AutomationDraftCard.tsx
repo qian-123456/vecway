@@ -19,21 +19,20 @@ import {
 	X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, errorMessage } from "../../../core/api";
+import { api, ApiError, errorMessage } from "../../../core/api";
 import { nav, paths } from "../../../core/nav";
 import { useMobileSchedules } from "../../../core/stores/schedules";
 import { Button, Chip, toast } from "../../../ui";
 import {
 	AGENT_TRIGGER_LABEL,
-	buildPayload,
 	cadenceText,
-	formFromSchedule,
 	renderAutomationPrompt,
 	resolveAgentTrigger,
+	scheduleDraftFromSchedule,
 	type AutomationPromptKey,
 	type AutomationSettingsSnapshot,
 	type ProbeTestResult,
-	type Schedule,
+	type ScheduleDraft,
 } from "../../more/schedule";
 import { useRightDrawer } from "../../panels/rightDrawerStore";
 import {
@@ -45,6 +44,14 @@ import {
 } from "./automationStatus";
 
 let cachedSettingsSnapshot: Partial<AutomationSettingsSnapshot> | null = null;
+const savedScheduleIdByDraft = new Map<string, string>();
+
+function deterministicScheduleIdFromDraft(draftId: string): string {
+	const cleaned = draftId.replace(/[^A-Za-z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
+	if (cleaned.startsWith("draft-") && cleaned.length > 6) return cleaned.slice(0, 64);
+	const suffix = cleaned ? cleaned.slice(0, 58) : "auto";
+	return `draft-${suffix}`;
+}
 
 async function loadPromptSettings(): Promise<Partial<AutomationSettingsSnapshot> | null> {
 	if (cachedSettingsSnapshot) return cachedSettingsSnapshot;
@@ -151,29 +158,80 @@ export function AutomationDraftCard({
 	const handleSave = async () => {
 		if (saving) return;
 		setSaving(true);
+		const key = `${sessionId}:${draftId}`;
+		let isUpdate = Boolean(existing);
 		try {
-			let resolvedExisting = existing;
-			if (draft.id) {
-				const freshList = await useMobileSchedules.getState().loadSchedules();
-				resolvedExisting = freshList.find((s) => s.id === draft.id) ?? null;
-			}
-			if (resolvedExisting) {
-				const merged = mergeAutomationDraftOntoSchedule(resolvedExisting, item);
-				const payload = buildPayload(formFromSchedule(merged), resolvedExisting);
-				if (!(item.presentFields ? item.presentFields.has("endAt") : draft.endAt !== undefined)) {
-					payload.endAt = resolvedExisting.endAt;
+			if (!savedScheduleIdByDraft.has(key)) {
+				let resolvedExisting = existing;
+				if (draft.id) {
+					const freshList = await useMobileSchedules.getState().loadSchedules();
+					resolvedExisting = freshList.find((s) => s.id === draft.id) ?? null;
 				}
-				if (merged.mode) payload.mode = merged.mode;
-				await useMobileSchedules.getState().updateSchedule(resolvedExisting.id, payload);
-			} else {
-				const payload: Record<string, unknown> = {
-					...draft,
-					enabled: draft.enabled ?? true,
-				};
-				await useMobileSchedules.getState().createSchedule(payload);
+				isUpdate = Boolean(resolvedExisting);
+				if (resolvedExisting) {
+					const merged = mergeAutomationDraftOntoSchedule(resolvedExisting, item);
+					const payload = scheduleDraftFromSchedule(merged);
+					await useMobileSchedules
+						.getState()
+						.updateSchedule(resolvedExisting.id, payload, resolvedExisting.updatedAt);
+					savedScheduleIdByDraft.set(key, resolvedExisting.id);
+				} else {
+					const settings = await api<Partial<AutomationSettingsSnapshot>>("GET", "/left/settings").catch(() => null);
+					const hasField = (k: keyof ScheduleDraft): boolean =>
+						item.presentFields ? item.presentFields.has(k) : draft[k] !== undefined;
+					const deterministicId = draft.id?.trim() || deterministicScheduleIdFromDraft(draftId);
+					const payload: Record<string, unknown> = {
+						...draft,
+						id: deterministicId,
+						enabled: hasField("enabled") && typeof draft.enabled === "boolean" ? draft.enabled : true,
+					};
+					if (settings) {
+						if (
+							!hasField("resultMode") &&
+							(settings.automationDefaultResultMode === "llm_summary" ||
+								settings.automationDefaultResultMode === "structured")
+						) {
+							payload.resultMode = settings.automationDefaultResultMode;
+						}
+						if (
+							!hasField("model") &&
+							typeof settings.automationDefaultModel === "string" &&
+							settings.automationDefaultModel.trim()
+						) {
+							payload.model = settings.automationDefaultModel.trim();
+						}
+						if (
+							!hasField("thinking") &&
+							typeof settings.automationDefaultThinking === "string" &&
+							settings.automationDefaultThinking.trim()
+						) {
+							payload.thinking = settings.automationDefaultThinking.trim();
+						}
+					}
+					try {
+						const created = await useMobileSchedules.getState().createSchedule(payload);
+						savedScheduleIdByDraft.set(key, created?.id ?? deterministicId);
+					} catch (createErr) {
+						if (createErr instanceof ApiError && createErr.status === 409 && !draft.id?.trim()) {
+							const refreshed = await useMobileSchedules.getState().loadSchedules().catch(() => null);
+							if (refreshed?.some((s) => s.id === deterministicId)) {
+								savedScheduleIdByDraft.set(key, deterministicId);
+							} else {
+								throw createErr;
+							}
+						} else {
+							throw createErr;
+						}
+					}
+				}
 			}
-			await onResolve(draftId, "saved");
-			toast(resolvedExisting ? "已更新自动化任务" : "已保存并启用自动化任务", { kind: "success" });
+			try {
+				await onResolve(draftId, "saved");
+			} catch {
+				toast("自动化已保存，但更新草案状态失败，点击重试即可同步状态", { kind: "error" });
+				return;
+			}
+			toast(isUpdate ? "已更新自动化任务" : "已保存并启用自动化任务", { kind: "success" });
 		} catch (e) {
 			toast(`保存失败：${errorMessage(e)}`, { kind: "error" });
 		} finally {
@@ -185,22 +243,32 @@ export function AutomationDraftCard({
 		if (dismissing) return;
 		setDismissing(true);
 		let resolvedExisting = existing;
-		if (!resolvedExisting && draft.id && !schedulesLoaded) {
-			const freshList = await useMobileSchedules.getState().loadSchedules().catch(() => [] as Schedule[]);
-			resolvedExisting = freshList.find((s) => s.id === draft.id) ?? null;
-		}
 		try {
-			await onResolve(draftId, "dismissed");
-		} catch {
-			/* proceed to editor even if resolve RPC fails */
+			if (draft.id) {
+				try {
+					const freshList = await useMobileSchedules.getState().loadSchedules();
+					resolvedExisting = freshList.find((s) => s.id === draft.id) ?? null;
+				} catch (e) {
+					toast(`刷新自动化列表失败：${errorMessage(e)}`, { kind: "error" });
+					return;
+				}
+			}
+			try {
+				await onResolve(draftId, "dismissed");
+			} catch {
+				/* proceed to editor even if resolve RPC fails */
+			}
+			const targetKey = resolvedExisting ? resolvedExisting.id : "new";
+			stashManualScheduleDraft(targetKey, {
+				draft: item.draft,
+				...(item.presentFields ? { presentFields: [...item.presentFields] } : {}),
+				...(item.cadencePresentFields ? { cadencePresentFields: [...item.cadencePresentFields] } : {}),
+			});
+			useRightDrawer.getState().closeDrawer();
+			nav.push(resolvedExisting ? `${paths.schedule(resolvedExisting.id)}?tab=config` : paths.scheduleNew());
 		} finally {
 			setDismissing(false);
 		}
-		const targetKey = resolvedExisting ? resolvedExisting.id : "new";
-		const handedOff = resolvedExisting ? mergeAutomationDraftOntoSchedule(resolvedExisting, item) : draft;
-		stashManualScheduleDraft(targetKey, handedOff);
-		useRightDrawer.getState().closeDrawer();
-		nav.push(resolvedExisting ? `${paths.schedule(resolvedExisting.id)}?tab=config` : paths.scheduleNew());
 	};
 
 	const handleDismiss = async () => {

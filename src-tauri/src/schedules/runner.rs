@@ -328,11 +328,18 @@ pub async fn resume_awaiting(
 }
 
 /// Manual and automatic runs share existence, cap and active-run guards.
-pub(crate) fn create_schedule_worktree(
+pub(crate) struct CreatedScheduleWorktree {
+    pub repo_root: String,
+    pub path: String,
+    pub branch: String,
+}
+
+/// Manual and automatic runs share existence, cap and active-run guards.
+pub(crate) fn create_schedule_worktree_info(
     base_path: &Path,
     name: &str,
     run_id: &str,
-) -> Result<String, String> {
+) -> Result<CreatedScheduleWorktree, String> {
     // Non-ASCII names (e.g. Chinese) slug to "", so always prefix.
     let slug = crate::git::worktree::slugify(name);
     let run_id_short = &run_id[..run_id.len().min(8)];
@@ -341,7 +348,43 @@ pub(crate) fn create_schedule_worktree(
     } else {
         format!("sched-{slug}-{run_id_short}")
     };
-    crate::git::worktree::create(base_path, &wt_name, None, None).map(|info| info.path)
+    let info =
+        crate::git::worktree::repo_info(base_path).ok_or_else(|| "不是 git 仓库".to_string())?;
+    let repo_root = info.main_root().to_string_lossy().into_owned();
+    let wt = crate::git::worktree::create(base_path, &wt_name, None, None)?;
+    let branch = wt
+        .branch
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| format!("omp/{}", crate::git::worktree::slugify(&wt_name)));
+    Ok(CreatedScheduleWorktree {
+        repo_root,
+        path: wt.path,
+        branch,
+    })
+}
+
+async fn create_and_record_schedule_worktree(
+    db: &std::sync::Arc<parking_lot::Mutex<rusqlite::Connection>>,
+    base_path: &Path,
+    name: &str,
+    run_id: &str,
+) -> Result<String, String> {
+    let base = base_path.to_path_buf();
+    let name = name.to_string();
+    let rid = run_id.to_string();
+    let created =
+        tokio::task::spawn_blocking(move || create_schedule_worktree_info(&base, &name, &rid))
+            .await
+            .map_err(|e| e.to_string())??;
+    let guard = db.lock();
+    let _ = store::set_run_worktree(
+        &guard,
+        run_id,
+        &created.repo_root,
+        &created.path,
+        &created.branch,
+    );
+    Ok(created.path)
 }
 
 pub async fn run_now(state: AppState, id: String) -> Result<ScheduleRun, String> {
@@ -387,7 +430,9 @@ async fn execute_run_with_existing_run(
         && policy == AutomationOverlapPolicy::Parallel
         && schedule.run_mode == ScheduleRunMode::Worktree
     {
-        match create_schedule_worktree(base_path, &schedule.name, &run_id) {
+        match create_and_record_schedule_worktree(&state.db, base_path, &schedule.name, &run_id)
+            .await
+        {
             Ok(path) => Some(path),
             Err(e) => {
                 finish_with_error(
@@ -419,7 +464,9 @@ async fn execute_run_with_existing_run(
         } else if schedule.agent_trigger == ScheduleAgentTrigger::Never
             && matches!(schedule.run_mode, ScheduleRunMode::Worktree)
         {
-            match create_schedule_worktree(base_path, &schedule.name, &run_id) {
+            match create_and_record_schedule_worktree(&state.db, base_path, &schedule.name, &run_id)
+                .await
+            {
                 Ok(p) => p,
                 Err(e) => {
                     finish_with_error(
@@ -665,7 +712,14 @@ async fn execute_run_with_existing_run(
     } else {
         match schedule.run_mode {
             ScheduleRunMode::Worktree => {
-                match create_schedule_worktree(base_path, &schedule.name, &run_id) {
+                match create_and_record_schedule_worktree(
+                    &state.db,
+                    base_path,
+                    &schedule.name,
+                    &run_id,
+                )
+                .await
+                {
                     Ok(p) => p,
                     Err(e) => {
                         finish_with_error_phase(

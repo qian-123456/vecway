@@ -22,6 +22,7 @@ import { SelectionToolbar } from "./components/SelectionToolbar";
 import { PendingBubble, TurnView } from "./components/TurnView";
 import type { Turn } from "./lib/turns";
 import { draftBook, queueFirstSend } from "./lib/drafts";
+import { loadUnsent } from "./lib/unsent";
 import { useRightDrawer } from "../panels/rightDrawerStore";
 import { useSessions } from "../../core/stores/sessions";
 import { PLAN_OFF } from "../../../src/features/chat/plan/planStatus";
@@ -431,6 +432,20 @@ describe("First-send recovery & draft plan-mode promotion", () => {
 		}
 	});
 
+	it("P2-3: restores rejected queued first goal alongside existing composer edits", async () => {
+		const realId = "s-first-with-edits";
+		draftBook.stash(realId, "激活期间补充说明", [
+			{ id: 1, name: "wait.png", isImage: true, url: "blob:wait", status: "up" },
+		]);
+		queueFirstSend(realId, "每日巡检");
+		await act(async () => {
+			render(<ChatPage route={{ name: "chat", path: `/s/${realId}`, params: { id: realId }, query: {} }} />);
+		});
+		const input = screen.getByLabelText("消息输入框") as HTMLTextAreaElement;
+		expect(input.value).toBe("每日巡检\n\n激活期间补充说明");
+		expect(loadUnsent(realId)).toBe("每日巡检\n\n激活期间补充说明");
+	});
+
 	it("transfers draft text and replaces route when toggling plan mode materializes a draft", async () => {
 		const draftId = "mobile-draft-plan-1";
 		const realId = "sess-plan-real-1";
@@ -598,7 +613,7 @@ describe("Image and composer parity", () => {
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: "发送" }));
 		});
-		expect(setAutoSpy).toHaveBeenCalledWith(true, "每小时检查日志");
+		expect(setAutoSpy).toHaveBeenCalledWith(true, "每小时检查日志", "/automate 每小时检查日志");
 		expect(box.value).toBe("/automate 每小时检查日志");
 		expect(sendSpy).not.toHaveBeenCalled();
 
@@ -607,8 +622,37 @@ describe("Image and composer parity", () => {
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: "发送" }));
 		});
-		expect(sendSpy).toHaveBeenCalledWith("每小时检查日志", expect.any(String));
+		expect(sendSpy).toHaveBeenCalledWith("每小时检查日志", expect.any(String), { preserveComposer: true });
 		expect(box.value).toBe("/automate 每小时检查日志");
+		c.dispose();
+	});
+
+	it("preserves extra text typed while /automate activation is in flight", async () => {
+		const c = new ChatController("s-comp-2");
+		let resolveAuto!: (id: string) => void;
+		vi.spyOn(c, "setAutomationMode").mockImplementationOnce(
+			() => new Promise<string>((r) => { resolveAuto = r; }),
+		);
+		const sendSpy = vi.spyOn(c, "send").mockResolvedValue(true);
+		render(wrap(c, <Composer sessionId="s-comp-2" />));
+
+		const box = screen.getByLabelText("消息输入框") as HTMLTextAreaElement;
+		await act(async () => {
+			fireEvent.input(box, { target: { value: "/automate 检查日志" } });
+			await new Promise((r) => requestAnimationFrame(r));
+		});
+		fireEvent.click(screen.getByRole("button", { name: "发送" }));
+		// User continues typing while POST /automation is pending
+		await act(async () => {
+			fireEvent.input(box, { target: { value: "/automate 检查日志 补充说明" } });
+			await new Promise((r) => requestAnimationFrame(r));
+		});
+		await act(async () => {
+			resolveAuto("s-comp-2");
+			await Promise.resolve();
+		});
+		expect(sendSpy).toHaveBeenCalledWith("检查日志", expect.any(String), { preserveComposer: true });
+		expect(box.value).toBe("补充说明");
 		c.dispose();
 	});
 });

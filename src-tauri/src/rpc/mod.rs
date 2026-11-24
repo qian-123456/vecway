@@ -51,6 +51,34 @@ static IDLE_EVICTION_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 // automation continuation is submitted. Ordinary mutating commands cannot race it.
 static AUTOMATION_RESUME_GUARDS: std::sync::LazyLock<parking_lot::Mutex<HashMap<u32, String>>> =
     std::sync::LazyLock::new(Default::default);
+static IN_FLIGHT_STARTUPS: std::sync::LazyLock<parking_lot::Mutex<HashMap<u64, String>>> =
+    std::sync::LazyLock::new(Default::default);
+static IN_FLIGHT_STARTUP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+struct InFlightStartupGuard {
+    id: u64,
+}
+
+impl Drop for InFlightStartupGuard {
+    fn drop(&mut self) {
+        IN_FLIGHT_STARTUPS.lock().remove(&self.id);
+    }
+}
+
+fn register_in_flight_startup(cwd: String) -> InFlightStartupGuard {
+    let id = IN_FLIGHT_STARTUP_SEQ.fetch_add(1, Ordering::Relaxed);
+    IN_FLIGHT_STARTUPS.lock().insert(id, cwd);
+    InFlightStartupGuard { id }
+}
+
+/// `(startup_id, cwd)` pairs for RPC session spawns currently between preflight and registry publication.
+pub(crate) fn in_flight_startup_cwds() -> Vec<(String, String)> {
+    IN_FLIGHT_STARTUPS
+        .lock()
+        .iter()
+        .map(|(id, cwd)| (format!("starting-{id}"), cwd.clone()))
+        .collect()
+}
 
 pub(crate) fn automation_resume_guarded(pid: u32) -> bool {
     AUTOMATION_RESUME_GUARDS.lock().contains_key(&pid)
@@ -618,8 +646,11 @@ pub async fn start(state: &AppState, opts: &StartOpts) -> Result<LiveSessionInfo
     let mode = opts.mode.unwrap_or_default();
     // Brief mutation gate for fast pre-checks and global workspace init only;
     // never hold the global mutation lock across lsof or 30s-120s child handshakes.
-    {
+    let _startup_in_flight = {
         let _mutation = catalog::session_mutation_lock().lock().await;
+        if crate::git::commands::is_worktree_reserved(&opts.cwd) {
+            return Err("该工作树正在合并或清理，请稍后再试".to_string());
+        }
         if let Some(file) = &opts.resume_file {
             if !std::path::Path::new(file).is_file() {
                 return Err(format!("session file no longer exists: {file}"));
@@ -641,7 +672,8 @@ pub async fn start(state: &AppState, opts: &StartOpts) -> Result<LiveSessionInfo
             let db = state.db.lock();
             let _ = crate::db::ensure_global_workspace(&db);
         }
-    }
+        register_in_flight_startup(opts.cwd.clone())
+    };
     if let Some(file) = &opts.resume_file {
         ensure_not_held(file).await?;
     }
@@ -673,6 +705,9 @@ pub async fn start(state: &AppState, opts: &StartOpts) -> Result<LiveSessionInfo
             Ok(())
         }
         .and_then(|()| {
+            if crate::git::commands::is_worktree_reserved(&opts.cwd) {
+                return Err("该工作树正在合并或清理，请稍后再试".into());
+            }
             if !handle.is_usable() {
                 return Err("omp exited before session registration".into());
             }
@@ -712,6 +747,7 @@ pub async fn start(state: &AppState, opts: &StartOpts) -> Result<LiveSessionInfo
             Ok(info)
         })
     };
+    drop(_startup_in_flight);
     let info = match reg_result {
         Ok(info) => info,
         Err(err) => {
@@ -850,10 +886,12 @@ pub async fn ensure_live(
                     .to_string_lossy()
                     .into_owned();
                 let _mutation = catalog::session_mutation_lock().lock().await;
+                if crate::git::commands::is_worktree_reserved(&dir) {
+                    return Err("该工作树正在合并或清理，请稍后再试".to_string());
+                }
                 if !std::path::Path::new(&dir).is_dir() {
                     return Err(format!("目录不存在: {dir}"));
                 }
-                // Persist first so the recomputed meta reports the new cwd.
                 catalog::set_cwd_override(state, session_id, &dir).await;
                 dir
             }

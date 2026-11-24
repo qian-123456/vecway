@@ -8,7 +8,7 @@ import { usePref } from "../../../core/stores/prefs";
 import { useSession, useSessions } from "../../../core/stores/sessions";
 import { BottomSheet, IconButton, MenuRow, openImage, Spinner, Switch, toast, type ViewerImage } from "../../../ui";
 import { ActionTile } from "../../../ui/ActionTile";
-import type { Attachment } from "../chatStore";
+import { remainingAfterSubmitted, type Attachment } from "../chatStore";
 import { useChat, useChatUi } from "../ChatContext";
 import { contextTone, formatContextPercent, queueChipText, resolveContextPercent } from "../lib/context";
 import { draftBook, takeComposerAction } from "../lib/drafts";
@@ -137,18 +137,35 @@ export function Composer({
 	const handleSend = async (raw: string) => {
 		const trimmed = raw.trim();
 		if (/^\/automate(?:\s|$)/i.test(trimmed)) {
+			const submittedRaw = raw;
 			const goalText = trimmed.replace(/^\/automate\s*/i, "").trim();
 			try {
-				const targetId = await controller.setAutomationMode(true, goalText || undefined);
+				const targetId = await controller.setAutomationMode(true, goalText || undefined, submittedRaw);
 				toast("自动化定制模式已开启");
 				if (targetId === sessionId) {
+					const cur = apiRef.current?.get() ?? "";
+					const remaining = remainingAfterSubmitted(cur, submittedRaw);
 					if (goalText) {
-						const sent = await controller.send(goalText, behavior);
-						if (!sent) {
-							apiRef.current?.set(raw, true);
-							saveUnsent(sessionId, raw);
+						if (remaining) {
+							apiRef.current?.set(remaining, true);
+							saveUnsent(sessionId, remaining);
+						} else if (cur === submittedRaw) {
+							apiRef.current?.set("");
+							clearUnsent(sessionId);
 						}
-					} else if (apiRef.current?.get() === raw) {
+						const sent = await controller.send(goalText, behavior, { preserveComposer: true });
+						if (!sent) {
+							const latest = apiRef.current?.get() ?? "";
+							const restored = remaining
+								? (latest === remaining ? cur : latest ? `${submittedRaw}\n${latest}` : submittedRaw)
+								: (latest ? `${submittedRaw}\n${latest}` : submittedRaw);
+							apiRef.current?.set(restored, true);
+							saveUnsent(sessionId, restored);
+						}
+					} else if (remaining) {
+						apiRef.current?.set(remaining, true);
+						saveUnsent(sessionId, remaining);
+					} else if (cur === submittedRaw) {
 						apiRef.current?.set("");
 						clearUnsent(sessionId);
 					}

@@ -114,7 +114,14 @@ export function AutomationSettingsSheet({
 	const focusedPromptRef = useRef<AutomationPromptKey | null>(null);
 	const dirtyPromptsRef = useRef<Set<AutomationPromptKey>>(new Set());
 	const sentPromptDraftRef = useRef<Partial<Record<AutomationPromptKey, string>>>({});
-
+	const promptWriteGenRef = useRef<Record<AutomationPromptKey, number>>({
+		mockTest: 0,
+		realOnceTest: 0,
+		realLoopTest: 0,
+		adjust: 0,
+	});
+	const pendingPromptGensRef = useRef<Partial<Record<AutomationPromptKey, number>>>({});
+	const effectivePromptValueRef = useRef<Partial<Record<AutomationPromptKey, string | null>>>({});
 	useEffect(() => {
 		setDraftPrompts((prev) => {
 			let changed = false;
@@ -154,10 +161,12 @@ export function AutomationSettingsSheet({
 				const waiters = pendingWaitersRef.current;
 				const msgs = pendingOkMsgsRef.current;
 				const activeKeys = new Set(pendingKeysRef.current);
+				const batchPromptGens = { ...pendingPromptGensRef.current };
 				pendingPatchRef.current = null;
 				pendingWaitersRef.current = [];
 				pendingOkMsgsRef.current = [];
 				pendingKeysRef.current = new Set();
+				pendingPromptGensRef.current = {};
 				syncBusyState(activeKeys);
 				setError(null);
 				try {
@@ -171,8 +180,12 @@ export function AutomationSettingsSheet({
 					) {
 						throw new Error("电脑未返回有效的自动化重合策略");
 					}
+					const reconciled: Partial<Record<AutomationPromptKey, string>> = {};
 					for (const { key, field } of PROMPT_FIELDS) {
-						if (!(field in batch)) continue;
+						const batchGen = batchPromptGens[key];
+						if (!(field in batch) || batchGen === undefined) continue;
+						if (batchGen !== promptWriteGenRef.current[key]) continue;
+						delete effectivePromptValueRef.current[key];
 						const sentDraft = sentPromptDraftRef.current[key];
 						if (
 							focusedPromptRef.current !== key &&
@@ -180,7 +193,13 @@ export function AutomationSettingsSheet({
 						) {
 							dirtyPromptsRef.current.delete(key);
 							delete sentPromptDraftRef.current[key];
+							const raw = updated[field];
+							reconciled[key] =
+								typeof raw === "string" && raw.trim() ? raw : DEFAULT_AUTOMATION_PROMPTS[key];
 						}
+					}
+					if (Object.keys(reconciled).length > 0) {
+						setDraftPrompts((prev) => ({ ...prev, ...reconciled }));
 					}
 					invalidateAutomationPromptSettingsCache();
 					onUpdate(updated);
@@ -188,6 +207,12 @@ export function AutomationSettingsSheet({
 					if (lastMsg) toast(lastMsg, { kind: "success" });
 					for (const resolve of waiters) resolve(updated);
 				} catch (e) {
+					for (const { key } of PROMPT_FIELDS) {
+						const batchGen = batchPromptGens[key];
+						if (batchGen !== undefined && batchGen === promptWriteGenRef.current[key]) {
+							delete effectivePromptValueRef.current[key];
+						}
+					}
 					const msg = errorMessage(e);
 					setError(msg);
 					toast(`保存失败：${msg}`, { kind: "error" });
@@ -228,12 +253,20 @@ export function AutomationSettingsSheet({
 		const trimmed = raw.trim();
 		const def = DEFAULT_AUTOMATION_PROMPTS[key].trim();
 		const nextVal = !trimmed || trimmed === def ? null : raw;
-		const currentStored = (snapshot?.[field] as string | null | undefined) ?? null;
-		if (nextVal === currentStored) {
-			dirtyPromptsRef.current.delete(key);
-			delete sentPromptDraftRef.current[key];
+		const hasPendingWrite = Object.prototype.hasOwnProperty.call(effectivePromptValueRef.current, key);
+		const effectiveCurrent = hasPendingWrite
+			? effectivePromptValueRef.current[key]
+			: ((snapshot?.[field] as string | null | undefined) ?? null);
+		if (nextVal === effectiveCurrent) {
+			if (!hasPendingWrite) {
+				dirtyPromptsRef.current.delete(key);
+				delete sentPromptDraftRef.current[key];
+			}
 			return;
 		}
+		const gen = ++promptWriteGenRef.current[key];
+		effectivePromptValueRef.current[key] = nextVal;
+		pendingPromptGensRef.current[key] = gen;
 		sentPromptDraftRef.current[key] = raw;
 		await patchSettings(key, { [field]: nextVal } as Partial<AutomationSettingsSnapshot>, "提示词模板已保存");
 	};
@@ -242,6 +275,9 @@ export function AutomationSettingsSheet({
 		const previous =
 			(typeof snapshot?.[field] === "string" && (snapshot[field] as string).trim()) || draftPrompts[key];
 		const def = DEFAULT_AUTOMATION_PROMPTS[key];
+		const gen = ++promptWriteGenRef.current[key];
+		effectivePromptValueRef.current[key] = null;
+		pendingPromptGensRef.current[key] = gen;
 		dirtyPromptsRef.current.add(key);
 		sentPromptDraftRef.current[key] = def;
 		setDraftPrompts((prev) => ({ ...prev, [key]: def }));
@@ -252,6 +288,9 @@ export function AutomationSettingsSheet({
 				action: {
 					label: "撤销",
 					onClick: async () => {
+						const undoGen = ++promptWriteGenRef.current[key];
+						effectivePromptValueRef.current[key] = previous;
+						pendingPromptGensRef.current[key] = undoGen;
 						dirtyPromptsRef.current.add(key);
 						sentPromptDraftRef.current[key] = previous;
 						setDraftPrompts((prev) => ({ ...prev, [key]: previous }));
@@ -486,7 +525,6 @@ export function AutomationSettingsSheet({
 								"model",
 								{
 									automationDefaultModel: modelString({ provider: next.provider, id: next.id }),
-									automationDefaultThinking: defaultThinking,
 								},
 								"默认自动化模型已更新",
 							);

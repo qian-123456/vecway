@@ -136,7 +136,8 @@ fn stage_script_and_resolve_command(
     let quoted = shell_quote_single(&script_path);
     let default_runner = if filename.ends_with(".py") {
         format!("python3 {quoted}")
-    } else if filename.ends_with(".mjs") || filename.ends_with(".cjs") || filename.ends_with(".js") {
+    } else if filename.ends_with(".mjs") || filename.ends_with(".cjs") || filename.ends_with(".js")
+    {
         format!("node {quoted}")
     } else {
         format!("bash {quoted}")
@@ -258,6 +259,134 @@ fn read_existing_staged_script(auto_dir: &Path) -> String {
     }
     out.trim().to_string()
 }
+
+fn split_shell_tokens(cmd: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let mut in_token = false;
+    let mut chars = cmd.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            c if c.is_whitespace() => {
+                if in_token {
+                    tokens.push(std::mem::take(&mut cur));
+                    in_token = false;
+                }
+            }
+            '\'' => {
+                in_token = true;
+                for c in chars.by_ref() {
+                    if c == '\'' {
+                        break;
+                    }
+                    cur.push(c);
+                }
+            }
+            '"' => {
+                in_token = true;
+                while let Some(c) = chars.next() {
+                    if c == '"' {
+                        break;
+                    }
+                    if c == '\\' {
+                        if let Some(esc) = chars.next() {
+                            if matches!(esc, '"' | '\\' | '$' | '`') {
+                                cur.push(esc);
+                            } else {
+                                cur.push('\\');
+                                cur.push(esc);
+                            }
+                        }
+                    } else {
+                        cur.push(c);
+                    }
+                }
+            }
+            '\\' => {
+                in_token = true;
+                if let Some(esc) = chars.next() {
+                    cur.push(esc);
+                }
+            }
+            other => {
+                in_token = true;
+                cur.push(other);
+            }
+        }
+    }
+    if in_token {
+        tokens.push(cur);
+    }
+    tokens
+}
+
+fn is_script_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "sh" | "py" | "js" | "mjs" | "cjs"))
+}
+
+fn resolve_active_managed_script(
+    auto_dir: &Path,
+    probe_command: &str,
+) -> Option<std::path::PathBuf> {
+    let canon_auto = std::fs::canonicalize(auto_dir).ok()?;
+    let state_dir = canon_auto.join("state");
+    let tokens = split_shell_tokens(probe_command);
+    let mut fallback: Option<std::path::PathBuf> = None;
+    for token in tokens {
+        let mut candidates = vec![token.as_str()];
+        if let Some((_, rhs)) = token.split_once('=') {
+            if !rhs.is_empty() {
+                candidates.push(rhs);
+            }
+        }
+        for raw in candidates {
+            let p = Path::new(raw);
+            let candidate = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                auto_dir.join(p)
+            };
+            let Ok(canon_cand) = std::fs::canonicalize(&candidate) else {
+                continue;
+            };
+            if !canon_cand.starts_with(&canon_auto)
+                || canon_cand.starts_with(&state_dir)
+                || !canon_cand.is_file()
+            {
+                continue;
+            }
+            if is_script_extension(&canon_cand) {
+                return Some(canon_cand);
+            }
+            if fallback.is_none() {
+                fallback = Some(canon_cand);
+            }
+        }
+    }
+    fallback
+}
+
+/// Reads the active managed script referenced by `probe_command` (e.g. under
+/// `auto_dir/revisions/<rev>/...`) when valid and confined inside `auto_dir`,
+/// falling back to top-level staged scripts under `auto_dir`.
+pub fn read_active_or_staged_script(auto_dir: &Path, probe_command: Option<&str>) -> String {
+    if let Some(cmd) = probe_command.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(active_path) = resolve_active_managed_script(auto_dir, cmd) {
+            if let Ok(text) = std::fs::read_to_string(&active_path) {
+                let name = active_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("script");
+                let snippet: String = text.chars().take(6000).collect();
+                return format!("# {name}\n{snippet}").trim().to_string();
+            }
+        }
+    }
+    read_existing_staged_script(auto_dir)
+}
+
 pub fn resolve_stage_dir(auto_dir: &Path, preview: bool) -> Result<std::path::PathBuf, String> {
     if !preview {
         return Ok(auto_dir.to_path_buf());
@@ -296,8 +425,8 @@ pub async fn generate_draft_with_options(
         .as_ref()
         .and_then(|c| serde_json::to_string_pretty(c).ok())
         .unwrap_or_default();
-    let existing_script = if current.is_some() {
-        read_existing_staged_script(&auto_dir)
+    let existing_script = if let Some(cur) = current.as_ref() {
+        read_active_or_staged_script(&auto_dir, cur.probe_command.as_deref())
     } else {
         String::new()
     };
@@ -368,12 +497,16 @@ mod tests {
 
     #[test]
     fn preview_staging_isolates_revision_and_preserves_live_script() {
-        let auto_dir = std::env::temp_dir().join(format!("ompws-author-prev-{}", uuid::Uuid::new_v4()));
+        let auto_dir =
+            std::env::temp_dir().join(format!("ompws-author-prev-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&auto_dir).unwrap();
         let live_script = auto_dir.join("check.sh");
         std::fs::write(&live_script, "#!/usr/bin/env bash\necho live\n").unwrap();
 
-        assert_eq!(read_existing_staged_script(&auto_dir), "# check.sh\n#!/usr/bin/env bash\necho live");
+        assert_eq!(
+            read_existing_staged_script(&auto_dir),
+            "# check.sh\n#!/usr/bin/env bash\necho live"
+        );
 
         let stage_dir = resolve_stage_dir(&auto_dir, true).unwrap();
         assert!(stage_dir.starts_with(auto_dir.join("revisions")));
@@ -382,7 +515,10 @@ mod tests {
         let raw = r##"{"name":"Fixed","cadence":{"kind":"interval","minutes":5},"agentTrigger":"on_signal","scriptFilename":"check.sh","scriptContent":"#!/usr/bin/env bash\necho fixed","probeCommand":null,"prompt":"inspect"}"##;
         let res = parse_and_stage_output("auto-prev", &stage_dir, raw, "fix").unwrap();
         let cmd = res.probe_command.unwrap();
-        assert!(cmd.contains("revisions/"), "expected revision path in {cmd}");
+        assert!(
+            cmd.contains("revisions/"),
+            "expected revision path in {cmd}"
+        );
         assert_eq!(
             std::fs::read_to_string(&live_script).unwrap(),
             "#!/usr/bin/env bash\necho live\n"
@@ -392,5 +528,49 @@ mod tests {
             "#!/usr/bin/env bash\necho fixed\n"
         );
         let _ = std::fs::remove_dir_all(&auto_dir);
+    }
+
+    #[test]
+    fn subsequent_repair_reads_active_revision_script_over_stale_top_level_and_blocks_escapes() {
+        let root = std::env::temp_dir().join(format!("ompws-author-m2-{}", uuid::Uuid::new_v4()));
+        let auto_dir = root.join("auto-1");
+        let rev_dir = auto_dir.join("revisions").join("rev-active");
+        let state_dir = auto_dir.join("state");
+        let outside_dir = root.join("outside");
+        std::fs::create_dir_all(&rev_dir).unwrap();
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+
+        std::fs::write(
+            auto_dir.join("check.sh"),
+            "#!/usr/bin/env bash\necho stale\n",
+        )
+        .unwrap();
+        let active_script = rev_dir.join("check.sh");
+        std::fs::write(&active_script, "#!/usr/bin/env bash\necho active-rev\n").unwrap();
+        std::fs::write(state_dir.join("cursor.sh"), "echo state\n").unwrap();
+        let outside_script = outside_dir.join("secret.sh");
+        std::fs::write(&outside_script, "echo secret\n").unwrap();
+
+        let cmd = format!("bash {}", shell_quote_single(&active_script));
+        let read_back = read_active_or_staged_script(&auto_dir, Some(&cmd));
+        assert_eq!(
+            read_back,
+            "# check.sh\n#!/usr/bin/env bash\necho active-rev"
+        );
+
+        // Paths escaping auto_dir or pointing into state/ must never be read as the active script;
+        // instead it falls back safely to auto_dir top-level staged scripts.
+        let escape_cmd = format!("bash {}", shell_quote_single(&outside_script));
+        let fallback = read_active_or_staged_script(&auto_dir, Some(&escape_cmd));
+        assert_eq!(fallback, "# check.sh\n#!/usr/bin/env bash\necho stale");
+
+        let rel_escape = "bash '../outside/secret.sh'";
+        assert_eq!(
+            read_active_or_staged_script(&auto_dir, Some(rel_escape)),
+            "# check.sh\n#!/usr/bin/env bash\necho stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

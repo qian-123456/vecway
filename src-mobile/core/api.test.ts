@@ -41,9 +41,19 @@ describe("api", () => {
 		expect(useConnection.getState().phase).toBe("unauthorized");
 	});
 
-	it("normalizes server errors to the body's error text, falling back to the status", async () => {
-		fetchMock.mockResolvedValueOnce(json(400, { error: "不支持的图片格式" }));
-		await expect(api("POST", "/x")).rejects.toMatchObject({ status: 400, message: "不支持的图片格式" });
+	it("normalizes server errors to the body's error text, preserves JSON error data, and falls back to status", async () => {
+		fetchMock.mockResolvedValueOnce(json(400, { error: "不支持的图片格式", sessionId: "real-123" }));
+		try {
+			await api("POST", "/x");
+			throw new Error("expected throw");
+		} catch (e) {
+			expect(e).toBeInstanceOf(ApiError);
+			expect(e).toMatchObject({
+				status: 400,
+				message: "不支持的图片格式",
+				data: { error: "不支持的图片格式", sessionId: "real-123" },
+			});
+		}
 		fetchMock.mockResolvedValueOnce(new Response("", { status: 500, statusText: "Internal Server Error" }));
 		await expect(api("GET", "/x")).rejects.toMatchObject({ status: 500, message: "Internal Server Error" });
 	});

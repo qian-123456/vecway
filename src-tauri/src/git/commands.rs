@@ -1,7 +1,8 @@
 //! [C] Tauri commands: git + time machine (docs/ARCHITECTURE.md §7).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use tauri::Emitter;
@@ -51,7 +52,149 @@ async fn removal_session_cwds(state: &AppState, orphan_only: bool) -> Vec<(Strin
             .filter(|handle| handle.alive.load(std::sync::atomic::Ordering::SeqCst))
             .map(|handle| (handle.session_id.read().clone(), handle.cwd.clone())),
     );
+    sessions.extend(crate::mobile::api::draft::active_cwds().await);
+    sessions.extend(crate::rpc::in_flight_startup_cwds());
+    sessions.extend(active_terminal_cwds());
     sessions
+}
+
+static ACTIVE_TERMINAL_CWDS: LazyLock<std::sync::Mutex<std::collections::HashMap<u64, String>>> =
+    LazyLock::new(Default::default);
+static TERMINAL_OWNERSHIP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// RAII guard keeping an in-flight or active terminal's cwd registered in
+/// `ACTIVE_TERMINAL_CWDS` until PTY spawn fails, the child exits, or the terminal closes.
+pub(crate) struct TerminalOwnershipGuard {
+    id: u64,
+}
+
+impl Drop for TerminalOwnershipGuard {
+    fn drop(&mut self) {
+        ACTIVE_TERMINAL_CWDS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
+    }
+}
+
+/// Atomically verify `cwd` is not inside a reserved worktree and register an
+/// active terminal ownership guard for it. Callers MUST hold `catalog::session_mutation_lock()`.
+pub(crate) fn try_register_terminal_ownership(cwd: &str) -> Result<TerminalOwnershipGuard, String> {
+    if is_worktree_reserved(cwd) {
+        return Err("该工作树正在合并或清理，请稍后再试".to_string());
+    }
+    let id = TERMINAL_OWNERSHIP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let key = norm_worktree_key(cwd);
+    ACTIVE_TERMINAL_CWDS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id, key);
+    Ok(TerminalOwnershipGuard { id })
+}
+
+pub(crate) fn active_terminal_cwds() -> Vec<(String, String)> {
+    ACTIVE_TERMINAL_CWDS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(id, cwd)| (format!("terminal:{id}"), cwd.clone()))
+        .collect()
+}
+
+fn has_active_terminal_inside(target: &Path) -> bool {
+    ACTIVE_TERMINAL_CWDS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .any(|cwd| Path::new(cwd).starts_with(target))
+}
+
+pub(crate) static RESERVED_WORKTREES: LazyLock<std::sync::Mutex<HashSet<String>>> =
+    LazyLock::new(Default::default);
+
+fn canonical_or_ancestor(path: &Path) -> PathBuf {
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return canon;
+    }
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = path;
+    while let Some(parent) = cur.parent() {
+        if let Some(name) = cur.file_name() {
+            missing.push(name.to_os_string());
+        }
+        if let Ok(mut canon) = std::fs::canonicalize(parent) {
+            for part in missing.into_iter().rev() {
+                canon.push(part);
+            }
+            return canon;
+        }
+        cur = parent;
+    }
+    path.to_path_buf()
+}
+
+fn norm_worktree_key(path: &str) -> String {
+    let canon = canonical_or_ancestor(Path::new(path));
+    let raw = canon.to_string_lossy();
+    let trimmed = if raw.len() > 1 {
+        raw.trim_end_matches('/')
+    } else {
+        raw.as_ref()
+    };
+    match trimmed.strip_prefix("/private/") {
+        Some(rest) => format!("/{rest}"),
+        None => trimmed.to_string(),
+    }
+}
+
+/// True if `path` equals or lies inside a worktree currently reserved for merge/cleanup.
+pub(crate) fn is_worktree_reserved(path: &str) -> bool {
+    let key = norm_worktree_key(path);
+    let candidate = Path::new(&key);
+    let guard = RESERVED_WORKTREES.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .iter()
+        .any(|reserved| candidate.starts_with(Path::new(reserved)))
+}
+
+/// RAII reservation guard holding a worktree path in `RESERVED_WORKTREES` until
+/// commit/merge/removal completes or errors out.
+pub(crate) struct WorktreeReservationGuard {
+    key: String,
+}
+
+impl WorktreeReservationGuard {
+    pub(crate) fn matches(&self, path: &str) -> bool {
+        self.key == norm_worktree_key(path)
+    }
+}
+
+impl Drop for WorktreeReservationGuard {
+    fn drop(&mut self) {
+        RESERVED_WORKTREES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
+/// Atomically reserve `path` when neither it nor any ancestor/descendant is already reserved.
+/// Callers that coordinate with session startup MUST hold `catalog::session_mutation_lock()`.
+pub(crate) fn try_reserve_worktree(path: &str) -> Result<WorktreeReservationGuard, String> {
+    let key = norm_worktree_key(path);
+    let candidate = Path::new(&key);
+    if has_active_terminal_inside(candidate) {
+        return Err("工作树仍被终端使用，已拒绝操作".to_string());
+    }
+    let mut guard = RESERVED_WORKTREES.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.iter().any(|existing| {
+        let ex = Path::new(existing);
+        candidate.starts_with(ex) || ex.starts_with(candidate)
+    }) {
+        return Err("该工作树正在合并或清理，请稍后再试".to_string());
+    }
+    guard.insert(key.clone());
+    Ok(WorktreeReservationGuard { key })
 }
 
 /// Paths of registered project workspaces.
@@ -173,7 +316,7 @@ pub async fn git_list_worktrees(
     list_worktrees_for_app(&state, repo).await
 }
 
-pub(crate) async fn remove_worktree_for_app(
+async fn remove_worktree_inner(
     state: &AppState,
     repo: String,
     path: String,
@@ -181,7 +324,6 @@ pub(crate) async fn remove_worktree_for_app(
     force: bool,
     orphan_only: Option<bool>,
 ) -> Result<(), String> {
-    let _mutation = crate::catalog::session_mutation_lock().lock().await;
     // An orphan listing is only a preview: re-read ownership at mutation time.
     let sessions = removal_session_cwds(state, orphan_only.unwrap_or(false)).await;
     blocking(move || {
@@ -194,6 +336,49 @@ pub(crate) async fn remove_worktree_for_app(
         )
     })
     .await
+}
+
+pub(crate) async fn remove_worktree_for_app(
+    state: &AppState,
+    repo: String,
+    path: String,
+    delete_branch: bool,
+    force: bool,
+    orphan_only: Option<bool>,
+) -> Result<(), String> {
+    let _mutation = crate::catalog::session_mutation_lock().lock().await;
+    let _reservation = try_reserve_worktree(&path)?;
+    remove_worktree_inner(state, repo, path, delete_branch, force, orphan_only).await
+}
+
+pub(crate) async fn remove_reserved_worktree_for_app(
+    state: &AppState,
+    reservation: &WorktreeReservationGuard,
+    repo: String,
+    path: String,
+    delete_branch: bool,
+    force: bool,
+    orphan_only: Option<bool>,
+) -> Result<(), String> {
+    if !reservation.matches(&path) {
+        return Err("工作树已变化，请刷新后再确认".to_string());
+    }
+    let _mutation = crate::catalog::session_mutation_lock().lock().await;
+    remove_worktree_inner(state, repo, path, delete_branch, force, orphan_only).await
+}
+
+/// Check worktree occupancy and atomically reserve the worktree under `session_mutation_lock`
+/// BEFORE any Git commit, merge, or removal write begins. The returned RAII guard must be
+/// held across commit, merge, and worktree removal.
+pub(crate) async fn reserve_worktree_for_app(
+    st: &AppState,
+    worktree_path: &str,
+) -> Result<WorktreeReservationGuard, String> {
+    let _mutation = crate::catalog::session_mutation_lock().lock().await;
+    let sessions = removal_session_cwds(st, false).await;
+    let target = PathBuf::from(worktree_path);
+    blocking(move || worktree::ensure_unused(&target, &sessions, &tm::list())).await?;
+    try_reserve_worktree(worktree_path)
 }
 
 #[tauri::command]
@@ -1176,4 +1361,118 @@ pub async fn git_clone_repo(
         )
     })
     .await
+}
+
+#[cfg(test)]
+mod reservation_tests {
+    use super::*;
+
+    #[test]
+    fn worktree_reservation_blocks_concurrent_and_nested_access_and_releases_on_drop() {
+        let base = std::env::temp_dir().join(format!("omp-wt-res-{}", uuid::Uuid::new_v4()));
+        let sub = base.join("packages").join("app");
+        std::fs::create_dir_all(&sub).unwrap();
+        let base_str = base.to_string_lossy().into_owned();
+        let sub_str = sub.to_string_lossy().into_owned();
+
+        assert!(!is_worktree_reserved(&base_str));
+        assert!(!is_worktree_reserved(&sub_str));
+
+        let guard = try_reserve_worktree(&base_str).expect("first reservation must succeed");
+        assert!(is_worktree_reserved(&base_str));
+        assert!(is_worktree_reserved(&sub_str));
+
+        let dup_err = try_reserve_worktree(&base_str)
+            .err()
+            .expect("concurrent reservation on same worktree must fail");
+        assert!(dup_err.contains("正在合并或清理"));
+        let sub_err = try_reserve_worktree(&sub_str)
+            .err()
+            .expect("nested path reservation must fail");
+        assert!(sub_err.contains("正在合并或清理"));
+
+        drop(guard);
+        assert!(!is_worktree_reserved(&base_str));
+        assert!(!is_worktree_reserved(&sub_str));
+
+        let guard2 = try_reserve_worktree(&base_str).expect("reservation must succeed after drop");
+        drop(guard2);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn terminal_ownership_blocks_worktree_reservation_until_dropped() {
+        let base = std::env::temp_dir().join(format!("omp-term-own-{}", uuid::Uuid::new_v4()));
+        let sub = base.join("nested");
+        std::fs::create_dir_all(&sub).unwrap();
+        let base_str = base.to_string_lossy().into_owned();
+        let sub_str = sub.to_string_lossy().into_owned();
+
+        let term_guard =
+            try_register_terminal_ownership(&sub_str).expect("terminal ownership must register");
+        assert!(active_terminal_cwds()
+            .iter()
+            .any(|(_, cwd)| cwd == &norm_worktree_key(&sub_str)));
+        assert!(worktree::ensure_unused(&base, &active_terminal_cwds(), &[]).is_err());
+
+        let res_err = try_reserve_worktree(&base_str)
+            .err()
+            .expect("active terminal inside worktree must block reservation");
+        assert!(res_err.contains("终端"));
+
+        drop(term_guard);
+        assert!(worktree::ensure_unused(&base, &active_terminal_cwds(), &[]).is_ok());
+        let wt_guard = try_reserve_worktree(&base_str)
+            .expect("reservation must succeed once terminal guard drops");
+        let term_err = try_register_terminal_ownership(&sub_str)
+            .err()
+            .expect("reserved worktree must reject new terminal ownership");
+        assert!(term_err.contains("正在合并或清理"));
+
+        drop(wt_guard);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn worktree_create_honors_active_reservation() {
+        let repo = std::env::temp_dir().join(format!("omp-wt-create-res-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| -> bool {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !git(&["init", "-q", "-b", "main"]) {
+            let _ = std::fs::remove_dir_all(&repo);
+            return;
+        }
+        assert!(git(&["config", "user.name", "t"]));
+        assert!(git(&["config", "user.email", "t@example.com"]));
+        assert!(git(&["config", "commit.gpgsign", "false"]));
+        std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
+        assert!(git(&["add", "-A"]));
+        assert!(git(&["commit", "-q", "-m", "init"]));
+
+        let planned = repo.join(worktree::WORKTREES_DIR).join("sched-reuse");
+        let planned_str = planned.to_string_lossy().into_owned();
+        let reservation = try_reserve_worktree(&planned_str).expect("reserve planned path");
+
+        let err = worktree::create(&repo, "sched-reuse", Some("feature/reused"), None)
+            .err()
+            .expect("worktree creation must be rejected while path is reserved");
+        assert!(err.contains("正在合并或清理"), "unexpected error: {err}");
+        assert!(!planned.exists());
+
+        drop(reservation);
+        let created = worktree::create(&repo, "sched-reuse", Some("feature/reused"), None)
+            .expect("worktree creation succeeds after reservation drops");
+        assert_eq!(created.branch.as_deref(), Some("feature/reused"));
+
+        let _ = worktree::remove(&repo, Path::new(&created.path), true, true);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
 }

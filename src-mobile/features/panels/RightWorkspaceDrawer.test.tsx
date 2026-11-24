@@ -419,4 +419,55 @@ describe("RightWorkspaceDrawer & panel overhaul", () => {
 		expect(dialog.style.transform).toBe("translate3d(100%,0,0)");
 		vi.useRealTimers();
 	});
+
+	it("keeps RightWorkspaceDrawer at translate3d(100%,0,0) before rAF flips shown=true on normal open", async () => {
+		vi.spyOn(apiModule, "api").mockImplementation(async (method, path) => {
+			if (method === "GET" && path.endsWith("/git/status")) return { isRepo: true, branch: "main", files: [] };
+			return {};
+		});
+		const rafCbs: FrameRequestCallback[] = [];
+		const origRaf = window.requestAnimationFrame;
+		vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+			rafCbs.push(cb);
+			return rafCbs.length;
+		});
+		try {
+			render(<RightWorkspaceDrawer sessionId="s1" />);
+			act(() => useRightDrawer.getState().openDrawer("s1", "git"));
+			const dialog = screen.getByRole("dialog", { name: "工作区抽屉" });
+			// Before rAF gate: must remain offscreen at 100% so entry transition animates 100% -> 0
+			expect(dialog.style.transform).toBe("translate3d(100%,0,0)");
+
+			act(() => {
+				while (rafCbs.length) rafCbs.shift()!(16);
+			});
+			expect(dialog.style.transform).toBe("translate3d(0,0,0)");
+		} finally {
+			vi.stubGlobal("requestAnimationFrame", origRaf);
+		}
+	});
+
+	it("P2-8: re-samples live drawer X when horizontal swipe claims the axis without snapping back", async () => {
+		vi.spyOn(apiModule, "api").mockImplementation(async (method, path) => {
+			if (method === "GET" && path.endsWith("/git/status")) return { isRepo: true, branch: "main", files: [] };
+			return {};
+		});
+		render(<RightWorkspaceDrawer sessionId="s1" />);
+		act(() => useRightDrawer.getState().openDrawer("s1", "git"));
+		const dialog = screen.getByRole("dialog", { name: "工作区抽屉" });
+
+		// Drawer is mid-open at 120px when finger touches down
+		dialog.style.transform = "matrix(1, 0, 0, 1, 120, 0)";
+		fireEvent.touchStart(dialog, { touches: [{ clientX: 100, clientY: 200 }], timeStamp: 10 });
+
+		// Animation advances drawer to 16px before finger crosses the 10px horizontal swipe threshold
+		dialog.style.transform = "matrix(1, 0, 0, 1, 16, 0)";
+		fireEvent.touchMove(dialog, { touches: [{ clientX: 125, clientY: 200 }], timeStamp: 20 });
+		expect(dialog.dataset.dragging).toBe("true");
+		expect(dialog.style.transform).toBe("translate3d(16px,0,0)");
+
+		// Subsequent horizontal drag moves smoothly from liveBaseX=16
+		fireEvent.touchMove(dialog, { touches: [{ clientX: 145, clientY: 200 }], timeStamp: 30 });
+		expect(dialog.style.transform).toBe("translate3d(36px,0,0)");
+	});
 });

@@ -7,6 +7,7 @@ import { useSessions } from "../../../core/stores/sessions";
 import type { SpaceMode } from "../../../core/types";
 import {
 	AUTOMATION_COMPOSER_SYSTEM_PROMPT,
+	formFromSchedule,
 	type Cadence,
 	type NotifyMode,
 	type ProbeTestResult,
@@ -14,6 +15,7 @@ import {
 	type Schedule,
 	type ScheduleAgentTrigger,
 	type ScheduleDraft,
+	type ScheduleForm,
 	type ScheduleResultMode,
 } from "../../more/schedule";
 import { draftBook, queueFirstSend } from "../lib/drafts";
@@ -31,6 +33,7 @@ export interface AutomationDraftStatus {
 export interface AutomationSessionState {
 	mode: "active" | "idle";
 	drafts: AutomationDraftStatus[];
+	lastProposedDraftId?: string;
 }
 
 function asCadence(raw: unknown): Cadence {
@@ -118,14 +121,41 @@ function parseDraftItem(obj: Record<string, unknown>): AutomationDraftStatus | n
 	if (!obj.draft || typeof obj.draft !== "object" || Array.isArray(obj.draft)) return null;
 	const status = obj.status === "saved" || obj.status === "dismissed" ? obj.status : "pending";
 	const rawDraft = obj.draft as Record<string, unknown>;
-	const presentFields = new Set(Object.keys(rawDraft).filter((k) => rawDraft[k] !== undefined));
 	const cadenceRaw =
 		rawDraft.cadence && typeof rawDraft.cadence === "object" && !Array.isArray(rawDraft.cadence)
 			? (rawDraft.cadence as Record<string, unknown>)
 			: null;
-	const cadencePresentFields = cadenceRaw
-		? new Set(Object.keys(cadenceRaw).filter((k) => cadenceRaw[k] !== undefined))
-		: undefined;
+	const hasExplicitPresent = Array.isArray(obj.presentFields);
+	const presentFields = hasExplicitPresent
+		? new Set(
+				(obj.presentFields as unknown[]).filter(
+					(x): x is string => typeof x === "string" && x.length > 0,
+				),
+			)
+		: (() => {
+				const inferred = new Set<string>();
+				for (const k of Object.keys(rawDraft)) {
+					if (rawDraft[k] === undefined) continue;
+					if (k === "name" && (typeof rawDraft.name !== "string" || !rawDraft.name.trim())) continue;
+					if (k === "prompt" && typeof rawDraft.prompt !== "string") continue;
+					if (k === "cwd" && (typeof rawDraft.cwd !== "string" || !rawDraft.cwd.trim())) continue;
+					if (k === "runMode" && rawDraft.runMode !== "local" && rawDraft.runMode !== "worktree") continue;
+					if (k === "cadence" && !cadenceRaw) continue;
+					inferred.add(k);
+				}
+				return inferred;
+			})();
+	const cadencePresentFields = Array.isArray(obj.cadencePresentFields)
+		? new Set(
+				(obj.cadencePresentFields as unknown[]).filter(
+					(x): x is string => typeof x === "string" && x.length > 0,
+				),
+			)
+		: hasExplicitPresent
+			? undefined
+			: cadenceRaw
+				? new Set(Object.keys(cadenceRaw).filter((k) => cadenceRaw[k] !== undefined))
+				: undefined;
 
 	const has = (k: string) => presentFields.has(k);
 	const probeCommand =
@@ -218,16 +248,43 @@ export function mergeAutomationDraftOntoSchedule(existing: Schedule, item: Autom
 		item.presentFields ? item.presentFields.has(k) : draft[k] !== undefined;
 	let cadence = existing.cadence;
 	if (has("cadence")) {
-		if (
-			(draft.cadence.kind === "daily" && existing.cadence.kind === "daily") ||
-			(draft.cadence.kind === "monthly" && existing.cadence.kind === "monthly")
-		) {
-			const hasAnchor = item.cadencePresentFields
-				? item.cadencePresentFields.has("anchor")
-				: Boolean(draft.cadence.anchor);
+		const hasCadenceField = (k: string): boolean =>
+			item.cadencePresentFields
+				? item.cadencePresentFields.has(k)
+				: (draft.cadence as Record<string, unknown>)[k] !== undefined;
+		if (draft.cadence.kind === "daily" && existing.cadence.kind === "daily") {
+			const time = hasCadenceField("time") ? draft.cadence.time : existing.cadence.time;
+			const weekdays = hasCadenceField("weekdays") ? draft.cadence.weekdays : existing.cadence.weekdays;
+			const every = hasCadenceField("every") ? draft.cadence.every : existing.cadence.every;
+			const anchor = hasCadenceField("anchor") ? draft.cadence.anchor : existing.cadence.anchor;
 			cadence = {
-				...draft.cadence,
-				...(!hasAnchor && existing.cadence.anchor ? { anchor: existing.cadence.anchor } : {}),
+				kind: "daily",
+				time,
+				...(weekdays && weekdays.length > 0 ? { weekdays } : {}),
+				...(every !== undefined ? { every } : {}),
+				...(anchor ? { anchor } : {}),
+			};
+		} else if (draft.cadence.kind === "monthly" && existing.cadence.kind === "monthly") {
+			const day = hasCadenceField("day") ? draft.cadence.day : existing.cadence.day;
+			const time = hasCadenceField("time") ? draft.cadence.time : existing.cadence.time;
+			const every = hasCadenceField("every") ? draft.cadence.every : existing.cadence.every;
+			const anchor = hasCadenceField("anchor") ? draft.cadence.anchor : existing.cadence.anchor;
+			cadence = {
+				kind: "monthly",
+				day,
+				time,
+				...(every !== undefined ? { every } : {}),
+				...(anchor ? { anchor } : {}),
+			};
+		} else if (draft.cadence.kind === "interval" && existing.cadence.kind === "interval") {
+			cadence = {
+				kind: "interval",
+				minutes: hasCadenceField("minutes") ? draft.cadence.minutes : existing.cadence.minutes,
+			};
+		} else if (draft.cadence.kind === "once" && existing.cadence.kind === "once") {
+			cadence = {
+				kind: "once",
+				at: hasCadenceField("at") ? draft.cadence.at : existing.cadence.at,
 			};
 		} else {
 			cadence = draft.cadence;
@@ -288,7 +345,15 @@ export function parseAutomationSessionState(raw: unknown): AutomationSessionStat
 		const single = parseDraftItem(obj);
 		if (single) drafts.push(single);
 	}
-	return { mode, drafts };
+	const lastProposedDraftId =
+		typeof obj.lastProposedDraftId === "string" && obj.lastProposedDraftId.trim()
+			? obj.lastProposedDraftId.trim()
+			: undefined;
+	return {
+		mode,
+		drafts,
+		...(lastProposedDraftId ? { lastProposedDraftId } : {}),
+	};
 }
 
 /** Cross-remount probe test result cache keyed by `${sessionId}:${draftId}`. */
@@ -302,18 +367,109 @@ export function setCachedProbeResult(sessionId: string, draftId: string, res: Pr
 	probeTestCache.set(`${sessionId}:${draftId}`, res);
 }
 
-/** One-shot handoff when switching a draft card to manual fine-tuning in ScheduleFormPage. */
-let pendingManualDraft: { targetKey: string; draft: ScheduleDraft } | null = null;
-
-export function stashManualScheduleDraft(targetKey: string, draft: ScheduleDraft): void {
-	pendingManualDraft = { targetKey, draft };
+/** One-shot proposal patch handoff when switching a draft card to manual fine-tuning in ScheduleFormPage. */
+export interface ManualScheduleDraftPatch {
+	draft: ScheduleDraft;
+	presentFields?: string[];
+	cadencePresentFields?: string[];
 }
 
-export function takeManualScheduleDraft(targetKey: string): ScheduleDraft | null {
+let pendingManualDraft: { targetKey: string; patch: ManualScheduleDraftPatch } | null = null;
+
+export function stashManualScheduleDraft(targetKey: string, patch: ManualScheduleDraftPatch): void {
+	pendingManualDraft = { targetKey, patch };
+}
+
+export function takeManualScheduleDraft(targetKey: string): ManualScheduleDraftPatch | null {
 	if (!pendingManualDraft || pendingManualDraft.targetKey !== targetKey) return null;
-	const d = pendingManualDraft.draft;
+	const p = pendingManualDraft.patch;
 	pendingManualDraft = null;
-	return d;
+	return p;
+}
+
+/**
+ * Merge a proposal patch onto a freshly built `ScheduleForm` baseline (either existing server
+ * schedule or new form with global defaults), preserving omitted fields and returning the touched keys.
+ */
+export function applyManualDraftPatchToForm(
+	baseline: ScheduleForm,
+	patch: ManualScheduleDraftPatch,
+): { form: ScheduleForm; proposalKeys: Set<keyof ScheduleForm> } {
+	const rawForm = formFromSchedule(patch.draft);
+	const present = patch.presentFields ? new Set(patch.presentFields) : null;
+	const cadencePresent = patch.cadencePresentFields ? new Set(patch.cadencePresentFields) : null;
+	const has = (k: keyof ScheduleDraft): boolean =>
+		present ? present.has(k) : patch.draft[k] !== undefined;
+	const hasCadence = (k: string): boolean =>
+		cadencePresent
+			? cadencePresent.has(k)
+			: (patch.draft.cadence as Record<string, unknown>)[k] !== undefined;
+
+	const next: ScheduleForm = { ...baseline };
+	const proposalKeys = new Set<keyof ScheduleForm>();
+	const applyKey = <K extends keyof ScheduleForm>(formKey: K, val: ScheduleForm[K]) => {
+		next[formKey] = val;
+		proposalKeys.add(formKey);
+	};
+
+	if (has("id") && rawForm.id) applyKey("id", rawForm.id);
+	if (has("name")) applyKey("name", rawForm.name);
+	if (has("prompt")) applyKey("prompt", rawForm.prompt);
+	if (has("cwd")) applyKey("cwd", rawForm.cwd);
+	if (has("runMode")) applyKey("runMode", rawForm.runMode);
+	if (has("model")) applyKey("model", rawForm.model);
+	if (has("thinking")) applyKey("thinking", rawForm.thinking);
+	if (has("approvalMode")) applyKey("approvalMode", rawForm.approvalMode);
+	if (has("enabled") && typeof patch.draft.enabled === "boolean") applyKey("enabled", rawForm.enabled);
+	if (has("notify") && patch.draft.notify) applyKey("notify", rawForm.notify);
+	if (has("newChatEachRun") && typeof patch.draft.newChatEachRun === "boolean") applyKey("fresh", rawForm.fresh);
+	if (has("endAt")) applyKey("endAt", rawForm.endAt);
+	if (has("maxRuns")) applyKey("maxRuns", rawForm.maxRuns);
+	if (has("probeCommand")) applyKey("probeCommand", rawForm.probeCommand);
+	if (has("probeDescription")) applyKey("probeDescription", rawForm.probeDescription);
+	if (has("agentTrigger") && patch.draft.agentTrigger) applyKey("agentTrigger", rawForm.agentTrigger);
+	if (has("resultMode") && patch.draft.resultMode) applyKey("resultMode", rawForm.resultMode);
+	if (has("invokesExternalModel") && typeof patch.draft.invokesExternalModel === "boolean") {
+		applyKey("invokesExternalModel", rawForm.invokesExternalModel);
+	}
+
+	if (has("cadence")) {
+		const sameKind = rawForm.kind === baseline.kind;
+		if (!sameKind) {
+			applyKey("kind", rawForm.kind);
+			applyKey("ivNum", rawForm.ivNum);
+			applyKey("ivUnit", rawForm.ivUnit);
+			applyKey("time", rawForm.time);
+			applyKey("every", rawForm.every);
+			applyKey("weekdays", rawForm.weekdays);
+			applyKey("at", rawForm.at);
+			applyKey("mday", rawForm.mday);
+			applyKey("mTime", rawForm.mTime);
+			applyKey("mEvery", rawForm.mEvery);
+			applyKey("anchor", rawForm.anchor);
+		} else if (rawForm.kind === "interval") {
+			if (hasCadence("minutes")) {
+				applyKey("ivNum", rawForm.ivNum);
+				applyKey("ivUnit", rawForm.ivUnit);
+			}
+		} else if (rawForm.kind === "daily") {
+			if (hasCadence("time")) applyKey("time", rawForm.time);
+			if (hasCadence("every")) applyKey("every", rawForm.every);
+			if (hasCadence("weekdays")) applyKey("weekdays", rawForm.weekdays);
+			if (hasCadence("anchor")) applyKey("anchor", rawForm.anchor);
+		} else if (rawForm.kind === "once") {
+			if (hasCadence("at")) applyKey("at", rawForm.at);
+		} else if (rawForm.kind === "monthly") {
+			if (hasCadence("day")) applyKey("mday", rawForm.mday);
+			if (hasCadence("time")) applyKey("mTime", rawForm.mTime);
+			if (hasCadence("every")) applyKey("mEvery", rawForm.mEvery);
+			if (hasCadence("anchor")) applyKey("anchor", rawForm.anchor);
+		}
+	}
+
+	if (next.agentTrigger === "never") next.runMode = "local";
+	if (next.runMode === "worktree") next.fresh = true;
+	return { form: next, proposalKeys };
 }
 
 /** Launch a dedicated conversational automation session and open chat. */
@@ -367,22 +523,38 @@ export function createAutomationDraftAutoOpenTracker() {
 			hydrated: boolean,
 			state: AutomationSessionState | null,
 			source: "snapshot" | "live" = "live",
+			snapshotBaselineIds?: readonly string[],
 		): string | null {
 			if (!hydrated) return null;
 			const pendingIds = (state?.drafts ?? [])
 				.filter((d) => d.status === "pending")
 				.map((d) => d.draftId);
-			if (!baselineReady || source === "snapshot") {
-				for (const did of pendingIds) seenPending.add(did);
+			if (!baselineReady) {
+				if (source === "snapshot" || snapshotBaselineIds === undefined) {
+					for (const did of pendingIds) seenPending.add(did);
+					baselineReady = true;
+					return null;
+				}
+				for (const did of snapshotBaselineIds) seenPending.add(did);
 				baselineReady = true;
+			} else if (source === "snapshot") {
+				for (const did of pendingIds) seenPending.add(did);
 				return null;
 			}
-			let newest: string | null = null;
-			for (const did of pendingIds) {
-				if (!seenPending.has(did)) newest = did;
-				seenPending.add(did);
+			const proposedId = state?.lastProposedDraftId;
+			let target: string | null = null;
+			if (proposedId) {
+				if (pendingIds.includes(proposedId) && !seenPending.has(proposedId)) {
+					target = proposedId;
+				}
+			} else {
+				const unseen = pendingIds.filter((did) => !seenPending.has(did));
+				if (unseen.length === 1) {
+					target = unseen[0];
+				}
 			}
-			return newest;
+			for (const did of pendingIds) seenPending.add(did);
+			return target;
 		},
 	};
 }

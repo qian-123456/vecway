@@ -14,7 +14,7 @@ import {
 	gitBadge,
 	gitCreateWorktree,
 	gitListBranches,
-	gitSummary,
+	gitRepoRoot,
 	rpcListLive,
 	rpcSend,
 	validatePath,
@@ -117,12 +117,25 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 	const [prompt, setPrompt] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [repoProbe, setRepoProbe] = useState<{ cwd: string; isRepo: boolean } | null>(null);
+	const [repoProbe, setRepoProbe] = useState<
+		| { cwd: string; status: "repo" }
+		| { cwd: string; status: "not_repo" }
+		| { cwd: string; status: "error"; error: string }
+		| null
+	>(null);
+	const [probeRetryTick, setProbeRetryTick] = useState(0);
 	const /** Linked-worktree name when `cwd` already is one (null = main checkout). */
 		[linkedWt, setLinkedWt] = useState<string | null>(null);
 	const [retrySessionId, setRetrySessionId] = useState<string | null>(null);
 	const repoCheck = useRef(0);
-	const probePromiseRef = useRef<{ cwd: string; promise: Promise<boolean> } | null>(null);
+	const probePromiseRef = useRef<{
+		cwd: string;
+		promise: Promise<
+			| { cwd: string; status: "repo" }
+			| { cwd: string; status: "not_repo" }
+			| { cwd: string; status: "error"; error: string }
+		>;
+	} | null>(null);
 	const backgroundRef = useRef(false);
 	const createdWorktreeRef = useRef<{ key: string; path: string } | null>(null);
 	const createdSessionRef = useRef<string | null>(null);
@@ -196,7 +209,31 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 		return w.kind === "global" ? globalDir : w.path;
 	}, [wsSel, modeWorkspaces, customCwd, globalDir]);
 
-	const isRepo = repoProbe && repoProbe.cwd === cwd ? repoProbe.isRepo : null;
+	const activeProbe = repoProbe && repoProbe.cwd === cwd ? repoProbe : null;
+	const isRepo =
+		activeProbe === null
+			? null
+			: activeProbe.status === "repo"
+				? true
+				: activeProbe.status === "not_repo"
+					? false
+					: null;
+	const probeError = activeProbe?.status === "error" ? activeProbe.error : null;
+	const probeRepo = (targetCwd: string) =>
+		gitRepoRoot(targetCwd)
+			.then((root) =>
+				({
+					cwd: targetCwd,
+					status: root !== null ? "repo" : "not_repo",
+				}) as const,
+			)
+			.catch((err) =>
+				({
+					cwd: targetCwd,
+					status: "error",
+					error: errMsg(err),
+				}) as const,
+			);
 	// Detect whether the chosen cwd is inside a git repo (gates the worktree option).
 	useEffect(() => {
 		setLinkedWt(null);
@@ -208,22 +245,17 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 		}
 		const targetCwd = cwd;
 		const seq = ++repoCheck.current;
-		const promise = gitSummary(targetCwd)
-			.then((s) => {
-				if (seq === repoCheck.current) setRepoProbe({ cwd: targetCwd, isRepo: s.isRepo });
-				return s.isRepo;
-			})
-			.catch(() => {
-				if (seq === repoCheck.current) setRepoProbe({ cwd: targetCwd, isRepo: false });
-				return false;
-			});
+		const promise = probeRepo(targetCwd).then((res) => {
+			if (seq === repoCheck.current) setRepoProbe(res);
+			return res;
+		});
 		probePromiseRef.current = { cwd: targetCwd, promise };
 		gitBadge(targetCwd)
 			.then((b) => {
 				if (seq === repoCheck.current) setLinkedWt(b?.worktree ?? null);
 			})
 			.catch(() => {});
-	}, [cwd]);
+	}, [cwd, probeRetryTick]);
 	// Fetch branches when selected cwd is a git repo
 	useEffect(() => {
 		if (isRepo && cwd) {
@@ -262,6 +294,7 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 	const canSubmit =
 		!!cwd &&
 		!busy &&
+		!(useWorktree && probeError !== null) &&
 		(wsSel !== CUSTOM || !customCwdError);
 	const handleBrowse = async () => {
 		try {
@@ -343,20 +376,22 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 		setError(null);
 		let createdSessionId: string | null = null;
 		try {
-			let resolvedIsRepo = repoProbe?.cwd === targetCwd ? repoProbe.isRepo : null;
-			if (useWorktree && resolvedIsRepo === null) {
+			let resolvedProbe = repoProbe?.cwd === targetCwd ? repoProbe : null;
+			if (useWorktree && !resolvedProbe) {
 				if (probePromiseRef.current?.cwd === targetCwd) {
-					resolvedIsRepo = await probePromiseRef.current.promise;
+					resolvedProbe = await probePromiseRef.current.promise;
 				} else {
-					resolvedIsRepo = await gitSummary(targetCwd)
-						.then((s) => s.isRepo)
-						.catch(() => false);
-				}
-				if (probePromiseRef.current?.cwd === targetCwd) {
-					setRepoProbe({ cwd: targetCwd, isRepo: resolvedIsRepo });
+					resolvedProbe = await probeRepo(targetCwd);
+					if (probePromiseRef.current?.cwd === targetCwd) {
+						setRepoProbe(resolvedProbe);
+					}
 				}
 			}
-			const submitUseWorktree = useWorktree && resolvedIsRepo === true;
+			if (useWorktree && resolvedProbe?.status === "error") {
+				setError(t("git.newSession.probeRepoFailed", { error: resolvedProbe.error }));
+				return;
+			}
+			const submitUseWorktree = useWorktree && resolvedProbe?.status === "repo";
 			let target = targetCwd;
 			if (submitUseWorktree) {
 				const resolvedName = wtName.trim() || slug;
@@ -631,6 +666,27 @@ function NewSessionForm({ props }: { props: Record<string, unknown> }) {
 							</div>
 						)}
 					</>
+				)}
+				{useWorktree && probeError && (
+					<div
+						role="alert"
+						className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-2.5 py-2 text-xs text-rose-300"
+					>
+						<span className="min-w-0 flex-1 break-words">
+							{t("git.newSession.probeRepoFailed", { error: probeError })}
+						</span>
+						<button
+							type="button"
+							onClick={() => {
+								setError(null);
+								setRepoProbe((prev) => (prev?.cwd === cwd ? null : prev));
+								setProbeRetryTick((n) => n + 1);
+							}}
+							className="shrink-0 whitespace-nowrap rounded-md border border-rose-400/30 bg-rose-500/15 px-2 py-1 text-[11px] font-medium text-rose-200 hover:bg-rose-500/25"
+						>
+							{t("git.newSession.retryProbe")}
+						</button>
+					</div>
 				)}
 
 				<label className="mb-1 block text-[11px] text-neutral-400">{t("git.newSession.firstMessageOptional")}</label>

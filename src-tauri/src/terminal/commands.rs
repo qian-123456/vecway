@@ -20,8 +20,22 @@ fn session_terms() -> &'static SessionTerms {
     MAP.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
 }
 
-fn forget_term(term_id: &str) {
+type DesktopTermGuards =
+    parking_lot::Mutex<HashMap<String, crate::git::commands::TerminalOwnershipGuard>>;
+static DESKTOP_TERM_GUARDS: std::sync::LazyLock<DesktopTermGuards> =
+    std::sync::LazyLock::new(Default::default);
+
+fn desktop_term_guards() -> &'static DesktopTermGuards {
+    &DESKTOP_TERM_GUARDS
+}
+
+fn detach_session_term(term_id: &str) {
     session_terms().lock().retain(|_, (t, _)| t != term_id);
+}
+
+fn release_term_on_exit(term_id: &str) {
+    desktop_term_guards().lock().remove(term_id);
+    detach_session_term(term_id);
 }
 
 fn open_registered_term(
@@ -47,6 +61,7 @@ pub fn close_session_term(session_id: &str) {
     let entry = session_terms().lock().remove(session_id);
     if let Some((term_id, _)) = entry {
         pty::close(&term_id);
+        // Keep the worktree ownership guard until `TermEvent::Exit` after `child.wait()`.
     }
 }
 
@@ -72,7 +87,7 @@ fn app_sink(state: &AppState) -> Sink {
                 }),
             ),
             TermEvent::Exit(code) => {
-                forget_term(term_id);
+                release_term_on_exit(term_id);
                 app.emit("terminal:exit", json!({ "termId": term_id, "code": code }))
             }
         };
@@ -90,6 +105,10 @@ pub async fn term_open(
     rows: u16,
     session_id: Option<String>,
 ) -> Result<String, String> {
+    let ownership = {
+        let _mutation = crate::catalog::session_mutation_lock().lock().await;
+        crate::git::commands::try_register_terminal_ownership(&cwd)?
+    };
     let session_file = session_id
         .as_deref()
         .map(|id| {
@@ -109,7 +128,12 @@ pub async fn term_open(
         .transpose()?;
     let (argv, extra_env) =
         shell_init::drawer_spawn(&command, session_file).unwrap_or((command, vec![]));
-    pty::open(&cwd, &argv, cols, rows, app_sink(&state), &extra_env)
+    let mut guards = desktop_term_guards().lock();
+    let term_id = pty::open(&cwd, &argv, cols, rows, app_sink(&state), &extra_env)?;
+    if pty::is_open(&term_id) {
+        guards.insert(term_id.clone(), ownership);
+    }
+    Ok(term_id)
 }
 
 /// Records the selected session's transcript in
@@ -134,7 +158,7 @@ pub async fn term_resize(term_id: String, cols: u16, rows: u16) -> Result<(), St
 #[tauri::command]
 pub async fn term_close(term_id: String) -> Result<(), String> {
     pty::close(&term_id);
-    forget_term(&term_id);
+    detach_session_term(&term_id);
     Ok(())
 }
 
@@ -194,6 +218,7 @@ pub async fn term_open_session(
     let meta = crate::catalog::get(&state, &session_id)
         .await
         .ok_or_else(|| format!("找不到会话 {session_id}"))?;
+    let ownership = crate::git::commands::try_register_terminal_ownership(&meta.cwd)?;
     let foreign = agent.foreign_argv();
     if let Some(argv) = &foreign {
         // Resolve against the login-shell PATH before tearing anything down.
@@ -215,7 +240,7 @@ pub async fn term_open_session(
     let old = session_terms().lock().get(&session_id).cloned();
     if let Some((old, _)) = old {
         pty::close(&old);
-        forget_term(&old);
+        detach_session_term(&old);
     }
     let is_omp = foreign.is_none();
     let argv = match foreign {
@@ -251,13 +276,18 @@ pub async fn term_open_session(
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|| "/".to_string())
     };
-    open_registered_term(
+    let mut guards = desktop_term_guards().lock();
+    let term_id = open_registered_term(
         session_terms(),
         session_id,
         is_omp,
         || pty::open(&cwd, &argv, cols, rows, app_sink(&state), &extra_env),
         pty::is_open,
-    )
+    )?;
+    if pty::is_open(&term_id) {
+        guards.insert(term_id.clone(), ownership);
+    }
+    Ok(term_id)
 }
 
 /// POSIX single-quote `s` unless it is made only of shell-safe characters.
@@ -444,6 +474,41 @@ mod registration_tests {
         drop(opening);
         delete.await.unwrap();
         assert!(terms.lock().is_empty());
+    }
+
+    #[test]
+    fn desktop_terminal_guard_holds_until_exit_not_close() {
+        let dir = std::env::temp_dir().join(format!("omp-desk-term-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir_str = dir.to_string_lossy().into_owned();
+        let term_id = format!("test-term-{}", uuid::Uuid::new_v4());
+        let session_id = format!("test-sess-{}", uuid::Uuid::new_v4());
+
+        let ownership =
+            crate::git::commands::try_register_terminal_ownership(&dir_str).expect("register");
+        desktop_term_guards()
+            .lock()
+            .insert(term_id.clone(), ownership);
+        session_terms()
+            .lock()
+            .insert(session_id.clone(), (term_id.clone(), true));
+        assert!(crate::git::commands::try_reserve_worktree(&dir_str).is_err());
+
+        // Close request detaches session mapping immediately, but MUST NOT release
+        // worktree ownership before the PTY child actually exits.
+        detach_session_term(&term_id);
+        assert!(!omp_terminal_open(&session_id));
+        assert!(
+            crate::git::commands::try_reserve_worktree(&dir_str).is_err(),
+            "close/detach must keep worktree ownership until TermEvent::Exit"
+        );
+
+        // Exit path (after child.wait()) releases ownership.
+        release_term_on_exit(&term_id);
+        let wt_guard = crate::git::commands::try_reserve_worktree(&dir_str)
+            .expect("reservation must succeed once desktop terminal exits");
+        drop(wt_guard);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

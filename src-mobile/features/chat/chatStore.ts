@@ -10,7 +10,7 @@ import {
 	parseAutomationSessionState,
 	type AutomationSessionState,
 } from "./automation/automationStatus";
-import { api, errorMessage, LONG_TIMEOUT_MS, upload } from "../../core/api";
+import { api, ApiError, errorMessage, LONG_TIMEOUT_MS, upload } from "../../core/api";
 import { imageFromBlob, toDataUrl, type PromptImage } from "../../core/lib/images";
 import { nav, paths } from "../../core/nav";
 import { buildPendingResponse, doneOption, nextMultiChoice, type PendingAnswer } from "../../core/pendingUi";
@@ -156,6 +156,8 @@ export interface ChatState {
 	planApproving: boolean;
 	automationState: AutomationSessionState | null;
 	automationHydrated: boolean;
+	automationBaselineHydrated: boolean;
+	automationBaselineIds: readonly string[];
 	automationSource: "snapshot" | "live";
 }
 
@@ -171,6 +173,14 @@ export function resetPlanAutoOpenForTest(): void {
 	autoOpenedPlanVersion.clear();
 }
 
+/** Extract text typed beyond `submittedRaw` (or full `cur` if edited non-appendingly). */
+export function remainingAfterSubmitted(cur: string, submittedRaw: string): string {
+	if (cur === submittedRaw) return "";
+	if (cur.startsWith(submittedRaw)) {
+		return cur.slice(submittedRaw.length).replace(/^\s+/, "");
+	}
+	return cur;
+}
 /** Markdown quote of a selected passage: every line prefixed with 「> 」 (blank lines kept as 「>」). */
 export function quoteMarkdown(text: string): string {
 	return text
@@ -223,6 +233,7 @@ export class ChatController {
 	/** Invalidates state reads and failed-send rollbacks when newer session activity arrives. */
 	private activitySequence = 0;
 	private automationSeq = 0;
+	private earlyLivePendingIds = new Set<string>();
 	private transcriptRevision = 0;
 	private treeSequence = 0;
 	private treeFetched = false;
@@ -316,6 +327,8 @@ export class ChatController {
 			planApproving: false,
 			automationState: null,
 			automationHydrated: isDraftId(id),
+			automationBaselineHydrated: isDraftId(id),
+			automationBaselineIds: [],
 			automationSource: "snapshot",
 		}));
 		if (this.ownsDraftStash) {
@@ -567,10 +580,17 @@ export class ChatController {
 			clearLiveStale(this.id);
 		}
 		this.stream = { ...this.stream, live };
-		const hasAutomation = acceptAutomation && Object.prototype.hasOwnProperty.call(page, "automationState");
+		const pageHasAutomation = Object.prototype.hasOwnProperty.call(page, "automationState");
+		const hasAutomation = acceptAutomation && pageHasAutomation;
 		const nextAutomation = hasAutomation
 			? parseAutomationSessionState(page.automationState)
 			: prev.automationState;
+		const pageBaselineIds =
+			!prev.automationBaselineHydrated && pageHasAutomation
+				? (parseAutomationSessionState(page.automationState)?.drafts ?? [])
+						.filter((d) => d.status === "pending")
+						.map((d) => d.draftId)
+				: null;
 		if (
 			!r.changed &&
 			optimistic === prev.optimistic &&
@@ -578,6 +598,7 @@ export class ChatController {
 			segments === prev.segments &&
 			!clearInterrupted &&
 			!hasAutomation &&
+			!pageBaselineIds &&
 			prev.loaded
 		) {
 			return false;
@@ -590,7 +611,19 @@ export class ChatController {
 			live,
 			segments,
 			...(clearInterrupted ? { interrupted: null } : {}),
-			...(hasAutomation ? { automationState: nextAutomation, automationHydrated: true, automationSource: "snapshot" as const } : {}),
+			...(hasAutomation
+				? {
+						automationState: nextAutomation,
+						automationSource: "snapshot" as const,
+					}
+				: {}),
+			...(pageBaselineIds
+				? {
+						automationBaselineIds: pageBaselineIds,
+						automationBaselineHydrated: true,
+						automationHydrated: true,
+					}
+				: {}),
 		});
 		return r.changed;
 	}
@@ -744,7 +777,14 @@ export class ChatController {
 					? { mode: "idle" as const, drafts: [] }
 					: parseAutomationSessionState(frame.statusText);
 			if (parsed) {
-				this.set({ automationState: parsed, automationHydrated: true, automationSource: "live" });
+				if (!this.state.automationBaselineHydrated) {
+					const proposed = parsed.lastProposedDraftId;
+					if (proposed && parsed.drafts.some((d) => d.draftId === proposed && d.status === "pending")) {
+						this.earlyLivePendingIds.delete(proposed);
+						this.earlyLivePendingIds.add(proposed);
+					}
+				}
+				this.set({ automationState: parsed, automationSource: "live" });
 			}
 		}
 		const step = reduceFrame(this.stream, frame);
@@ -883,14 +923,14 @@ export class ChatController {
 				if (st.thinkingLevel == null && prev?.thinkingLevel) st.thinkingLevel = prev.thinkingLevel;
 				const authoritative = Object.prototype.hasOwnProperty.call(st, "planStatus");
 				if (authoritative) clearTimeout(this.approvalTimer);
-				const hasAuto =
-					Object.prototype.hasOwnProperty.call(st, "automationState") && autoSeq === this.automationSeq;
-				const parsedAuto = hasAuto ? parseAutomationSessionState(st.automationState) : null;
+				const stHasAuto = Object.prototype.hasOwnProperty.call(st, "automationState");
+				const parsedSnapAuto = stHasAuto ? parseAutomationSessionState(st.automationState) : null;
+				const hasAuto = stHasAuto && autoSeq === this.automationSeq;
+				const autoPatch = this.buildAutomationSnapshotPatch(parsedSnapAuto, hasAuto);
 				this.set({
 					cstate: st,
 					...(authoritative ? { acceptedPlan: null } : {}),
-					...(hasAuto ? { automationState: parsedAuto, automationSource: "snapshot" as const } : {}),
-					automationHydrated: true,
+					...autoPatch,
 					...(!st.streaming && !this.stream.working && this.state.stopping ? { stopping: false } : {}),
 				});
 				this.syncPlanSheetLifecycle();
@@ -931,23 +971,58 @@ export class ChatController {
 		this.syncPlanSheetLifecycle();
 	}
 
-	async setAutomationMode(on: boolean, initialGoal?: string): Promise<string> {
+	async setAutomationMode(on: boolean, initialGoal?: string, submittedRaw?: string): Promise<string> {
 		const autoSeq = this.automationSeq;
-		const r = await api<{ automationState?: unknown; sessionId?: string }>(
-			"POST",
-			`/sessions/${this.id}/automation`,
-			{ action: on ? "enable" : "disable" },
-		);
-		if (this.disposed) return r?.sessionId ?? this.id;
-		const parsed = parseAutomationSessionState(r?.automationState);
-		if (parsed && autoSeq === this.automationSeq) {
-			this.set({ automationState: parsed, automationHydrated: true, automationSource: "snapshot" });
+		let r: { automationState?: unknown; sessionId?: string };
+		try {
+			r = await api<{ automationState?: unknown; sessionId?: string }>(
+				"POST",
+				`/sessions/${this.id}/automation`,
+				{ action: on ? "enable" : "disable" },
+			);
+		} catch (e) {
+			const realId =
+				e instanceof ApiError && typeof e.data?.sessionId === "string" ? e.data.sessionId.trim() : "";
+			if (realId && realId !== this.id) {
+				const text = this.composer?.get() ?? this.lastText;
+				draftBook.stash(realId, text, this.state.atts);
+				draftBook.forget(this.id);
+				if (text.trim() !== "") saveUnsent(realId, text);
+				clearUnsent(this.id);
+				this.markDraftTransferred(realId);
+				void useSessions.getState().refresh().catch(() => {});
+				if (!this.disposed) nav.replace(paths.chat(realId));
+				throw new Error(`自动化定制尚未确认开启（${errorMessage(e)}），已切换到新会话，请重试`);
+			}
+			throw e;
+		}
+		if (!this.disposed) {
+			const parsed = parseAutomationSessionState(r?.automationState);
+			if (parsed && autoSeq === this.automationSeq) {
+				this.set(this.buildAutomationSnapshotPatch(parsed, true));
+			}
 		}
 		if (r?.sessionId && r.sessionId !== this.id) {
-			const text = initialGoal ? "" : (this.composer?.get() ?? this.lastText);
-			draftBook.stash(r.sessionId, text, this.state.atts);
+			const curText = this.composer?.get() ?? this.lastText;
+			const remainingText =
+				submittedRaw !== undefined
+					? remainingAfterSubmitted(curText, submittedRaw)
+					: initialGoal
+						? ""
+						: curText;
+			if (this.disposed) {
+				const combined = [initialGoal?.trim() ?? "", remainingText.trim()].filter(Boolean).join("\n\n");
+				draftBook.stash(r.sessionId, combined, this.state.atts);
+				draftBook.forget(this.id);
+				if (combined !== "") saveUnsent(r.sessionId, combined);
+				clearUnsent(this.id);
+				this.markDraftTransferred(r.sessionId);
+				void useSessions.getState().refresh().catch(() => {});
+				return r.sessionId;
+			}
+			draftBook.stash(r.sessionId, remainingText, this.state.atts);
 			draftBook.forget(this.id);
-			if (text.trim() !== "") saveUnsent(r.sessionId, text);
+			if (remainingText.trim() !== "") saveUnsent(r.sessionId, remainingText);
 			clearUnsent(this.id);
 			if (on && initialGoal?.trim()) {
 				queueFirstSend(r.sessionId, initialGoal.trim());
@@ -970,7 +1045,7 @@ export class ChatController {
 		if (this.disposed) return;
 		const parsed = parseAutomationSessionState(r?.automationState);
 		if (parsed && autoSeq === this.automationSeq) {
-			this.set({ automationState: parsed, automationHydrated: true, automationSource: "snapshot" });
+			this.set(this.buildAutomationSnapshotPatch(parsed, true));
 		} else if (this.state.automationState) {
 			this.set({
 				automationState: {
@@ -981,6 +1056,70 @@ export class ChatController {
 				},
 			});
 		}
+	}
+
+	/**
+	 * Merge an HTTP automation snapshot into controller state while preserving any
+	 * live-observed pre-hydration proposals across discarded/retried hydration calls.
+	 */
+	private buildAutomationSnapshotPatch(
+		parsedSnapAuto: AutomationSessionState | null,
+		allowStateUpdate: boolean,
+	): Partial<ChatState> {
+		const seedBaseline = !this.state.automationBaselineHydrated;
+		const snapBaselineIds = seedBaseline
+			? (parsedSnapAuto?.drafts ?? [])
+					.filter((d) => d.status === "pending" && !this.earlyLivePendingIds.has(d.draftId))
+					.map((d) => d.draftId)
+			: undefined;
+		const staleSnapMissingEarly =
+			seedBaseline &&
+			allowStateUpdate &&
+			this.earlyLivePendingIds.size > 0 &&
+			[...this.earlyLivePendingIds].some(
+				(did) =>
+					(this.state.automationState?.drafts ?? []).some((d) => d.draftId === did && d.status === "pending") &&
+					!(parsedSnapAuto?.drafts ?? []).some((d) => d.draftId === did),
+			);
+		const applySnapAuto = allowStateUpdate && !staleSnapMissingEarly;
+		const effectiveAuto = applySnapAuto ? parsedSnapAuto : this.state.automationState;
+		const pendingEarlyIds = seedBaseline
+			? [...this.earlyLivePendingIds].filter((did) =>
+					(effectiveAuto?.drafts ?? []).some((d) => d.draftId === did && d.status === "pending"),
+				)
+			: [];
+		if (seedBaseline) {
+			this.earlyLivePendingIds.clear();
+		}
+		const newestPendingEarlyId =
+			pendingEarlyIds.length > 0 ? pendingEarlyIds[pendingEarlyIds.length - 1] : undefined;
+		const attachEarlyMarker = (state: AutomationSessionState | null): AutomationSessionState | null => {
+			if (!state || !newestPendingEarlyId) return state;
+			const chosen =
+				state.lastProposedDraftId && pendingEarlyIds.includes(state.lastProposedDraftId)
+					? state.lastProposedDraftId
+					: newestPendingEarlyId;
+			return state.lastProposedDraftId === chosen ? state : { ...state, lastProposedDraftId: chosen };
+		};
+		const nextAutoState = attachEarlyMarker(effectiveAuto);
+		const nextAutoSource: "snapshot" | "live" = pendingEarlyIds.length > 0 ? "live" : "snapshot";
+		return {
+			...(applySnapAuto
+				? { automationState: nextAutoState, automationSource: nextAutoSource }
+				: pendingEarlyIds.length > 0
+					? {
+							...(nextAutoState !== this.state.automationState ? { automationState: nextAutoState } : {}),
+							automationSource: "live" as const,
+						}
+					: {}),
+			...(seedBaseline
+				? {
+						automationBaselineIds: snapBaselineIds ?? [],
+						automationBaselineHydrated: true,
+					}
+				: {}),
+			automationHydrated: true,
+		};
 	}
 
 	private syncPlanSheetLifecycle(): void {
@@ -1239,7 +1378,7 @@ export class ChatController {
 	}
 
 	/** Returns true when the text was consumed (composer should already have been cleared by the caller on true). */
-	async send(text: string, behavior: StreamBehavior): Promise<boolean> {
+	async send(text: string, behavior: StreamBehavior, opts?: { preserveComposer?: boolean }): Promise<boolean> {
 		const delivery = this.state.delivery;
 		if (delivery) {
 			// "sending" = dispatch still in flight: a double-tap lands here and must not alarm the user;
@@ -1263,17 +1402,17 @@ export class ChatController {
 		}
 		const trimmed = text.trim();
 		if (s.forkFrom && trimmed) {
-			this.composer?.set("");
+			if (!opts?.preserveComposer) this.composer?.set("");
 			return this.runCommand("fork", trimmed, text);
 		}
 		if (intent === "slash") {
 			const p = parseSlashInput(trimmed);
 			if (p) {
-				this.composer?.set("");
+				if (!opts?.preserveComposer) this.composer?.set("");
 				return this.runCommand(p.name, p.args, text);
 			}
 		}
-		return this.sendPrompt(trimmed, behavior);
+		return this.sendPrompt(trimmed, behavior, opts?.preserveComposer);
 	}
 
 	/** Explicit recovery is not proof of non-delivery; never resends automatically. */
@@ -1299,7 +1438,7 @@ export class ChatController {
 		this.set({ delivery: null });
 	}
 
-	private async sendPrompt(text: string, behavior: StreamBehavior): Promise<boolean> {
+	private async sendPrompt(text: string, behavior: StreamBehavior, preserveComposer = false): Promise<boolean> {
 		const id = this.id;
 		const wasWorking = this.stream.working;
 		const savedAtts = this.state.atts;
@@ -1326,9 +1465,15 @@ export class ChatController {
 			.filter(Boolean);
 		const optText = stripImageMarkers(prompt);
 		const opt: OptimisticMsg = { id: `o${++this.optSeq}`, text: optText, imageUrls };
-		this.composer?.set("");
-		this.lastText = "";
-		clearUnsent(id);
+		const curText = this.composer?.get();
+		const shouldPreserve =
+			preserveComposer ||
+			(curText !== undefined && curText.trim() !== "" && curText.trim() !== text.trim());
+		if (!shouldPreserve) {
+			this.composer?.set("");
+			this.lastText = "";
+			clearUnsent(id);
+		}
 		this.lastSend = Date.now();
 		const activity = ++this.activitySequence;
 		this.stream = { ...this.stream, working: true };

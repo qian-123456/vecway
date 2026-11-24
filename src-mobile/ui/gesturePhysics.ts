@@ -10,20 +10,36 @@ export interface TranslateXY {
 	y: number;
 }
 
-/**
- * Read the current rendered X/Y translation of an element (including mid-transition frames)
- * via `DOMMatrix(getComputedStyle(el).transform)` so gestures can catch and take over
- * an open/close or snap-back animation seamlessly.
- */
-export function readTranslateXY(el: HTMLElement | null): TranslateXY {
-	if (!el || typeof window === "undefined" || typeof window.getComputedStyle !== "function") {
-		return { x: 0, y: 0 };
+/** Parse a CSS length token (`px` or `%` against `refSize`) into pixels. */
+function parseTranslateToken(token: string | undefined, refSize: number): number {
+	if (!token) return 0;
+	if (token.endsWith("px")) {
+		const n = Number.parseFloat(token);
+		return Number.isFinite(n) ? n : 0;
 	}
-	const style = window.getComputedStyle(el);
-	const raw = style.transform;
-	if (!raw || raw === "none") {
-		return { x: 0, y: 0 };
+	if (token.endsWith("%")) {
+		const pct = Number.parseFloat(token);
+		return Number.isFinite(pct) && refSize > 0 ? (pct / 100) * refSize : 0;
 	}
+	const n = Number.parseFloat(token);
+	return Number.isFinite(n) ? n : 0;
+}
+
+/** Parse CSS independent `translate` property (`none`, `<x>`, `<x> <y>`, `<x> <y> <z>`). */
+function readIndependentTranslate(style: CSSStyleDeclaration, el: HTMLElement): TranslateXY {
+	const raw = (style as CSSStyleDeclaration & { translate?: string }).translate;
+	if (!raw || raw === "none") return { x: 0, y: 0 };
+	const parts = raw.trim().split(/\s+/);
+	if (parts.length === 0) return { x: 0, y: 0 };
+	return {
+		x: parseTranslateToken(parts[0], el.clientWidth || el.offsetWidth),
+		y: parseTranslateToken(parts[1], el.clientHeight || el.offsetHeight),
+	};
+}
+
+/** Parse CSS `transform` matrix translation (`none`, `matrix(...)`, `matrix3d(...)`). */
+function readMatrixTranslate(raw: string): TranslateXY {
+	if (!raw || raw === "none") return { x: 0, y: 0 };
 	try {
 		if (typeof DOMMatrix !== "undefined") {
 			const matrix = new DOMMatrix(raw);
@@ -56,6 +72,24 @@ export function readTranslateXY(el: HTMLElement | null): TranslateXY {
 		}
 	}
 	return { x: 0, y: 0 };
+}
+
+/**
+ * Read the current rendered X/Y translation of an element (including mid-transition frames)
+ * by summing CSS `transform` and independent `translate` (Tailwind v4 `translate-y-*` / `translate-x-*`)
+ * so gestures can catch and take over an open/close or snap-back animation seamlessly.
+ */
+export function readTranslateXY(el: HTMLElement | null): TranslateXY {
+	if (!el || typeof window === "undefined" || typeof window.getComputedStyle !== "function") {
+		return { x: 0, y: 0 };
+	}
+	const style = window.getComputedStyle(el);
+	const matrix = readMatrixTranslate(style.transform);
+	const indep = readIndependentTranslate(style, el);
+	return {
+		x: matrix.x + indep.x,
+		y: matrix.y + indep.y,
+	};
 }
 
 /**

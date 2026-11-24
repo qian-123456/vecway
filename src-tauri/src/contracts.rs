@@ -1879,6 +1879,12 @@ pub struct ScheduleRun {
     pub phase: ScheduleRunPhase,
     #[serde(default)]
     pub probe_output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_repo_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

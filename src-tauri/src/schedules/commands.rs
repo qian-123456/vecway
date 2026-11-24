@@ -69,7 +69,24 @@ pub async fn schedules_create_unique(
     state: &AppState,
     schedule: ScheduleDraft,
 ) -> Result<Schedule, store::CreateScheduleError> {
-    let saved = blocking_db_with_snapshot(state, move |db| store::create_new(db, &schedule)).await?;
+    let saved =
+        blocking_db_with_snapshot(state, move |db| store::create_new(db, &schedule)).await?;
+    scheduler::notify_scheduler();
+    crate::state::emit_schedules_changed(state);
+    Ok(saved)
+}
+
+/// Update an existing schedule with optional optimistic `expected_updated_at` check
+/// verified inside the DB lock before mutating the row.
+pub async fn schedules_update_checked(
+    state: &AppState,
+    schedule: ScheduleDraft,
+    expected_updated_at: Option<String>,
+) -> Result<Schedule, store::UpdateScheduleError> {
+    let saved = blocking_db_with_snapshot(state, move |db| {
+        store::upsert_checked(db, &schedule, expected_updated_at.as_deref())
+    })
+    .await?;
     scheduler::notify_scheduler();
     crate::state::emit_schedules_changed(state);
     Ok(saved)

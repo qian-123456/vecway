@@ -594,6 +594,7 @@ pub fn run() {
             // LEAD
             get_settings,
             save_settings,
+            settings::patch_settings,
             app_paths,
             app_relaunch,
             current_worktree_identity,

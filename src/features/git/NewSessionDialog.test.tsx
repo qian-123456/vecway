@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 	createSession: vi.fn(),
 	sendFirstPrompt: vi.fn(),
 	gitCreateWorktree: vi.fn(),
-	gitSummary: vi.fn(),
+	gitRepoRoot: vi.fn(),
 	gitBadge: vi.fn(),
 	gitListBranches: vi.fn(),
 	rpcListLive: vi.fn(),
@@ -35,7 +35,7 @@ vi.mock("../../lib/ipc", () => ({
 	gitBadge: mocks.gitBadge,
 	gitCreateWorktree: mocks.gitCreateWorktree,
 	gitListBranches: mocks.gitListBranches,
-	gitSummary: mocks.gitSummary,
+	gitRepoRoot: mocks.gitRepoRoot,
 	rpcListLive: mocks.rpcListLive,
 	rpcSend: vi.fn(),
 	validatePath: mocks.validatePath,
@@ -83,7 +83,7 @@ describe("NewSessionDialog safety & staged retry", () => {
 		});
 		mocks.appPaths.mockResolvedValue({ globalDir: "/global" });
 		mocks.validatePath.mockResolvedValue({ exists: true, isDir: true });
-		mocks.gitSummary.mockResolvedValue({ isRepo: true, branch: "main", dirtyCount: 0 });
+		mocks.gitRepoRoot.mockResolvedValue("/repo");
 		mocks.gitBadge.mockResolvedValue({ isRepo: true, isWorktree: false, worktreeName: null });
 		mocks.gitListBranches.mockResolvedValue(["main"]);
 		mocks.gitCreateWorktree.mockResolvedValue({ path: "/repo/.worktrees/wt1" });
@@ -99,11 +99,10 @@ describe("NewSessionDialog safety & staged retry", () => {
 	afterEach(cleanup);
 
 	it("does not block submission on a non-git directory and hides worktree controls", async () => {
-		mocks.gitSummary.mockResolvedValue({ isRepo: false, branch: "", dirtyCount: 0 });
+		mocks.gitRepoRoot.mockResolvedValue(null);
 		mocks.gitBadge.mockResolvedValue({ isRepo: false, isWorktree: false, worktreeName: null });
 		render(<NewSessionDialog />);
-		await waitFor(() => expect(mocks.gitSummary).toHaveBeenCalled());
-		expect(screen.queryByRole("checkbox", { name: /工作树/ })).toBeNull();
+		await waitFor(() => expect(mocks.gitRepoRoot).toHaveBeenCalled());
 		const submitBtn = screen.getByRole("button", { name: "创建会话" }) as HTMLButtonElement;
 		expect(submitBtn.disabled).toBe(false);
 		fireEvent.click(submitBtn);
@@ -132,7 +131,7 @@ describe("NewSessionDialog safety & staged retry", () => {
 		expect(mocks.closeModal).toHaveBeenCalled();
 	});
 
-	it("awaits cwd-keyed gitSummary probe when useWorktree is enabled instead of using previous non-git directory result (H10)", async () => {
+	it("awaits cwd-keyed gitRepoRoot probe when useWorktree is enabled instead of using previous non-git directory result (H10)", async () => {
 		useSessions.setState({
 			workspaces: [
 				{ id: "ws-nongit", name: "Plain", path: "/plain", mode: "code" } as never,
@@ -140,10 +139,10 @@ describe("NewSessionDialog safety & staged retry", () => {
 			],
 			sessions: {},
 		});
-		let resolveRepoProbe!: (val: { isRepo: boolean; branch: string; dirtyCount: number }) => void;
-		mocks.gitSummary.mockImplementation((dir: string) => {
+		let resolveRepoProbe!: (val: string | null) => void;
+		mocks.gitRepoRoot.mockImplementation((dir: string) => {
 			if (dir === "/plain") {
-				return Promise.resolve({ isRepo: false, branch: "", dirtyCount: 0 });
+				return Promise.resolve(null);
 			}
 			return new Promise((resolve) => {
 				resolveRepoProbe = resolve;
@@ -158,18 +157,18 @@ describe("NewSessionDialog safety & staged retry", () => {
 		});
 
 		render(<NewSessionDialog />);
-		await waitFor(() => expect(mocks.gitSummary).toHaveBeenCalledWith("/plain"));
+		await waitFor(() => expect(mocks.gitRepoRoot).toHaveBeenCalledWith("/plain"));
 
-		// Switch workspace to /repo whose gitSummary probe is still pending
+		// Switch workspace to /repo whose gitRepoRoot probe is still pending
 		const selects = screen.getAllByRole("combobox");
 		fireEvent.change(selects[0], { target: { value: "ws-git" } });
-		await waitFor(() => expect(mocks.gitSummary).toHaveBeenCalledWith("/repo"));
+		await waitFor(() => expect(mocks.gitRepoRoot).toHaveBeenCalledWith("/repo"));
 
 		// Submit immediately before /repo probe resolves
 		fireEvent.click(screen.getByRole("button", { name: "创建会话" }));
 		expect(mocks.createSession).not.toHaveBeenCalled();
 
-		resolveRepoProbe({ isRepo: true, branch: "main", dirtyCount: 0 });
+		resolveRepoProbe("/repo");
 		await waitFor(() => expect(mocks.gitCreateWorktree).toHaveBeenCalledWith("/repo", expect.any(String), expect.any(Object)));
 		expect(mocks.createSession).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/repo/.worktrees/wt1" }));
 	});
@@ -218,5 +217,32 @@ describe("NewSessionDialog safety & staged retry", () => {
 		expect(useComposer.getState().drafts["sess-1"]).toBe("edited before open");
 		expect(mocks.selectSession).toHaveBeenCalledWith("sess-1");
 		expect(mocks.closeModal).toHaveBeenCalled();
+	});
+
+	it("blocks isolated launch when gitRepoRoot probe fails and retries cleanly (M9 / P2-6)", async () => {
+		mocks.gitRepoRoot
+			.mockRejectedValueOnce(new Error("git exited 128"))
+			.mockResolvedValueOnce("/repo");
+		useUi.setState({
+			modal: { name: "new-session", props: { workspaceId: "ws1", useWorktree: true } },
+		});
+
+		render(<NewSessionDialog />);
+		const alert = await screen.findByRole("alert");
+		expect(alert.textContent).toContain("git exited 128");
+		const submitBtn = screen.getByRole("button", { name: "创建会话" }) as HTMLButtonElement;
+		expect(submitBtn.disabled).toBe(true);
+		expect(mocks.createSession).not.toHaveBeenCalled();
+
+		// Retry probe -> succeeds, clears error, and allows isolated worktree creation
+		fireEvent.click(screen.getByRole("button", { name: "重试检测" }));
+		await waitFor(() => expect(mocks.gitRepoRoot).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+
+		fireEvent.click(screen.getByRole("button", { name: "创建会话" }));
+		await waitFor(() =>
+			expect(mocks.gitCreateWorktree).toHaveBeenCalledWith("/repo", expect.any(String), expect.any(Object)),
+		);
+		expect(mocks.createSession).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/repo/.worktrees/wt1" }));
 	});
 });

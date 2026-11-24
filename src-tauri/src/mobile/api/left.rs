@@ -134,7 +134,10 @@ pub fn routes<B: Backend>() -> Router<Arc<Ctx<B>>> {
             "/left/schedules",
             get(schedules_list::<B>).post(schedules_create::<B>),
         )
-        .route("/left/schedules/probe-test", post(schedules_probe_test::<B>))
+        .route(
+            "/left/schedules/probe-test",
+            post(schedules_probe_test::<B>),
+        )
         .route(
             "/left/schedules/generate-draft",
             post(schedules_generate_draft::<B>),
@@ -178,7 +181,10 @@ pub fn routes<B: Backend>() -> Router<Arc<Ctx<B>>> {
         .route("/left/settings/set", post(setting_set::<B>))
         .route("/left/settings/desktop", get(desktop_settings::<B>))
         .route("/left/settings/approval-mode", post(approval_mode_set::<B>))
-        .route("/left/settings/automation", post(automation_settings_set::<B>))
+        .route(
+            "/left/settings/automation",
+            post(automation_settings_set::<B>),
+        )
         .route("/left/roles", get(roles_get::<B>))
         .route("/left/roles/set", post(roles_set::<B>))
         .route("/left/providers", get(providers_get::<B>))
@@ -1115,6 +1121,12 @@ async fn new_session<B: Backend>(
     } else {
         entry.mode
     };
+    {
+        let _mutation = crate::catalog::session_mutation_lock().lock().await;
+        if crate::git::commands::is_worktree_reserved(&cwd) {
+            return Err(conflict("该工作树正在合并或清理，请稍后再试"));
+        }
+    }
     let (model, thinking) = parse_new_selection(&body)?;
     let append_system_prompt = parse_append_system_prompt(body.append_system_prompt.as_deref())?;
     let info = super::draft::create_with_context(
@@ -1476,12 +1488,19 @@ fn validate_schedule_id(id: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn schedule_exists(st: &AppState, id: &str) -> Result<(), ApiError> {
+fn schedule_exists_db(
+    db: &parking_lot::Mutex<rusqlite::Connection>,
+    id: &str,
+) -> Result<(), ApiError> {
     let found = {
-        let db = st.db.lock();
+        let db = db.lock();
         sched_store::get(&db, id).map_err(internal)?
     };
     found.map(|_| ()).ok_or_else(|| not_found("自动化不存在"))
+}
+
+fn schedule_exists(st: &AppState, id: &str) -> Result<(), ApiError> {
+    schedule_exists_db(&st.db, id)
 }
 
 async fn validate_draft(
@@ -1551,19 +1570,47 @@ async fn schedules_create<B: Backend>(
     Ok(Json(saved))
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ScheduleUpdateQuery {
+    expected_updated_at: Option<String>,
+}
+
 async fn schedules_update<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Path(id): Path<String>,
+    Query(query): Query<ScheduleUpdateQuery>,
     Json(mut draft): Json<ScheduleDraft>,
 ) -> ApiResult<crate::contracts::Schedule> {
     validate_schedule_id(&id)?;
-    let st = app(&ctx)?;
-    schedule_exists(st, &id)?;
+    schedule_exists_db(&ctx.db, &id)?;
     draft.id = Some(id);
     validate_draft(&ctx.db, &mut draft).await?;
-    let saved = crate::schedules::commands::schedules_save(st.app.state::<AppState>(), draft)
-        .await
-        .map_err(bad_request)?;
+    let saved = match ctx.backend.app_state() {
+        Some(st) => {
+            crate::schedules::commands::schedules_update_checked(
+                st,
+                draft,
+                query.expected_updated_at,
+            )
+            .await
+        }
+        None => {
+            let db = ctx.db.clone();
+            let expected = query.expected_updated_at;
+            tokio::task::spawn_blocking(move || {
+                let guard = db.lock();
+                sched_store::upsert_checked(&guard, &draft, expected.as_deref())
+            })
+            .await
+            .map_err(|e| internal(e.to_string()))?
+        }
+    }
+    .map_err(|e| match e {
+        sched_store::UpdateScheduleError::Conflict(msg) => conflict(msg),
+        sched_store::UpdateScheduleError::NotFound(msg) => not_found(&msg),
+        sched_store::UpdateScheduleError::Invalid(msg) => bad_request(msg),
+    })?;
     Ok(Json(saved))
 }
 async fn schedules_delete<B: Backend>(
@@ -1783,46 +1830,91 @@ fn count_diff_lines(diff: &str) -> (u32, u32) {
 
 static WORKTREE_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorktreeActionBody {
-    run_id: Option<String>,
-    branch: Option<String>,
-    worktree_path: Option<String>,
+    #[serde(default)]
+    run_id: String,
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    worktree_path: String,
 }
 
 impl WorktreeActionBody {
-    fn has_target_fields(&self) -> bool {
-        [&self.run_id, &self.branch, &self.worktree_path]
-            .into_iter()
-            .any(|v| v.as_deref().map(str::trim).is_some_and(|s| !s.is_empty()))
+    fn validate_non_empty(&self) -> Result<(), ApiError> {
+        if self.run_id.trim().is_empty()
+            || self.branch.trim().is_empty()
+            || self.worktree_path.trim().is_empty()
+        {
+            return Err(bad_request(
+                "缺少目标工作树标识（runId、branch、worktreePath）",
+            ));
+        }
+        Ok(())
     }
 }
 
-fn worktree_matches_run(
-    wt: &crate::contracts::WorktreeInfo,
-    run: &crate::contracts::ScheduleRun,
-) -> bool {
+fn trim_non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn branch_matches_run_prefix(branch: &str, run: &crate::contracts::ScheduleRun) -> bool {
     let run_prefix: String = run.id.chars().take(8).collect();
     if run_prefix.chars().count() < 6 {
         return false;
     }
-    wt.branch.as_deref().is_some_and(|b| {
-        let b = b.trim();
-        let tail = b.strip_prefix("omp/").unwrap_or(b);
-        tail.starts_with("sched-") && tail.ends_with(&run_prefix)
-    })
+    let b = branch.trim();
+    let tail = b.strip_prefix("omp/").unwrap_or(b);
+    tail.starts_with("sched-") && tail.ends_with(&run_prefix)
 }
 
+fn worktree_matches_run(
+    repo_root: &str,
+    wt: &crate::contracts::WorktreeInfo,
+    run: &crate::contracts::ScheduleRun,
+) -> bool {
+    let recorded_repo = trim_non_empty(run.worktree_repo_root.as_deref());
+    let recorded_path = trim_non_empty(run.worktree_path.as_deref());
+    let recorded_branch = trim_non_empty(run.worktree_branch.as_deref());
+    let wt_branch = trim_non_empty(wt.branch.as_deref());
+
+    if recorded_repo.is_some() || recorded_path.is_some() || recorded_branch.is_some() {
+        // Runs with recorded identity must match recorded repo, path, and original branch;
+        // never claim a replacement checkout on a different branch at the same path or fall
+        // back to branch-prefix matching when recorded identity disagrees.
+        if let Some(rr) = recorded_repo {
+            if norm_path(repo_root) != norm_path(rr) {
+                return false;
+            }
+        }
+        if let Some(rp) = recorded_path {
+            if norm_path(&wt.path) != norm_path(rp) {
+                return false;
+            }
+        }
+        return match recorded_branch {
+            Some(rb) => wt_branch == Some(rb),
+            None => wt_branch.is_some_and(|b| branch_matches_run_prefix(b, run)),
+        };
+    }
+
+    // Legacy runs without recorded worktree identity fall back to `sched-...<run_prefix>`.
+    wt_branch.is_some_and(|b| branch_matches_run_prefix(b, run))
+}
+
+/// Match an isolated worktree created for one of this schedule's runs, independent
+/// of the schedule's current mutable `run_mode` (a user may switch `worktree` -> `local`
+/// while an earlier isolated run's unmerged worktree still exists). Ordinary linked
+/// checkouts without `sched-...<run_prefix>` branch proof are never claimed.
 fn find_automation_worktree<'a, 'b>(
     repo_root: &str,
-    run_mode: crate::contracts::ScheduleRunMode,
     worktrees: &'a [crate::contracts::WorktreeInfo],
     runs: &'b [crate::contracts::ScheduleRun],
-) -> Option<(&'a crate::contracts::WorktreeInfo, &'b crate::contracts::ScheduleRun)> {
-    if run_mode != crate::contracts::ScheduleRunMode::Worktree {
-        return None;
-    }
+) -> Option<(
+    &'a crate::contracts::WorktreeInfo,
+    &'b crate::contracts::ScheduleRun,
+)> {
     let main_path = norm_path(repo_root);
     let candidates: Vec<&crate::contracts::WorktreeInfo> = worktrees
         .iter()
@@ -1831,13 +1923,15 @@ fn find_automation_worktree<'a, 'b>(
     if candidates.is_empty() {
         return None;
     }
-    let mut fallback: Option<(&crate::contracts::WorktreeInfo, &crate::contracts::ScheduleRun)> =
-        None;
+    let mut fallback: Option<(
+        &crate::contracts::WorktreeInfo,
+        &crate::contracts::ScheduleRun,
+    )> = None;
     for run in runs {
         let Some(wt) = candidates
             .iter()
             .copied()
-            .find(|wt| worktree_matches_run(wt, run))
+            .find(|wt| worktree_matches_run(repo_root, wt, run))
         else {
             continue;
         };
@@ -1854,6 +1948,66 @@ fn find_automation_worktree<'a, 'b>(
 struct InspectedWorktree {
     state: AutomationWorktreeState,
     wt_session_ids: Vec<String>,
+}
+
+async fn collect_candidate_repo_roots<B: Backend>(
+    ctx: &Ctx<B>,
+    schedule: &crate::contracts::Schedule,
+    runs: &[crate::contracts::ScheduleRun],
+    session_list: &[SessionMeta],
+) -> Vec<String> {
+    let session_cwd_by_id: HashMap<&str, &str> = session_list
+        .iter()
+        .map(|s| (s.id.as_str(), s.cwd.as_str()))
+        .collect();
+    let mut candidate_dirs: Vec<String> = Vec::new();
+    let mut seen_dirs: HashSet<String> = HashSet::new();
+    let mut push_dir = |raw: &str| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let key = norm_path(trimmed);
+        if seen_dirs.insert(key) {
+            candidate_dirs.push(trimmed.to_string());
+        }
+    };
+
+    for run in runs {
+        if let Some(repo_root) = run.worktree_repo_root.as_deref() {
+            push_dir(repo_root);
+        }
+        if let Some(wt_path) = run.worktree_path.as_deref() {
+            push_dir(wt_path);
+        }
+    }
+    push_dir(&schedule.cwd);
+    for run in runs {
+        if let Some(sid) = run.session_id.as_deref() {
+            if let Some(scwd) = session_cwd_by_id.get(sid) {
+                push_dir(scwd);
+            }
+        }
+    }
+    if let Ok(allowed) = allowed_dirs_db(&ctx.db).await {
+        for entry in allowed {
+            if entry.kind != "global" {
+                push_dir(&entry.path);
+            }
+        }
+    }
+
+    let mut roots: Vec<String> = Vec::new();
+    let mut seen_roots: HashSet<String> = HashSet::new();
+    for dir in candidate_dirs {
+        if let Ok(Some(root)) = crate::git::commands::repo_root_for_cwd(dir).await {
+            let key = norm_path(&root);
+            if seen_roots.insert(key) {
+                roots.push(root);
+            }
+        }
+    }
+    roots
 }
 
 async fn inspect_schedule_worktree_detail<B: Backend>(
@@ -1877,37 +2031,51 @@ async fn inspect_schedule_worktree_detail<B: Backend>(
         let runs = sched_store::list_runs(&db, id, 30).map_err(internal)?;
         (schedule, runs)
     };
-    if schedule.run_mode != crate::contracts::ScheduleRunMode::Worktree {
+    if runs.is_empty() {
         return Ok((schedule, None, runs, Vec::new()));
     }
-    let cwd = schedule.cwd.trim();
-    if cwd.is_empty() {
-        return Ok((schedule, None, runs, Vec::new()));
-    }
-    let Ok(Some(repo_root)) = crate::git::commands::repo_root_for_cwd(cwd.to_string()).await else {
-        return Ok((schedule, None, runs, Vec::new()));
-    };
     let session_list = ctx.backend.sessions().await;
-    let worktrees = match ctx.backend.app_state() {
-        Some(st) => crate::git::commands::list_worktrees_for_app(st, repo_root.clone())
-            .await
-            .unwrap_or_default(),
-        None => {
-            let pairs: Vec<(String, String)> = session_list
-                .iter()
-                .map(|s| (s.id.clone(), s.cwd.clone()))
-                .collect();
-            let root = PathBuf::from(&repo_root);
-            tokio::task::spawn_blocking(move || crate::git::worktree::list(&root, &pairs))
+    let candidate_roots = collect_candidate_repo_roots(ctx, &schedule, &runs, &session_list).await;
+    if candidate_roots.is_empty() {
+        return Ok((schedule, None, runs, session_list));
+    }
+    let mut best: Option<(
+        String,
+        crate::contracts::WorktreeInfo,
+        &crate::contracts::ScheduleRun,
+    )> = None;
+    for repo_root in candidate_roots {
+        let worktrees = match ctx.backend.app_state() {
+            Some(st) => crate::git::commands::list_worktrees_for_app(st, repo_root.clone())
                 .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            None => {
+                let pairs: Vec<(String, String)> = session_list
+                    .iter()
+                    .map(|s| (s.id.clone(), s.cwd.clone()))
+                    .collect();
+                let root = PathBuf::from(&repo_root);
+                tokio::task::spawn_blocking(move || crate::git::worktree::list(&root, &pairs))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default()
+            }
+        };
+        let Some((wt, run)) = find_automation_worktree(&repo_root, &worktrees, &runs) else {
+            continue;
+        };
+        let actionable = wt.ahead > 0 || wt.dirty > 0;
+        let wt_owned = wt.clone();
+        if actionable {
+            best = Some((repo_root, wt_owned, run));
+            break;
         }
-    };
-    let Some((wt, run)) =
-        find_automation_worktree(&repo_root, schedule.run_mode, &worktrees, &runs)
-    else {
+        if best.is_none() {
+            best = Some((repo_root, wt_owned, run));
+        }
+    }
+    let Some((repo_root, wt, run)) = best else {
         return Ok((schedule, None, runs, session_list));
     };
     let Some(branch) = wt
@@ -1983,96 +2151,135 @@ fn verify_worktree_target(
     wt: &AutomationWorktreeState,
     target: &WorktreeActionBody,
 ) -> Result<(), ApiError> {
-    if let Some(expected_run) = target
-        .run_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+    if wt.run_id.as_deref() != Some(target.run_id.trim())
+        || wt.branch != target.branch.trim()
+        || norm_path(&wt.worktree_path) != norm_path(target.worktree_path.trim())
     {
-        if wt.run_id.as_deref() != Some(expected_run) {
-            return Err(conflict("工作树已变化，请刷新后再确认"));
-        }
-    }
-    if let Some(expected_branch) = target
-        .branch
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if wt.branch != expected_branch {
-            return Err(conflict("工作树已变化，请刷新后再确认"));
-        }
-    }
-    if let Some(expected_path) = target
-        .worktree_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if norm_path(&wt.worktree_path) != norm_path(expected_path) {
-            return Err(conflict("工作树已变化，请刷新后再确认"));
-        }
+        return Err(conflict("工作树已变化，请刷新后再确认"));
     }
     Ok(())
 }
 
-fn ensure_worktree_idle(
+async fn ensure_worktree_idle(
     wt: &AutomationWorktreeState,
     wt_session_ids: &[String],
     runs: &[crate::contracts::ScheduleRun],
     session_list: &[SessionMeta],
 ) -> Result<(), ApiError> {
+    let busy_msg = "该工作树仍有正在运行的任务或活跃会话，请等待结束后再操作";
     let has_running_run = runs
         .iter()
         .any(|r| r.status == crate::contracts::ScheduleRunStatus::Running);
     if has_running_run {
-        return Err(conflict(
-            "该工作树仍有正在运行的任务或活跃会话，请等待结束后再操作",
-        ));
+        return Err(conflict(busy_msg));
     }
-    let wt_norm = norm_path(&wt.worktree_path);
-    let live_ids: HashSet<&str> = session_list
+    let busy_session = |s: &SessionMeta| {
+        s.live || s.external_pid.is_some() || crate::terminal::commands::omp_terminal_open(&s.id)
+    };
+    let busy_ids: HashSet<&str> = session_list
         .iter()
-        .filter(|s| s.live)
+        .filter(|s| busy_session(s))
         .map(|s| s.id.as_str())
         .collect();
-    let has_live_session = session_list
+    let has_session_owner = session_list
         .iter()
-        .any(|s| s.live && norm_path(&s.cwd) == wt_norm)
+        .any(|s| busy_session(s) && is_inside_canon(&s.cwd, &wt.worktree_path))
         || wt_session_ids
             .iter()
-            .any(|sid| live_ids.contains(sid.as_str()));
-    if has_live_session {
-        return Err(conflict(
-            "该工作树仍有正在运行的任务或活跃会话，请等待结束后再操作",
-        ));
+            .any(|sid| busy_ids.contains(sid.as_str()));
+    if has_session_owner {
+        return Err(conflict(busy_msg));
+    }
+    let has_live_rpc = crate::rpc::registry().read().values().any(|handle| {
+        handle.alive.load(std::sync::atomic::Ordering::SeqCst)
+            && is_inside_canon(&handle.cwd, &wt.worktree_path)
+    });
+    if has_live_rpc {
+        return Err(conflict(busy_msg));
+    }
+    let has_active_draft = super::draft::active_cwds()
+        .await
+        .into_iter()
+        .any(|(_, cwd)| is_inside_canon(&cwd, &wt.worktree_path));
+    if has_active_draft {
+        return Err(conflict(busy_msg));
+    }
+    let has_in_flight_startup = crate::rpc::in_flight_startup_cwds()
+        .into_iter()
+        .any(|(_, cwd)| is_inside_canon(&cwd, &wt.worktree_path));
+    if has_in_flight_startup {
+        return Err(conflict(busy_msg));
+    }
+    let has_active_terminal = crate::git::commands::active_terminal_cwds()
+        .into_iter()
+        .any(|(_, cwd)| is_inside_canon(&cwd, &wt.worktree_path));
+    if has_active_terminal {
+        return Err(conflict(busy_msg));
     }
     Ok(())
 }
 
+/// Validates target binding, verifies worktree idleness/occupancy, and atomically
+/// reserves the worktree under `session_mutation_lock` BEFORE any Git commit, merge,
+/// or worktree removal begins. The returned RAII reservation guard must be held
+/// through the entire commit/merge/removal lifecycle.
 async fn prepare_worktree_mutation<B: Backend>(
     ctx: &Ctx<B>,
     id: &str,
-    target: Option<WorktreeActionBody>,
-) -> Result<(crate::contracts::Schedule, AutomationWorktreeState), ApiError> {
-    let (schedule, inspected_opt, runs, session_list) =
+    target: WorktreeActionBody,
+) -> Result<
+    (
+        crate::contracts::Schedule,
+        AutomationWorktreeState,
+        crate::git::commands::WorktreeReservationGuard,
+    ),
+    ApiError,
+> {
+    target.validate_non_empty()?;
+    let (_schedule, inspected_opt, runs, session_list) =
         inspect_schedule_worktree_detail(ctx, id).await?;
     let Some(inspected) = inspected_opt else {
-        if target.as_ref().is_some_and(WorktreeActionBody::has_target_fields) {
-            return Err(conflict("工作树已变化，请刷新后再确认"));
-        }
-        return Err(not_found("未找到该自动化关联的隔离工作树"));
+        return Err(conflict("工作树已变化，请刷新后再确认"));
     };
-    if let Some(target) = target.as_ref() {
-        verify_worktree_target(&inspected.state, target)?;
-    }
+    verify_worktree_target(&inspected.state, &target)?;
     ensure_worktree_idle(
         &inspected.state,
         &inspected.wt_session_ids,
         &runs,
         &session_list,
-    )?;
-    Ok((schedule, inspected.state))
+    )
+    .await?;
+    let reservation = match ctx.backend.app_state() {
+        Some(st) => {
+            crate::git::commands::reserve_worktree_for_app(st, &inspected.state.worktree_path)
+                .await
+                .map_err(conflict)?
+        }
+        None => {
+            let _mutation = crate::catalog::session_mutation_lock().lock().await;
+            crate::git::commands::try_reserve_worktree(&inspected.state.worktree_path)
+                .map_err(conflict)?
+        }
+    };
+    // Revalidate the recorded (repo, path, branch) identity and idle state AFTER acquiring
+    // the reservation so a concurrent delete+recreate on another branch cannot be mutated.
+    let (schedule, rechecked_opt, rechecked_runs, rechecked_sessions) =
+        inspect_schedule_worktree_detail(ctx, id).await?;
+    let Some(rechecked) = rechecked_opt else {
+        return Err(conflict("工作树已变化，请刷新后再确认"));
+    };
+    if !reservation.matches(&rechecked.state.worktree_path) {
+        return Err(conflict("工作树已变化，请刷新后再确认"));
+    }
+    verify_worktree_target(&rechecked.state, &target)?;
+    ensure_worktree_idle(
+        &rechecked.state,
+        &rechecked.wt_session_ids,
+        &rechecked_runs,
+        &rechecked_sessions,
+    )
+    .await?;
+    Ok((schedule, rechecked.state, reservation))
 }
 
 async fn schedules_worktree<B: Backend>(
@@ -2112,14 +2319,22 @@ where
 async fn schedules_worktree_merge<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Path(id): Path<String>,
-    body: Option<Json<WorktreeActionBody>>,
+    Json(body): Json<WorktreeActionBody>,
 ) -> ApiResult<Value> {
     let _guard = WORKTREE_MUTATION_LOCK.lock().await;
-    let (schedule, wt) = prepare_worktree_mutation(&ctx, &id, body.map(|Json(b)| b)).await?;
+    let (schedule, wt, reservation) = prepare_worktree_mutation(&ctx, &id, body).await?;
     let st = app(&ctx)?;
-    merge_automation_worktree_step(&schedule.name, wt, |repo, path| async move {
-        crate::git::commands::remove_worktree_for_app(st, repo, path, true, false, Some(false))
-            .await
+    merge_automation_worktree_step(&schedule.name, wt, |repo, path| async {
+        crate::git::commands::remove_reserved_worktree_for_app(
+            st,
+            &reservation,
+            repo,
+            path,
+            true,
+            false,
+            Some(false),
+        )
+        .await
     })
     .await?;
     Ok(ok_json())
@@ -2128,13 +2343,14 @@ async fn schedules_worktree_merge<B: Backend>(
 async fn schedules_worktree_discard<B: Backend>(
     State(ctx): State<Arc<Ctx<B>>>,
     Path(id): Path<String>,
-    body: Option<Json<WorktreeActionBody>>,
+    Json(body): Json<WorktreeActionBody>,
 ) -> ApiResult<Value> {
     let _guard = WORKTREE_MUTATION_LOCK.lock().await;
-    let (_schedule, wt) = prepare_worktree_mutation(&ctx, &id, body.map(|Json(b)| b)).await?;
+    let (_schedule, wt, reservation) = prepare_worktree_mutation(&ctx, &id, body).await?;
     let st = app(&ctx)?;
-    crate::git::commands::remove_worktree_for_app(
+    crate::git::commands::remove_reserved_worktree_for_app(
         st,
+        &reservation,
         wt.repo_root,
         wt.worktree_path,
         true,
@@ -3689,7 +3905,10 @@ mod tests {
         .await
         .unwrap();
         assert!(!FsPath::new(&wt1.path).exists());
-        assert_eq!(std::fs::read_to_string(base.join("new.txt")).unwrap(), "from-auto\n");
+        assert_eq!(
+            std::fs::read_to_string(base.join("new.txt")).unwrap(),
+            "from-auto\n"
+        );
 
         // 2. Conflicting merge must abort BEFORE removing the worktree.
         let wt2 = crate::git::worktree::create(&base, "sched-demo-run67890", None, None).unwrap();
@@ -3734,10 +3953,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
     #[test]
-    fn find_automation_worktree_requires_worktree_mode_sched_branch_and_prefers_actionable() {
-        use crate::contracts::{
-            ScheduleRun, ScheduleRunMode, ScheduleRunPhase, ScheduleRunStatus, WorktreeInfo,
-        };
+    fn find_automation_worktree_requires_sched_branch_ignores_mutable_run_mode_and_prefers_actionable(
+    ) {
+        use crate::contracts::{ScheduleRun, ScheduleRunPhase, ScheduleRunStatus, WorktreeInfo};
         let mk_run = |id: &str| ScheduleRun {
             id: id.into(),
             schedule_id: "s1".into(),
@@ -3748,16 +3966,19 @@ mod tests {
             summary: None,
             phase: ScheduleRunPhase::Agent,
             probe_output: None,
+            worktree_repo_root: None,
+            worktree_path: None,
+            worktree_branch: None,
         };
         let runs = vec![mk_run("runnewer-000"), mk_run("runolder-000")];
         let worktrees = vec![
             WorktreeInfo {
                 path: "/repo".into(),
-                branch: Some("main".into()),
+                branch: Some("omp/sched-a-runnewer".into()),
                 head: "h0".into(),
-                dirty: 0,
+                dirty: 3,
                 session_ids: vec![],
-                ahead: 0,
+                ahead: 2,
                 behind: 0,
             },
             // Ordinary linked checkout NOT created by automation: must NEVER be claimed even if session_ids match.
@@ -3792,36 +4013,75 @@ mod tests {
             },
         ];
 
-        // H1: Local mode never claims any worktree.
-        assert!(
-            find_automation_worktree("/repo", ScheduleRunMode::Local, &worktrees, &runs)
-                .is_none()
-        );
-
-        // M9: Worktree mode picks older actionable worktree over newer clean worktree.
-        let (picked, picked_run) =
-            find_automation_worktree("/repo", ScheduleRunMode::Worktree, &worktrees, &runs)
-                .unwrap();
+        // M9 + M1: Picks older actionable worktree over newer clean worktree, and never claims main checkout.
+        let (picked, picked_run) = find_automation_worktree("/repo", &worktrees, &runs).unwrap();
         assert_eq!(picked.path, "/repo/.worktrees/sched-a-runolder");
         assert_eq!(picked_run.id, "runolder-000");
 
         // H1: Without sched-<run_prefix> branch proof, ordinary linked checkout is never claimed.
         let non_sched_only = &worktrees[..2];
-        assert!(
-            find_automation_worktree("/repo", ScheduleRunMode::Worktree, non_sched_only, &runs)
-                .is_none()
-        );
-    }
+        assert!(find_automation_worktree("/repo", non_sched_only, &runs).is_none());
 
+        // P1 (Round 5): Recorded (repo_root, path, branch) matches the exact worktree,
+        // and rejects any replacement checkout on a different branch, detached HEAD,
+        // different repo, or different path even when a legacy sched-* branch exists.
+        let mut exact_run = mk_run("short");
+        exact_run.session_id = None;
+        exact_run.worktree_repo_root = Some("/repo".into());
+        exact_run.worktree_path = Some("/repo/.worktrees/sched-a-runolder".into());
+        exact_run.worktree_branch = Some("omp/sched-a-runolder".into());
+        let exact_runs = [exact_run.clone()];
+        let (picked_exact, picked_exact_run) =
+            find_automation_worktree("/repo", &worktrees, &exact_runs).unwrap();
+        assert_eq!(picked_exact.path, "/repo/.worktrees/sched-a-runolder");
+        assert_eq!(picked_exact_run.id, "short");
+
+        // Different repo_root must be rejected even if path & branch match.
+        assert!(
+            find_automation_worktree("/other-repo", &worktrees, &[exact_run.clone()]).is_none()
+        );
+
+        // Replacement checkout at the SAME path on a different branch must be rejected.
+        let replaced_branch = vec![WorktreeInfo {
+            path: "/repo/.worktrees/sched-a-runolder".into(),
+            branch: Some("feature/unrelated-reused-path".into()),
+            head: "h9".into(),
+            dirty: 2,
+            session_ids: vec![],
+            ahead: 1,
+            behind: 0,
+        }];
+        assert!(
+            find_automation_worktree("/repo", &replaced_branch, &[exact_run.clone()]).is_none()
+        );
+
+        // Detached HEAD at the SAME path must also be rejected.
+        let detached = vec![WorktreeInfo {
+            path: "/repo/.worktrees/sched-a-runolder".into(),
+            branch: None,
+            head: "h9".into(),
+            dirty: 1,
+            session_ids: vec![],
+            ahead: 0,
+            behind: 0,
+        }];
+        assert!(find_automation_worktree("/repo", &detached, &[exact_run]).is_none());
+
+        // Recorded identity with mismatched path must NOT fall back to legacy branch-prefix match.
+        let mut moved_run = mk_run("runolder-000");
+        moved_run.worktree_repo_root = Some("/repo".into());
+        moved_run.worktree_path = Some("/repo/.worktrees/removed-original".into());
+        moved_run.worktree_branch = Some("omp/sched-a-runolder".into());
+        assert!(find_automation_worktree("/repo", &worktrees, &[moved_run]).is_none());
+    }
     #[test]
     fn generate_draft_body_defaults_preview_to_false_and_parses_true() {
         let plain: GenerateDraftBody =
             serde_json::from_value(json!({ "request": "check", "cwd": "/repo" })).unwrap();
         assert!(!plain.preview);
-        let preview: GenerateDraftBody = serde_json::from_value(
-            json!({ "request": "check", "cwd": "/repo", "preview": true }),
-        )
-        .unwrap();
+        let preview: GenerateDraftBody =
+            serde_json::from_value(json!({ "request": "check", "cwd": "/repo", "preview": true }))
+                .unwrap();
         assert!(preview.preview);
     }
 }

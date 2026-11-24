@@ -65,6 +65,36 @@ pub async fn all_metas() -> Vec<SessionMeta> {
     out
 }
 
+/// `(draft_id, cwd)` pairs for drafts that are actively handing off, spawning a
+/// prewarmed session, or holding a live session activity guard.
+pub async fn active_cwds() -> Vec<(String, String)> {
+    let entries: Vec<Entry> = registry().lock().drafts.values().cloned().collect();
+    let mut out = Vec::new();
+    for entry in entries {
+        let (id, cwd, busy, start) = {
+            let d = entry.lock();
+            (
+                d.id.clone(),
+                d.cwd.clone(),
+                d.sending || d.activity.is_some(),
+                d.start.clone(),
+            )
+        };
+        let spawning_or_live = if busy {
+            true
+        } else {
+            match start.try_lock() {
+                Err(_) => true,
+                Ok(slot) => slot.is_some(),
+            }
+        };
+        if spawning_or_live {
+            out.push((id, cwd));
+        }
+    }
+    out
+}
+
 /// Drop a draft the user abandoned and release its prewarmed process.
 pub async fn discard(id: &str) -> bool {
     let Some(entry) = registry().lock().drafts.remove(id) else {
@@ -222,6 +252,12 @@ async fn spawn<B: Backend>(ctx: &Ctx<B>, entry: &Entry) -> Result<LiveSessionInf
     let mut slot = start.lock().await;
     if let Some(info) = slot.as_ref() {
         return Ok(info.clone());
+    }
+    {
+        let _mutation = crate::catalog::session_mutation_lock().lock().await;
+        if crate::git::commands::is_worktree_reserved(&opts.cwd) {
+            return Err("该工作树正在合并或清理，请稍后再试".to_string());
+        }
     }
     let info = ctx.backend.start_process(&opts).await?;
     let guard = crate::rpc::retain_session_activity(&info.session_id, GUARD_OWNER);
@@ -463,13 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn context_drafts_do_not_reuse_or_get_reused_by_plain_blank_drafts() {
-        let plain1 = create(
-            "/tmp/draft-ctx-a".into(),
-            SpaceMode::Code,
-            None,
-            None,
-        )
-        .await;
+        let plain1 = create("/tmp/draft-ctx-a".into(), SpaceMode::Code, None, None).await;
         let with_prompt = create_with_context(
             "/tmp/draft-ctx-a".into(),
             SpaceMode::Code,
@@ -493,29 +523,22 @@ mod tests {
         assert_ne!(with_auto.session_id, with_prompt.session_id);
 
         // Another plain blank draft reuses plain1, never with_prompt/with_auto.
-        let plain2 = create(
-            "/tmp/draft-ctx-a".into(),
-            SpaceMode::Code,
-            None,
-            None,
-        )
-        .await;
+        let plain2 = create("/tmp/draft-ctx-a".into(), SpaceMode::Code, None, None).await;
         assert_eq!(plain2.session_id, plain1.session_id);
 
         // Even after discarding plain1, a new plain draft never reuses context drafts.
         discard(&plain1.session_id).await;
-        let plain3 = create(
-            "/tmp/draft-ctx-a".into(),
-            SpaceMode::Code,
-            None,
-            None,
-        )
-        .await;
+        let plain3 = create("/tmp/draft-ctx-a".into(), SpaceMode::Code, None, None).await;
         assert_ne!(plain3.session_id, with_prompt.session_id);
         assert_ne!(plain3.session_id, with_auto.session_id);
 
         assert!(!selection(&plain3.session_id).await.unwrap().automation_mode);
-        assert!(selection(&with_auto.session_id).await.unwrap().automation_mode);
+        assert!(
+            selection(&with_auto.session_id)
+                .await
+                .unwrap()
+                .automation_mode
+        );
 
         for id in [
             &with_prompt.session_id,
