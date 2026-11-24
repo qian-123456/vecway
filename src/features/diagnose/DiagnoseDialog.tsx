@@ -24,6 +24,7 @@ import { useSessions } from "../../stores/sessions";
 import { useUi } from "../../stores/ui";
 import { NativeSelect } from "../../components/NativeSelect";
 import { useT } from "../../stores/language";
+import { needsAttention } from "../sessions/grouping";
 
 /**
  * [D] Diagnose dialog. Always mounted; opened via
@@ -50,6 +51,8 @@ export function DiagnoseDialog() {
 	const [promptError, setPromptError] = useState<string | null>(null);
 	const [dispatchError, setDispatchError] = useState<string | null>(null);
 	const sending = useRef(false);
+	const mountedRef = useRef(true);
+	const dispatchSeqRef = useRef(0);
 	const promptRequest = useRef(0);
 	const visit = useRef(0);
 	const createdSessionRef = useRef<{
@@ -59,6 +62,14 @@ export function DiagnoseDialog() {
 		mode: string | undefined;
 	} | null>(null);
 
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+			dispatchSeqRef.current++;
+			sending.current = false;
+		};
+	}, []);
 	const targetSession = targetSessionId ? sessions[targetSessionId] : undefined;
 
 	const fetchPrompt = useCallback(() => {
@@ -82,30 +93,38 @@ export function DiagnoseDialog() {
 
 	useEffect(() => {
 		visit.current++;
+		dispatchSeqRef.current++;
+		sending.current = false;
 		if (isVisible && targetSessionId) {
 			createdSessionRef.current = null;
 			setPrompt("");
 			setPromptError(null);
 			setDispatchError(null);
-			setDispatching(sending.current);
+			setDispatching(false);
 			setTargetType("new");
 			setNewSessionModel("");
-			// Read once per opening, not on catalog refresh; exclude busy sessions.
+			// Read once per opening, not on catalog refresh; exclude busy/awaiting sessions.
 			const candidateIds = Object.values(useSessions.getState().sessions)
-				.filter((s) => s.id !== targetSessionId && s.status !== "working")
+				.filter((s) => s.id !== targetSessionId && !needsAttention(s))
 				.map((s) => s.id);
 			setSelectedExistingId(candidateIds[0] || "");
 			fetchPrompt();
+		} else {
+			setDispatching(false);
 		}
-		return () => { promptRequest.current++; };
+		return () => {
+			promptRequest.current++;
+			dispatchSeqRef.current++;
+			visit.current++;
+			sending.current = false;
+		};
 	}, [isVisible, targetSessionId, fetchPrompt]);
 	useEffect(() => {
 		createdSessionRef.current = null;
 	}, [targetSession?.cwd, targetSession?.mode]);
 
-
 	const candidateSessions = Object.values(sessions).filter(
-		(s) => s.id !== targetSessionId && s.status !== "working",
+		(s) => s.id !== targetSessionId && !needsAttention(s),
 	);
 	// Keep "existing" selected once the user chose it so unavailability is shown explicitly
 	// instead of silently substituting another session or switching to "new".
@@ -117,7 +136,7 @@ export function DiagnoseDialog() {
 	);
 	const existingTargetError =
 		effectiveTargetType === "existing" && !isSelectedExistingValid
-			? selectedExistingSession?.status === "working"
+			? selectedExistingSession && needsAttention(selectedExistingSession)
 				? t("diagnose.selectedSessionBusy")
 				: t("diagnose.selectedSessionUnavailable")
 			: null;
@@ -133,6 +152,9 @@ export function DiagnoseDialog() {
 		if (!canSubmit || sending.current) return;
 		sending.current = true;
 		const currentVisit = visit.current;
+		const seq = ++dispatchSeqRef.current;
+		const isStale = () =>
+			!mountedRef.current || seq !== dispatchSeqRef.current || currentVisit !== visit.current;
 		setDispatching(true);
 		setDispatchError(null);
 		try {
@@ -156,7 +178,7 @@ export function DiagnoseDialog() {
 						model,
 						mode,
 					});
-					if (currentVisit !== visit.current) return;
+					if (isStale()) return;
 					diagnoserId = info.sessionId;
 					createdSessionRef.current = {
 						sessionId: diagnoserId,
@@ -166,25 +188,36 @@ export function DiagnoseDialog() {
 					};
 				}
 			} else {
-				if (!isSelectedExistingValid) {
-					throw new Error(t("diagnose.selectDiagnoserSession"));
+				const freshTarget = selectedExistingId
+					? useSessions.getState().sessions[selectedExistingId]
+					: undefined;
+				if (!freshTarget || freshTarget.id === targetSessionId || needsAttention(freshTarget)) {
+					throw new Error(
+						freshTarget && needsAttention(freshTarget)
+							? t("diagnose.selectedSessionBusy")
+							: t("diagnose.selectedSessionUnavailable"),
+					);
 				}
 				diagnoserId = selectedExistingId;
 			}
 
 			await dispatchPrompt(diagnoserId, prompt);
 
-			if (currentVisit !== visit.current) return;
+			if (isStale()) return;
 			createdSessionRef.current = null;
 			toast.success(t("diagnose.diagnosisStarted"));
 			closeModal();
 			selectSession(diagnoserId);
 		} catch (err) {
-			if (currentVisit !== visit.current) return;
+			if (isStale()) return;
 			setDispatchError(errMsg(err));
 		} finally {
-			sending.current = false;
-			setDispatching(false);
+			if (seq === dispatchSeqRef.current) {
+				sending.current = false;
+			}
+			if (mountedRef.current && seq === dispatchSeqRef.current) {
+				setDispatching(false);
+			}
 		}
 	};
 	return (

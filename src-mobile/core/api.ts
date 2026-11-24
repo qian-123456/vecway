@@ -10,10 +10,12 @@ import { base64ToBytes, blobToBase64, bytesToBase64, getNativeBridge, type Nativ
 
 export class ApiError extends Error {
 	readonly status: number;
-	constructor(status: number, message: string) {
+	readonly data?: Record<string, unknown>;
+	constructor(status: number, message: string, data?: Record<string, unknown>) {
 		super(message);
 		this.name = "ApiError";
 		this.status = status;
+		if (data !== undefined) this.data = data;
 	}
 }
 
@@ -216,7 +218,9 @@ async function finish<T>(res: Response): Promise<T> {
 	if (!res.ok) {
 		const fromBody = extractBodyError(data);
 		const text = typeof data === "string" && data.length < 200 ? data.trim() : "";
-		throw new ApiError(res.status, fromBody || text || res.statusText || `HTTP ${res.status}`);
+		const objData =
+			data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : undefined;
+		throw new ApiError(res.status, fromBody || text || res.statusText || `HTTP ${res.status}`, objData);
 	}
 	if (useConnection.getState().error) useConnection.getState().setError(null);
 	return data as T;

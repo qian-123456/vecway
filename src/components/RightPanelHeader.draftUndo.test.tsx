@@ -5,9 +5,9 @@ import {
 	RightPanelHeader,
 	_clearClosedBlankSideChatDrafts,
 	getClosedBlankSideChatDraft,
+	getClosedBlankSideChatDrafts,
 	restoreClosedBlankSideChatDraft,
 } from "./RightPanelHeader";
-import { useComposer } from "../stores/composer";
 import { useSessions } from "../stores/sessions";
 import { useUi } from "../stores/ui";
 import { useSideChatView } from "../features/sidechat/viewStore";
@@ -91,18 +91,62 @@ describe("RightPanelHeader blank side-chat close undo", () => {
 		expect(useUi.getState().rightOpen).toBe(false);
 		expect(getClosedBlankSideChatDraft("p1")).toBeUndefined();
 
-		// Switch back to p1 and verify overwriting on next blank close
+		// Switch back to p1 and verify closing two blank tabs retains both snapshots and binds toasts per tabId (H7)
 		useUi.getState().selectSession("p1");
-		const secondBlank = useSideChatView.getState().openBlankTab("p1");
-		useComposer.getState().setSideChatDraft(secondBlank, "First close");
+		useUi.setState({ rightTab: "sidechat", openRightTabs: ["sidechat"], rightOpen: true });
+		const tabA = useSideChatView.getState().openBlankTab("p1");
+		const tabB = useSideChatView.getState().openBlankTab("p1");
+		useComposer.getState().setSideChatDraft(tabA, "Draft A");
+		useComposer.getState().setSideChatDraft(tabB, "Draft B");
 		const view = render(<RightPanelHeader activeTab="sidechat" tabBadges={{} as never} />);
-		fireEvent.click(screen.getAllByRole("button", { name: /关闭标签页/ })[1]);
-		expect(getClosedBlankSideChatDraft("p1")?.text).toBe("First close");
+		fireEvent.click(screen.getAllByRole("button", { name: /关闭标签页/ })[0]);
+		fireEvent.click(screen.getAllByRole("button", { name: /关闭标签页/ })[0]);
 
-		const thirdBlank = useSideChatView.getState().openBlankTab("p1");
-		useComposer.getState().setSideChatDraft(thirdBlank, "Second close");
-		view.rerender(<RightPanelHeader activeTab="sidechat" tabBadges={{} as never} />);
-		fireEvent.click(screen.getAllByRole("button", { name: /关闭标签页/ })[1]);
-		expect(getClosedBlankSideChatDraft("p1")?.text).toBe("Second close");
+		expect(getClosedBlankSideChatDrafts("p1").map((d) => d.tabId)).toEqual([tabB, tabA]);
+		expect(getClosedBlankSideChatDraft("p1", tabA)?.text).toBe("Draft A");
+		expect(getClosedBlankSideChatDraft("p1", tabB)?.text).toBe("Draft B");
+		expect(sessionStorage.getItem("omp_closed_blank_sidechat_drafts")).toContain("Draft A");
+
+		// Older toast (index 0) restores tabA specifically, leaving tabB retained
+		const toasts = useToasts.getState().items;
+		expect(toasts).toHaveLength(2);
+		toasts[0].action!.onClick();
+		const tabsAfterUndoA = useSideChatView.getState().openTabs.p1 ?? [];
+		expect(tabsAfterUndoA).toHaveLength(1);
+		expect(useComposer.getState().sideChatDrafts[tabsAfterUndoA[0]]).toBe("Draft A");
+		expect(getClosedBlankSideChatDrafts("p1").map((d) => d.tabId)).toEqual([tabB]);
+		view.unmount();
+	});
+
+	it("recovers closed side-chat drafts via RightPanelHeader UI button even after toasts expire (H7)", () => {
+		const tabA = useSideChatView.getState().openBlankTab("p1");
+		const tabB = useSideChatView.getState().openBlankTab("p1");
+		useComposer.getState().setSideChatDraft(tabA, "Expired toast draft A");
+		useComposer.getState().setSideChatDraft(tabB, "Expired toast draft B");
+
+		render(<RightPanelHeader activeTab="sidechat" tabBadges={{} as never} />);
+		fireEvent.click(screen.getAllByRole("button", { name: /关闭标签页/ })[0]);
+		fireEvent.click(screen.getAllByRole("button", { name: /关闭标签页/ })[0]);
+
+		// Simulate all toasts expiring / being dismissed
+		for (const item of [...useToasts.getState().items]) {
+			useToasts.getState().dismiss(item.id);
+		}
+		expect(useToasts.getState().items).toHaveLength(0);
+
+		// Multiple closed drafts -> header restore button opens draft list, allowing recovery of Draft A
+		const restoreMultiBtn = screen.getByRole("button", { name: "恢复草稿 (2)" });
+		fireEvent.click(restoreMultiBtn);
+		fireEvent.click(screen.getByRole("button", { name: "Expired toast draft A" }));
+		const tabsAfterA = useSideChatView.getState().openTabs.p1 ?? [];
+		expect(tabsAfterA).toHaveLength(1);
+		expect(useComposer.getState().sideChatDrafts[tabsAfterA[0]]).toBe("Expired toast draft A");
+
+		// One remaining closed draft -> header restore button directly restores Draft B
+		fireEvent.click(screen.getByRole("button", { name: "恢复草稿" }));
+		const tabsAfterB = useSideChatView.getState().openTabs.p1 ?? [];
+		expect(tabsAfterB).toHaveLength(2);
+		expect(useComposer.getState().sideChatDrafts[tabsAfterB[1]]).toBe("Expired toast draft B");
+		expect(getClosedBlankSideChatDrafts("p1")).toHaveLength(0);
 	});
 });

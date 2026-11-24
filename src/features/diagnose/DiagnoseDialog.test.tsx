@@ -193,4 +193,50 @@ describe("diagnosis dialog lifecycle", () => {
   expect(mocks.start).toHaveBeenLastCalledWith({ cwd: "/project", mode: "code", model: "sonnet" });
   expect(mocks.dispatch).toHaveBeenLastCalledWith("new-diagnoser-2", "generated prompt");
  });
+
+ it("does not let an in-flight dispatch close modals or navigate after unmount (M8)", async () => {
+  let finish!: () => void;
+  mocks.dispatch.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  const view = render(<DiagnoseDialog />);
+  await screen.findByPlaceholderText("diagnose.promptPlaceholder");
+  fireEvent.click(screen.getByText("diagnose.startDiagnosis"));
+  await waitFor(() => expect(mocks.dispatch).toHaveBeenCalledTimes(1));
+
+  // Unmount dialog while dispatch is still pending (e.g., modal dismissed)
+  view.unmount();
+  await act(async () => { finish(); });
+  expect(mocks.close).not.toHaveBeenCalled();
+  expect(mocks.select).not.toHaveBeenCalled();
+ });
+
+ it.each(["working", "awaiting_approval", "awaiting_answer"] as const)(
+  "excludes %s sessions from existing targets and blocks submit if selected target enters that state (M8)",
+  async (busyStatus) => {
+   useSessions.setState({
+    sessions: {
+     target: { id: "target", title: "target", cwd: "/project", status: "error", mode: "code" },
+     busy: { id: "busy", title: "busy", cwd: "/project", status: busyStatus, mode: "code" },
+     idleOne: { id: "idleOne", title: "idleOne", cwd: "/project", status: "idle", mode: "code" },
+    } as never,
+   });
+   render(<DiagnoseDialog />);
+   await screen.findByPlaceholderText("diagnose.promptPlaceholder");
+   fireEvent.click(screen.getByText("diagnose.tabExisting"));
+   const options = Array.from(screen.getByRole("combobox").querySelectorAll("option")).map((o) => (o as HTMLOptionElement).value);
+   expect(options).toEqual(["idleOne"]);
+
+   // Now idleOne enters busyStatus -> submit is blocked with busy alert
+   act(() => {
+    useSessions.setState({
+     sessions: {
+      target: { id: "target", title: "target", cwd: "/project", status: "error", mode: "code" },
+      idleOne: { id: "idleOne", title: "idleOne", cwd: "/project", status: busyStatus, mode: "code" },
+     } as never,
+    });
+   });
+   expect(screen.getByRole("alert").textContent).toBe("diagnose.selectedSessionBusy");
+   expect((screen.getByText("diagnose.startDiagnosis").closest("button") as HTMLButtonElement).disabled).toBe(true);
+  },
+ );
+ });
 });

@@ -331,6 +331,7 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 	const parentTabs = useSideChatView((s) => (selectedId ? s.openTabs[selectedId] : undefined));
 	const storedSideTab = useSideChatView((s) => (selectedId ? s.openChild[selectedId] : undefined));
 	const activeSideTab = resolveActiveTab(parentTabs, storedSideTab);
+	const closedDrafts = selectedId ? getClosedBlankSideChatDrafts(selectedId) : [];
 	const handbackMode = useDisplayPrefs((s) => s.sideChatHandback);
 	const visibleTerminals = drawerTabs.filter((t) => !t.detached && t.scope === terminalScope);
 	const fileTabs = useFilePreview((s) => s.tabs);
@@ -644,42 +645,43 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 					<Plus size={14} />
 				</button>
 			</div>
-			{(() => {
-				const closedDrafts = selectedId ? getClosedBlankSideChatDrafts(selectedId) : [];
-				if (closedDrafts.length === 0) return null;
-				const label =
-					closedDrafts.length > 1
-						? t("rightPanel.restoreSideChatDraftCount", { count: closedDrafts.length })
-						: t("rightPanel.restoreSideChatDraft");
-				return (
-					<button
-						ref={restoreDraftBtnRef}
-						type="button"
-						onClick={() => {
-							if (closedDrafts.length === 1) {
-								restoreClosedBlankSideChatDraft(selectedId!, closedDrafts[0].tabId);
-								setDraftMenuOpen(false);
-							} else {
-								setDraftMenuOpen((v) => !v);
-							}
-						}}
-						title={label}
-						aria-label={label}
-						className={clsx(
-							"flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]",
-							draftMenuOpen
-								? "bg-neutral-800 text-neutral-100"
-								: "text-neutral-400 hover:bg-neutral-800/80 hover:text-neutral-200",
-						)}
-					>
-						<RotateCcw size={13} />
-						{closedDrafts.length > 1 && (
-							<span className="tabular-nums">{closedDrafts.length}</span>
-						)}
-					</button>
-				);
-			})()}
-
+			{closedDrafts.length > 0 && (
+				<button
+					ref={restoreDraftBtnRef}
+					type="button"
+					onClick={() => {
+						if (closedDrafts.length === 1) {
+							restoreClosedBlankSideChatDraft(selectedId!, closedDrafts[0].tabId);
+							setDraftMenuOpen(false);
+						} else {
+							setMenuOpen(false);
+							setOverflowOpen(false);
+							setDraftMenuOpen((v) => !v);
+						}
+					}}
+					title={
+						closedDrafts.length > 1
+							? t("rightPanel.restoreSideChatDraftCount", { count: closedDrafts.length })
+							: t("rightPanel.restoreSideChatDraft")
+					}
+					aria-label={
+						closedDrafts.length > 1
+							? t("rightPanel.restoreSideChatDraftCount", { count: closedDrafts.length })
+							: t("rightPanel.restoreSideChatDraft")
+					}
+					className={clsx(
+						"flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]",
+						draftMenuOpen
+							? "bg-neutral-800 text-neutral-100"
+							: "text-neutral-400 hover:bg-neutral-800/80 hover:text-neutral-200",
+					)}
+				>
+					<RotateCcw size={13} />
+					{closedDrafts.length > 1 && (
+						<span className="tabular-nums">{closedDrafts.length}</span>
+					)}
+				</button>
+			)}
 
 			<button
 				type="button"
@@ -834,43 +836,38 @@ export function RightPanelHeader({ activeTab, tabBadges }: RightPanelHeaderProps
 					})}
 				</div>
 			</FloatingLayer>
-			{(() => {
-				const closedDrafts = selectedId ? getClosedBlankSideChatDrafts(selectedId) : [];
-				return (
-					<FloatingLayer
-						anchor={draftMenuOpen && closedDrafts.length > 0 ? restoreDraftBtnRef.current : null}
-						placement="bottom-end"
-						offset={4}
-						layer="popover"
-						ignoreRefs={[restoreDraftBtnRef]}
-						onDismiss={() => setDraftMenuOpen(false)}
-						className="w-max min-w-[180px] max-w-[280px] p-1 text-xs text-neutral-200"
-					>
-						<div className="px-2 py-1 text-[10px] font-medium text-neutral-400">
-							{t("rightPanel.restoreSideChatDraft")}
-						</div>
-						{closedDrafts.map((d) => {
-							const preview =
-								d.text.trim().replace(/\s+/g, " ") ||
-								t("rightPanel.attachmentOnlyDraft", { count: d.images.length + d.files.length });
-							return (
-								<button
-									key={d.tabId}
-									type="button"
-									onClick={() => {
-										restoreClosedBlankSideChatDraft(selectedId!, d.tabId);
-										setDraftMenuOpen(false);
-									}}
-									className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-neutral-300 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-neutral-800/60 hover:text-neutral-100 active:scale-[0.985]"
-								>
-									<RotateCcw size={12} className="shrink-0 text-sky-400" />
-									<span className="min-w-0 flex-1 truncate">{preview}</span>
-								</button>
-							);
-						})}
-					</FloatingLayer>
-				);
-			})()}
+			<FloatingLayer
+				anchor={draftMenuOpen && closedDrafts.length > 0 ? restoreDraftBtnRef.current : null}
+				placement="bottom-end"
+				offset={4}
+				layer="popover"
+				ignoreRefs={[restoreDraftBtnRef]}
+				onDismiss={() => setDraftMenuOpen(false)}
+				className="w-max min-w-[180px] max-w-[280px] p-1 text-xs text-neutral-200"
+			>
+				<div className="px-2 py-1 text-[10px] font-medium text-neutral-400">
+					{t("rightPanel.restoreSideChatDraft")}
+				</div>
+				{closedDrafts.map((d) => {
+					const preview =
+						d.text.trim().replace(/\s+/g, " ") ||
+						t("rightPanel.attachmentOnlyDraft", { count: d.images.length + d.files.length });
+					return (
+						<button
+							key={d.tabId}
+							type="button"
+							onClick={() => {
+								restoreClosedBlankSideChatDraft(selectedId!, d.tabId);
+								setDraftMenuOpen(false);
+							}}
+							className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-neutral-300 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-neutral-800/60 hover:text-neutral-100 active:scale-[0.985]"
+						>
+							<RotateCcw size={12} className="shrink-0 text-sky-400" />
+							<span className="min-w-0 flex-1 truncate">{preview}</span>
+						</button>
+					);
+				})}
+			</FloatingLayer>
 		</div>
 	);
 }
