@@ -8,6 +8,7 @@ import clsx from "clsx";
 import { AlertCircle, Loader2, Send, Settings as SettingsIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CopyButton } from "../../components/CopyButton";
+import { InfoTip } from "../../components/InfoTip";
 import { isComposing } from "../../lib/hooks";
 import type { SessionMeta, TranscriptItem } from "../../lib/contracts";
 import { relativeTime } from "../../lib/format";
@@ -139,9 +140,7 @@ export function DoctorView({
 					<span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-mono text-emerald-400">
 						{t("doctor.dehydratedBadge", { tokens: formatTok(skeletonTokens) })}
 					</span>
-				</div>
-				<div className="mt-1 text-[10px] text-neutral-500">
-					{t("doctor.skeletonExplanation")}
+					<InfoTip text={t("doctor.skeletonExplanation")} />
 				</div>
 
 				<button

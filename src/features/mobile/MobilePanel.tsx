@@ -3,7 +3,7 @@
  * LAN server controls, QR pairing, cloudflared tunnel, device revocation.
  */
 import { Copy, Globe, Info, Power, QrCode, RefreshCw, RotateCcw, ShieldAlert, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Segmented } from "../../components/Segmented";
 import type { MobileDevice, MobileDeviceWork, MobileStatus, PairingInfo, PairingTarget } from "../../lib/contracts";
@@ -31,6 +31,7 @@ import { Switch } from "../settings/Switch";
 import { toast } from "../../lib/toast";
 import { tNow, useT } from "../../stores/language";
 import { Notice } from "../../components/Notice";
+import { InfoTip } from "../../components/InfoTip";
 import { Modal } from "../../components/Modal";
 import {
 	Button,
@@ -171,6 +172,7 @@ function PortEditor({ value, activePort, running, disabled, busy, label, minPort
 
 export function MobilePanel() {
 	const { t, locale } = useT();
+	const tunnelHostId = useId();
 	const { settings, save } = useAppSettings();
 	const [status, setStatus] = useState<MobileStatus | null>(null);
 	const [pairing, setPairing] = useState<PairingInfo | null>(null);
@@ -188,9 +190,7 @@ export function MobilePanel() {
 	const [stopWork, setStopWork] = useState(false);
 	const [selectedWork, setSelectedWork] = useState<string[]>([]);
 	const [deviceBusy, setDeviceBusy] = useState(false);
-	const [showLanGuide, setShowLanGuide] = useState(false);
 	const [showIpv6Guide, setShowIpv6Guide] = useState(false);
-	const [showTunnelGuide, setShowTunnelGuide] = useState(false);
 	const [showZeroTrustGuide, setShowZeroTrustGuide] = useState(false);
 	const [devicesOpen, setDevicesOpen] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -619,24 +619,10 @@ export function MobilePanel() {
 				<div className="flex items-center justify-between">
 					<div className="flex items-center gap-1.5">
 						<span className="text-[13px] font-medium text-[var(--text)]">{t("mobile.lanConnection")}</span>
-						<button
-							type="button"
-							className="flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border-divider)] bg-[var(--well-bg)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors cursor-pointer"
-							onClick={() => setShowLanGuide((v) => !v)}
-							title={t("mobile.usageTipsTitle")}
-							aria-label={t("mobile.usageTipsTitle")}
-						>
-							<Info className="h-3 w-3" />
-						</button>
+						<InfoTip text={t("mobile.pairHeroHelp")} label={t("mobile.usageTipsTitle")} />
 					</div>
 					<span className="text-xs text-[var(--text-muted)]">{t("mobile.tunnelModeOffExplain")}</span>
 				</div>
-
-				{showLanGuide && (
-					<div className="rounded-lg border-l-2 border-[#0969da] bg-[var(--well-bg)] p-3 text-xs text-[var(--text-muted)]">
-						<p>{t("mobile.pairHeroHelp")}</p>
-					</div>
-				)}
 
 				{/* Plan B Flat Card */}
 				<div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--border-divider)] bg-[var(--card-bg)] p-3.5">
@@ -880,7 +866,10 @@ export function MobilePanel() {
 
 							<div className="space-y-1 text-xs text-[var(--text-muted)]">
 								<div className="flex items-center justify-between">
-									<span>{t("mobile.cfTokenLabel")}</span>
+									<span className="inline-flex items-center gap-1.5">
+										<span>{t("mobile.cfTokenLabel")}</span>
+										<InfoTip text={t("mobile.tokenSecurityNote")} />
+									</span>
 									{status?.ddns?.tokenSet && <Chip tone="success">{t("mobile.tokenSetChip")}</Chip>}
 								</div>
 								<div className="flex min-w-0 flex-wrap gap-2">
@@ -910,9 +899,6 @@ export function MobilePanel() {
 										</Button>
 									)}
 								</div>
-								<p className="text-[11px] text-[var(--text-dim)]">
-									{t("mobile.tokenSecurityNote")}
-								</p>
 							</div>
 
 							{status?.ddns?.halted && (
@@ -966,15 +952,7 @@ export function MobilePanel() {
 				<div className="flex items-center justify-between">
 					<div className="flex items-center gap-1.5">
 						<span className="text-[13px] font-medium text-[var(--text)]">{t("mobile.remoteTunnel")}</span>
-						<button
-							type="button"
-							className="flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border-divider)] bg-[var(--well-bg)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors cursor-pointer"
-							onClick={() => setShowTunnelGuide((v) => !v)}
-							title={t("mobile.usageTipsTitle")}
-							aria-label={t("mobile.usageTipsTitle")}
-						>
-							<Info className="h-3 w-3" />
-						</button>
+						<InfoTip text={t("mobile.cardTunnelFooter")} label={t("mobile.usageTipsTitle")} />
 					</div>
 					<div className="flex items-center gap-2">
 						<Chip tone={isTunnelRunning ? "success" : "neutral"}>
@@ -993,11 +971,6 @@ export function MobilePanel() {
 					</div>
 				</div>
 
-				{showTunnelGuide && (
-					<div className="rounded-lg border-l-2 border-[#0969da] bg-[var(--well-bg)] p-3 text-xs text-[var(--text-muted)]">
-						<p>{t("mobile.cardTunnelFooter")}</p>
-					</div>
-				)}
 				{/* Cloudflare Tunnel Capsule Card */}
 				<div className="space-y-3.5 rounded-xl border border-[var(--border-divider)] bg-[var(--card-bg)] p-3.5">
 					<div className="flex flex-wrap items-center justify-between gap-3">
@@ -1087,9 +1060,12 @@ export function MobilePanel() {
 							)}
 
 							<div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-								<label className="space-y-1 text-xs text-[var(--text-muted)]">
+								<div className="space-y-1 text-xs text-[var(--text-muted)]">
 									<div className="flex items-center justify-between">
-										<span>{t("mobile.tunnelHostLabel")}</span>
+										<span className="inline-flex items-center gap-1.5">
+											<label htmlFor={tunnelHostId}>{t("mobile.tunnelHostLabel")}</label>
+											<InfoTip text={t("mobile.domainPrefixTip")} />
+										</span>
 										{status?.cloudflaredLoggedIn && (
 											<span className="text-[11px] font-medium text-emerald-500">
 												✓ {t("mobile.cfLoginSuccess")}
@@ -1097,15 +1073,13 @@ export function MobilePanel() {
 										)}
 									</div>
 									<input
+										id={tunnelHostId}
 										className={INPUT_CLASS}
 										placeholder={t("mobile.tunnelHostPlaceholder")}
 										value={tunnelHost}
 										onChange={(e) => setTunnelHost(e.target.value)}
 									/>
-									<span className="block text-[11px] text-[var(--text-dim)]">
-										{t("mobile.domainPrefixTip")}
-									</span>
-								</label>
+								</div>
 								<label className="space-y-1 text-xs text-[var(--text-muted)]">
 									<span>{t("mobile.tunnelNameLabel")}</span>
 									<input

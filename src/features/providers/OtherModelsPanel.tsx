@@ -1,6 +1,7 @@
 import { ChevronDown, FileText, Loader2, Pencil, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "../../components/Modal";
+import { InfoTip } from "../../components/InfoTip";
 import { CollapsibleSearchInput, SearchInput, useNarrowContainer } from "../../components/SearchInput";
 import type { ModelKindEntry, ProviderRow } from "../../lib/contracts";
 import { useT } from "../../stores/language";
@@ -109,8 +110,13 @@ export function OtherModelsPanel() {
 		{error && <div role="alert" className="flex items-start gap-2 text-xs text-rose-400"><p className="min-w-0 flex-1 break-words">{t("providers.otherModelsLoadError", { error })}</p><Button disabled={loading} onClick={() => void loadCatalog(true)}>{t("common.retry")}</Button></div>}
 		{providerError && <div role="alert" className="flex items-start gap-2 text-xs text-rose-400"><p className="min-w-0 flex-1 break-words">{t("providers.connectionLoadError", { error: providerError })}</p><Button onClick={() => void loadProviders()}>{t("common.retry")}</Button></div>}
 		{loading && <p role="status" className="flex items-center gap-2 text-xs"><Loader2 size={14} className="animate-spin" />{t("providers.otherModelsLoading")}</p>}
-		<div aria-label={t("providers.otherModelsSuppliers")} className="min-w-0 overflow-hidden rounded-xl hairline bg-[var(--well-bg)]/40">{visibleIds.map((id) => renderSupplier(id))}{visibleIds.length === 0 && !loading && !error && entries !== null && <p className="p-6 text-center text-xs text-[var(--text-dim)]">{t(query.trim() ? "providers.otherModelsNoMatch" : "providers.otherModelsEmpty")}</p>}</div>
-		<p className="text-xs leading-5 text-[var(--text-dim)]">{t("providers.otherModelsRegistrationHint")}</p>
+		<div className="space-y-2">
+			<div className="flex items-center gap-1.5 px-1">
+				<h3 className="text-[13px] font-semibold tracking-[-0.01em] text-[var(--text)]">{t("providers.otherModelsSuppliers")}</h3>
+				<InfoTip text={t("providers.otherModelsRegistrationHint")} label={t("providers.infoTipAria")} />
+			</div>
+			<div aria-label={t("providers.otherModelsSuppliers")} className="min-w-0 overflow-hidden rounded-xl hairline bg-[var(--well-bg)]/40">{visibleIds.map((id) => renderSupplier(id))}{visibleIds.length === 0 && !loading && !error && entries !== null && <p className="p-6 text-center text-xs text-[var(--text-dim)]">{t(query.trim() ? "providers.otherModelsNoMatch" : "providers.otherModelsEmpty")}</p>}</div>
+		</div>
 		{addOpen && <Modal title={t("providers.addService")} size="lg" onClose={() => setAddOpen(false)}>
 			<div ref={addModalRef} className="flex max-h-[70vh] flex-col gap-3 p-4">
 				<div className="flex flex-wrap gap-2">

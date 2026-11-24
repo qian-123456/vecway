@@ -1,11 +1,12 @@
 import clsx from "clsx";
-import { Activity, AppWindow, HardDrive, Info, X } from "lucide-react";
+import { Activity, AppWindow, HardDrive, X } from "lucide-react";
 import { type RefObject, useMemo } from "react";
 import type { PerfBreakdown } from "../../lib/contracts";
 import { formatMemoryBytes as formatBytes } from "../../lib/format";
 import { useLive } from "../../stores/live";
 import { useUi } from "../../stores/ui";
 import { type Anchor, FloatingLayer } from "../../components/FloatingLayer";
+import { InfoTip } from "../../components/InfoTip";
 import { useT } from "../../stores/language";
 
 export interface PerfPopoverProps {
@@ -78,16 +79,11 @@ export function PerfPopover({
 			)}
 		>
 			{/* Header */}
-			<div className="relative mb-3 flex items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
+			<div className="mb-3 flex items-center justify-between gap-2 border-b border-[var(--line)] pb-2">
 				<div className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-[var(--text)]">
 					<Activity size={14} className="shrink-0 text-[var(--text-60)]" />
 					<span>{t("chatView.perf.title")}</span>
-					<span className="group/tip inline-flex shrink-0 cursor-help items-center text-[var(--text-40)] hover:text-[var(--text-60)] transition-colors">
-						<Info size={12} />
-						<span className="pointer-events-none absolute top-full left-0 right-0 z-10 mt-1.5 hidden rounded-md bg-[var(--bg-panel)] px-2.5 py-1.5 text-[11px] font-normal leading-relaxed text-[var(--text-dim)] shadow-lg ring-1 ring-[var(--line)] group-hover/tip:block">
-							{t("chatView.perf.description")}
-						</span>
-					</span>
+					<InfoTip text={t("chatView.perf.description")} />
 				</div>
 				<div className="flex shrink-0 items-center gap-1.5">
 					<button

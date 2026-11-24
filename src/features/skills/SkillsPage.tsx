@@ -347,10 +347,10 @@ function EnableInfoButton() {
 				onMouseLeave={leave}
 				role="dialog"
 				aria-label={t("skills.enableInfoAriaLabel")}
-				className="w-[260px] rounded-xl border border-neutral-700 bg-neutral-900 p-3 text-left text-[12px] font-normal normal-case leading-relaxed tracking-normal text-neutral-300 shadow-2xl"
+				className="w-[260px] p-3 text-left text-[12px] font-normal normal-case leading-relaxed tracking-normal text-[var(--text)]"
 			>
-				<div className="mb-1.5 font-semibold text-neutral-100">{t("skills.enableInfoTitle")}</div>
-				<ul className="list-disc space-y-1 pl-4 text-neutral-400">
+				<div className="mb-1.5 font-semibold text-[var(--text)]">{t("skills.enableInfoTitle")}</div>
+				<ul className="list-disc space-y-1 pl-4 text-[var(--text-dim)]">
 					<li>{t("skills.enableInfoItem1")}</li>
 					<li>{t("skills.enableInfoItem2")}</li>
 					<li>{t("skills.enableInfoItem3")}</li>

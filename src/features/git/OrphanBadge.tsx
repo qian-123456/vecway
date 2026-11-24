@@ -9,6 +9,7 @@ import { basename, shortPath } from "../../lib/paths";
 import { ListMore, repoRootFromWorktree } from "./helpers";
 import { removeWorktreeFlow } from "./removeWorktree";
 import { HoverScrollText } from "../../components/HoverScrollText";
+import { InfoTip } from "../../components/InfoTip";
 import { Notice } from "../../components/Notice";
 import { useWorktrees } from "../../stores/worktrees";
 import { useT } from "../../stores/language";
@@ -190,6 +191,7 @@ export function OrphanInlinePanel({
 				<div className="flex items-center gap-1.5 font-medium text-neutral-100">
 					<AlertTriangle size={12} className="text-amber-400 shrink-0" />
 					<span>{t("worktree.orphan.panelHeader", { count: orphans.length })}</span>
+					<InfoTip text={t("worktree.orphan.panelDesc")} />
 				</div>
 				<div className="flex items-center gap-1.5">
 					<button
@@ -212,19 +214,14 @@ export function OrphanInlinePanel({
 					</button>
 				</div>
 			</div>
-
-			<p className="mt-1.5 mb-2 text-[10px] text-neutral-400 leading-relaxed">
-				{t("worktree.orphan.panelDesc")}
-			</p>
-
 			{error && (
-				<div className="mb-2">
+				<div className="mt-2">
 					<Notice tone="danger">{error}</Notice>
 				</div>
 			)}
 
 			{/* List of idle worktrees - perfectly fits any container width without horizontal overflow */}
-			<ul className="space-y-1 max-h-48 overflow-y-auto pr-0.5">
+			<ul className="mt-2 space-y-1 max-h-48 overflow-y-auto pr-0.5">
 				{(showAll ? orphans : orphans.slice(0, 5)).map((o) => {
 					const name = o.branch || basename(o.path);
 					return (

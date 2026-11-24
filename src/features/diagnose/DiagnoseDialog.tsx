@@ -11,6 +11,7 @@ import {
 import { isComposing } from "../../lib/hooks";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Modal } from "../../components/Modal";
+import { InfoTip } from "../../components/InfoTip";
 import { Notice } from "../../components/Notice";
 import { errMsg } from "../../lib/dialogs";
 import {
@@ -238,20 +239,33 @@ export function DiagnoseDialog() {
 
 				{/* Prompt Preview Accordion */}
 				<div className="rounded-xl border border-[var(--border-divider)] bg-[var(--well-bg)]/60">
-					<button
-						onClick={() => setShowPromptPreview(!showPromptPreview)}
-						className="flex w-full items-center justify-between p-3 text-xs font-medium text-neutral-400 hover:text-neutral-200"
-					>
-						<div className="flex items-center gap-1.5">
-							<FileText className="h-3.5 w-3.5" />
-							<span>{t("diagnose.promptTitle", { count: prompt ? t("diagnose.charCount", { count: prompt.length }) : t("diagnose.promptPreparing") })}</span>
+					<div className="flex items-center justify-between gap-2 p-3">
+						<div className="flex min-w-0 items-center gap-1.5">
+							<button
+								type="button"
+								onClick={() => setShowPromptPreview(!showPromptPreview)}
+								aria-expanded={showPromptPreview}
+								className="flex min-w-0 items-center gap-1.5 text-left text-xs font-medium text-neutral-400 hover:text-neutral-200"
+							>
+								<FileText className="h-3.5 w-3.5 shrink-0" />
+								<span>{t("diagnose.promptTitle", { count: prompt ? t("diagnose.charCount", { count: prompt.length }) : t("diagnose.promptPreparing") })}</span>
+							</button>
+							<InfoTip text={t("diagnose.promptHint")} />
 						</div>
-						{showPromptPreview ? (
-							<ChevronDown className="h-4 w-4" />
-						) : (
-							<ChevronRight className="h-4 w-4" />
-						)}
-					</button>
+						<button
+							type="button"
+							onClick={() => setShowPromptPreview(!showPromptPreview)}
+							tabIndex={-1}
+							aria-hidden="true"
+							className="flex flex-1 justify-end text-neutral-400 hover:text-neutral-200"
+						>
+							{showPromptPreview ? (
+								<ChevronDown className="h-4 w-4" />
+							) : (
+								<ChevronRight className="h-4 w-4" />
+							)}
+						</button>
+					</div>
 
 					{showPromptPreview && (
 						<div className="border-t border-[var(--border-divider)] p-3">
@@ -276,8 +290,7 @@ export function DiagnoseDialog() {
 										placeholder={t("diagnose.promptPlaceholder")}
 										className="w-full resize-y rounded-lg border border-neutral-700 bg-neutral-950 p-2.5 text-[11px] font-mono text-neutral-200 placeholder-neutral-500 focus:border-amber-500 focus:outline-none"
 									/>
-									<div className="flex items-center justify-between text-[11px] text-neutral-500">
-										<span>{t("diagnose.promptHint")}</span>
+									<div className="flex items-center justify-end text-[11px] text-neutral-500">
 										<button
 											type="button"
 											onClick={fetchPrompt}

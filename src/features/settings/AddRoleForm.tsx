@@ -5,7 +5,7 @@
  */
 import { useState } from "react";
 import { useT } from "../../stores/language";
-import { richT } from "./modelRoleScope";
+import { InfoTip } from "../../components/InfoTip";
 import { isComposing } from "../../lib/hooks";
 import { ModelSelect } from "../../components/ModelSelect";
 import { parseSelection } from "../../components/modelSelectLogic";
@@ -33,6 +33,10 @@ export function AddRoleForm({
 	const [error, setError] = useState<string | null>(null);
 	const locked = pending || ctx.busy;
 	const target = ctx.scope === "global" ? t("settingsModels.targetGlobalConfig") : t("settingsModels.targetProjectConfig", { name: ctx.projectName || t("settingsModels.scopeProject") });
+	const explainerText = `${t("settingsModels.addRoleExplainer1", {
+		role: t("settingsModels.roleRefExample"),
+		model: `model: "${t("settingsModels.roleRefExample")}"`,
+	})}\n${t("settingsModels.addRoleExplainer2", { target })}`;
 
 	const pickModel = (raw: string) => {
 		const check = checkAssignmentValue(raw);
@@ -73,6 +77,10 @@ export function AddRoleForm({
 
 	return (
 		<div data-testid="add-role-form" className="space-y-2 border-b border-[var(--border-divider)] bg-[var(--well-bg)]/40 px-4 py-3">
+			<div className="flex items-center gap-1.5">
+				<span className="text-xs font-medium text-[var(--text)]">{t("settingsModels.addRoleBtn")}</span>
+				<InfoTip text={explainerText} />
+			</div>
 			<div className="flex flex-wrap items-center gap-2">
 				<input
 					aria-label={t("settingsModels.roleNameAria")}
@@ -120,15 +128,6 @@ export function AddRoleForm({
 					{t("common.cancel")}
 				</Button>
 			</div>
-			<p className="text-[11px] text-[var(--text-muted)]">
-				{richT(t, "settingsModels.addRoleExplainer1", {
-					role: <code className="font-mono">{t("settingsModels.roleRefExample")}</code>,
-					model: <code className="font-mono">model: "{t("settingsModels.roleRefExample")}"</code>,
-				})}
-			</p>
-			<p className="text-[11px] text-[var(--text-dim)]">
-				{t("settingsModels.addRoleExplainer2", { target })}
-			</p>
 			{error && (
 				<p role="alert" className="select-text break-all text-[11px] text-[var(--status-error)]">
 					{error}

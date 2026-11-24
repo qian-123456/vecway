@@ -23,6 +23,7 @@ import {
 } from "../lib/theme";
 import { PRESET_WALLPAPERS } from "../lib/wallpaperPalette";
 import { WallpaperPicker } from "./WallpaperPicker";
+import { InfoTip } from "./InfoTip";
 import { useT } from "../stores/language";
 
 type ModeTab = "dark" | "light" | "system" | "wallpaper";
@@ -188,6 +189,10 @@ export function ThemePicker({ compact = false }: { compact?: boolean }) {
 			)}
 			{tab === "system" && (
 				<div className="mt-2 space-y-3">
+					<div className="flex items-center gap-1.5 text-[11px] font-medium text-neutral-400">
+						<span>{t("theme.system")}</span>
+						<InfoTip text={t("theme.autoSwitchDesc")} />
+					</div>
 					<div>
 						<div className="text-[11px] font-medium text-neutral-400">
 							{t("theme.dayLight")}
@@ -208,9 +213,6 @@ export function ThemePicker({ compact = false }: { compact?: boolean }) {
 							)}
 						</div>
 					</div>
-					<p className="px-0.5 text-[11px] text-neutral-500">
-						{t("theme.autoSwitchDesc")}
-					</p>
 				</div>
 			)}
 			{tab === "wallpaper" && (

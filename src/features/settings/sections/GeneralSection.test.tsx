@@ -9,6 +9,13 @@ import { _resetSettingsStore, DEFAULT_SETTINGS, useSettings } from "../store";
 import { GeneralSection } from "./GeneralSection";
 
 beforeEach(() => {
+	if (typeof globalThis.ResizeObserver === "undefined") {
+		globalThis.ResizeObserver = class {
+			observe() {}
+			unobserve() {}
+			disconnect() {}
+		} as unknown as typeof ResizeObserver;
+	}
 	window.localStorage.clear();
 	useLanguageStore.setState({ locale: "zh-CN" });
 	_resetSettingsStore();
@@ -41,8 +48,10 @@ describe("GeneralSection global automation overlap policy", () => {
 		render(<GeneralSection />);
 		const group = screen.getByRole("radiogroup", { name: "运行重合策略" });
 		expect(within(group).getByRole("radio", { name: "跳过" }).getAttribute("aria-checked")).toBe("true");
-		expect(screen.getByText(/统一用于所有自动化之后的触发/).textContent).toContain("当前运行不会被中断");
-		expect(screen.getByText(/已接收的队列会保留并继续排出/)).toBeTruthy();
+		const tipBtn = screen.getByRole("button", { name: /统一用于所有自动化之后的触发/ });
+		fireEvent.click(tipBtn);
+		expect(screen.getByRole("tooltip").textContent).toContain("当前运行不会被中断");
+		expect(screen.getByRole("tooltip").textContent).toContain("已接收的队列会保留并继续排出");
 	});
 
 	it.each([

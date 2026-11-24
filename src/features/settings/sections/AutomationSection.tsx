@@ -4,6 +4,7 @@
  */
 import { RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { InfoTip } from "../../../components/InfoTip";
 import { ModelSelect } from "../../../components/ModelSelect";
 import { parseSelection } from "../../../components/modelSelectLogic";
 import { Segmented } from "../../../components/Segmented";
@@ -136,17 +137,27 @@ export function AutomationSection() {
 				title={t("settingsSections.automations.cardRuntime")}
 			>
 				<ToggleRow
-					label={t("schedules.bgRunLabel")}
-					description={t("schedules.bgRunTooltip")}
+					label={
+						<span className="inline-flex items-center gap-1.5">
+							<span>{t("schedules.bgRunLabel")}</span>
+							<span onClick={(e) => e.stopPropagation()} className="inline-flex items-center">
+								<InfoTip text={t("schedules.bgRunTooltip")} />
+							</span>
+						</span>
+					}
 					checked={settings?.automationBackgroundEnabled ?? true}
 					onChange={(v) => void save({ automationBackgroundEnabled: v })}
 				/>
 				<SettingRow
 					fieldId="automationOverlapPolicy"
-					label={t("settingsSections.general.overlapPolicyLabel")}
+					label={
+						<span className="inline-flex items-center gap-1.5">
+							<span>{t("settingsSections.general.overlapPolicyLabel")}</span>
+							<InfoTip text={t("settingsSections.general.overlapPolicyHint")} />
+						</span>
+					}
 					stacked
 					description={t(`settingsSections.general.overlap.${overlapPolicy}.description`)}
-					hint={t("settingsSections.general.overlapPolicyHint")}
 					status={overlapSave.status}
 					statusError={overlapSave.error}
 					control={
@@ -256,8 +267,12 @@ export function AutomationSection() {
 			<SettingsCard
 				fieldId="automationTestPrompts"
 				jump={t("settingsSections.automations.jumpPrompts")}
-				title={t("settingsSections.automations.cardPrompts")}
-				description={t("settingsSections.automations.cardPromptsDesc")}
+				title={
+					<span className="inline-flex items-center gap-1.5">
+						<span>{t("settingsSections.automations.cardPrompts")}</span>
+						<InfoTip text={t("settingsSections.automations.cardPromptsDesc")} />
+					</span>
+				}
 			>
 				{PROMPT_FIELDS.map(({ key, settingsKey, labelKey, descKey }) => {
 					const hasCustom = Boolean(
@@ -267,7 +282,12 @@ export function AutomationSection() {
 					return (
 						<SettingRow
 							key={key}
-							label={t(labelKey)}
+							label={
+								<span className="inline-flex items-center gap-1.5">
+									<span>{t(labelKey)}</span>
+									<InfoTip text={t("settingsSections.automations.placeholderHint")} />
+								</span>
+							}
 							description={t(descKey)}
 							stacked
 							status={promptSave.status}
@@ -288,9 +308,8 @@ export function AutomationSection() {
 										}
 										className="w-full rounded-lg border border-[var(--border-divider)] bg-[var(--bg)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
 									/>
-									<div className="flex items-center justify-between gap-2 text-[11px] text-[var(--text-40)]">
-										<span>{t("settingsSections.automations.placeholderHint")}</span>
-										{hasCustom && (
+									{hasCustom && (
+										<div className="flex justify-end">
 											<button
 												type="button"
 												onClick={() => void resetPrompt(key, settingsKey)}
@@ -299,8 +318,8 @@ export function AutomationSection() {
 												<RotateCcw size={10} />
 												<span>{t("settingsSections.automations.resetDefaultBtn")}</span>
 											</button>
-										)}
-									</div>
+										</div>
+									)}
 								</div>
 							}
 						/>

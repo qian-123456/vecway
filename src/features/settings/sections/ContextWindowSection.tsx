@@ -11,6 +11,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { FloatingLayer } from "../../../components/FloatingLayer";
 import { HoverScrollText } from "../../../components/HoverScrollText";
+import { InfoTip } from "../../../components/InfoTip";
 import { confirmDialog, errMsg } from "../../../lib/dialogs";
 import { claimEscape } from "../../../lib/escapeClaim";
 import { isComposing } from "../../../lib/hooks";
@@ -413,9 +414,13 @@ export function ContextWindowSection() {
 			</SettingsCard>
 
 			<SettingsCard jump={t("settingsSectionsContext.context.jumpModelWindow")}
-				title={t("settingsSectionsContext.context.titleModelWindow")}
+				title={
+					<span className="inline-flex items-center gap-1.5">
+						<span>{t("settingsSectionsContext.context.titleModelWindow")}</span>
+						<InfoTip text={t("settingsSectionsContext.context.footerModelWindow")} />
+					</span>
+				}
 				description={t("settingsSectionsContext.context.descModelWindow", { matched: matchedTotal, total: rows.length })}
-				footer={t("settingsSectionsContext.context.footerModelWindow")}
 			>
 				<div className="@container flex min-h-[320px] flex-col @[580px]:flex-row">
 					{/* Family rail: wraps as compact pills when narrow; docked left rail when wide */}
@@ -640,8 +645,12 @@ export function ContextWindowSection() {
 			</SettingsCard>
 
 			<SettingsCard jump={t("settingsSectionsContext.context.jumpRules")}
-				title={t("settingsSectionsContext.context.titleRules")}
-				footer={t("settingsSectionsContext.context.footerRules")}
+				title={
+					<span className="inline-flex items-center gap-1.5">
+						<span>{t("settingsSectionsContext.context.titleRules")}</span>
+						<InfoTip text={t("settingsSectionsContext.context.footerRules")} />
+					</span>
+				}
 			>
 				{rules.length === 0 && (
 					<div className="px-4 py-3 text-[11px] text-[var(--text-dim)]">

@@ -11,7 +11,6 @@ import {
 	GitCommitHorizontal,
 	GitMerge,
 	GitPullRequest,
-	Info,
 	Loader2,
 	MoreHorizontal,
 	Plus,
@@ -24,6 +23,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { type Anchor, FloatingLayer } from "../../components/FloatingLayer";
+import { InfoTip } from "../../components/InfoTip";
 import type { ServiceInfo, WorktreeInfo } from "../../lib/contracts";
 import { createSession } from "../../lib/createSession";
 import { confirmDialog, copyText, errMsg } from "../../lib/dialogs";
@@ -885,12 +885,7 @@ export function WorktreeSection({
 					<span className="rounded-full bg-[var(--bg-active-fill)] px-1.5 font-mono text-[10px] text-neutral-400">
 						{worktrees.length}
 					</span>
-					<span
-						title={t("worktree.activeWorktreesTooltip")}
-						className="cursor-help text-neutral-500 transition-colors hover:text-neutral-300"
-					>
-						<Info size={11} />
-					</span>
+					<InfoTip text={t("worktree.activeWorktreesTooltip")} />
 				</div>
 
 				<div className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap">

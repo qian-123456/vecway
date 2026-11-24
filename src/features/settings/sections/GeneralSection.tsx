@@ -6,6 +6,7 @@ import { AlertTriangle, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { SUPPORTED_LOCALES, type Locale } from "../../../lib/i18n";
 import { useT } from "../../../stores/language";
+import { InfoTip } from "../../../components/InfoTip";
 import { Segmented } from "../../../components/Segmented";
 import { macosPermissionsStatus, ompConfigSet, type MacosPermissionsStatus } from "../../../lib/ipc";
 import { toModelKey } from "../../../lib/models";
@@ -203,10 +204,14 @@ export function GeneralSection() {
 			<SettingsCard jump={t("settingsSections.general.titleAutomation")} title={t("settingsSections.general.titleAutomation")}>
 				<SettingRow
 					fieldId="automationOverlapPolicy"
-					label={t("settingsSections.general.overlapPolicyLabel")}
+					label={
+						<span className="inline-flex items-center gap-1.5">
+							<span>{t("settingsSections.general.overlapPolicyLabel")}</span>
+							<InfoTip text={t("settingsSections.general.overlapPolicyHint")} />
+						</span>
+					}
 					stacked
 					description={t(`settingsSections.general.overlap.${overlapPolicy}.description`)}
-					hint={t("settingsSections.general.overlapPolicyHint")}
 					status={overlapSave.status}
 					statusError={overlapSave.error}
 					control={
@@ -327,8 +332,14 @@ export function GeneralSection() {
 			<SettingsCard jump={t("settingsSections.general.troubleshootingTitle")} title={t("settingsSections.general.troubleshootingTitle")}>
 				<ToggleRow
 					fieldId="diagnosticsEnabled"
-					label={<span className="whitespace-nowrap">{t("settingsSections.general.diagnosticsLabel")}</span>}
-					description={t("settingsSections.general.diagnosticsDesc")}
+					label={
+						<span className="inline-flex items-center gap-1.5">
+							<span className="whitespace-nowrap">{t("settingsSections.general.diagnosticsLabel")}</span>
+							<span onClick={(e) => e.stopPropagation()} className="inline-flex items-center">
+								<InfoTip text={t("settingsSections.general.diagnosticsDesc")} />
+							</span>
+						</span>
+					}
 					checked={settings?.diagnosticsEnabled ?? true}
 					disabled={!settings}
 					onChange={(v) => save({ diagnosticsEnabled: v })}

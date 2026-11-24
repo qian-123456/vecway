@@ -16,6 +16,7 @@
 import { AlertTriangle, ArrowLeft, History, Loader2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "../../../components/Modal";
+import { InfoTip } from "../../../components/InfoTip";
 import type {
 	ModelReplaceEdit,
 	ModelReplaceItemResult,
@@ -390,9 +391,12 @@ export function ModelReplaceDialog({ onClose }: { onClose: () => void }) {
 			>
 				<div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--border-divider)] pb-3">
 					<div className="min-w-0">
-						<h2 id="model-replace-title" className="text-sm font-semibold text-[var(--text)]">
-							{t("modelReplace.dialogTitle")}
-						</h2>
+						<div className="flex items-center gap-1.5">
+							<h2 id="model-replace-title" className="text-sm font-semibold text-[var(--text)]">
+								{t("modelReplace.dialogTitle")}
+							</h2>
+							<InfoTip text={t("modelReplace.matchRulesHint")} />
+						</div>
 						<p className="mt-0.5 text-[11px] leading-5 text-neutral-400">
 							{t("modelReplace.dialogDesc")}
 						</p>
@@ -521,9 +525,6 @@ export function ModelReplaceDialog({ onClose }: { onClose: () => void }) {
 							<p className="px-1 pt-3 text-[11px] leading-5 text-neutral-500">
 								{t("modelReplace.scopeDisplay", { scope: scopeLabel(scope, projectNames) })}
 								{scope === "all" ? t("modelReplace.scopeAllHint") : t("modelReplace.scopeProjectHint")}
-							</p>
-							<p className="px-1 pt-2 text-[11px] leading-5 text-neutral-500">
-								{t("modelReplace.matchRulesHint")}
 							</p>
 						</div>
 					)}

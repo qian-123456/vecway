@@ -1,7 +1,8 @@
 import clsx from "clsx";
-import { ChevronDown, GitBranch, Info, Loader2, PanelRight, Plus, SquareTerminal, Trash2 } from "lucide-react";
+import { ChevronDown, GitBranch, Loader2, PanelRight, Plus, SquareTerminal, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
+import { InfoTip } from "../../components/InfoTip";
 import type { WorktreeInfo } from "../../lib/contracts";
 import { errMsg } from "../../lib/dialogs";
 import { addWorkspace, gitListBranches } from "../../lib/ipc";
@@ -240,12 +241,7 @@ export function WorktreeGraph({
 				<div className="flex items-center gap-1.5 px-1 py-1 text-neutral-400 font-medium text-[11px]">
 					<span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
 					<span>{t("worktree.graph.activeWorktrees")}</span>
-					<span
-						title={t("worktree.graph.activeWorktreesDesc")}
-						className="cursor-help text-neutral-500 hover:text-neutral-300 transition-colors"
-					>
-						<Info size={11} />
-					</span>
+					<InfoTip text={t("worktree.graph.activeWorktreesDesc")} />
 				</div>
 
 				{/* Worktrees Tree */}
@@ -584,12 +580,7 @@ export function WorktreeGraph({
 						<span className="h-1.5 w-1.5 rounded-full bg-neutral-500" />
 						<span>{t("worktree.graph.idleBranches")}</span>
 						<span className="font-mono text-[10px] text-neutral-500">({idleBranches.length + hiddenIdleCount})</span>
-						<span
-							title={t("worktree.graph.idleBranchesDesc")}
-							className="cursor-help text-neutral-500 hover:text-neutral-300 transition-colors"
-						>
-							<Info size={11} />
-						</span>
+						<InfoTip text={t("worktree.graph.idleBranchesDesc")} />
 					</div>
 
 					{/* Idle Branches Tree */}

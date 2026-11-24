@@ -98,8 +98,8 @@ export function InfoTip({ text, label, className }: InfoTipProps) {
 					setPinned((prev) => !prev);
 				}}
 				className={clsx(
-					"inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-neutral-400 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-neutral-200 focus:text-neutral-200 focus:outline-none active:scale-[0.95]",
-					pinned && "bg-[var(--bg-hover)] text-neutral-200",
+					"inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--text-40)] transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] focus:text-[var(--text)] focus:outline-none active:scale-[0.95]",
+					pinned && "bg-[var(--bg-hover)] text-[var(--text)]",
 					className,
 				)}
 			>
@@ -123,7 +123,7 @@ export function InfoTip({ text, label, className }: InfoTipProps) {
 					onMouseEnter={clearTimers}
 					onMouseLeave={scheduleClose}
 					role="tooltip"
-					className="max-w-[290px] whitespace-normal break-words rounded-lg hairline vibrancy-popover px-2.5 py-2 text-[11px] leading-relaxed text-neutral-200 shadow-apple-modal"
+					className="max-w-[290px] whitespace-normal break-words rounded-lg hairline vibrancy-popover px-2.5 py-2 text-[11px] leading-relaxed text-[var(--text)] shadow-apple-modal"
 				>
 					{text}
 				</FloatingLayer>
