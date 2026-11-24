@@ -12,6 +12,7 @@ import { useOmpConfigStore } from "../ompConfigStore";
 import { useProviders } from "../../providers/store";
 import { ompInfo, readTextFile, writeTextFile } from "../../../lib/ipc";
 import { toast } from "../../../lib/toast";
+import { InfoTip } from "../../../components/InfoTip";
 import { Button } from "../ui";
 
 type FileName = "models.yml" | "config.yml" | ".env";
@@ -181,15 +182,15 @@ export function RawFilesDialog({ onClose }: { onClose: () => void }) {
 						</Button>
 					))}
 				</div>
-				{path ? <div className="break-all font-mono text-xs text-[var(--text-muted,inherit)]">{path}</div> : null}
-				<div className="text-xs">{meta.hint}</div>
-				{kind === "env" ? (
+				<div className="flex items-center gap-1.5">
+					{path ? <div className="break-all font-mono text-xs text-[var(--text-muted,inherit)]">{path}</div> : null}
+					<InfoTip text={kind === "env" ? meta.hint : `${meta.hint}\n${t("memoryRules.rawFiles.yamlNotice")}`} />
+				</div>
+				{kind === "env" && (
 					<div className="flex items-start gap-2 rounded-md border border-[var(--status-warning,var(--line))] p-2 text-xs">
 						<AlertTriangle size={14} className="mt-0.5 shrink-0" />
 						<span>{t("memoryRules.rawFiles.envNotice")}</span>
 					</div>
-				) : (
-					<div className="text-xs text-[var(--text-muted,inherit)]">{t("memoryRules.rawFiles.yamlNotice")}</div>
 				)}
 				{loadError ? (
 					<pre className="whitespace-pre-wrap rounded-md border border-[var(--status-error)] p-2 text-xs text-[var(--status-error)]">{loadError}</pre>

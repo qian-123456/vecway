@@ -265,7 +265,7 @@ export function PromptCompositionSection() {
 		<div className="space-y-5">
 			<SectionHeader
 				title={t("promptComposition.title")}
-				description={t("promptComposition.desc")}
+				infoTip={t("promptComposition.desc")}
 			/>
 			<SectionJumpBar />
 
@@ -356,7 +356,7 @@ export function PromptCompositionSection() {
 
 					<SettingsCard jump={t("promptComposition.hints")}
 						title={t("promptComposition.hints")}
-						footer={t("promptComposition.hintsFooter")}
+						infoTip={t("promptComposition.hintsFooter")}
 						clip
 					>
 						{comp.hints.length === 0 ? (
@@ -368,7 +368,7 @@ export function PromptCompositionSection() {
 
 					<SettingsCard jump={t("promptComposition.aiOptimize")}
 						title={t("promptComposition.aiOptimize")}
-						footer={t("promptComposition.aiOptimizeFooter")}
+						infoTip={t("promptComposition.aiOptimizeFooter")}
 					>
 						<div className="flex flex-wrap items-center gap-3 px-3 py-2.5">
 							<span className="text-xs text-neutral-300">{t("promptComposition.targetWorkspace")}</span>

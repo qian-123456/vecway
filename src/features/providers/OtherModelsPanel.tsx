@@ -105,7 +105,6 @@ export function OtherModelsPanel() {
 	};
 	const visibleIds = ids.filter((id) => added(id) && matches(id, query));
 	return <div className="space-y-4">
-		<p className="text-xs leading-5 text-[var(--text-dim)]">{t("providers.otherModelsDesc")}</p>
 		<div ref={toolbarRef} className={narrowToolbar ? "flex flex-wrap items-center gap-1.5" : "flex flex-wrap items-center justify-between gap-2"}><CollapsibleSearchInput collapsed={narrowToolbar} className="min-w-[120px] flex-1 basis-[140px]" value={query} onChange={setQuery} placeholder={compactSearch && !narrowToolbar ? t("common.search") : t("providers.otherModelsSearch")} title={t("providers.otherModelsSearch")} ariaLabel={t("providers.otherModelsSearch")} /><div className="flex items-center gap-2"><Button icon={Plus} onClick={() => setAddOpen(true)}>{t("providers.addService")}</Button><Button icon={RefreshCw} disabled={loading} onClick={() => { void loadCatalog(true); void loadProviders(); }}>{t("common.refresh")}</Button></div></div>
 		{error && <div role="alert" className="flex items-start gap-2 text-xs text-rose-400"><p className="min-w-0 flex-1 break-words">{t("providers.otherModelsLoadError", { error })}</p><Button disabled={loading} onClick={() => void loadCatalog(true)}>{t("common.retry")}</Button></div>}
 		{providerError && <div role="alert" className="flex items-start gap-2 text-xs text-rose-400"><p className="min-w-0 flex-1 break-words">{t("providers.connectionLoadError", { error: providerError })}</p><Button onClick={() => void loadProviders()}>{t("common.retry")}</Button></div>}
@@ -113,17 +112,17 @@ export function OtherModelsPanel() {
 		<div className="space-y-2">
 			<div className="flex items-center gap-1.5 px-1">
 				<h3 className="text-[13px] font-semibold tracking-[-0.01em] text-[var(--text)]">{t("providers.otherModelsSuppliers")}</h3>
-				<InfoTip text={t("providers.otherModelsRegistrationHint")} label={t("providers.infoTipAria")} />
+				<InfoTip text={`${t("providers.otherModelsDesc")}\n${t("providers.otherModelsRegistrationHint")}`} label={t("providers.infoTipAria")} />
 			</div>
 			<div aria-label={t("providers.otherModelsSuppliers")} className="min-w-0 overflow-hidden rounded-xl hairline bg-[var(--well-bg)]/40">{visibleIds.map((id) => renderSupplier(id))}{visibleIds.length === 0 && !loading && !error && entries !== null && <p className="p-6 text-center text-xs text-[var(--text-dim)]">{t(query.trim() ? "providers.otherModelsNoMatch" : "providers.otherModelsEmpty")}</p>}</div>
 		</div>
 		{addOpen && <Modal title={t("providers.addService")} size="lg" onClose={() => setAddOpen(false)}>
 			<div ref={addModalRef} className="flex max-h-[70vh] flex-col gap-3 p-4">
-				<div className="flex flex-wrap gap-2">
+				<div className="flex flex-wrap items-center gap-2">
 					<Button icon={Plus} onClick={() => { setAddOpen(false); setDialog({ mode: "add" }); }}>{t("providers.addProviderBtn")}</Button>
 					<Button icon={FileText} onClick={() => { setAddOpen(false); setRawOpen(true); }}>{t("settingsSections.providers.editRawConfig")}</Button>
+					<InfoTip text={t("providers.serviceGlobalHint")} label={t("providers.infoTipAria")} />
 				</div>
-				<p className="text-xs text-[var(--text-dim)]">{t("providers.serviceGlobalHint")}</p>
 				<SearchInput ref={addSearchRef} value={addQuery} onChange={setAddQuery} shortcutHint="/" placeholder={t("providers.otherModelsSearch")} ariaLabel={t("providers.otherModelsSearch")} />
 				<div className="min-h-0 overflow-y-auto rounded-xl hairline">{ids.filter((id) => !added(id) && matches(id, addQuery)).map(renderSupplier)}</div>
 			</div>

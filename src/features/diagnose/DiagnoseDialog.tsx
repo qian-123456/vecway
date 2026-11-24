@@ -177,13 +177,11 @@ export function DiagnoseDialog() {
 						<div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/10 text-amber-400">
 							<Stethoscope className="h-4 w-4" />
 						</div>
-						<div>
+						<div className="flex items-center gap-1.5">
 							<h2 id="diagnose-dialog-title" className="text-sm font-semibold text-[var(--text)]">
 								{t("diagnose.title")}
 							</h2>
-							<p className="text-[11px] text-neutral-400">
-								{t("diagnose.subtitle")}
-							</p>
+							<InfoTip text={t("diagnose.subtitle")} />
 						</div>
 					</div>
 					<button

@@ -7,6 +7,7 @@
 import { useT } from "../../stores/language";
 import { ChevronDown, ChevronRight, Plus, X } from "lucide-react";
 import { useMemo, useRef, useState, type ClipboardEvent } from "react";
+import { InfoTip } from "../../components/InfoTip";
 import { Modal } from "../../components/Modal";
 import { Segmented } from "../../components/Segmented";
 import type { McpKv, McpScope, McpServerPatch, McpServerView } from "../../lib/contracts";
@@ -67,8 +68,10 @@ function KvEditor({
 	const kept = existing.filter((kv) => !removed.has(kv.key));
 	return (
 		<div className="space-y-1">
-			<div className={LABEL_CLASS}>{label}</div>
-			<div className="text-[11px] text-[var(--text-dim)]">{hint}</div>
+			<div className="flex items-center gap-1.5">
+				<span className={LABEL_CLASS}>{label}</span>
+				{hint && <InfoTip text={hint} />}
+			</div>
 			<div className="space-y-1">
 				{kept.map((kv) => (
 					<div key={kv.key} className="flex items-center gap-1.5">

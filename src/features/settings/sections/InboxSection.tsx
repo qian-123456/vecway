@@ -41,14 +41,14 @@ export function InboxSection() {
 				<ToggleRow
 					fieldId="systemDetection"
 					label={t("notifications.inbox.autoCollect")}
-					description={t("notifications.inbox.autoCollectDesc")}
+					infoTip={t("notifications.inbox.autoCollectDesc")}
 					checked={settings?.systemDetection ?? true}
 					onChange={(v) => save({ systemDetection: v })}
 				/>
 				<SettingRow
 					fieldId="inboxWindowHours"
 					label={t("notifications.inbox.autoRemoveHours")}
-					description={t("notifications.inbox.autoRemoveHoursDesc")}
+					infoTip={t("notifications.inbox.autoRemoveHoursDesc")}
 					hint={t("notifications.inbox.hoursHint")}
 					control={
 						<div className="flex items-start gap-1.5">
@@ -104,12 +104,12 @@ export function DoctorSection() {
 			<SectionHeader title={t("notifications.doctor.title")} description={t("notifications.doctor.desc")} />
 			<SettingsCard
 				title={t("notifications.doctor.settingsTitle")}
-				footer={t("notifications.doctor.footer")}
+				infoTip={t("notifications.doctor.footer")}
 			>
 				<SettingRow
 					fieldId="doctorModel"
 					label={t("notifications.doctor.modelLabel")}
-					description={t("notifications.doctor.modelDesc")}
+					infoTip={t("notifications.doctor.modelDesc")}
 					status={doctorSave.status}
 					statusError={doctorSave.error}
 					control={
@@ -134,7 +134,7 @@ export function DoctorSection() {
 				<SettingRow
 					fieldId="doctorAutoMode"
 					label={t("notifications.doctor.autoModeLabel")}
-					description={t("notifications.doctor.autoModeDesc")}
+					infoTip={t("notifications.doctor.autoModeDesc")}
 					control={
 						<Segmented
 							value={doctorMode}

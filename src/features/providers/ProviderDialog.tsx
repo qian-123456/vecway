@@ -107,7 +107,6 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 	const [envName, setEnvName] = useState(initialEnv);
 	const [keyAttempted, setKeyAttempted] = useState(false);
 	const [apiKey, setApiKey] = useState("");
-	const [howOpen, setHowOpen] = useState(false);
 	const keyProblem = authNone || isImport
 		? null
 		: keyInputProblem({ mode: keyMode, envName, plainKey: apiKey, requirePlainKey: editing !== null && initialMode === "env" });
@@ -827,7 +826,10 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 									: "rounded-lg border border-dashed border-transparent p-2"
 							}
 						>
-							<div className={labelCls}>{t("providers.readFileSection")}</div>
+							<div className="flex items-center gap-1.5">
+								<div className={labelCls}>{t("providers.readFileSection")}</div>
+								<InfoTip text={t("providers.hiddenFileHint")} label={t("providers.infoTipAria")} />
+							</div>
 							<div className="mt-1.5 flex items-center gap-1.5">
 								<input
 									type="text"
@@ -862,9 +864,6 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 									<span>{t("providers.selectFileBtn")}</span>
 								</button>
 							</div>
-							<div className={hintCls}>
-								{t("providers.hiddenFileHint")}
-							</div>
 							{fileError && (
 								<div className="mt-1 select-text whitespace-pre-wrap break-words text-[11px] text-red-400">
 									{fileError}
@@ -872,11 +871,11 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 							)}
 						</div>
 						<div>
-							<label htmlFor="provider-import" className={labelCls}>
-								{t("providers.pasteEnvLabel")}
-							</label>
-							<div className={hintCls}>
-								{t("providers.pasteEnvHint")}
+							<div className="flex items-center gap-1.5">
+								<label htmlFor="provider-import" className={labelCls}>
+									{t("providers.pasteEnvLabel")}
+								</label>
+								<InfoTip text={t("providers.pasteEnvHint")} label={t("providers.infoTipAria")} />
 							</div>
 							<textarea
 								id="provider-import"
@@ -885,7 +884,7 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 								rows={6}
 								spellCheck={false}
 								autoComplete="off"
-								className={`${inputCls} font-mono`}
+								className={`mt-1.5 ${inputCls} font-mono`}
 								placeholder={"ANTHROPIC_API_KEY=sk-ant-xxx\nOPENAI_API_KEY=sk-xxx"}
 							/>
 						</div>
@@ -989,29 +988,27 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 							)}
 
 							{serviceMode && (
-								<div className="grid grid-cols-1 gap-3 @[540px]:grid-cols-2 @[540px]:items-center">
-									<div>
+								<div>
+									<div className="flex items-center gap-1.5">
 										<label htmlFor="provider-purpose" className={labelCls}>{t("providers.servicePurpose")}</label>
-										<NativeSelect
-											id="provider-purpose"
-											value={purpose}
-											containerClassName="mt-1.5"
-											onChange={(event) => {
-												const next = SERVICE_PURPOSES.find((p) => p.kind === event.target.value)!;
-												setPurpose(next.kind);
-												setModelRows((prev) => prev.map((row) => (row.id.trim() ? row : { ...row, kind: next.kind, api: next.apis[0] })));
-											}}
-										>
-											{SERVICE_PURPOSES.map((p) => (
-												<option key={p.kind} value={p.kind}>
-													{t(p.key)}
-												</option>
-											))}
-										</NativeSelect>
+										<InfoTip text={t("providers.servicePurposeHint")} label={t("providers.infoTipAria")} />
 									</div>
-									<p className="text-[11px] leading-relaxed text-neutral-400 @[540px]:pt-5">
-										{t("providers.servicePurposeHint")}
-									</p>
+									<NativeSelect
+										id="provider-purpose"
+										value={purpose}
+										containerClassName="mt-1.5"
+										onChange={(event) => {
+											const next = SERVICE_PURPOSES.find((p) => p.kind === event.target.value)!;
+											setPurpose(next.kind);
+											setModelRows((prev) => prev.map((row) => (row.id.trim() ? row : { ...row, kind: next.kind, api: next.apis[0] })));
+										}}
+									>
+										{SERVICE_PURPOSES.map((p) => (
+											<option key={p.kind} value={p.kind}>
+												{t(p.key)}
+											</option>
+										))}
+									</NativeSelect>
 								</div>
 							)}
 
@@ -1159,21 +1156,8 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 												) : (
 													<span>{t("providers.envHint")}</span>
 												)}
-												<button
-													type="button"
-													aria-expanded={howOpen}
-													onClick={() => setHowOpen((v) => !v)}
-													className="whitespace-nowrap rounded-full hairline bg-[var(--well-bg)] px-2 py-0.5 text-neutral-300 hover:bg-[var(--bg-hover)]"
-												>
-													{howOpen ? t("providers.envHowHide") : t("providers.envHowShow")}
-												</button>
+												<InfoTip text={`${t("providers.envExplainWhere")}\n${t("providers.envExplainFix")}`} label={t("providers.envHowShow")} />
 											</div>
-											{howOpen && (
-												<ul className="list-disc space-y-1 rounded-lg hairline bg-[var(--well-bg)] py-2 pl-6 pr-3 text-[11px] leading-relaxed text-neutral-400">
-													<li>{t("providers.envExplainWhere")}</li>
-													<li>{t("providers.envExplainFix")}</li>
-												</ul>
-											)}
 										</div>
 									)}
 
@@ -1199,6 +1183,19 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 									<span className={`${labelCls} whitespace-nowrap`}>
 										{isBuiltin ? t("providers.modelsHeaderExtra") : t("providers.modelsHeaderAll")}
 									</span>
+									{(isBuiltin || (!serviceMode && autoDiscover)) && (
+										<InfoTip
+											text={[
+												isBuiltin
+													? t("providers.builtinModelsHint", { count: Math.max(0, (editing?.models.length ?? 0) - (editing?.extraModels.length ?? 0)) })
+													: null,
+												!isBuiltin && !serviceMode && autoDiscover
+													? t("providers.autoDiscoverModelsHeaderHint")
+													: null,
+											].filter(Boolean).join("\n")}
+											label={t("providers.infoTipAria")}
+										/>
+									)}
 									<span className="inline-flex items-center whitespace-nowrap rounded-full bg-[var(--bg-active-fill)] px-2 py-0.5 text-[11px] font-medium tabular-nums text-neutral-300">
 										{isFiltering ? `${visibleModelEntries.length} / ${modelRows.length}` : modelRows.length}
 									</span>
@@ -1260,16 +1257,6 @@ export function ProviderDialog({ target, onClose, pickerCategory = "chat" }: Pro
 								</div>
 							</div>
 
-							{isBuiltin && (
-								<p className="text-[11px] text-neutral-400">
-									{t("providers.builtinModelsHint", { count: Math.max(0, (editing?.models.length ?? 0) - (editing?.extraModels.length ?? 0)) })}
-								</p>
-							)}
-							{!isBuiltin && !serviceMode && autoDiscover && (
-								<p className="text-[11px] text-neutral-400">
-									{t("providers.autoDiscoverModelsHeaderHint")}
-								</p>
-							)}
 
 							<SearchInput
 								value={modelSearch}

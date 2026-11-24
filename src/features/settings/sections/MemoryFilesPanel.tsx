@@ -4,6 +4,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { ArrowLeft, ChevronDown, ChevronRight, ExternalLink, FolderOpen, Pencil, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { tNow, useT } from "../../../stores/language";
+import { InfoTip } from "../../../components/InfoTip";
 import { NativeSelect } from "../../../components/NativeSelect";
 import { confirmDialog, errMsg } from "../../../lib/dialogs";
 import { useHomeDir } from "../../../lib/hooks";
@@ -377,9 +378,9 @@ export function MemoryFilesPanel() {
 	return (
 		<div ref={rootRef} className="scroll-mt-4 space-y-3" data-jump={t("memoryRules.title")}>
 			<div className="flex flex-wrap items-start justify-between gap-2 px-1">
-				<div>
+				<div className="flex items-center gap-1.5">
 					<h3 className="text-sm font-semibold text-[var(--text)]">{t("memoryRules.title")}</h3>
-					<p className="mt-0.5 text-xs text-[var(--text-muted)]">{t("memoryRules.desc")}</p>
+					<InfoTip text={t("memoryRules.desc")} />
 				</div>
 				<Button icon={FolderOpen} disabled={!projectDir} onClick={() => projectDir && void openFolder(projectDir)}>
 					{t("memoryRules.openInFinder")}
@@ -462,20 +463,20 @@ export function MemoryFilesPanel() {
 			{slug && split.generatedCount > 0 && (
 				<SettingsCard>
 					<div className="px-4 py-3">
-						<button
-							type="button"
-							aria-expanded={rawOpen}
-							onClick={() => setRawOpen((v) => !v)}
-							className="flex w-full items-center gap-1.5 text-left text-xs font-medium text-[var(--text)]"
-						>
-							{rawOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-							{t("memoryRules.generatedRecordsTitle", { count: split.generatedCount })}
-						</button>
+						<div className="flex items-center gap-1.5">
+							<button
+								type="button"
+								aria-expanded={rawOpen}
+								onClick={() => setRawOpen((v) => !v)}
+								className="flex items-center gap-1.5 text-left text-xs font-medium text-[var(--text)]"
+							>
+								{rawOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+								{t("memoryRules.generatedRecordsTitle", { count: split.generatedCount })}
+							</button>
+							<InfoTip text={t("memoryRules.generatedRecordsDesc")} />
+						</div>
 						{rawOpen && (
-							<div className="mt-2 flex flex-wrap items-center justify-between gap-2 pl-5">
-								<p className="text-xs text-[var(--text-muted)]">
-									{t("memoryRules.generatedRecordsDesc")}
-								</p>
+							<div className="mt-2 flex flex-wrap items-center gap-2 pl-5">
 								<Button
 									size="sm"
 									icon={FolderOpen}

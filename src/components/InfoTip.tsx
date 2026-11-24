@@ -123,7 +123,7 @@ export function InfoTip({ text, label, className }: InfoTipProps) {
 					onMouseEnter={clearTimers}
 					onMouseLeave={scheduleClose}
 					role="tooltip"
-					className="max-w-[290px] whitespace-normal break-words rounded-lg hairline vibrancy-popover px-2.5 py-2 text-[11px] leading-relaxed text-[var(--text)] shadow-apple-modal"
+					className="max-w-[290px] whitespace-pre-line break-words rounded-lg hairline vibrancy-popover px-2.5 py-2 text-[11px] leading-relaxed text-[var(--text)] shadow-apple-modal"
 				>
 					{text}
 				</FloatingLayer>

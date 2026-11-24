@@ -1,4 +1,5 @@
-import { type ReactNode, useState } from "react";
+import type { ReactNode } from "react";
+import { InfoTip } from "../../components/InfoTip";
 import { useT } from "../../stores/language";
 import { MODELS_YML_PATH } from "./keyState";
 import type { KeyInputMode as Mode, KeyInputProblem } from "./keyInput";
@@ -35,7 +36,6 @@ export function KeyInputMode({
 	children: ReactNode;
 }) {
 	const { t } = useT();
-	const [howOpen, setHowOpen] = useState(false);
 	const options: { value: Mode; label: string; hint: string }[] = [
 		{ value: "plain", label: t("providers.keyInputModePlain"), hint: t("providers.keyInputModePlainHint", { path: MODELS_YML_PATH }) },
 		{ value: "env", label: t("providers.keyInputModeEnv"), hint: t("providers.keyInputModeEnvHint") },
@@ -113,23 +113,10 @@ export function KeyInputMode({
 							</div>
 						)}
 					</div>
-					<div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">
+					<div className="flex flex-wrap items-center gap-1.5 text-[11px] text-neutral-500">
 						<span>{t("providers.envHint")}</span>
-						<button
-							type="button"
-							aria-expanded={howOpen}
-							onClick={() => setHowOpen((v) => !v)}
-							className="rounded-full hairline bg-[var(--well-bg)] px-2 py-0.5 text-neutral-300 hover:bg-[var(--bg-hover)]"
-						>
-							{howOpen ? t("providers.envHowHide") : t("providers.envHowShow")}
-						</button>
+						<InfoTip text={`${t("providers.envExplainWhere")}\n${t("providers.envExplainFix")}`} label={t("providers.envHowShow")} />
 					</div>
-					{howOpen && (
-						<ul className="list-disc space-y-1 rounded-lg hairline bg-[var(--well-bg)] py-2 pl-7 pr-3 text-[11px] leading-relaxed text-neutral-400">
-							<li>{t("providers.envExplainWhere")}</li>
-							<li>{t("providers.envExplainFix")}</li>
-						</ul>
-					)}
 				</div>
 			)}
 

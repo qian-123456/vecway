@@ -11,6 +11,7 @@ import { Check, Loader2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Z_LAYER } from "../../../components/FloatingLayer";
+import { InfoTip } from "../../../components/InfoTip";
 import { ModelSelect } from "../../../components/ModelSelect";
 import { parseSelection } from "../../../components/modelSelectLogic";
 import type { ModelTemplate, ModelTemplateInput } from "../../../lib/contracts";
@@ -236,22 +237,20 @@ export function TemplateEditor({
 								{t("modelTemplates.bottomLineHint")}
 							</span>
 						</div>
-						<Chip tone={uncovered > 0 ? "warning" : "success"}>
-							{uncovered > 0 ? t("modelTemplates.uncoveredRoles", { count: String(uncovered) }) : t("modelTemplates.allCovered")}
-						</Chip>
+						<div className="flex items-center gap-1.5">
+							<Chip tone={uncovered > 0 ? "warning" : "success"}>
+								{uncovered > 0 ? t("modelTemplates.uncoveredRoles", { count: String(uncovered) }) : t("modelTemplates.allCovered")}
+							</Chip>
+							{uncovered > 0 && (
+								<InfoTip text={isProject ? t("modelTemplates.uncoveredNoticeProject") : t("modelTemplates.uncoveredNoticeGlobal")} />
+							)}
+						</div>
 					</div>
 
 					{isBottomLine && otherBottomLine.length > 0 && (
 						<Notice tone="info">
 							<span className="break-words">
 								{t("modelTemplates.bottomLineOverrideNotice", { names: otherBottomLine.map((o) => o.name).join(locale === "zh-CN" ? "」「" : "\", \"") })}
-							</span>
-						</Notice>
-					)}
-					{uncovered > 0 && (
-						<Notice tone="info">
-							<span className="break-words">
-								{isProject ? t("modelTemplates.uncoveredNoticeProject") : t("modelTemplates.uncoveredNoticeGlobal")}
 							</span>
 						</Notice>
 					)}

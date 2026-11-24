@@ -7,6 +7,7 @@
  * injects into app-launched sessions.
  */
 import { useEffect, useState } from "react";
+import { InfoTip } from "../../components/InfoTip";
 import { checkpointsRule } from "../../lib/ipc";
 import { errMsg } from "../../lib/dialogs";
 import { toast } from "../../lib/toast";
@@ -51,10 +52,9 @@ export function CheckpointsCard() {
 
 	return (
 		<div className="m-2.5 mb-1.5 rounded-lg border border-indigo-500/30 bg-indigo-500/10 p-3">
-			<div className="text-xs font-medium text-neutral-100">{t("git.checkpoints.title")}</div>
-			<div className="mt-1 text-[11px] leading-relaxed text-neutral-400">
-				{t("git.checkpoints.desc")}
-				<div className="mt-0.5 text-neutral-500">{t("git.checkpoints.effectiveAfter")}</div>
+			<div className="flex items-center gap-1.5">
+				<div className="text-xs font-medium text-neutral-100">{t("git.checkpoints.title")}</div>
+				<InfoTip text={`${t("git.checkpoints.desc")}\n${t("git.checkpoints.effectiveAfter")}`} />
 			</div>
 			<div className="mt-2 flex items-center gap-2">
 				<button

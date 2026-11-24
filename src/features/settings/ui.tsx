@@ -18,6 +18,7 @@ import {
 } from "react";
 import { errMsg } from "../../lib/dialogs";
 import { isComposing } from "../../lib/hooks";
+import { InfoTip } from "../../components/InfoTip";
 import { Switch } from "./Switch";
 export { Switch } from "./Switch";
 
@@ -28,18 +29,22 @@ export function SectionHeader({
 	description,
 	actions,
 	aside,
+	infoTip,
 }: {
 	title: ReactNode;
 	description?: ReactNode;
 	actions?: ReactNode;
 	/** Small muted text after the title (counts, scope). */
 	aside?: ReactNode;
+	/** Optional info-circle tooltip rendered next to the heading. */
+	infoTip?: string;
 }) {
 	return (
 		<div>
 			<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-				<div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+				<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
 					<h2 className="text-[18px] font-semibold leading-7 tracking-[-0.022em] text-[var(--text)]">{title}</h2>
+					{infoTip && <InfoTip text={infoTip} />}
 					{aside && <span className="whitespace-nowrap text-xs text-[var(--text-dim)]">{aside}</span>}
 				</div>
 				{actions && <div className="flex max-w-full shrink-0 flex-wrap items-center gap-2">{actions}</div>}
@@ -57,6 +62,7 @@ export function SettingsCard({
 	description,
 	aside,
 	footer,
+	infoTip,
 	fieldId,
 	jump,
 	clip,
@@ -68,6 +74,8 @@ export function SettingsCard({
 	/** Muted text after the heading (e.g. the omp TUI group name). */
 	aside?: ReactNode;
 	footer?: ReactNode;
+	/** Optional info-circle tooltip rendered next to the card heading. */
+	infoTip?: string;
 	/** Renders `data-field-id` on the card (deep links to a whole card). */
 	fieldId?: string;
 	/** Chip label in the page's `SectionJumpBar`; omit for cards that should not appear there. */
@@ -82,8 +90,9 @@ export function SettingsCard({
 			{(hasHeading || description) && (
 				<div className="px-1">
 					{hasHeading && (
-						<div className="flex items-baseline gap-2">
+						<div className="flex items-center gap-1.5">
 							<h3 className="text-[13px] font-semibold tracking-[-0.01em] text-[var(--text)]">{title}</h3>
+							{infoTip && <InfoTip text={infoTip} />}
 							{aside && <span className="text-[11px] text-[var(--text-dim)]">{aside}</span>}
 						</div>
 					)}
@@ -110,6 +119,8 @@ export interface SettingRowProps {
 	description?: ReactNode;
 	/** Secondary muted line under the description (units, defaults, caveats). */
 	hint?: ReactNode;
+	/** Optional info-circle tooltip rendered next to the row label (stops click propagation for ToggleRow). */
+	infoTip?: string;
 	/** Right-side control; with `stacked` it renders below the text instead. */
 	control?: ReactNode;
 	/** Renders `data-field-id` for search highlight / openSettings focusKey. */
@@ -131,6 +142,7 @@ export function SettingRow({
 	label,
 	description,
 	hint,
+	infoTip,
 	control,
 	fieldId,
 	status = "idle",
@@ -177,6 +189,11 @@ export function SettingRow({
 						>
 							{label}
 						</span>
+						{infoTip && (
+							<span className="inline-flex items-center" onClick={(e) => e.stopPropagation()}>
+								<InfoTip text={infoTip} />
+							</span>
+						)}
 						<SaveIndicator status={status} error={statusError} />
 					</div>
 					{description && (

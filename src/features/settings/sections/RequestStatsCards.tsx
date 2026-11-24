@@ -30,7 +30,7 @@ export function RequestStatsCard() {
 	return (
 		<SettingsCard
 			title={t("settingsSections.requestStats.title")}
-			footer={t("settingsSections.requestStats.footer", { defaultOn })}
+			infoTip={t("settingsSections.requestStats.footer", { defaultOn })}
 		>
 			<ToggleRow
 				fieldId="requestStats"
@@ -73,18 +73,18 @@ export function ConversationDisplayCard() {
 	const setBottomBar = useDisplayPrefs((s) => s.setBottomBar);
 
 	return (
-		<SettingsCard title={t("settingsSections.conversationDisplay.title")} footer={t("settingsSections.conversationDisplay.footer")}>
+		<SettingsCard title={t("settingsSections.conversationDisplay.title")} infoTip={t("settingsSections.conversationDisplay.footer")}>
 			<ToggleRow
 				fieldId="bottomBar"
 				label={t("settingsSections.conversationDisplay.bottomBarLabel")}
-				description={t("settingsSections.conversationDisplay.bottomBarDesc")}
+				infoTip={t("settingsSections.conversationDisplay.bottomBarDesc")}
 				checked={bottomBar}
 				onChange={setBottomBar}
 			/>
 			<ToggleRow
 				fieldId="thinkingPreview"
 				label={t("settingsSections.conversationDisplay.thinkingPreviewLabel")}
-				description={t("settingsSections.conversationDisplay.thinkingPreviewDesc")}
+				infoTip={t("settingsSections.conversationDisplay.thinkingPreviewDesc")}
 				checked={thinkingPreview}
 				onChange={setThinkingPreview}
 			/>
@@ -96,7 +96,7 @@ export function ConversationDisplayCard() {
 						? t("settingsSections.conversationDisplay.sideChatHandbackSummary")
 						: t("settingsSections.conversationDisplay.sideChatHandbackSelect")
 				}
-				hint={t("settingsSections.conversationDisplay.sideChatHandbackHint")}
+				infoTip={t("settingsSections.conversationDisplay.sideChatHandbackHint")}
 				control={
 					<Segmented<SideChatHandbackMode>
 						aria-label={t("settingsSections.conversationDisplay.sideChatHandbackAria")}

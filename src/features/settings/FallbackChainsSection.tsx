@@ -10,6 +10,7 @@
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useT } from "../../stores/language";
+import { InfoTip } from "../../components/InfoTip";
 import { PopoverSelect } from "../../components/PopoverSelect";
 import type { OmpConfigEntry } from "../../lib/contracts";
 import { errMsg } from "../../lib/dialogs";
@@ -180,13 +181,10 @@ function CycleOrderEditor({
 	return (
 		<div>
 			<div className="flex flex-wrap items-center gap-2">
-				<span
-					title={t("settingsModels.cycleOrderCardDesc")}
-					className="text-xs font-medium text-[var(--text)]"
-				>
+				<span className="text-xs font-medium text-[var(--text)]">
 					{t("settingsModels.cycleOrderCardTitle")}
 				</span>
-				<span className="text-xs text-[var(--text-dim)]">{t("settingsModels.cycleOrderHint")}</span>
+				<InfoTip text={`${t("settingsModels.cycleOrderCardDesc")}\n${t("settingsModels.cycleOrderHint")}`} />
 				{savedTick && <Check className="h-3 w-3 text-[var(--status-success)]" />}
 			</div>
 			<div className="mt-2 flex flex-wrap items-center gap-1.5">

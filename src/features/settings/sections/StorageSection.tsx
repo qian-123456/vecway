@@ -290,12 +290,12 @@ export function StorageSection() {
 			<SettingsCard
 				jump={t("settingsSectionsStorage.storage.jumpImages")}
 				title={t("settingsSectionsStorage.storage.titleImages")}
-				description={t("settingsSectionsStorage.storage.descImages")}
+				infoTip={t("settingsSectionsStorage.storage.descImages")}
 				aside={overview ? t("settingsSectionsStorage.storage.imagesCardAside", { count: overview.images.count, bytes: formatBytes(overview.images.bytes) }) : undefined}
 			>
 				<SettingRow
 					label={t("settingsSectionsStorage.storage.unusedImagesLabel")}
-					description={t("settingsSectionsStorage.storage.unusedImagesDesc")}
+					infoTip={t("settingsSectionsStorage.storage.unusedImagesDesc")}
 					hint={
 						overview && cleanable
 							? t("settingsSectionsStorage.storage.unusedImagesHint", {
@@ -322,7 +322,7 @@ export function StorageSection() {
 			<SettingsCard jump={t("settingsSectionsStorage.storage.jumpCacheAndLogs")} title={t("settingsSectionsStorage.storage.titleCacheAndLogs")}>
 				<SettingRow
 					label={t("settingsSectionsStorage.storage.webCacheLabel")}
-					description={t("settingsSectionsStorage.storage.webCacheDesc")}
+					infoTip={t("settingsSectionsStorage.storage.webCacheDesc")}
 					hint={
 						overview
 							? overview.webCacheBytes > 0
@@ -342,7 +342,7 @@ export function StorageSection() {
 				/>
 				<SettingRow
 					label={t("settingsSectionsStorage.storage.ompCacheLabel")}
-					description={t("settingsSectionsStorage.storage.ompCacheDesc")}
+					infoTip={t("settingsSectionsStorage.storage.ompCacheDesc")}
 					hint={
 						overview
 							? (overview.ompCacheBytes ?? 0) > 0
@@ -362,7 +362,7 @@ export function StorageSection() {
 				/>
 				<SettingRow
 					label={t("settingsSectionsStorage.storage.ompOtherLabel")}
-					description={t("settingsSectionsStorage.storage.ompOtherDesc")}
+					infoTip={t("settingsSectionsStorage.storage.ompOtherDesc")}
 					hint={
 						overview
 							? t("settingsSectionsStorage.storage.usedBytesHint", { bytes: formatBytes(overview.ompOtherBytes ?? 0) })
@@ -380,7 +380,7 @@ export function StorageSection() {
 				/>
 				<SettingRow
 					label={t("settingsSectionsStorage.storage.expiredStatusLabel")}
-					description={t("settingsSectionsStorage.storage.expiredStatusDesc")}
+					infoTip={t("settingsSectionsStorage.storage.expiredStatusDesc")}
 					hint={
 						overview
 							? overview.status.expiredCount > 0

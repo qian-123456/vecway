@@ -6,7 +6,6 @@ import { AlertTriangle, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { SUPPORTED_LOCALES, type Locale } from "../../../lib/i18n";
 import { useT } from "../../../stores/language";
-import { InfoTip } from "../../../components/InfoTip";
 import { Segmented } from "../../../components/Segmented";
 import { macosPermissionsStatus, ompConfigSet, type MacosPermissionsStatus } from "../../../lib/ipc";
 import { toModelKey } from "../../../lib/models";
@@ -191,7 +190,7 @@ export function GeneralSection() {
 				<SettingRow
 					fieldId="agentsMdShortcut"
 					label={t("settingsSections.general.agentsMdLabel")}
-					description={t("settingsSections.general.agentsMdDesc")}
+					infoTip={t("settingsSections.general.agentsMdDesc")}
 					control={
 						<Button size="sm" variant="ghost" onClick={() => navigate("agents-md")}>
 							{t("settingsSections.general.goToRulesFiles")}
@@ -204,12 +203,8 @@ export function GeneralSection() {
 			<SettingsCard jump={t("settingsSections.general.titleAutomation")} title={t("settingsSections.general.titleAutomation")}>
 				<SettingRow
 					fieldId="automationOverlapPolicy"
-					label={
-						<span className="inline-flex items-center gap-1.5">
-							<span>{t("settingsSections.general.overlapPolicyLabel")}</span>
-							<InfoTip text={t("settingsSections.general.overlapPolicyHint")} />
-						</span>
-					}
+					label={t("settingsSections.general.overlapPolicyLabel")}
+					infoTip={t("settingsSections.general.overlapPolicyHint")}
 					stacked
 					description={t(`settingsSections.general.overlap.${overlapPolicy}.description`)}
 					status={overlapSave.status}
@@ -230,7 +225,7 @@ export function GeneralSection() {
 				/>
 				<SettingRow
 					label={t("settingsSections.automations.moreShortcutLabel")}
-					description={t("settingsSections.automations.moreShortcutDesc")}
+					infoTip={t("settingsSections.automations.moreShortcutDesc")}
 					control={
 						<Button size="sm" variant="ghost" onClick={() => navigate("automations")}>
 							{t("settingsSections.automations.openSectionBtn")}
@@ -257,21 +252,21 @@ export function GeneralSection() {
 				<ToggleRow
 					fieldId="capsuleVisible"
 					label={t("settingsSections.general.capsuleLabel")}
-					description={t("settingsSections.general.capsuleDesc")}
+					infoTip={t("settingsSections.general.capsuleDesc")}
 					checked={settings?.capsuleVisible ?? true}
 					onChange={(v) => save({ capsuleVisible: v })}
 				/>
 				<ToggleRow
 					fieldId="windowWorktreeTitle"
 					label={t("settingsSections.general.windowWorktreeTitleLabel")}
-					description={t("settingsSections.general.windowWorktreeTitleDesc")}
+					infoTip={t("settingsSections.general.windowWorktreeTitleDesc")}
 					checked={settings?.windowWorktreeTitle ?? true}
 					onChange={(v) => save({ windowWorktreeTitle: v })}
 				/>
 				<ToggleRow
 					fieldId="smartContextRouting"
 					label={t("settingsSections.general.smartContextRoutingLabel")}
-					description={t("settingsSections.general.smartContextRoutingDesc")}
+					infoTip={t("settingsSections.general.smartContextRoutingDesc")}
 					checked={settings?.smartContextRouting ?? true}
 					onChange={(v) => save({ smartContextRouting: v })}
 				/>
@@ -282,7 +277,7 @@ export function GeneralSection() {
 					fieldId="gitDeliveryMode"
 					label={t("settingsSections.general.gitDeliveryModeLabel")}
 					description={t("settingsSections.general.gitDeliveryModeDesc")}
-					hint={t("settingsSections.general.gitDeliveryModeHint")}
+					infoTip={t("settingsSections.general.gitDeliveryModeHint")}
 					control={
 						<Segmented
 							value={(settings?.gitDeliveryMode as "pr" | "direct") ?? "pr"}
@@ -311,7 +306,7 @@ export function GeneralSection() {
 					<SettingRow
 						fieldId="macosPermissions"
 						label={t("settingsSections.general.macosPermissionsLabel")}
-						description={t("settingsSections.general.macosPermissionsDesc")}
+					infoTip={t("settingsSections.general.macosPermissionsDesc")}
 						control={
 							<div className="flex items-center gap-2">
 								<Chip tone={deniedCount > 0 ? "warning" : "success"}>
@@ -332,14 +327,8 @@ export function GeneralSection() {
 			<SettingsCard jump={t("settingsSections.general.troubleshootingTitle")} title={t("settingsSections.general.troubleshootingTitle")}>
 				<ToggleRow
 					fieldId="diagnosticsEnabled"
-					label={
-						<span className="inline-flex items-center gap-1.5">
-							<span className="whitespace-nowrap">{t("settingsSections.general.diagnosticsLabel")}</span>
-							<span onClick={(e) => e.stopPropagation()} className="inline-flex items-center">
-								<InfoTip text={t("settingsSections.general.diagnosticsDesc")} />
-							</span>
-						</span>
-					}
+					label={t("settingsSections.general.diagnosticsLabel")}
+					infoTip={t("settingsSections.general.diagnosticsDesc")}
 					checked={settings?.diagnosticsEnabled ?? true}
 					disabled={!settings}
 					onChange={(v) => save({ diagnosticsEnabled: v })}

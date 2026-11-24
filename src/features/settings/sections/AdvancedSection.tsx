@@ -183,7 +183,7 @@ export function AdvancedSection() {
 					fieldId="ompBinary"
 					stacked
 					label={t("settingsSections.advanced.ompBinaryLabel")}
-					description={t("settingsSections.advanced.ompBinaryDesc")}
+					infoTip={t("settingsSections.advanced.ompBinaryDesc")}
 					hint={ompStatus}
 					control={
 						<CommitInput
@@ -200,7 +200,7 @@ export function AdvancedSection() {
 					fieldId="ompConfigFiles"
 					stacked
 					label={t("settingsSections.advanced.ompConfigLabel")}
-					description={t("settingsSections.advanced.ompConfigDesc")}
+					infoTip={t("settingsSections.advanced.ompConfigDesc")}
 					hint={
 						<>
 							{info ? <span className="font-mono">{info.configPath}</span> : null}
@@ -227,7 +227,7 @@ export function AdvancedSection() {
 				<SettingRow
 					fieldId="installStatusExtension"
 					label={t("settingsSections.advanced.installExtensionLabel")}
-					description={t("settingsSections.advanced.installExtensionDesc")}
+					infoTip={t("settingsSections.advanced.installExtensionDesc")}
 					control={
 						<Button icon={Download} loading={installing} onClick={handleInstallExtension}>{installing ? t("settingsSections.advanced.installingExtension") : t("settingsSections.advanced.installExtension")}</Button>
 					}
@@ -245,7 +245,7 @@ export function AdvancedSection() {
 					fieldId="dataManagement"
 					stacked
 					label={t("settingsSections.advanced.dataManagementLabel")}
-					description={t("settingsSections.advanced.dataManagementDesc")}
+					infoTip={t("settingsSections.advanced.dataManagementDesc")}
 					control={
 						<div className="flex flex-wrap items-center gap-2">
 							<Button icon={FolderOpen} onClick={handleOpenDataDir}>{t("settingsSections.advanced.openDataDir")}</Button>

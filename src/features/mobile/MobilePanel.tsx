@@ -2,7 +2,7 @@
  * [E] Pairing / tunnel panel (rendered inside Settings ▸ 手机访问, §11 E).
  * LAN server controls, QR pairing, cloudflared tunnel, device revocation.
  */
-import { Copy, Globe, Info, Power, QrCode, RefreshCw, RotateCcw, ShieldAlert, X } from "lucide-react";
+import { Copy, Globe, Power, QrCode, RefreshCw, RotateCcw, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useId, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Segmented } from "../../components/Segmented";
@@ -190,8 +190,6 @@ export function MobilePanel() {
 	const [stopWork, setStopWork] = useState(false);
 	const [selectedWork, setSelectedWork] = useState<string[]>([]);
 	const [deviceBusy, setDeviceBusy] = useState(false);
-	const [showIpv6Guide, setShowIpv6Guide] = useState(false);
-	const [showZeroTrustGuide, setShowZeroTrustGuide] = useState(false);
 	const [devicesOpen, setDevicesOpen] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [ddnsTokenDraft, setDdnsTokenDraft] = useState("");
@@ -452,7 +450,6 @@ export function MobilePanel() {
 	const mm = Math.floor(expiresIn / 60);
 	const ss = String(expiresIn % 60).padStart(2, "0");
 	const expired = pairing != null && expiresIn === 0;
-	const modeInfo = tunnelModes.find((m) => m.value === tunnelMode) ?? tunnelModes[0];
 	const tunnelButtonLabel = isTunnelRunning
 		? tunnelDirty
 			? t("mobile.btnSaveAndReconnect")
@@ -473,11 +470,9 @@ export function MobilePanel() {
 				<div className="min-w-0 flex-1">
 					<div className="flex items-center gap-2">
 						<span className="text-sm font-semibold text-[var(--text)]">{t("mobile.rowMobileLanLabel")}</span>
+						<InfoTip text={running ? t("mobile.rowMobileLanDescRunning") : t("mobile.rowMobileLanDescStopped")} />
 						<RunChip status={status == null ? "unknown" : running ? "running" : "stopped"} />
 					</div>
-					<p className="mt-0.5 text-xs text-[var(--text-muted)]">
-						{running ? t("mobile.rowMobileLanDescRunning") : t("mobile.rowMobileLanDescStopped")}
-					</p>
 				</div>
 				<div className="flex flex-wrap items-center gap-2">
 					<Button
@@ -722,15 +717,7 @@ export function MobilePanel() {
 				<div className="flex items-center justify-between">
 					<div className="flex items-center gap-1.5">
 						<span className="text-[13px] font-medium text-[var(--text)]">{t("mobile.ipv6Connection")}</span>
-						<button
-							type="button"
-							className="flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border-divider)] bg-[var(--well-bg)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors cursor-pointer"
-							onClick={() => setShowIpv6Guide((v) => !v)}
-							title={t("mobile.usageTipsTitle")}
-							aria-label={t("mobile.usageTipsTitle")}
-						>
-							<Info className="h-3 w-3" />
-						</button>
+						<InfoTip text={[t("mobile.tip1"), t("mobile.tip2"), t("mobile.tip3"), t("mobile.tip4")].join("\n")} label={t("mobile.usageTipsTitle")} />
 					</div>
 					<div className="flex items-center gap-2">
 						<RunChip status={status == null ? "unknown" : ipv6Running ? "running" : !status.ipv6Address ? "noIpv6" : "stopped"} />
@@ -752,17 +739,6 @@ export function MobilePanel() {
 					</div>
 				</div>
 
-				{showIpv6Guide && (
-					<div className="space-y-1.5 rounded-lg border-l-2 border-[#0969da] bg-[var(--well-bg)] p-3 text-xs text-[var(--text-muted)]">
-						<div className="font-medium text-[var(--text)]">{t("mobile.usageTipsTitle")}</div>
-						<ul className="list-inside list-disc space-y-1">
-							<li>{t("mobile.tip1")}</li>
-							<li>{t("mobile.tip2")}</li>
-							<li>{t("mobile.tip3")}</li>
-							<li>{t("mobile.tip4")}</li>
-						</ul>
-					</div>
-				)}
 
 				{ipv6Running && status?.ipv6Url && <UrlLine label={t("mobile.ipv6UrlLabel")} url={status.ipv6Url} />}
 				{status && !status.ipv6Address && <Notice tone="warning">{t("mobile.noticeNoIpv6")}</Notice>}
@@ -822,7 +798,7 @@ export function MobilePanel() {
 							)}
 						</span>
 					}
-					description={t("mobile.ddnsDesc")}
+					infoTip={t("mobile.ddnsDesc")}
 					control={
 						<Switch
 							checked={settings?.ddnsEnabled ?? false}
@@ -974,11 +950,9 @@ export function MobilePanel() {
 				{/* Cloudflare Tunnel Capsule Card */}
 				<div className="space-y-3.5 rounded-xl border border-[var(--border-divider)] bg-[var(--card-bg)] p-3.5">
 					<div className="flex flex-wrap items-center justify-between gap-3">
-						<div className="min-w-0 flex-1 space-y-0.5">
-							<span className="block text-[11px] font-medium text-[var(--text-muted)]">{t("mobile.tunnelMethodLabel")}</span>
-							<p className="text-xs text-[var(--text-dim)]">
-								{modeInfo.explain}
-							</p>
+						<div className="flex min-w-0 flex-1 items-center gap-1.5">
+							<span className="text-[11px] font-medium text-[var(--text-muted)]">{t("mobile.tunnelMethodLabel")}</span>
+							<InfoTip text={tunnelModes.map((m) => `${m.label}: ${m.explain}`).join("\n")} label={t("mobile.tunnelMethodLabel")} />
 						</div>
 						<div className="shrink-0">
 							<Segmented
@@ -1099,15 +1073,7 @@ export function MobilePanel() {
 										<span className="text-[11px] text-[var(--text-dim)]">（{t("mobile.zeroTrustBadge")}）</span>
 									</div>
 									<div className="flex items-center gap-1.5">
-										<button
-											type="button"
-											className="flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border-divider)] bg-[var(--card-bg)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors cursor-pointer"
-											onClick={() => setShowZeroTrustGuide((v) => !v)}
-											title={t("mobile.zeroTrustTitle")}
-											aria-label={t("mobile.zeroTrustTitle")}
-										>
-											<Info className="h-3 w-3" />
-										</button>
+										<InfoTip text={`${t("mobile.zeroTrustDesc")}\n${t("mobile.zeroTrustGuide")}`} label={t("mobile.zeroTrustTitle")} />
 										<Button
 											size="sm"
 											variant="secondary"
@@ -1118,12 +1084,6 @@ export function MobilePanel() {
 									</div>
 								</div>
 
-								{showZeroTrustGuide && (
-									<div className="mt-2 space-y-1 border-t border-[var(--border-divider)] pt-2 text-[11px] leading-relaxed text-[var(--text-dim)]">
-										<p>{t("mobile.zeroTrustDesc")}</p>
-										<p>{t("mobile.zeroTrustGuide")}</p>
-									</div>
-								)}
 							</div>
 						</div>
 					)}

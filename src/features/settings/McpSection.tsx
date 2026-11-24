@@ -238,7 +238,7 @@ export function McpSection({
 		<div className="space-y-6">
 			<SectionHeader
 				title={t("mcp.sectionTitle")}
-				description={t("mcp.sectionDesc")}
+				infoTip={t("mcp.sectionDesc")}
 				actions={
 					<>
 						<IconButton

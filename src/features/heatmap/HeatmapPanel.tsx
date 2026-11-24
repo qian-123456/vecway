@@ -13,6 +13,7 @@ import clsx from "clsx";
 import { AlertCircle, AlertTriangle, CheckCircle, ChevronDown, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { EmptyState } from "../../components/EmptyState";
+import { InfoTip } from "../../components/InfoTip";
 import { Segmented } from "../../components/Segmented";
 import type { SubagentSummary, TranscriptItem } from "../../lib/contracts";
 import { relativeTime } from "../../lib/format";
@@ -550,9 +551,9 @@ export function HeatmapPanel() {
 													{/* In-place Accordion: List of individual invocations */}
 													{isExpanded && hasCalls && (
 														<div className="mt-2.5 pt-2 border-t border-[var(--border-divider)] space-y-1">
-															<div className="text-[10px] text-neutral-400 font-medium flex items-center justify-between mb-1">
+															<div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium text-neutral-400">
 																<span>{t("heatmap.callHistoryTitle", { count: item.callDetails!.length })}</span>
-																<span className="text-[9.5px] text-neutral-500">{t("heatmap.callHistoryTip")}</span>
+																<InfoTip text={t("heatmap.callHistoryTip")} />
 															</div>
 															<div className="max-h-48 overflow-y-auto space-y-1 pr-0.5 no-scrollbar">
 																{item.callDetails!.map((call, cIdx) => (

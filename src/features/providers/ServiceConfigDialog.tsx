@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { InfoTip } from "../../components/InfoTip";
 import { Modal } from "../../components/Modal";
 import { serviceConfigRead, serviceConfigWrite } from "../../lib/ipc";
 import type { ServiceConfigChanges, ServiceConfigSnapshot } from "../../lib/serviceConfigTypes";
@@ -51,8 +52,10 @@ export function ServiceConfigDialog({ capability, selector, onClose, onAdvanced,
 	const canKey = capability.method === "key" || capability.method === "optional-key";
 	return <Modal title={t("providers.serviceConfigTitle", { provider: capability.supplier })} onClose={onClose} size="md">
 		<div className="min-h-0 max-h-[calc(85vh-64px)] space-y-4 overflow-y-auto p-4">
-			<p className="text-xs text-[var(--text-dim)]">{t("providers.serviceGlobalHint")}</p>
-			<p className="select-text break-all font-mono text-xs">{selector}</p>
+			<div className="flex items-center gap-1.5">
+				<p className="select-text break-all font-mono text-xs">{selector}</p>
+				<InfoTip text={t("providers.serviceGlobalHint")} label={t("providers.infoTipAria")} />
+			</div>
 			{capability.method === "keyless" && <p className="text-sm">{t("providers.serviceKeylessHint")}</p>}
 			{capability.method === "optional-key" && <p className="text-sm">{t("providers.serviceOptionalKeyHint")}</p>}
 			{capability.method === "advanced" && <><p className="text-sm">{t(capability.supplier === "kimi" ? "providers.serviceKimiHint" : "providers.serviceAdvancedHint")}</p><Button onClick={onAdvanced}>{t("settingsSections.providers.editRawConfig")}</Button></>}

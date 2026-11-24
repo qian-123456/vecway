@@ -12,6 +12,7 @@
  */
 import { AlertTriangle, ArrowRightLeft, ChevronDown, ChevronRight, Loader2, PlayCircle, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { InfoTip } from "../../../components/InfoTip";
 import { NativeSelect } from "../../../components/NativeSelect";
 import { SearchInput } from "../../../components/SearchInput";
 import type { ModelProbeResult, ModelUsageScan } from "../../../lib/contracts";
@@ -290,21 +291,6 @@ export function ModelReplaceOverview({
 
 	return (
 		<div ref={rootRef} className="flex min-h-0 flex-1 flex-col">
-			<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 pb-3">
-				<p className="text-xs leading-5 text-neutral-400">
-					{t("modelReplace.overviewIntro")}
-				</p>
-				<button
-					type="button"
-					onClick={rescan}
-					disabled={loading || kindLoading}
-					title={t("modelReplace.rescanTitle")}
-					className="inline-flex shrink-0 items-center gap-1.5 rounded-full hairline bg-[var(--bg-active-fill)] px-3 py-1 text-[11px] text-neutral-300 transition-all hover:bg-[var(--bg-hover)] active:scale-95 disabled:opacity-50"
-				>
-					<RefreshCw className={`h-3 w-3 ${loading || kindLoading ? "animate-spin" : ""}`} />
-					{t("modelReplace.rescan")}
-				</button>
-			</div>
 
 			<div className="flex flex-wrap items-center gap-2 px-4 pb-3">
 				<SearchInput
@@ -333,6 +319,17 @@ export function ModelReplaceOverview({
 						</option>
 					))}
 				</NativeSelect>
+				<InfoTip text={`${t("modelReplace.overviewIntro")}\n${t("modelReplace.testHint")}`} />
+				<button
+					type="button"
+					onClick={rescan}
+					disabled={loading || kindLoading}
+					title={t("modelReplace.rescanTitle")}
+					className="inline-flex shrink-0 items-center gap-1.5 rounded-full hairline bg-[var(--bg-active-fill)] px-3 py-1 text-[11px] text-neutral-300 transition-all hover:bg-[var(--bg-hover)] active:scale-95 disabled:opacity-50"
+				>
+					<RefreshCw className={`h-3 w-3 ${loading || kindLoading ? "animate-spin" : ""}`} />
+					{t("modelReplace.rescan")}
+				</button>
 			</div>
 
 			{error !== null && (
@@ -418,10 +415,6 @@ export function ModelReplaceOverview({
 							))}
 						</section>
 					))}
-					<p className="flex items-start gap-1.5 px-1 text-[10px] leading-4 text-neutral-500">
-						<PlayCircle className="mt-px h-3 w-3 shrink-0" />
-						{t("modelReplace.testHint")}
-					</p>
 				</div>
 			)}
 		</div>

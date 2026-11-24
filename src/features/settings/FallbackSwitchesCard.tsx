@@ -158,12 +158,8 @@ export function UsageAwareCard({ onSaved }: { onSaved?: () => void }) {
 			<div className={master ? undefined : "opacity-50"}>
 				<SettingRow
 					label={<span title="retry.usageAwareFallback">{t("settingsModels.usageAwareLabel")}</span>}
-					description={
-						master
-							? t("settingsModels.usageAwareDesc")
-							: offReason
-					}
-					hint={t("settingsModels.usageAwareHint")}
+					description={master ? undefined : offReason}
+					infoTip={`${t("settingsModels.usageAwareDesc")}\n${t("settingsModels.usageAwareHint")}`}
 					status={savedStatus(savedKey, "retry.usageAwareFallback")}
 					control={
 						<Switch
@@ -187,7 +183,7 @@ export function UsageAwareCard({ onSaved }: { onSaved?: () => void }) {
 							t("settingsModels.reservePctActiveDesc")
 						)
 					}
-					hint={t("settingsModels.reservePctHint", { pct: RESERVE_PCT_DEFAULT })}
+					infoTip={t("settingsModels.reservePctHint", { pct: RESERVE_PCT_DEFAULT })}
 					status={savedStatus(savedKey, "retry.usageReservePct")}
 					control={
 						<div className="flex items-center gap-1.5">

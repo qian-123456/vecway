@@ -229,7 +229,7 @@ function QuietHoursRow() {
 			fieldId="notifyQuiet"
 			stacked
 			label={t("notifications.quietHours")}
-			description={t("notifications.quietHoursDesc")}
+			infoTip={t("notifications.quietHoursDesc")}
 			status={status.status}
 			statusError={status.error}
 			control={

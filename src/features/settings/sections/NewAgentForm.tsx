@@ -8,6 +8,7 @@
 import clsx from "clsx";
 import { Check, Sparkles } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { InfoTip } from "../../../components/InfoTip";
 import { ModelSelect } from "../../../components/ModelSelect";
 import { parseSelection } from "../../../components/modelSelectLogic";
 import { NativeSelect } from "../../../components/NativeSelect";
@@ -137,12 +138,14 @@ function Segmented<T extends string>({
 	);
 }
 
-function Field({ label, hint, children }: { label: string; hint: string; children: ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
 	return (
 		<div className="space-y-1.5">
-			<div className="text-xs font-medium text-[var(--text)]">{label}</div>
+			<div className="flex items-center gap-1.5">
+				<span className="text-xs font-medium text-[var(--text)]">{label}</span>
+				{hint && <InfoTip text={hint} />}
+			</div>
 			{children}
-			<p className="text-[11px] text-[var(--text-dim)]">{hint}</p>
 		</div>
 	);
 }
@@ -256,9 +259,10 @@ export function NewAgentForm({
 
 	return (
 		<div data-testid="new-agent-form" className="space-y-4 border-b border-[var(--border-divider)] bg-[var(--well-bg)]/40 px-4 py-4">
-			<p className="text-[11px] leading-relaxed text-[var(--text-muted)]">
-				{t("agentDefs.form.lead", { scopeLabel })}
-			</p>
+			<div className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-muted)]">
+				<span>{scopeLabel}</span>
+				<InfoTip text={t("agentDefs.form.lead", { scopeLabel })} />
+			</div>
 
 			<Field label={t("agentDefs.form.nameLabel")} hint={t("agentDefs.form.nameHint")}>
 				<input

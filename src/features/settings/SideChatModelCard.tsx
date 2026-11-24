@@ -34,7 +34,7 @@ export function SideChatModelCard() {
 		<SettingsCard title={t("settingsModels.sideChatCardTitle")} fieldId="sideChatModel" jump={t("settingsModels.sideChatCardJump")}>
 			<ToggleRow
 				label={t("settingsModels.dedicatedModelLabel")}
-				description={t("settingsModels.dedicatedModelDesc")}
+				infoTip={t("settingsModels.dedicatedModelDesc")}
 				checked={enabled}
 				onChange={async (next) => {
 					if (next) {
@@ -48,7 +48,7 @@ export function SideChatModelCard() {
 			{enabled && (
 				<SettingRow
 					label={t("settingsModels.modelRowLabel")}
-					description={t("settingsModels.modelRowDesc")}
+					infoTip={t("settingsModels.modelRowDesc")}
 					status={pickSave.status}
 					statusError={pickSave.error}
 					control={

@@ -98,7 +98,10 @@ export function DoctorView({
 		<div className="min-w-0 space-y-3 break-words [overflow-wrap:anywhere]">
 			{/* Lens selector */}
 			<div className={CARD}>
-				<div className="mb-2 text-[11.5px] font-medium text-neutral-200">{t("doctor.selectLens")}</div>
+				<div className="mb-2 flex items-center gap-1.5 text-[11.5px] font-medium text-neutral-200">
+					<span>{t("doctor.selectLens")}</span>
+					<InfoTip text={PRESET_LENS_KEYS.map((l) => `${t(l.labelKey)}: ${t(l.hintKey)}`).join("\n")} />
+				</div>
 				<div className="grid grid-cols-2 gap-1.5">
 					{PRESET_LENS_KEYS.map((l) => {
 						const active = selectedLenses.includes(l.value);
@@ -124,9 +127,6 @@ export function DoctorView({
 							</button>
 						);
 					})}
-				</div>
-				<div className="mt-1.5 text-[10px] text-neutral-500">
-					{selectedLenses.map((l) => t(PRESET_LENS_KEYS.find((k) => k.value === l)?.hintKey ?? "")).filter(Boolean).join(" · ")}
 				</div>
 				<textarea
 					value={question}

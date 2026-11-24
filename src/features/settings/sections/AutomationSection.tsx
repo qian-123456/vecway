@@ -4,7 +4,6 @@
  */
 import { RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { InfoTip } from "../../../components/InfoTip";
 import { ModelSelect } from "../../../components/ModelSelect";
 import { parseSelection } from "../../../components/modelSelectLogic";
 import { Segmented } from "../../../components/Segmented";
@@ -128,7 +127,7 @@ export function AutomationSection() {
 		<div className="space-y-5">
 			<SectionHeader
 				title={t("settingsSections.automations.title")}
-				description={t("settingsSections.automations.desc")}
+				infoTip={t("settingsSections.automations.desc")}
 			/>
 			<SectionJumpBar />
 
@@ -137,25 +136,15 @@ export function AutomationSection() {
 				title={t("settingsSections.automations.cardRuntime")}
 			>
 				<ToggleRow
-					label={
-						<span className="inline-flex items-center gap-1.5">
-							<span>{t("schedules.bgRunLabel")}</span>
-							<span onClick={(e) => e.stopPropagation()} className="inline-flex items-center">
-								<InfoTip text={t("schedules.bgRunTooltip")} />
-							</span>
-						</span>
-					}
+					label={t("schedules.bgRunLabel")}
+					infoTip={t("schedules.bgRunTooltip")}
 					checked={settings?.automationBackgroundEnabled ?? true}
 					onChange={(v) => void save({ automationBackgroundEnabled: v })}
 				/>
 				<SettingRow
 					fieldId="automationOverlapPolicy"
-					label={
-						<span className="inline-flex items-center gap-1.5">
-							<span>{t("settingsSections.general.overlapPolicyLabel")}</span>
-							<InfoTip text={t("settingsSections.general.overlapPolicyHint")} />
-						</span>
-					}
+					label={t("settingsSections.general.overlapPolicyLabel")}
+					infoTip={t("settingsSections.general.overlapPolicyHint")}
 					stacked
 					description={t(`settingsSections.general.overlap.${overlapPolicy}.description`)}
 					status={overlapSave.status}
@@ -186,8 +175,7 @@ export function AutomationSection() {
 					fieldId="automationDefaultResultMode"
 					label={t("settingsSections.automations.defaultResultModeLabel")}
 					stacked
-					description={t("settingsSections.automations.defaultResultModeDesc")}
-					status={resultModeSave.status}
+					infoTip={t("settingsSections.automations.defaultResultModeDesc")}
 					statusError={resultModeSave.error}
 					control={
 						<Segmented
@@ -212,8 +200,7 @@ export function AutomationSection() {
 				<SettingRow
 					fieldId="automationDefaultModel"
 					label={t("settingsSections.automations.defaultModelLabel")}
-					description={t("settingsSections.automations.defaultModelDesc")}
-					status={modelSave.status}
+					infoTip={t("settingsSections.automations.defaultModelDesc")}
 					statusError={modelSave.error}
 					control={
 						<div className="flex max-w-full flex-wrap items-center gap-2">
@@ -267,12 +254,8 @@ export function AutomationSection() {
 			<SettingsCard
 				fieldId="automationTestPrompts"
 				jump={t("settingsSections.automations.jumpPrompts")}
-				title={
-					<span className="inline-flex items-center gap-1.5">
-						<span>{t("settingsSections.automations.cardPrompts")}</span>
-						<InfoTip text={t("settingsSections.automations.cardPromptsDesc")} />
-					</span>
-				}
+				title={t("settingsSections.automations.cardPrompts")}
+				infoTip={t("settingsSections.automations.cardPromptsDesc")}
 			>
 				{PROMPT_FIELDS.map(({ key, settingsKey, labelKey, descKey }) => {
 					const hasCustom = Boolean(
@@ -282,12 +265,8 @@ export function AutomationSection() {
 					return (
 						<SettingRow
 							key={key}
-							label={
-								<span className="inline-flex items-center gap-1.5">
-									<span>{t(labelKey)}</span>
-									<InfoTip text={t("settingsSections.automations.placeholderHint")} />
-								</span>
-							}
+							label={t(labelKey)}
+							infoTip={t("settingsSections.automations.placeholderHint")}
 							description={t(descKey)}
 							stacked
 							status={promptSave.status}

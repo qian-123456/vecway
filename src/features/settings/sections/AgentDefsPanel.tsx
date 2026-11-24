@@ -269,7 +269,7 @@ export function AgentDefsPanel() {
 		<div data-jump={t("agentDefs.title")} className="scroll-mt-4 space-y-4">
 			<SectionHeader
 				title={t("agentDefs.title")}
-				description={t("agentDefs.desc")}
+				infoTip={t("agentDefs.desc")}
 			/>
 
 			<RoleScopeBar

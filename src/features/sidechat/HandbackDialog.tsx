@@ -8,6 +8,7 @@
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
+import { InfoTip } from "../../components/InfoTip";
 import { Notice } from "../../components/Notice";
 import { errMsg } from "../../lib/dialogs";
 import { toast } from "../../lib/toast";
@@ -94,7 +95,10 @@ export function HandbackDialog() {
 			aria-label={t("sidechat.handbackDialogTitle")}
 			className="flex max-h-[calc(100vh-4rem)] w-[560px] max-w-[calc(100vw-2rem)] flex-col gap-3 p-5 shadow-apple-modal"
 		>
-			<h3 className="text-sm font-semibold text-[var(--text)]">{t("sidechat.handbackDialogTitle")}</h3>
+			<div className="flex items-center gap-1.5">
+				<h3 className="text-sm font-semibold text-[var(--text)]">{t("sidechat.handbackDialogTitle")}</h3>
+				<InfoTip text={t("sidechat.handbackDesc")} />
+			</div>
 			{phase === "running" && (
 				<div className="flex flex-col gap-2.5 py-2">
 					<div className="flex items-center gap-2 text-xs text-[var(--text-60)]">
@@ -120,9 +124,6 @@ export function HandbackDialog() {
 			)}
 			{phase === "ready" && run && (
 				<>
-					<p className="text-[11px] text-[var(--text-40)]">
-						{t("sidechat.handbackDesc")}
-					</p>
 					<textarea
 						value={run.draft}
 						onChange={(e) => useHandback.getState().set(childId, { draft: e.target.value })}

@@ -2,6 +2,7 @@
 
 import { useT } from "../../stores/language";
 import { useMemo, useRef, useState } from "react";
+import { InfoTip } from "../../components/InfoTip";
 import { Modal } from "../../components/Modal";
 import type { McpScope } from "../../lib/contracts";
 import { McpScopePicker, type PickerProject } from "./McpScopePicker";
@@ -84,9 +85,15 @@ export function McpImportDialog({
 	return (
 		<Modal title={t("mcp.importMcpConfig")} size="xl" closeOnBackdrop={false} onClose={onClose}>
 			<div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
-				<label className="block space-y-1">
-					<span className="text-[11px] text-[var(--text-muted)]">{t("mcp.pastePlaceholder")}</span>
+				<div className="space-y-1">
+					<div className="flex items-center gap-1.5">
+						<label htmlFor="mcp-import-json" className="text-[11px] text-[var(--text-muted)]">
+							{t("mcp.pastePlaceholder")}
+						</label>
+						<InfoTip text={t("mcp.importHelper")} />
+					</div>
 					<textarea
+						id="mcp-import-json"
 						autoFocus
 						value={text}
 						onChange={(e) => {
@@ -98,10 +105,7 @@ export function McpImportDialog({
 						placeholder={'{\n  "mcpServers": {\n    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem"] }\n  }\n}'}
 						className={`${FIELD_CLASS} font-mono`}
 					/>
-					<span className="block text-[11px] text-[var(--text-dim)]">
-						{t("mcp.importHelper")}
-					</span>
-				</label>
+				</div>
 
 				{parsed.kind === "error" && text.trim() && (
 					<div role="alert" className="select-text break-all text-xs text-[var(--status-error)]">

@@ -2,6 +2,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelKindEntry, ProviderKeyKind, ProviderRow } from "../../lib/contracts";
+if (typeof globalThis.ResizeObserver === "undefined") {
+	globalThis.ResizeObserver = class {
+		observe() {}
+		unobserve() {}
+		disconnect() {}
+	} as unknown as typeof ResizeObserver;
+}
 import { tNow } from "../../stores/language";
 
 const ipc = vi.hoisted(() => ({
@@ -437,7 +444,9 @@ describe("edit dialog", () => {
 		expect(url.value).toBe("");
 		expect(screen.getByRole("radio", { name: "免密钥" }).getAttribute("aria-checked")).toBe("true");
 		expect(screen.getByText("额外添加的模型")).toBeTruthy();
-		expect(screen.getByText(/OMP 自带的 2 个模型会保留/)).toBeTruthy();
+		const headerSection = screen.getByText("额外添加的模型").parentElement!;
+		fireEvent.click(within(headerSection).getByRole("button", { name: tNow("providers.infoTipAria") }));
+		expect(screen.getByRole("tooltip").textContent).toMatch(/OMP 自带的 2 个模型会保留/);
 		expect(screen.queryByLabelText("API 密钥")).toBeNull();
 		expect(screen.queryByRole("button", { name: /删除|恢复 OMP 默认/ })).toBeNull();
 	});

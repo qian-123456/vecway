@@ -1,6 +1,7 @@
 import { ChevronDown, ClipboardCopy, FileInput, Loader2, LogIn, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FloatingLayer } from "../../components/FloatingLayer";
+import { InfoTip } from "../../components/InfoTip";
 import { CollapsibleSearchInput, useNarrowContainer } from "../../components/SearchInput";
 import type { ProviderRow } from "../../lib/contracts";
 import { copyText, errMsg } from "../../lib/dialogs";
@@ -200,6 +201,7 @@ function ChatProviderPanel() {
 						>
 							<RefreshCw className="h-3.5 w-3.5" />
 						</button>
+						<InfoTip text={t("providers.footerNote", { modelsYmlPath: MODELS_YML_PATH })} label={t("providers.infoTipAria")} />
 					</div>
 				</div>
 
@@ -290,9 +292,6 @@ function ChatProviderPanel() {
 				</div>
 			)}
 
-			<div className="text-[11px] leading-relaxed text-neutral-600">
-				{t("providers.footerNote", { modelsYmlPath: MODELS_YML_PATH })}
-			</div>
 			{dialog && <ProviderDialog target={dialog} onClose={() => setDialog(null)} pickerCategory={category} />}
 			{keyDialogRow && <SetKeyDialog row={keyDialogRow} onClose={() => setKeyDialogId(null)} />}
 			{oauthDialog && <OauthLoginDialog onClose={() => setOauthDialog(false)} />}

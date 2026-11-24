@@ -12,6 +12,7 @@ import { toast } from "../../../lib/toast";
 import { usePrivacy } from "../../../stores/privacy";
 import { useAppSettings } from "../useAppSettings";
 import { OmpSections } from "../OmpSettingsList";
+import { InfoTip } from "../../../components/InfoTip";
 import { EmptyState } from "../../../components/EmptyState";
 import { Notice } from "../../../components/Notice";
 import {
@@ -219,9 +220,12 @@ function AddSecretDialog({
 
 				<div className="space-y-3.5 py-4">
 					<div className="space-y-1.5">
-						<label className="text-[11.5px] font-medium text-[var(--text-muted)]">
-							{t("settingsSectionsPrivacy.privacy.valueLabel")}
-						</label>
+						<div className="flex items-center gap-1.5">
+							<label className="text-[11.5px] font-medium text-[var(--text-muted)]">
+								{t("settingsSectionsPrivacy.privacy.valueLabel")}
+							</label>
+							<InfoTip text={t("settingsSectionsPrivacy.privacy.valueHint")} />
+						</div>
 						<input
 							ref={valueInputRef}
 							className={`${INPUT_CLASS} w-full font-mono text-xs`}
@@ -230,15 +234,15 @@ function AddSecretDialog({
 							placeholder={t("settingsSectionsPrivacy.privacy.valuePlaceholder")}
 							aria-label={t("settingsSectionsPrivacy.privacy.valueAria")}
 						/>
-						<p className="text-[11px] text-[var(--text-dim)]">
-							{t("settingsSectionsPrivacy.privacy.valueHint")}
-						</p>
 					</div>
 
 					<div className="space-y-1.5">
-						<label className="text-[11.5px] font-medium text-[var(--text-muted)]">
-							{t("settingsSectionsPrivacy.privacy.labelLabel")}
-						</label>
+						<div className="flex items-center gap-1.5">
+							<label className="text-[11.5px] font-medium text-[var(--text-muted)]">
+								{t("settingsSectionsPrivacy.privacy.labelLabel")}
+							</label>
+							<InfoTip text={t("settingsSectionsPrivacy.privacy.labelHint")} />
+						</div>
 						<input
 							className={`${INPUT_CLASS} w-full text-xs`}
 							value={label}
@@ -246,9 +250,6 @@ function AddSecretDialog({
 							placeholder={t("settingsSectionsPrivacy.privacy.labelPlaceholder")}
 							aria-label={t("settingsSectionsPrivacy.privacy.labelAria")}
 						/>
-						<p className="text-[11px] text-[var(--text-dim)]">
-							{t("settingsSectionsPrivacy.privacy.labelHint")}
-						</p>
 					</div>
 				</div>
 
@@ -336,9 +337,12 @@ function EditSecretDialog({
 
 				<div className="space-y-3.5 py-4">
 					<div className="space-y-1.5">
-						<label className="text-[11.5px] font-medium text-[var(--text-muted)]">
-							{t("settingsSectionsPrivacy.privacy.labelLabel")}
-						</label>
+						<div className="flex items-center gap-1.5">
+							<label className="text-[11.5px] font-medium text-[var(--text-muted)]">
+								{t("settingsSectionsPrivacy.privacy.labelLabel")}
+							</label>
+							<InfoTip text={t("settingsSectionsPrivacy.privacy.editLabelHint")} />
+						</div>
 						<input
 							ref={labelInputRef}
 							className={`${INPUT_CLASS} w-full text-xs`}
@@ -347,9 +351,6 @@ function EditSecretDialog({
 							placeholder={t("settingsSectionsPrivacy.privacy.labelPlaceholder")}
 							aria-label={t("settingsSectionsPrivacy.privacy.labelAria")}
 						/>
-						<p className="text-[11px] text-[var(--text-dim)]">
-							{t("settingsSectionsPrivacy.privacy.editLabelHint")}
-						</p>
 					</div>
 
 					<div className="space-y-1.5">
@@ -422,8 +423,11 @@ export function PrivacySection() {
 
 			<SettingsCard jump={t("settingsSectionsPrivacy.privacy.jumpLibrary")}
 				title={t("settingsSectionsPrivacy.privacy.titleLibrary")}
-				description={t("settingsSectionsPrivacy.privacy.descLibrary")}
-				footer={t("settingsSectionsPrivacy.privacy.footerLibrary")}
+				infoTip={[
+					t("settingsSectionsPrivacy.privacy.descLibrary"),
+					t("settingsSectionsPrivacy.privacy.footerLibrary"),
+					t("settingsSectionsPrivacy.privacy.autoEnableNotice"),
+				].join("\n")}
 			>
 				<SettingRow
 					label={t("settingsSectionsPrivacy.privacy.protectedCount", { count: library.length })}
@@ -443,18 +447,13 @@ export function PrivacySection() {
 			<EditSecretDialog entry={editingEntry} onClose={() => setEditingEntry(null)} />
 
 			{sessionOnly.length > 0 && (
-				<SettingsCard jump={t("settingsSectionsPrivacy.privacy.jumpSessionOnly")} title={t("settingsSectionsPrivacy.privacy.titleSessionOnly")} footer={t("settingsSectionsPrivacy.privacy.footerSessionOnly")}>
+				<SettingsCard jump={t("settingsSectionsPrivacy.privacy.jumpSessionOnly")} title={t("settingsSectionsPrivacy.privacy.titleSessionOnly")} infoTip={t("settingsSectionsPrivacy.privacy.footerSessionOnly")}>
 					{sessionOnly.map((e) => (
 						<EntryRow key={e.id} entry={e} onEdit={setEditingEntry} />
 					))}
 				</SettingsCard>
 			)}
 
-			{library.length > 0 && (
-				<Notice tone="info">
-					{t("settingsSectionsPrivacy.privacy.autoEnableNotice")}
-				</Notice>
-			)}
 			<OmpSections page="privacy" />
 		</div>
 	);

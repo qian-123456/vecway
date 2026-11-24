@@ -198,20 +198,16 @@ export function RulesFilesSection() {
 		<div className="space-y-5">
 			<SectionHeader
 				title={t("memoryRules.rulesTitle")}
-				description={t("memoryRules.rulesDesc")}
+				infoTip={`${t("memoryRules.rulesDesc")}\n${t("memoryRules.rulesNotice")}\n${t("memoryRules.expandTip")}`}
 			/>
-
-			<Notice tone="info">
-				{t("memoryRules.rulesNotice")}
-			</Notice>
-
 			{error && <Notice tone="danger">{error}</Notice>}
 
 			<SectionJumpBar />
 			<SettingsCard
+				title={t("memoryRules.rulesScope")}
 				jump={t("memoryRules.rulesScope")}
 				fieldId="agentsMdScope"
-				footer={
+				infoTip={
 					effectiveScope === "global"
 						? t("memoryRules.scopeGlobalFooter")
 						: t("memoryRules.scopeProjectFooter")
@@ -268,12 +264,6 @@ export function RulesFilesSection() {
 					))}
 				</div>
 			</SettingsCard>
-
-			{!expanded && (
-				<p data-field-id="agentsMdEditor" className="px-1 text-xs text-[var(--text-muted)]">
-					{t("memoryRules.expandTip")}
-				</p>
-			)}
 
 			<OmpSections page="agents-md" />
 		</div>

@@ -35,7 +35,7 @@ export function SessionsSection() {
 				<SettingRow
 					fieldId="idleSuspendMinutes"
 					label={t("settingsSections.sessions.idleSuspendLabel")}
-					description={t("settingsSections.sessions.idleSuspendDesc")}
+					infoTip={t("settingsSections.sessions.idleSuspendDesc")}
 					hint={minutes === 0 ? t("settingsSections.sessions.idleSuspendNever") : t("settingsSections.sessions.idleSuspendMinutes", { minutes })}
 					control={
 						<CommitInput
@@ -70,7 +70,7 @@ export function SessionsSection() {
 				<ToggleRow
 					fieldId="sessionGroupByWorktree"
 					label={t("settingsSections.sessions.groupByWorktreeLabel")}
-					description={t("settingsSections.sessions.groupByWorktreeDesc")}
+					infoTip={t("settingsSections.sessions.groupByWorktreeDesc")}
 					checked={settings?.sessionGroupByWorktree ?? true}
 					onChange={(v) => save({ sessionGroupByWorktree: v })}
 				/>
@@ -89,7 +89,7 @@ export function SessionsSection() {
 
 			<SettingsCard jump={t("settingsSections.sessions.jumpSend")}
 				title={t("settingsSections.sessions.titleSend")}
-				description={t("settingsSections.sessions.sendDesc")}
+				infoTip={t("settingsSections.sessions.sendDesc")}
 			>
 				<ToggleRow
 					fieldId="queueAutoSend"
@@ -101,7 +101,7 @@ export function SessionsSection() {
 				<SettingRow
 					fieldId="followUpBehavior"
 					label={t("settingsSections.sessions.followUpBehaviorLabel")}
-					description={t("settingsSections.sessions.followUpBehaviorDesc")}
+					infoTip={t("settingsSections.sessions.followUpBehaviorDesc")}
 					control={
 						<Segmented
 							value={settings?.followUpBehavior ?? "steer"}
@@ -120,12 +120,12 @@ export function SessionsSection() {
 
 			<SettingsCard jump={t("settingsSections.sessions.jumpVisualize")}
 				title={t("settingsSections.sessions.titleVisualize")}
-				footer={t("settingsSections.sessions.footerVisualize")}
+				infoTip={t("settingsSections.sessions.footerVisualize")}
 			>
 				<ToggleRow
 					fieldId="visualizeEnabled"
 					label={t("settingsSections.sessions.visualizeLabel")}
-					description={t("settingsSections.sessions.visualizeDesc")}
+					infoTip={t("settingsSections.sessions.visualizeDesc")}
 					checked={settings?.visualizeEnabled ?? true}
 					onChange={(v) => save({ visualizeEnabled: v })}
 				/>
