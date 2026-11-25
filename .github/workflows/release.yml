@@ -98,10 +98,13 @@ jobs:
             ---
 
             ### 本次更新 / What's New
-            #### 修复与优化 / Fixes
-            - **修复 macOS 应用内更新重启后提示"已损坏"**：修复重启辅助脚本在正式版安装包内错误创建空 `dev.icns` 文件导致 Apple 代码签名校验失败的问题（`v0.2.0` / `v0.2.1` 自动升级到本版本时旧进程仍会执行最后一次旧重启脚本，如遇提示请重新从 `.dmg` 拖入覆盖安装，后续版本即可正常无缝重启）。
-            - **Fix macOS "App is damaged" after in-app update relaunch**: Prevented the relaunch helper from creating an empty `dev.icns` inside signed release bundles, which invalidated the sealed code signature (when upgrading from `v0.2.0` / `v0.2.1`, the previous version's relaunch script runs one final time—reinstall from the `.dmg` if prompted, and subsequent updates will relaunch cleanly).
+            #### 新特性 / Features
+            - **移动端与局域网配对 / Mobile Companion & LAN Pairing**：新增 iOS / Android 移动端支持，支持桌面端局域网 TLS 加密与二维码配对、工作区抽屉、Plan 视图及侧边对话同步。 / Added iOS & Android companion support with pinned LAN TLS & QR pairing, workspace drawer, Plan sheet, and side-chat sync.
+            - **自动化草稿与定时任务 / Automation Drafts & Schedules**：新增自动化任务草稿箱、定时调度管理与相关设置。 / Added automation drafts, schedule management, and settings.
+            - **思考强度快速模式与交互优化 / Thinking Fast Mode & UX Polish**：思考强度选择器新增一键快速模式开关、空白侧边对话关闭支持多草稿撤销，并全面打磨桌面端与移动端交互细节。 / Added one-click fast-mode toggle in the thinking level picker, per-tab multi-draft undo for blank side-chat close, and desktop/mobile UI polish.
 
+            #### 修复与性能 / Fixes & Performance
+            - **内存与稳定性优化 / Memory & Reliability**：限制空闲会话转录缓存并精简后台轮询；修复恢复子代理归属展示、外部模型上下文窗口解析及工作树归属校验等问题。 / Bounded idle transcript caches and trimmed background polling; fixed resumed subagent visibility, external model context windows, and worktree ownership checks.
             ---
 
             ### 帮助与反馈 / Support
