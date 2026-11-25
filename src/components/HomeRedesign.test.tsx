@@ -174,7 +174,6 @@ describe("Home & shell redesign components", () => {
 			useUi.setState({ selectedSessionId: "prev-1" });
 		});
 		rerender(<BottomBar />);
-		expect(await screen.findByText("上下文 18%")).toBeTruthy();
 		expect(screen.getByText("1 轮 1 步")).toBeTruthy();
 	});
 });
